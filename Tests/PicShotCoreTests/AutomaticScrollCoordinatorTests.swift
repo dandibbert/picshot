@@ -129,7 +129,7 @@ final class AutomaticScrollCoordinatorTests: XCTestCase {
         var config = AutomaticScrollConfiguration(); config.stepPoints = Int.max
         let invalid = AutomaticScrollCoordinator(axis: .vertical, configuration: config, driver: Driver(), sleep: fastSleep)
         invalid.start()
-        XCTAssertEqual(invalid.state, .failed("Invalid automatic-scroll safety limits."))
+        XCTAssertEqual(invalid.state, .failed("自动滚动安全限制无效。"))
     }
 
     func testStopDuringCountdownCannotPostOrCapture() async throws {
@@ -296,6 +296,6 @@ final class AutomaticScrollCoordinatorTests: XCTestCase {
         held?.resume(returning: .accepted(totalFrames: 1)); held = nil
         try await waitUntil { !coordinator.hasPendingOperation }
         XCTAssertEqual(coordinator.acceptedFrames, 0)
-        XCTAssertEqual(coordinator.state, .failed("A screen capture timed out. Accepted frames have been kept."))
+        XCTAssertEqual(coordinator.state, .failed("屏幕捕获超时，已保留捕获内容。"))
     }
 }

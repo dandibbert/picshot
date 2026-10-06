@@ -24,11 +24,11 @@ public enum ScrollSequenceError: Error, LocalizedError, Equatable {
     case invalidGeometry, blockLimit, rangeLimit, emptySelection, unknownBlock
     public var errorDescription: String? {
         switch self {
-        case .invalidGeometry: return "The scroll sequence has invalid geometry. Accepted sources have been kept."
-        case .blockLimit: return "This session reached its 100-block limit. Finish this capture and start another."
-        case .rangeLimit: return "This edit reached its 100-range or 300-strip limit. Undo a cut or finish this image."
-        case .emptySelection: return "Keep at least one pixel strip in the image."
-        case .unknownBlock: return "That block is no longer in this capture."
+        case .invalidGeometry: return "长截图片段坐标无效，已保留原图。"
+        case .blockLimit: return "已达到100个源片段上限，请完成当前截图后重新开始。"
+        case .rangeLimit: return "已达到100个裁剪范围或300个输出片段上限。请撤销部分裁剪或完成截图。"
+        case .emptySelection: return "请至少保留一条像素带。"
+        case .unknownBlock: return "当前截图中已没有该片段。"
         }
     }
 }

@@ -33,30 +33,30 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
 
     private let direction = NSPopUpButton(frame: .zero, pullsDown: false)
     private let displayPicker = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let chooseButton = NSButton(title: "Choose Region & Capture", target: nil, action: nil)
-    private let nextButton = NSButton(title: "Capture Next (3s)", target: nil, action: nil)
-    private let automaticButton = NSButton(title: "Start Automatic (3s)", target: nil, action: nil)
-    private let accessibilityButton = NSButton(title: "Accessibility Settings…", target: nil, action: nil)
-    private let importButton = NSButton(title: "Import Frames…", target: nil, action: nil)
-    private let resetButton = NSButton(title: "Start Over", target: nil, action: nil)
-    private let finishButton = NSButton(title: "Finish & Edit", target: nil, action: nil)
-    private let status = NSTextField(wrappingLabelWithString: "Choose a region containing only scrolling content. Exclude fixed headers, sidebars, and scrollbars.")
-    private let dimensions = NSTextField(labelWithString: "No frames yet")
+    private let chooseButton = NSButton(title: "选择区域并截图", target: nil, action: nil)
+    private let nextButton = NSButton(title: "捕获下一帧（3秒）", target: nil, action: nil)
+    private let automaticButton = NSButton(title: "自动滚动（3秒）", target: nil, action: nil)
+    private let accessibilityButton = NSButton(title: "辅助功能设置…", target: nil, action: nil)
+    private let importButton = NSButton(title: "导入图片…", target: nil, action: nil)
+    private let resetButton = NSButton(title: "重新开始", target: nil, action: nil)
+    private let finishButton = NSButton(title: "完成并编辑", target: nil, action: nil)
+    private let status = NSTextField(wrappingLabelWithString: "请选择滚动内容，避开固定页眉、侧栏和滚动条。")
+    private let dimensions = NSTextField(labelWithString: "尚未捕获图片")
     private let preview = ScrollSequencePreview()
-    private let trimButton = NSButton(title: "Trim Blocks…", target: nil, action: nil)
+    private let trimButton = NSButton(title: "裁剪片段…", target: nil, action: nil)
     private let blockPicker = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let deleteButton = NSButton(title: "Delete Block", target: nil, action: nil)
-    private let undoButton = NSButton(title: "Undo", target: nil, action: nil)
-    private let redoButton = NSButton(title: "Redo", target: nil, action: nil)
-    private let applyButton = NSButton(title: "Apply Cuts", target: nil, action: nil)
-    private let cancelButton = NSButton(title: "Cancel Cuts", target: nil, action: nil)
-    private let autoCropButton = NSButton(checkboxWithTitle: "Reverse Auto-Crop", target: nil, action: nil)
-    private let resetDirectionButton = NSButton(title: "Reset Direction", target: nil, action: nil)
-    private let restoreCoverageButton = NSButton(title: "Restore Captured Edges", target: nil, action: nil)
+    private let deleteButton = NSButton(title: "删除整段", target: nil, action: nil)
+    private let undoButton = NSButton(title: "撤销", target: nil, action: nil)
+    private let redoButton = NSButton(title: "重做", target: nil, action: nil)
+    private let applyButton = NSButton(title: "应用裁剪", target: nil, action: nil)
+    private let cancelButton = NSButton(title: "取消裁剪", target: nil, action: nil)
+    private let autoCropButton = NSButton(checkboxWithTitle: "反向自动裁剪", target: nil, action: nil)
+    private let resetDirectionButton = NSButton(title: "重设方向", target: nil, action: nil)
+    private let restoreCoverageButton = NSButton(title: "恢复已捕获边缘", target: nil, action: nil)
     private let bandStartField = NSTextField(string: "0")
     private let bandLengthField = NSTextField(string: "1")
-    private let selectBandButton = NSButton(title: "Select Band", target: nil, action: nil)
-    private let restoreCutsButton = NSButton(title: "Reset Cuts", target: nil, action: nil)
+    private let selectBandButton = NSButton(title: "选择范围", target: nil, action: nil)
+    private let restoreCutsButton = NSButton(title: "重置裁剪", target: nil, action: nil)
     private var bandControls: NSStackView?
 
     init(storageLimitBytes: Int64 = 512 * 1024 * 1024, onComplete: @escaping (CGImage) -> Void) {
@@ -65,7 +65,7 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
         let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 720, height: 740),
                               styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         super.init(window: window)
-        window.title = "Scrolling Capture"
+        window.title = "长截图"
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.center()
@@ -78,7 +78,7 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
 
     private func buildInterface() {
         guard let content = window?.contentView else { return }
-        direction.addItems(withTitles: ["Vertical ↕", "Horizontal ↔"])
+        direction.addItems(withTitles: ["纵向 ↕", "横向 ↔"])
         direction.target = self
         direction.action = #selector(directionChanged)
         for screen in NSScreen.screens {
@@ -87,7 +87,7 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
         }
         if let main = NSScreen.main?.displayID,
            let index = NSScreen.screens.firstIndex(where: { $0.displayID == main }) { displayPicker.selectItem(at: index) }
-        let explanation = NSTextField(wrappingLabelWithString: "Capture scrolling content only, excluding fixed headers, sidebars and scrollbars. Manual capture can move either way. Reverse Auto-Crop trims the returning edge; turn it off to keep all captured coverage. Automatic capture scrolls down or right after a 3-second countdown and needs Accessibility approval. Return to the target app before it starts.")
+        let explanation = NSTextField(wrappingLabelWithString: "只选择滚动内容，避开固定页眉、侧栏和滚动条。手动捕获支持双向滚动，反向自动裁剪会缩短返回一侧；关闭后保留全部已捕获内容。自动模式在3秒后向下或向右滚动，需要辅助功能权限；请在倒计时内切回目标应用。")
         explanation.textColor = .secondaryLabelColor
         status.maximumNumberOfLines = 4
         dimensions.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
@@ -104,8 +104,8 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
         importButton.target = self; importButton.action = #selector(importFrames)
         resetButton.target = self; resetButton.action = #selector(startOver)
         finishButton.target = self; finishButton.action = #selector(finishCapture)
-        let controls = NSStackView(views: [NSTextField(labelWithString: "Direction:"), direction,
-                                          NSTextField(labelWithString: "Display:"), displayPicker])
+        let controls = NSStackView(views: [NSTextField(labelWithString: "方向："), direction,
+                                          NSTextField(labelWithString: "显示器："), displayPicker])
         controls.orientation = .horizontal
         controls.spacing = 10
         let captureControls = NSStackView(views: [chooseButton, nextButton, importButton])
@@ -116,7 +116,7 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
         automaticRow.spacing = 10
         trimButton.target = self; trimButton.action = #selector(beginTrimming)
         blockPicker.target = self; blockPicker.action = #selector(blockSelectionChanged)
-        blockPicker.setAccessibilityLabel("Accepted scroll block")
+        blockPicker.setAccessibilityLabel("已捕获片段")
         deleteButton.target = self; deleteButton.action = #selector(deleteSelectedBlock)
         undoButton.target = self; undoButton.action = #selector(undoCut)
         redoButton.target = self; redoButton.action = #selector(redoCut)
@@ -124,7 +124,7 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
         redoButton.keyEquivalent = "z"; redoButton.keyEquivalentModifierMask = [.command, .shift]
         applyButton.target = self; applyButton.action = #selector(applyTrimming)
         cancelButton.target = self; cancelButton.action = #selector(cancelTrimming)
-        preview.setAccessibilityLabel("Stitched scroll image. Use the block menu to select a strip while trimming.")
+        preview.setAccessibilityLabel("长截图预览。拖动选择任意范围，也可从片段菜单中选择整段。")
         preview.onSelect = { [weak self] id in self?.selectBlock(id) }
         preview.onDelete = { [weak self] in self?.deleteSelectedBlock() }
         preview.onBandSelect = { [weak self] range in self?.selectBand(range) }
@@ -133,13 +133,13 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
         restoreCoverageButton.target = self; restoreCoverageButton.action = #selector(restoreCapturedEdges)
         selectBandButton.target = self; selectBandButton.action = #selector(selectTypedBand)
         restoreCutsButton.target = self; restoreCutsButton.action = #selector(restoreCuts)
-        bandStartField.setAccessibilityLabel("Band start pixel, zero-based")
-        bandLengthField.setAccessibilityLabel("Band length in pixels")
+        bandStartField.setAccessibilityLabel("选区起点像素，从0开始")
+        bandLengthField.setAccessibilityLabel("选区长度，单位为像素")
         for field in [bandStartField, bandLengthField] { field.widthAnchor.constraint(equalToConstant: 65).isActive = true }
         let captureMode = NSStackView(views: [autoCropButton, resetDirectionButton])
         captureMode.orientation = .horizontal; captureMode.spacing = 10
-        let bandRow = NSStackView(views: [NSTextField(labelWithString: "Start px:"), bandStartField,
-                                         NSTextField(labelWithString: "Length:"), bandLengthField, selectBandButton, restoreCoverageButton, restoreCutsButton])
+        let bandRow = NSStackView(views: [NSTextField(labelWithString: "起点（像素）："), bandStartField,
+                                         NSTextField(labelWithString: "长度："), bandLengthField, selectBandButton, restoreCoverageButton, restoreCutsButton])
         bandRow.orientation = .horizontal; bandRow.spacing = 8; bandControls = bandRow
         for (control, identifier) in [(trimButton, "trim"), (deleteButton, "delete"), (undoButton, "undo"),
                                       (redoButton, "redo"), (applyButton, "apply"), (cancelButton, "cancel"),
@@ -205,9 +205,9 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
         }
         guard let currentScreen = NSScreen.screens.first(where: { $0.displayID == displayID }),
               currentScreen.frame.size == screenSize else {
-            throw CaptureError.failed("The display layout changed. Start a new scrolling capture.")
+            throw CaptureError.failed("显示器布局已改变，请重新开始长截图。")
         }
-        status.stringValue = "Capturing in 3 seconds. Return to your page, scroll, then pause."
+        status.stringValue = "3秒后捕获。请切回页面，滚动后停稳。"
         window?.orderOut(nil)
         try await Task.sleep(nanoseconds: 3_000_000_000)
         let fullImage = try await captureService.captureDisplay(displayID: displayID)
@@ -273,24 +273,24 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
     private func automaticChanged(_ state: AutomaticScrollState) {
         let text: String
         switch state {
-        case .ready: text = "Ready for automatic scrolling"
-        case .countdown(let seconds): text = "Starting in \(seconds)s · Return to the target app"
-        case .capturing: text = "Capturing and matching · \(frames.count) frames"
-        case .scrolling: text = "Scrolling \(axis == .vertical ? "down" : "right") at the region’s center"
-        case .settling: text = "Waiting for scrolling to settle"
-        case .retrying(let attempt): text = "Unchanged frame · Checking again (\(attempt))"
+        case .ready: text = "已准备自动滚动"
+        case .countdown(let seconds): text = "\(seconds)秒后开始 · 请切回目标应用"
+        case .capturing: text = "正在捕获并匹配 · 已保留\(frames.count)帧"
+        case .scrolling: text = "正在选区中心向\(axis == .vertical ? "下" : "右")滚动"
+        case .settling: text = "等待页面停止滚动"
+        case .retrying(let attempt): text = "画面未变化 · 再次检查（\(attempt)）"
         case .paused:
-            text = automatic?.hasPendingOperation == true ? "Paused · Waiting for the current capture to stop" : "Paused · Resume starts a new 3-second countdown"
-        case .failed(let message): text = "\(message) Accepted frames have been kept."
+            text = automatic?.hasPendingOperation == true ? "已暂停 · 等待当前捕获结束" : "已暂停 · 继续后将重新倒计时3秒"
+        case .failed(let message): text = "\(message) 已保留捕获内容。"
         case .finished(let reason):
             switch reason {
             case .stopped:
                 edits.resetCaptureDirection()
-                text = "Automatic scrolling stopped. Direction reset; finish, continue manually, or restart automatic capture."
-            case .noMovement: text = "No further movement detected after bounded retries. This may be the end or an app that ignores scroll events. Review the image, finish, or continue manually."
-            case .frameLimit: text = "Reached the 100-frame limit. Finish this capture."
-            case .eventLimit: text = "Reached the automatic scroll-event limit. Review and finish this capture."
-            case .timeLimit: text = "Reached the 3-minute automatic-capture limit. Accepted frames have been kept."
+                text = "自动滚动已停止，方向已重设。可完成截图、继续手动捕获或重新启动自动模式。"
+            case .noMovement: text = "多次检查后仍未检测到滚动，可能已到页面尽头或应用未响应。请检查预览，可完成截图或继续手动捕获。"
+            case .frameLimit: text = "已达到100帧上限，请完成本次截图。"
+            case .eventLimit: text = "已达到自动滚动次数上限，请检查并完成截图。"
+            case .timeLimit: text = "已达到3分钟自动捕获上限，已保留捕获内容。"
             }
         }
         status.stringValue = text
@@ -314,8 +314,8 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
     @objc private func importFrames() {
         guard !sessionBusy, !edits.isEditing else { return }
         let panel = NSOpenPanel()
-        panel.title = "Choose overlapping frames in filename order"
-        panel.message = "Choose equal-size overlapping images in capture order, including reverse movement. Names are sorted naturally (frame2 before frame10). Original accepted sources are kept."
+        panel.title = "按文件名顺序导入重叠图片"
+        panel.message = "请选择大小一致、相互重叠的图片，顺序可包含反向滚动。文件名按自然顺序排列（frame2在frame10之前）；已接受的原图保持不变。"
         panel.allowedContentTypes = [.image]
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
@@ -422,17 +422,17 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
         preview.image = NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
         refreshSequencePresentation()
         if let match = result.4 {
-            let motion = axis == .vertical ? (match.advance < 0 ? "Upward" : "Downward")
-                                          : (match.advance < 0 ? "Leftward" : "Rightward")
-            let evidence = match.evidence.map { String(format: " · mean error %.2f", $0.meanError) } ?? ""
-            let direction = edits.establishedDirection.map { $0 > 0 ? "down/right" : "up/left" } ?? "unset"
+            let motion = axis == .vertical ? (match.advance < 0 ? "向上" : "向下")
+                                          : (match.advance < 0 ? "向左" : "向右")
+            let evidence = match.evidence.map { String(format: " · 平均误差 %.2f", $0.meanError) } ?? ""
+            let direction = edits.establishedDirection.map { $0 > 0 ? "向下／向右" : "向上／向左" } ?? "待确定"
             status.stringValue = edits.autoCropEnabled
-                ? "\(motion) movement verified · Reverse Auto-Crop direction \(direction). The preview includes retained manual cuts.\(evidence)"
+                ? "已验证\(motion)移动 · 反向自动裁剪方向：\(direction)。已保留手动裁剪。\(evidence)"
                 : (result.2 == nil
-                    ? "\(motion) revisit verified. No source or output pixels were duplicated.\(evidence)"
-                    : "\(motion) movement matched with \(match.overlap) pixels of overlap. Only the unseen edge strip was added.\(evidence)")
+                    ? "已验证\(motion)返回已捕获区域，未重复保存或拼接像素。\(evidence)"
+                    : "已匹配\(motion)移动，重叠\(match.overlap)像素，仅添加新露出的边缘。\(evidence)")
         } else {
-            status.stringValue = "First frame saved. Scroll either way with at least 25% overlap, or start automatic scrolling. Up to 100 blocks, 60 million pixels and 32,768 pixels per edge."
+            status.stringValue = "首帧已保存。可双向滚动或启动自动模式，请保留至少25%重叠。上限为100个源片段、6000万像素、单边32768像素。"
         }
         return result.2 != nil
     }
@@ -449,11 +449,11 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
         for strip in layout.strips where listed.insert(strip.block.id).inserted {
             let originalIndex = sequence.blocks.firstIndex(where: { $0.id == strip.block.id }) ?? 0
             let visibleLength = layout.strips.filter { $0.block.id == strip.block.id }.reduce(0) { $0 + $1.block.length }
-            blockPicker.addItem(withTitle: "Block \(originalIndex + 1) · \(visibleLength) px")
+            blockPicker.addItem(withTitle: "第\(originalIndex + 1)段 · \(visibleLength)像素")
             blockPicker.lastItem?.representedObject = strip.block.id
             if strip.block.id == selectedBlockID { blockPicker.select(blockPicker.lastItem) }
         }
-        dimensions.stringValue = "\(Set(layout.strips.map { $0.block.id }).count)/\(sequence.blocks.count) blocks · \(layout.width) × \(layout.height) pixels · \(diskBytes / 1_048_576) MB sources"
+        dimensions.stringValue = "\(Set(layout.strips.map { $0.block.id }).count)/\(sequence.blocks.count)段 · \(layout.width) × \(layout.height)像素 · 原图\(diskBytes / 1_048_576) MB"
         updateControls()
     }
 
@@ -479,10 +479,10 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
     }
     @objc private func selectTypedBand() {
         guard let start = Int(bandStartField.stringValue), let count = Int(bandLengthField.stringValue),
-              start >= 0, count > 0 else { status.stringValue = "Enter a nonnegative start pixel and a positive band length."; return }
+              start >= 0, count > 0 else { status.stringValue = "起点须为非负整数，长度须为正整数。"; return }
         let end = start.addingReportingOverflow(count)
         guard !end.overflow, let layout = preview.layout, end.partialValue <= (axis == .vertical ? layout.height : layout.width) else {
-            status.stringValue = "The selected band must fit inside the current image."; return
+            status.stringValue = "选区不能超出当前图片。"; return
         }
         selectBand(start..<end.partialValue)
     }
@@ -496,7 +496,7 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
     @objc private func resetCaptureDirection() {
         guard !sessionBusy, !edits.isEditing else { return }
         edits.resetCaptureDirection()
-        status.stringValue = "Capture direction reset. Your next verified movement establishes the direction; source pixels and manual cuts are kept."
+        status.stringValue = "方向已重设，下次匹配成功的移动将确定新方向。原图与手动裁剪均保留。"
     }
     @objc private func restoreCapturedEdges() {
         guard !sessionBusy, edits.isEditing, let sequence else { return }
@@ -514,7 +514,7 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
     @objc private func beginTrimming() {
         guard !sessionBusy, !frames.isEmpty, !edits.isEditing else { return }
         edits.begin(); refreshSequencePresentation()
-        status.stringValue = "Drag across the preview to select any band, or enter exact start/length pixels. A click selects a whole source block. Delete joins remaining strips; Undo/Redo and Cancel preserve original sources."
+        status.stringValue = "拖动预览选择任意范围，或输入精确起点与长度；单击可选整段。删除后拼接剩余内容，支持撤销、重做与取消，原图保持不变。"
     }
     @objc private func deleteSelectedBlock() {
         guard !sessionBusy, let sequence, let selectedBlockID else { return }
@@ -537,7 +537,7 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
     @objc private func applyTrimming() {
         guard !sessionBusy, edits.isEditing else { return }
         edits.apply(); refreshSequencePresentation()
-        status.stringValue = "Cuts applied. Finish & Edit uses this exact preview. You can continue capturing or reopen Trim Blocks."
+        status.stringValue = "裁剪已应用，完成后将按当前预览进入编辑器。也可继续捕获或再次裁剪。"
     }
     @objc private func cancelTrimming() {
         guard !sessionBusy, edits.isEditing else { return }
@@ -564,8 +564,8 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
         preview.image = NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
         refreshSequencePresentation()
         status.stringValue = next.isEditing
-            ? "Preview updated. Undo/Redo changes cuts; Cancel restores the image from before this trim session."
-            : "Preview updated. Original captured sources and manual cuts are preserved."
+            ? "预览已更新。可撤销或重做；取消将恢复本次裁剪前的图片。"
+            : "预览已更新，原图与手动裁剪均已保留。"
     }
 
     private var canFinishCommittedFrames: Bool {
@@ -585,7 +585,7 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
         guard let sequence else { throw ScrollSequenceError.invalidGeometry }
         let layout = try edits.layout(for: sequence)
         let sourceFrames = frames, selectedAxis = axis, token = generation
-        status.stringValue = "Rendering the stitched image…"
+        status.stringValue = "正在合成长截图…"
         let worker = Task.detached(priority: .userInitiated) {
             try ScrollImageIO.renderSequence(sourceFrames, layout: layout, axis: selectedAxis)
         }
@@ -600,10 +600,10 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
         guard !sessionBusy else { return }
         if !frames.isEmpty {
             let alert = NSAlert()
-            alert.messageText = "Discard this scrolling capture?"
-            alert.informativeText = "The temporary source frames will be removed."
-            alert.addButton(withTitle: "Discard")
-            alert.addButton(withTitle: "Keep Capturing")
+            alert.messageText = "放弃本次长截图？"
+            alert.informativeText = "本次捕获的临时原图将被删除。"
+            alert.addButton(withTitle: "放弃")
+            alert.addButton(withTitle: "继续捕获")
             guard alert.runModal() == .alertFirstButtonReturn else { return }
         }
         resetSession()
@@ -620,7 +620,7 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
             catch is CancellationError { }
             catch {
                 if self.generation == token {
-                    self.status.stringValue = "\(error.localizedDescription) Accepted frames have been kept."
+                    self.status.stringValue = "\(error.localizedDescription) 已保留捕获内容。"
                 }
             }
             guard self.generation == token else { return }
@@ -653,7 +653,7 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
         for control in [bandStartField, bandLengthField, selectBandButton, restoreCoverageButton, restoreCutsButton] as [NSControl] {
             control.isEnabled = !sessionBusy && edits.isEditing
         }
-        deleteButton.title = selectedBand == nil ? "Delete Block" : "Delete Band"
+        deleteButton.title = selectedBand == nil ? "删除整段" : "删除选区"
         blockPicker.isEnabled = !sessionBusy
         let outputLength = preview.layout.map { axis == .vertical ? $0.height : $0.width } ?? 0
         deleteButton.isEnabled = !sessionBusy && edits.isEditing && (selectedBand.map { $0.count < outputLength }
@@ -688,8 +688,8 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
         preview.selectedRange = nil
         preview.layout = nil; preview.selectedID = nil; blockPicker.removeAllItems()
         preview.image = nil
-        dimensions.stringValue = "No frames yet"
-        status.stringValue = "Choose a region containing only scrolling content. Exclude fixed headers, sidebars, and scrollbars."
+        dimensions.stringValue = "尚未捕获图片"
+        status.stringValue = "请选择滚动内容，避开固定页眉、侧栏和滚动条。"
         updateControls()
     }
 
@@ -743,9 +743,9 @@ private enum ScrollSessionError: LocalizedError {
     case imageIO, frameLimit, diskLimit
     var errorDescription: String? {
         switch self {
-        case .imageIO: return "The image could not be read or written."
-        case .frameLimit: return "This session reached its 100-frame limit. Finish this image and start another."
-        case .diskLimit: return "This session reached its 512 MB temporary-storage limit. Finish this image and start another."
+        case .imageIO: return "无法读取或写入图片。"
+        case .frameLimit: return "已达到100帧上限，请完成当前截图后重新开始。"
+        case .diskLimit: return "已达到512 MB临时存储上限，请完成当前截图后重新开始。"
         }
     }
 }

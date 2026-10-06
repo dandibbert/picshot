@@ -10,13 +10,13 @@ public enum ScrollStitchError: Error, LocalizedError, Equatable {
 
     public var errorDescription: String? {
         switch self {
-        case .invalidPixels: return "The image pixels are invalid or the frame is too large."
-        case .differentDimensions: return "Every frame must have the same pixel dimensions."
-        case .duplicate: return "This frame is unchanged. Scroll a little farther and capture again."
-        case .insufficientTexture: return "There is too little detail to match this area safely. Include more text or image detail."
-        case .ambiguousOverlap: return "The overlap repeats or has more than one possible match. Scroll a smaller distance or choose a more distinctive area."
-        case .noOverlap: return "No reliable overlap was found. Return toward the previous position and leave at least 25% of the last frame visible."
-        case .pixelLimit: return "This capture reached its pixel limit. Finish this image and start another."
+        case .invalidPixels: return "图片像素无效或尺寸过大。"
+        case .differentDimensions: return "所有帧的像素尺寸必须一致。"
+        case .duplicate: return "画面未变化，请再滚动一些后捕获。"
+        case .insufficientTexture: return "当前区域细节不足，无法可靠匹配。请包含更多文字或图像细节。"
+        case .ambiguousOverlap: return "重叠内容重复，无法确定唯一接缝。请缩短滚动距离或选择更有辨识度的区域。"
+        case .noOverlap: return "未找到可靠重叠。请向上次位置返回，并保留至少25%的上一帧内容。"
+        case .pixelLimit: return "已达到长截图像素上限，请完成当前截图后重新开始。"
         }
     }
 }

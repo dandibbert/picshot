@@ -85,7 +85,7 @@ public final class AutomaticScrollCoordinator {
     /// This is the sole entry point that authorizes a run. Construction does no I/O.
     public func start() {
         guard state == .ready, !hasPendingOperation else { return }
-        guard configuration.isValid else { change(.failed("Invalid automatic-scroll safety limits.")); return }
+        guard configuration.isValid else { change(.failed("自动滚动安全限制无效。")); return }
         do { try driver.checkPermission() }
         catch { change(.failed(error.localizedDescription)); return }
         startedAt = now()
@@ -211,7 +211,7 @@ public final class AutomaticScrollCoordinator {
             self.invalidate()
             self.change(timeout < self.configuration.captureTimeout
                         ? .finished(.timeLimit)
-                        : .failed("A screen capture timed out. Accepted frames have been kept."))
+                        : .failed("屏幕捕获超时，已保留捕获内容。"))
         }
         do {
             let result = try await driver.capture()

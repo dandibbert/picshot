@@ -42,7 +42,7 @@ final class AutomaticScrollScreenDriver: AutomaticScrollDriver {
 
     func checkPermission() throws {
         guard Self.hasAccessibilityPermission else {
-            throw CaptureError.failed("Automatic scrolling needs Accessibility access. Enable PicShot yourself in System Settings → Privacy & Security → Accessibility, then press Start again. Manual capture still works without it.")
+            throw CaptureError.failed("自动滚动需要辅助功能权限。请自行前往“系统设置 → 隐私与安全性 → 辅助功能”开启PicShot，再重新启动。手动捕获无需此权限。")
         }
         guard CGPreflightScreenCaptureAccess() else { throw CaptureError.screenPermission }
     }
@@ -52,7 +52,7 @@ final class AutomaticScrollScreenDriver: AutomaticScrollDriver {
         try checkPermission()
         guard CGDisplayBounds(displayID) == displayBounds,
               NSScreen.screens.contains(where: { $0.displayID == displayID && $0.frame.size == screenSize }) else {
-            throw CaptureError.failed("The selected display changed or disconnected. Start a new scrolling capture.")
+            throw CaptureError.failed("所选显示器已变化或断开，请重新开始长截图。")
         }
         target = try Self.checkedTarget(windowAtTarget(), locked: target, at: targetPoint,
                                         frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
@@ -71,10 +71,10 @@ final class AutomaticScrollScreenDriver: AutomaticScrollDriver {
               current.bounds.size.width.isFinite, current.bounds.size.height.isFinite,
               current.bounds.size.width > 0, current.bounds.size.height > 0,
               current.bounds.contains(point), frontmostPID == current.pid else {
-            throw CaptureError.failed("The target app must be frontmost, with the center of the selected region unobstructed. Return to it during the countdown, or use manual capture.")
+            throw CaptureError.failed("目标应用须在最前方，且选区中心不能被遮挡。请在倒计时内切回目标应用，或改用手动捕获。")
         }
         if let locked, locked != current {
-            throw CaptureError.failed("The target window moved, changed, or was covered. Automatic input stopped. Accepted frames are safe; start over or continue manually.")
+            throw CaptureError.failed("目标窗口已移动、变化或被遮挡，自动滚动已停止。已保留捕获内容，可重新开始或继续手动捕获。")
         }
         return current
     }
@@ -95,7 +95,7 @@ final class AutomaticScrollScreenDriver: AutomaticScrollDriver {
               let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2,
                                   wheel1: axis == .vertical ? -Int32(points) : 0,
                                   wheel2: axis == .horizontal ? -Int32(points) : 0, wheel3: 0) else {
-            throw CaptureError.failed("The bounded scroll event could not be created.")
+            throw CaptureError.failed("无法创建安全范围内的滚动事件。")
         }
         event.location = location
         event.flags = []
@@ -113,7 +113,7 @@ final class AutomaticScrollScreenDriver: AutomaticScrollDriver {
         // burning those controls into the screenshot or hiding the target application.
         let ownApps = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier }
         guard !ownApps.isEmpty else {
-            throw CaptureError.failed("PicShot could not exclude its controls from the screenshot. Automatic capture stopped; use manual capture instead.")
+            throw CaptureError.failed("无法从截图中排除PicShot控制条，自动捕获已停止。请改用手动捕获。")
         }
         let filter = SCContentFilter(display: display, excludingApplications: ownApps, exceptingWindows: [])
         let configuration = SCStreamConfiguration()
@@ -152,15 +152,15 @@ final class AutomaticScrollScreenDriver: AutomaticScrollDriver {
 final class AutomaticScrollControls: NSWindowController, NSWindowDelegate {
     var pauseOrResume: (() -> Void)?
     var stop: (() -> Void)?
-    private let label = NSTextField(labelWithString: "Starting…")
-    private let pauseButton = NSButton(title: "Pause", target: nil, action: nil)
-    private let stopButton = NSButton(title: "Stop", target: nil, action: nil)
+    private let label = NSTextField(labelWithString: "准备开始…")
+    private let pauseButton = NSButton(title: "暂停", target: nil, action: nil)
+    private let stopButton = NSButton(title: "停止", target: nil, action: nil)
 
     init(targetPoint: CGPoint, displayBounds: CGRect) {
         let panel = NSPanel(contentRect: CGRect(x: 0, y: 0, width: 440, height: 90),
                             styleMask: [.titled, .nonactivatingPanel], backing: .buffered, defer: false)
         super.init(window: panel)
-        panel.title = "PicShot · Automatic scrolling"
+        panel.title = "PicShot · 自动滚动"
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false
         panel.level = .floating
@@ -192,7 +192,7 @@ final class AutomaticScrollControls: NSWindowController, NSWindowDelegate {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     func update(text: String, paused: Bool, canResume: Bool) {
         label.stringValue = text
-        pauseButton.title = paused ? "Resume (3s)" : "Pause"
+        pauseButton.title = paused ? "继续（3秒）" : "暂停"
         pauseButton.isEnabled = !paused || canResume
     }
     @objc private func togglePause() { pauseOrResume?() }

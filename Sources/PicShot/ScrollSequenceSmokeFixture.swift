@@ -15,6 +15,8 @@ enum ScrollSequenceSmokeFixture {
             "scope": "real native scroll-controller acceptance/buttons, reverse auto-crop in both start directions, arbitrary cross-source preview band drags, edited PNG pixels, editor pin callback, private PNG clipboard representation, temporary-source preservation and in-flight cancellation cleanup",
             "screenCaptureStarted": false, "permissionRequested": false, "inputEventsPosted": 0,
             "generalClipboardChanged": false,
+            "snapshotBackground": "effective NSWindow background; cached transparent content is composited before encoding",
+            "snapshotCaption": "合成纹理接缝测试（非真实页面）; verification window PNGs only, never captured/output image pixels",
             "limitations": ["Synthetic fixtures do not establish live third-party app, Retina or input-routing acceptance",
                             "Memory readings are sampled process observations at small fixture sizes, not maximum-size or zero-leak acceptance",
                             "Copy evidence uses the same PNG representation on a private pasteboard; the system Copy button is not invoked"],
@@ -462,15 +464,34 @@ enum ScrollSequenceSmokeFixture {
 
     private static func snapshot(_ controller: NSWindowController, to url: URL) async throws {
         try await Task.sleep(nanoseconds: 80_000_000)
-        let view = try unwrap(controller.window?.contentView, "Missing scroll view")
-        view.layoutSubtreeIfNeeded(); controller.window?.displayIfNeeded()
+        let window = try unwrap(controller.window, "Missing scroll window")
+        let view = try unwrap(window.contentView, "Missing scroll view")
+        view.layoutSubtreeIfNeeded(); window.displayIfNeeded()
         let width = Int(view.bounds.width.rounded(.up)), height = Int(view.bounds.height.rounded(.up))
         try require(width > 0 && width <= 1_200 && height > 0 && height <= 1_000, "Unbounded scroll window snapshot")
         let bitmap = try unwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
             bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
             bytesPerRow: width * 4, bitsPerPixel: 32), "Cannot allocate scroll window snapshot")
         bitmap.size = view.bounds.size; view.cacheDisplay(in: view.bounds, to: bitmap)
-        try ScrollImageIO.writePNG(try unwrap(bitmap.cgImage, "Empty scroll window snapshot"), to: url)
+        let cached = try unwrap(bitmap.cgImage, "Empty scroll window snapshot")
+        let context = try unwrap(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue), "Cannot composite scroll snapshot background")
+        let bounds = CGRect(x: 0, y: 0, width: width, height: height)
+        window.effectiveAppearance.performAsCurrentDrawingAppearance {
+            context.setFillColor(window.backgroundColor.cgColor)
+            context.fill(bounds)
+            context.draw(cached, in: bounds)
+            // Evidence-only caption. Never draw into a source, preview, export or handoff.
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+            NSAttributedString(string: "合成纹理接缝测试（非真实页面）", attributes: [
+                .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor
+            ]).draw(at: CGPoint(x: 20, y: 20))
+            NSGraphicsContext.restoreGraphicsState()
+        }
+        let composited = try unwrap(context.makeImage(), "Empty composited scroll window snapshot")
+        try ScrollImageIO.writePNG(composited, to: url)
     }
     private static func descendants(_ view: NSView?) -> [NSView] {
         guard let view else { return [] }; return [view] + view.subviews.flatMap { descendants($0) }

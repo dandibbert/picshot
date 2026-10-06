@@ -1,23 +1,53 @@
 # Verification evidence and release boundary
 
-Reviewed 6 October 2026. **ARM 0.5.0 at [87eaedf16aaf6c2df2001d35ce08af2762ac33c2](https://github.com/dandibbert/picshot/commit/87eaedf16aaf6c2df2001d35ce08af2762ac33c2) was delivered at 15:57 UTC.** In [run 37489170662](https://github.com/dandibbert/picshot/actions/runs/37489170662), the [ARM build/package job 112357029365](https://github.com/dandibbert/picshot/actions/runs/37489170662/job/112357029365) and [ARM attribution job 112357029582](https://github.com/dandibbert/picshot/actions/runs/37489170662/job/112357029582) reached terminal success. **Intel 0.5 is not delivered or fully verified**: its first full pipeline failed a real-model timing gate and skipped installed smoke; a same-source retry started at 16:00 UTC is still pending in this record. Verified Intel 0.4 artifacts remain available. The full **133-row scope, unchanged status counts and outstanding requirements** remain in [PARITY.md](PARITY.md); ARM delivery is a development preview, not full parity or zero-leak acceptance.
+Reviewed 6 October 2026. **Both ARM and Intel 0.5.0 are verified and available.** ARM at [87eaedf16aaf6c2df2001d35ce08af2762ac33c2](https://github.com/dandibbert/picshot/commit/87eaedf16aaf6c2df2001d35ce08af2762ac33c2) was delivered at 15:57 UTC: [run 37489170662](https://github.com/dandibbert/picshot/actions/runs/37489170662), [build/package job 112357029365](https://github.com/dandibbert/picshot/actions/runs/37489170662/job/112357029365) and [attribution job 112357029582](https://github.com/dandibbert/picshot/actions/runs/37489170662/job/112357029582) passed. Intel at [204325409123a07dc8a1bd472817a0ca38664092](https://github.com/dandibbert/picshot/commit/204325409123a07dc8a1bd472817a0ca38664092) reached terminal success in [run 37496626993 / job 112382709941](https://github.com/dandibbert/picshot/actions/runs/37496626993/job/112382709941); its installer updates were confirmed at 16:53 UTC. That source changes **only `.github/workflows/macos.yml`** from ARM 87eaedf; app implementation is identical. The full **133-row scope, source-qualified status counts and outstanding requirements** remain in [PARITY.md](PARITY.md). These are development previews, not full parity or zero-leak acceptance.
 
-The delivered ARM source includes the four annotation effects, camera/live annotation composition, journaled recording recovery and corrected isolated GIF export. The earlier full ARM/Intel functionality pass at [04999d0](https://github.com/dandibbert/picshot/commit/04999d0fd92a00e11bcbbfd2c9fe813f8ea9f11d), [run 37471951304](https://github.com/dandibbert/picshot/actions/runs/37471951304), remains a historical checkpoint; it does not override Intel's final-source failure. Results and measurements apply only to their identified source, process and fixture. Three subsequent offline modules are separately in progress and have no integrated implementation/acceptance credit in this release.
+The common 0.5 app implementation includes the four annotation effects, camera/live annotation composition, journaled recording recovery and corrected isolated GIF export. The earlier full ARM/Intel functionality pass at [04999d0](https://github.com/dandibbert/picshot/commit/04999d0fd92a00e11bcbbfd2c9fe813f8ea9f11d), [run 37471951304](https://github.com/dandibbert/picshot/actions/runs/37471951304), remains a historical checkpoint. Results and measurements apply only to their identified source, artifact, process and fixture; identical application code does not make differently packaged bytes or measurements interchangeable. The newer three-module interaction batch now has ARM runtime evidence below, but is not part of delivered 0.5 and no 0.6 installer has been delivered.
 
-## Delivered ARM 0.5 at 87eaedf and Intel release hold
+## ARM 0.6 functionality candidate at 9b63ddf, not delivered
+
+[Source 9b63ddf810a05160dd746750307119cbc1b361e7](https://github.com/dandibbert/picshot/commit/9b63ddf810a05160dd746750307119cbc1b361e7) reached terminal ARM success in [run 37498347869 / job 112388583473](https://github.com/dandibbert/picshot/actions/runs/37498347869/job/112388583473). Native logs report **836 ordinary tests: 833 passed, 3 intentional model-dependent skips; 390 focused tests; and 12 genuine-model tests**, all with zero failures. Focused/model groups overlap the ordinary suite; they are not additive distinct-test counts. Both signed installed ZIP and DMG pass their new `interactionParityEvidence`, recorded in `evidence/{zip,dmg}/interaction-parity.json`, alongside native annotation-path and scroll-sequence reports.
+
+**Release boundary:** Intel 9b63ddf is still running. The scroll-window snapshot at 9b63ddf had transparent-background composition; a later snapshot-composition/Chinese-label patch is authored and awaits a final rerun. The functional source pass is not a pass for that later patch, final visual acceptance or a delivered 0.6 installer. Both verified 0.5 architectures remain the available release.
+
+### Editable arcs, sectors and bounded polylines
+
+The installed path fixture uses an original **1024 × 760 synthetic desktop at 1×** and native AppKit controls/canvas NSEvents. It verifies editable open arcs and filled sectors, negative sweeps, angle/rotated-endpoint edits preserving the opposite endpoint, correct fill pixels, repeated undo/redo and canceled-drag preservation. Four-node click-built polylines support vertex edits, Return/Finish/double-click commit, Backspace/Command-Z vertex removal and Escape/tool-switch cancellation. Drafts stay out of exports; the 256-point limit auto-finishes with a single undo state. Four-edge toolbar/palette placement and owned UI/cache release pass.
+
+This supports **ANN-01 Code** for the stated geometry row. **ANN-07 remains Partial**: arrow toggles and configurable joins/end caps are still absent. Synthetic 1× pixels do not establish Retina acquisition, physical input, all fonts/scales or real captured-desktop acceptance.
+
+### Real Vision image-pin text selection and native payload paths
+
+The installed fixture runs **actual Apple Vision** on locally authored Latin text and an observational mixed-text image. It verifies word geometry, explicit image orientation, source-coordinate mapping through zoom/scroll, image-edit invalidation, Unicode keyboard/phrase selection and exact copy. It exercises the production native mouse/keyboard handlers and `NSDraggingItem` writer, then has an owned `NSTextView` consume the exact payload on an isolated pasteboard. Drag cancellation, Escape and disabled-overlay pass-through pass. **A physical drag/drop into an external application is not tested.** The user's general clipboard, preferences and permissions are unchanged.
+
+Twelve repeated mode/hide/close cycles retain zero tracked controllers/overlays; all recognition jobs settle. Admission remains bounded to two active/four waiting recognition jobs, 32,768 document UTF-16 units and 8,192 geometry units. These checks support **PIN-18 Code** for its reachable overlay/selection/drag path, not broad OCR/layout accuracy or a zero-leak result. **OCR-07 remains Partial** because new-pin recognition/selection requires explicit enablement rather than running automatically. The separate OCR result window still lacks a complete linked source/layout model.
+
+### Bidirectional scroll projection, reverse Auto-Crop and middle-band edits
+
+Native scroll-controller controls and original coordinate-hashed source pixels exercise signed placement in **both axes and both initial directions**. Reverse Auto-Crop removes the correct edge, supports explicit/mode/minimum-extent direction reset, and restores captured coverage without duplicating sources. Arbitrary selected/numeric middle bands can cross source boundaries, reconnect retained content and survive forward restoration. Undo/redo/apply/cancel restore intervals and cuts; original disk-source bytes remain unchanged. The fixture verifies 25-pixel reverse removal and 80-pixel arbitrary removal crossing two source boundaries in each direction/axis case, plus conservative repeated/ambiguous-content rejection, disk-limit refusal and in-flight cancellation cleanup.
+
+Small-fixture preview/export pixels match, and editor→pin pixels plus an isolated PNG clipboard round-trip pass. **The direct system Copy button is not invoked, and equality of previews scaled from inputs longer than 800 pixels remains unverified.** The transparent window-background snapshot issue is separate from verified edited-raster pixels; its later composition/Chinese-label fix has no inherited pass. These findings support **LONG-06 and LONG-07 Code**, while continuous manual monitoring, adjustable live capture regions, physical app routing, Retina, real dynamic/fixed page content and maximum-size/long-session resources remain open.
+
+### Installed lifecycle scope and ledger counts
+
+Both 9b63ddf installed copies complete 40 editor/pin lifecycle cycles: main-process RSS growth is **458,752 bytes ZIP / 344,064 bytes DMG**, with zero retained tracked controllers/content or cycle windows and **7 → 7 windows**. These bounded synthetic observations exclude whole-system/GPU/helper peaks and do not prove leak freedom.
+
+The 124 behavior rows now count **42 Code / 63 Partial / 19 Missing**, plus the unchanged nine macOS adaptation notes, preserving all **133 IDs**. Only ANN-01, PIN-18, LONG-06 and LONG-07 change status in this batch. Code denotes reachable implementation with the stated fixture evidence; it does not close the original acceptance column or promote the pending Intel/UI-patch work.
+
+## Verified 0.5: ARM 87eaedf and Intel 2043254
 
 Native evidence is from macOS 15.7.9 (24G830); the package minimum remains macOS 14, whose runtime acceptance is still open. `test.log`, `critical-tests.log`, `model-inference.log`, `recording-recovery.log`, package/UI/smoke logs and `evidence/` identify the exact source. Independent GIF jobs retain their focused-test and attribution logs.
 
-| Stage | ARM 87eaedf | Intel 87eaedf first attempt / independent GIF job |
+| Stage | ARM 87eaedf | Intel 2043254, with earlier independent 87eaedf GIF evidence labeled |
 | --- | --- | --- |
-| Ordinary native suite | **764 reported, 3 intentional model skips, zero failures** | Same counts/skips, zero failures |
+| Ordinary native suite | **764 reported: 761 passed, 3 intentional model skips, zero failures** | Same counts/skips, zero failures |
 | Selected critical suite | **287 passed, zero failures** | 287 passed, zero failures |
-| Genuine-model suite | **12 passed, zero failures** | 12 reported, one timing assertion failure; LaMa pixels passed |
-| GIF-focused suite | **123 passed, zero failures** | 123 passed, zero failures |
-| Installed ZIP/DMG and LaunchServices | **Both pass**, including native UI/model/pin/editor/composition checks | Installed smoke skipped after the model-stage failure; no final installed acceptance |
+| Genuine-model suite | **12 passed, zero failures** | **12 passed, zero failures** |
+| GIF-focused suite | **123 passed, zero failures** | 123 passed at app-identical 87eaedf in its independent GIF job |
+| Installed ZIP/DMG and LaunchServices | **Both pass**, including native UI/model/pin/editor/composition checks | **Both pass** at 2043254, including model exits/cleanup and composition |
 | Abrupt recording recovery | **Pass** | Pass |
-| GIF resource/cancellation profile | **Pass from ZIP only** | No full installed-smoke pass; independent attribution completed separately |
-| Eight-cycle GIF attribution | **Completed with helper exit/cleanup evidence** | Completed; does not waive the model timing failure |
+| GIF resource/cancellation profile | **Pass from ZIP only** | **Pass from ZIP only** at 2043254 |
+| Eight-cycle GIF attribution | **Completed with helper exit/cleanup evidence** | Completed at app-identical 87eaedf; not relabeled as a new 2043254 measurement |
 
 The selected critical, model and GIF-focused stages overlap the ordinary suite and each other; these are not additive distinct-test totals. Intentional model skips in the ordinary suite are not model passes.
 
@@ -33,9 +63,23 @@ All three downloaded SHA-256 sidecars below were checked against the actual file
 | `PicShot-0.5.0-macos-arm64.zip` | `8054c7791c65e5a6c89a532e6042caf77649bd675fd9d124d645daa330fcd536` |
 | `PicShot-0.5.0-macos-arm64.build-info.json` | `2bec7a2e75bab9de8cea24e9f4e2a454291224a8e5efdf8ab58d5c3facaf65a4` |
 
+### Exact Intel installer bytes and installed evidence
+
+All three Intel SHA-256 sidecars were checked against downloaded bytes. Build metadata records version 0.5.0, x86_64, exact source `204325409123a07dc8a1bd472817a0ca38664092`, macOS 14 minimum, ad-hoc signing and `notarized: false`.
+
+| File | SHA-256 |
+| --- | --- |
+| `PicShot-0.5.0-macos-x86_64.dmg` | `f92de567db034ecb986f11e9447390f096cb60f55b8200a8f5ca43e952b08f16` |
+| `PicShot-0.5.0-macos-x86_64.zip` | `3f7cd767c96632ab89a8b4eb5ce172514a235fcf41acaaa2e1f6fcfee9a3078a` |
+| `PicShot-0.5.0-macos-x86_64.build-info.json` | `e181a7187a1736124d985b6d29ab77a6f276d4e1d7ef1dbfd479379e0a275f11` |
+
+Both Intel installed formats pass normal startup/LaunchServices, visible native windows, signed formula/table/smart-erase model paths, confirmed model-child exit 0 and temporary cleanup, recording composition and lifecycle checks. The installed smart-erase fixture reports **53.5869 seconds ZIP / 50.6499 seconds DMG** for one successful production-helper job in each copy, retaining all outside-mask/alpha bytes. These fixture elapsed times are not a universal inference-latency guarantee or the child-only timing field.
+
+After ten warm-ups, **40 measured editor/pin lifecycle cycles** retain **987,136 bytes ZIP / 827,392 bytes DMG** of main-process RSS. Both end with zero retained tracked controllers/content or cycle windows and **7 → 7 windows**. This is a bounded main-process observation, not whole-device memory or a zero-leak result. Intel recovery again confirms own-child SIGKILL (9), five fragments/five seconds, 50 decoded video frames and 239,552 audio frames with source preservation and cleanup. The full GIF/cancellation profile passes from ZIP only: cancellation confirms child exit 1, `cancelled`, destination absent and cleanup; DMG explicitly records that profile as not run.
+
 ### Isolated GIF export: measured improvement with residual parent growth
 
-Each architecture compares its own **same installed binary** in fresh-process in-process-baseline and isolated-helper modes: one warm-up, then eight 30-second/360-frame exports from authored 640 × 360 media to 480 × 270 GIFs. There are zero GIF decoder validations before/during measured export cycles, followed by one final full-file validation. AVFoundation video decoding is still part of export. Independent decode-only runs warm up and read one immutable GIF eight times with no intervening exports.
+At source **87eaedf**, each architecture compares its own **same installed binary** in fresh-process in-process-baseline and isolated-helper modes: one warm-up, then eight 30-second/360-frame exports from authored 640 × 360 media to 480 × 270 GIFs. These attribution measurements predate the workflow-only 2043254 Intel packaging run and retain their original provenance. There are zero GIF decoder validations before/during measured export cycles, followed by one final full-file validation. AVFoundation video decoding is still part of export. Independent decode-only runs warm up and read one immutable GIF eight times with no intervening exports.
 
 | Architecture | Baseline export-only retained RSS bytes | Isolated-helper parent retained RSS bytes | Baseline / helper-prepared same-file decode-only retained RSS bytes |
 | --- | ---: | ---: | ---: |
@@ -48,9 +92,11 @@ For the ARM isolated export sequence, **all nine helpers including warm-up exit 
 
 The ZIP cancellation fixture requests cancellation after 36 parent-observed frame-progress messages. It confirms `cancelled`, **child exit 1**, destination absent, no partial files and child/staging cleanup. Queued progress does not establish an exact child-frame stop count. Existing codec, output/input, time and resource envelopes remain unchanged; neither this bounded workload nor cleanup success establishes sustained recording, maximum-resolution or real-device acceptance.
 
-### Intel blocker and same-source retry
+### Intel failure history and final resolution
 
-[Intel build job 112357029587](https://github.com/dandibbert/picshot/actions/runs/37489170662/job/112357029587) failed because `testRealCoreMLRemovesMarkedObjectAndPreservesOutsidePixels` took **314.905896243 seconds**, exceeding the unchanged **300-second** assertion. Its image/preservation checks passed, but this is still a real-model gate failure. Ordinary/critical/recovery and the separate GIF-focused/attribution successes do not turn the full pipeline green; installed smoke was skipped. A same-source retry began at 16:00 UTC on 6 October. **Its outcome is not yet recorded as passed, and no Intel 0.5 installer has been delivered.**
+[Intel build job 112357029587](https://github.com/dandibbert/picshot/actions/runs/37489170662/job/112357029587) first failed because `testRealCoreMLRemovesMarkedObjectAndPreservesOutsidePixels` took **314.905896243 seconds**, exceeding the unchanged **300-second** assertion. Its image/preservation checks passed, but that attempt remained a real-model gate failure and skipped installed smoke. The same-source 87eaedf retry passed the model gate, then reached the outer CI time window during smoke; it was not a complete pass either.
+
+Workflow-only 2043254 introduced an independent **40-minute Intel CI lane** and completed the full pipeline in [run 37496626993 / job 112382709941](https://github.com/dandibbert/picshot/actions/runs/37496626993/job/112382709941). **No application timeout, memory envelope or fidelity threshold was weakened**; the application implementation is identical to delivered ARM 87eaedf. Both 0.5 architectures are now available. Earlier failed/incomplete attempts remain recorded rather than being relabeled as successful.
 
 ## Historical functionality checkpoint at 04999d0
 
@@ -115,7 +161,7 @@ The cause was isolated with production-identical, test-only instrumentation at [
 
 Nearest-tick probes return the intended boundary frames on ARM and Intel, while the original production requests select preceding frames. Matching GIF/source-generator pixels further localize these failures to request-time construction rather than GIF palette/LZW assembly. These are targeted diagnostic observations on authored fixtures, not a corrected production run or a universal codec-fidelity claim.
 
-The narrow shared-rounding correction is present in **87eaedf**, with unchanged-threshold boundary-pixel regressions passing in its critical/GIF-focused stages on both architectures. The ARM final native/installed pipeline and both architectures' explicit eight-cycle isolated attribution now have recorded results above. The original failures and diagnostic probes remain history rather than being relabeled as passes. ARM 0.5 is delivered; Intel full-pipeline acceptance is independently held by the real LaMa timing gate, with its same-source retry pending.
+The narrow shared-rounding correction is present in **87eaedf**, with unchanged-threshold boundary-pixel regressions passing in its critical/GIF-focused stages on both architectures. The ARM final pipeline, app-identical Intel 2043254 final pipeline and both architectures' source-labeled eight-cycle isolated attribution have results above. The original failures and diagnostic probes remain history rather than being relabeled as passes. Both 0.5 architectures are available; real-device, broad-quality and sustained-resource acceptance remain open.
 
 [GIFExport.md](GIFExport.md) describes the production process boundary at 87eaedf: one on-demand same-executable child, with a **regular local self-contained H.264 MP4/optional AAC input cap of 1 GiB** and no silent in-process fallback. This is narrower than general video input or the recording/recovery maximum; larger otherwise valid recordings are not silently accepted for GIF. One GIF job has a separate admission gate from the ML gate, so one GIF job may overlap one model job. Recorded evidence separates parent RSS/footprint, parent-polled child RSS, child-reported RSS/footprint, child exit and cleanup; those scopes exclude other helpers, framework services and GPU allocations. Bounded measurements do not remove those limits or establish a system-wide resource guarantee.
 
@@ -219,6 +265,6 @@ The unchanged repeated-run regression envelopes are **384 MiB sampled peak growt
 
 ## Still requires real-device and full-scope acceptance
 
-User-TCC grant/deny/revoke/relaunch; real application capture; physical multi-monitor/mixed Retina/negative-origin/display-removal flows; complete capture → annotate → copy/export → pin → OCR → history paths; system/microphone audio sync and sustained recording; real camera selection/disconnect/indicator shutdown and overlay exclusion; Retina/user-desktop annotation effects; visible-preview force-kill, power loss and storage-removal recovery; long scrolling and prolonged resource use; broad multilingual/table/formula/inpainting quality; real Apple language download/translation; independent Office/export interoperability; sustained isolated-GIF resource behavior and every remaining parity-row requirement. The four annotation effects, camera/live annotations, recovery and GIF helper are now in delivered ARM 0.5; this does not establish complete acceptance or a passed Intel 0.5 pipeline. Click/scroll/keystroke effects, animated WebP and the other Missing/Partial features remain unfinished scope. Three subsequent offline modules are in progress and receive no implementation credit until integrated and tested.
+User-TCC grant/deny/revoke/relaunch; real application capture; physical multi-monitor/mixed Retina/negative-origin/display-removal flows; complete capture → annotate → copy/export → pin → OCR → history paths; system/microphone audio sync and sustained recording; real camera selection/disconnect/indicator shutdown and overlay exclusion; Retina/user-desktop annotation effects; visible-preview force-kill, power loss and storage-removal recovery; long scrolling and prolonged resource use; broad multilingual/table/formula/inpainting quality; real Apple language download/translation; independent Office/export interoperability; sustained isolated-GIF resource behavior and every remaining parity-row requirement. The four annotation effects, camera/live annotations, recovery and GIF helper are now in both verified 0.5 architectures; passing pipelines do not establish complete acceptance or full parity. Click/scroll/keystroke effects, animated WebP and the other Missing/Partial features remain unfinished scope. The subsequent 9b63ddf arcs/polylines, image-pin text selection and scroll-editing modules have the narrow ARM implementation evidence recorded above. Intel, the later UI patch, physical external-app drag, direct Copy and >800 px scaled-preview equality remain pending or unverified; no 0.6 delivery or full-parity claim is made.
 
 CI does not grant the user's OS permissions or modify permission databases. Packages are ad-hoc signed and **not notarized**; integrity checks do not establish publisher identity or Gatekeeper acceptance. Missing/Partial requirements remain in scope. No full-parity, zero-leak, universal latency or whole-device memory claim is made.

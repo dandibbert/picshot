@@ -2,6 +2,7 @@ name: Native macOS build and verification
 on:
   push:
     branches: ['feat/**']
+    paths-ignore: ['docs/**', 'README.md']
   workflow_dispatch:
 permissions:
   contents: read
@@ -157,4 +158,3 @@ jobs:
           path: dist/gif-timing.log
           if-no-files-found: ignore
           retention-days: 14
-

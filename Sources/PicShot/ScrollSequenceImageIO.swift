@@ -16,10 +16,10 @@ enum ScrollSequenceImageError: Error, LocalizedError {
     case missingSource, changedSource, storageLimit, writeFailed
     var errorDescription: String? {
         switch self {
-        case .storageLimit: return "This session reached its 512 MB temporary-storage limit. Finish this image and start another."
-        case .writeFailed: return "The temporary scroll image could not be written."
-        case .missingSource: return "A temporary scroll source is missing. Start a new capture."
-        case .changedSource: return "Previously captured content changed. Return to a stable page and capture again; the original image has been kept."
+        case .storageLimit: return "已达到512 MB临时存储上限，请完成当前截图后重新开始。"
+        case .writeFailed: return "无法写入长截图临时原图。"
+        case .missingSource: return "长截图临时原图缺失，请重新开始捕获。"
+        case .changedSource: return "先前捕获的内容发生变化。请等待页面稳定后重新捕获，原图已保留。"
         }
     }
 }
