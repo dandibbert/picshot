@@ -683,7 +683,7 @@ struct PinImageState {
         if let textSelectionOverlay, textSelectionOverlay.superview != nil { textSelectionOverlay.copy(sender) }
         else { onCopy?() }
     }
-    @objc func selectAll(_ sender: Any?) {
+    override func selectAll(_ sender: Any?) {
         if let textSelectionOverlay, textSelectionOverlay.superview != nil { textSelectionOverlay.selectAll(sender) }
     }
     override func keyDown(with event: NSEvent) {

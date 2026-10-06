@@ -62,7 +62,7 @@ extension ScrollImageIO {
             guard let info else { return 0 }
             return Unmanaged<BoundedScrollPNGWriter>.fromOpaque(info).takeUnretainedValue().put(bytes, count: count)
         }, releaseConsumer: nil)
-        guard let consumer = CGDataConsumer(info: Unmanaged.passUnretained(writer).toOpaque(), callbacks: &callbacks),
+        guard let consumer = CGDataConsumer(info: Unmanaged.passUnretained(writer).toOpaque(), cbks: &callbacks),
               let destination = CGImageDestinationCreateWithDataConsumer(consumer, UTType.png.identifier as CFString, 1, nil) else {
             throw ScrollSequenceImageError.writeFailed
         }

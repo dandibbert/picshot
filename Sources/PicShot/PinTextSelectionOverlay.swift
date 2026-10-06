@@ -171,7 +171,7 @@ import AppKit
         guard !selectedText.isEmpty else { return false }
         pasteboard.clearContents(); return pasteboard.setString(selectedText, forType: .string)
     }
-    @objc func selectAll(_ sender: Any?) {
+    override func selectAll(_ sender: Any?) {
         guard let document else { return }; select(NSRange(location: 0, length: document.text.utf16.count))
     }
     override func keyDown(with event: NSEvent) {
