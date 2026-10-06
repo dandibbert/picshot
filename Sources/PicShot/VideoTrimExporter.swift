@@ -149,6 +149,10 @@ struct VideoExportDestination: Sendable {
         return directory
     }
 
+    func makeGIFStagingDirectory() throws -> OwnedVideoExportStage {
+        try OwnedVideoExportStage.create(beside: url)
+    }
+
     private struct FileSnapshot: Equatable, Sendable {
         let inode: UInt64
         let device: UInt64
@@ -195,26 +199,21 @@ enum VideoTrimExporter {
         try options.validate()
         guard range.duration <= options.maximumDuration else { throw VideoTrimError.gifDurationLimit(options.maximumDuration) }
         try Task.checkCancellation()
-        let directory = try destination.makeStagingDirectory()
-        var mayRemoveStaging = true
-        defer { if mayRemoveStaging { try? FileManager.default.removeItem(at: directory) } }
-        let clipURL = directory.appendingPathComponent("selected.mp4")
+        let stage = try destination.makeGIFStagingDirectory()
+        // The child owns a private sibling job and copied input. Even an
+        // unconfirmed child exit cannot retain or use this caller-owned stage.
+        defer { stage.cleanupIfOwned() }
+        let clipURL = stage.clipURL
         _ = try await export(sourceURL: sourceURL, destinationURL: clipURL, range: range,
                              progress: { progress?($0 * 0.4) })
+        try stage.recordClip()
         try Task.checkCancellation()
-        let gifURL = directory.appendingPathComponent("selected.gif")
-        do {
-            _ = try await GIFExporter.export(sourceURL: clipURL, destinationURL: gifURL, options: options,
-                                             progress: { progress?(0.4 + $0 * 0.59) })
-        } catch GIFExportProcessError.exitUnconfirmed {
-            // This call's child job is nested in our trim staging directory.
-            // Preserve it while a live child may still hold/use these files.
-            // A .busy rejection belongs to another call and does not take this branch.
-            mayRemoveStaging = false
-            throw GIFExportProcessError.exitUnconfirmed
-        }
+        let gifURL = stage.gifURL
+        _ = try await GIFExporter.export(sourceURL: clipURL, destinationURL: gifURL, options: options,
+                                         trimStage: stage, progress: { progress?(0.4 + $0 * 0.59) })
         try Task.checkCancellation()
         try destination.publish(stagedURL: gifURL)
+        try stage.finishGIFPublication(at: destination.url)
         progress?(1)
         return destination.url
     }

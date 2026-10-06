@@ -2,6 +2,8 @@ import XCTest
 import AVFoundation
 import CoreGraphics
 import ImageIO
+import Darwin
+import PicShotCodecCore
 @testable import PicShot
 
 final class VideoTrimTests: XCTestCase {
@@ -106,7 +108,7 @@ final class VideoTrimTests: XCTestCase {
         try assertNoStaging(in: directory)
     }
 
-    func testGIFFaultInjectedUnconfirmedExitPreservesOnlyItsOwnTrimStaging() async throws {
+    func testGIFPrelaunchUnconfirmedExitDoesNotRetainCallerStaging() async throws {
         let directory = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let source = try await makeMovie(in: directory)
@@ -114,21 +116,147 @@ final class VideoTrimTests: XCTestCase {
         let range = try VideoTrimRange(start: 0, end: 0.5, sourceDuration: 2)
         let target = directory.appendingPathComponent("unconfirmed.gif")
         let destination = try VideoExportDestination(url: target, preserving: source)
-        // Test the caller's ownership decision; this injected error creates no
-        // child and is not evidence of a genuinely unkillable macOS process.
+        // An error enum is not proof that a child owns the caller's stage.
+        // This prelaunch injection must leave no retained selected clip.
         let service = GIFExportProcessService(configuration: .init(executable: { throw GIFExportProcessError.exitUnconfirmed }))
         do {
             _ = try await GIFExporter.withProcessServiceForTesting(service) {
                 try await VideoTrimExporter.exportGIF(sourceURL: source, destination: destination, range: range)
             }
-            XCTFail("Unconfirmed helper exit must preserve staged media")
+            XCTFail("Injected prelaunch error must propagate")
         } catch GIFExportProcessError.exitUnconfirmed { }
         let remaining = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
         let stages = remaining.filter { $0.lastPathComponent.hasPrefix(".picshot-") }
-        XCTAssertEqual(stages.count, 1)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(stages.first).appendingPathComponent("selected.mp4").path))
+        XCTAssertTrue(stages.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: target.path))
         XCTAssertEqual(try Data(contentsOf: source), original)
+    }
+
+    func testUnconfirmedGIFExitRemovesOuterStageWhileSiblingSurvivesUntilCrossFormatRecovery() async throws {
+        let python = URL(fileURLWithPath: "/usr/bin/python3")
+        guard FileManager.default.isExecutableFile(atPath: python.path) else {
+            throw GIFProcessTestSupportError.failed("Synthetic late-exit coverage requires system python3")
+        }
+        for format in [CodecExportFormat.webp, .avif] {
+            let root = try makeDirectory().resolvingSymlinksInPath()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let source = try await makeMovie(in: root)
+            let original = try Data(contentsOf: source)
+            let target = root.appendingPathComponent("preserved.gif")
+            let oldDestination = Data("previous explicitly replaceable destination".utf8)
+            try oldDestination.write(to: target)
+            let destination = try VideoExportDestination(url: target, preserving: source, overwriteConfirmed: true)
+            let range = try VideoTrimRange(start: 0, end: 0.5, sourceDuration: 2)
+            let marker = root.appendingPathComponent("child.json")
+            let release = root.appendingPathComponent("release")
+            let readback = root.appendingPathComponent("copied-input.mp4")
+            let script = """
+            import json,os,sys,time
+            sys.stdin.buffer.readline()
+            with open(sys.argv[1], 'x') as marker:
+                json.dump({'directory':os.getcwd(),'pid':os.getpid()}, marker)
+            print('{"version":1,"kind":"progress","fraction":0}', flush=True)
+            deadline=time.monotonic()+20
+            while not os.path.exists(sys.argv[2]) and time.monotonic()<deadline:
+                time.sleep(0.02)
+            if os.path.exists(sys.argv[2]):
+                with open('source.mp4','rb') as source, open(sys.argv[3],'xb') as output:
+                    output.write(source.read())
+            sys.exit(1)
+            """
+            // Signals alone are injected. The service still observes a real
+            // child, uses its unchanged 3.8-second window, and confirms exit.
+            let gif = GIFExportProcessService(configuration: .init(executable: { python },
+                arguments: ["-u", "-c", script, marker.path, release.path, readback.path], wallSeconds: 0.5,
+                stopActionsForTesting: .init(terminate: { _ in }, kill: { _ in })))
+            let operation = InferenceTestOperation {
+                try await GIFExporter.withProcessServiceForTesting(gif) {
+                    try await VideoTrimExporter.exportGIF(sourceURL: source, destination: destination, range: range)
+                }
+            }
+            do {
+                do { _ = try await operation.value(timeout: 15, phase: "unconfirmed trim GIF exit"); XCTFail("Must fail with an unconfirmed exit") }
+                catch GIFExportProcessError.exitUnconfirmed { }
+                let child = try JSONDecoder().decode(TrimChildMarker.self, from: Data(contentsOf: marker))
+                let job = URL(fileURLWithPath: child.directory, isDirectory: true)
+                XCTAssertEqual(job.deletingLastPathComponent().path, root.path)
+                XCTAssertTrue(job.lastPathComponent.hasPrefix(".picshot-gif-job-"))
+                XCTAssertEqual(Darwin.kill(child.pid, 0), 0, "Synthetic child must still be alive")
+                let copiedInput = try Data(contentsOf: job.appendingPathComponent("source.mp4"))
+                XCTAssertFalse(copiedInput.isEmpty)
+                XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: root.path).contains { $0.hasPrefix(".picshot-trim-") })
+                XCTAssertEqual(try Data(contentsOf: source), original)
+                XCTAssertEqual(try Data(contentsOf: target), oldDestination)
+                let stranded = await gif.snapshot()
+                XCTAssertTrue(stranded.active)
+                XCTAssertEqual(stranded.lastJob?.childExitConfirmed, false)
+                XCTAssertEqual(stranded.lastJob?.temporaryDirectoryRemoved, false)
+
+                let codec = CodecExportProcessService(configuration: .init(executable: { python }, arguments: ["-u", "-c", "import sys;sys.stdin.buffer.readline();print('{\"version\":1,\"kind\":\"error\",\"errorCode\":\"invalidSource\"}',flush=True)"], wallSeconds: 5))
+                let codecTarget = root.appendingPathComponent("next." + format.rawValue)
+                do { _ = try await codec.export(sourceURL: source, destinationURL: codecTarget, options: .init(format: format)); XCTFail("Live GIF child must retain shared admission") }
+                catch CodecExportProcessError.busy { }
+                try Data().write(to: release)
+                var admitted = false
+                let deadline = ProcessInfo.processInfo.systemUptime + 6
+                // No GIF snapshot/export is allowed to perform this recovery.
+                while !admitted, ProcessInfo.processInfo.systemUptime < deadline {
+                    do { _ = try await codec.export(sourceURL: source, destinationURL: codecTarget, options: .init(format: format)); XCTFail("Synthetic codec rejects its input") }
+                    catch CodecExportProcessError.busy { try await Task.sleep(nanoseconds: 20_000_000) }
+                    catch let failure as CodecExportFailure where failure.code == .invalidSource { admitted = true }
+                }
+                XCTAssertTrue(admitted, "The next format must recover the exited GIF child")
+                let codecState = await codec.snapshot()
+                XCTAssertEqual(codecState.lastJob?.childLaunched, true)
+                XCTAssertEqual(codecState.lastJob?.childExitConfirmed, true)
+                XCTAssertFalse(FileManager.default.fileExists(atPath: job.path))
+                XCTAssertEqual(try Data(contentsOf: readback), copiedInput, "The surviving child must retain its independent source")
+                let recovered = await gif.snapshot()
+                XCTAssertFalse(recovered.active)
+                XCTAssertEqual(recovered.lastJob?.childExitConfirmed, true)
+                XCTAssertEqual(recovered.lastJob?.temporaryDirectoryRemoved, true)
+                XCTAssertEqual(try Data(contentsOf: source), original)
+                XCTAssertEqual(try Data(contentsOf: target), oldDestination)
+                try assertNoStaging(in: root)
+            } catch {
+                let failure = error
+                try? Data().write(to: release)
+                operation.cancel()
+                _ = try? await operation.value(timeout: 6, phase: "failed late-exit fixture unwind")
+                let deadline = ProcessInfo.processInfo.systemUptime + 6
+                while await gif.snapshot().active, ProcessInfo.processInfo.systemUptime < deadline {
+                    try? await Task.sleep(nanoseconds: 20_000_000)
+                }
+                throw failure
+            }
+        }
+    }
+
+    func testBusyGIFFailureCleansOnlyItsOwnCallerStage() async throws {
+        let root = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = try await makeMovie(in: root)
+        let original = try Data(contentsOf: source)
+        let target = root.appendingPathComponent("busy.gif")
+        let destination = try VideoExportDestination(url: target, preserving: source)
+        let otherStage = try OwnedVideoExportStage.create(beside: root.appendingPathComponent("other.gif"))
+        let otherBytes = Data("another export owns this clip".utf8)
+        try otherBytes.write(to: otherStage.clipURL)
+        try otherStage.recordClip()
+        defer { otherStage.cleanupIfOwned() }
+        let lease = try XCTUnwrap(NativeExportAdmission.shared.acquire())
+        defer { NativeExportAdmission.shared.release(lease) }
+        let range = try VideoTrimRange(start: 0, end: 0.5, sourceDuration: 2)
+        do {
+            _ = try await VideoTrimExporter.exportGIF(sourceURL: source, destination: destination, range: range)
+            XCTFail("Another native export's admission must not be consumed")
+        } catch GIFExportProcessError.busy { }
+        let stages = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix(".picshot-trim-") }
+        XCTAssertEqual(stages.map(\.lastPathComponent), [otherStage.directoryURL.lastPathComponent])
+        XCTAssertEqual(try Data(contentsOf: otherStage.clipURL), otherBytes)
+        XCTAssertEqual(try Data(contentsOf: source), original)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: target.path))
     }
 
     func testCancellationAfterHelperPublicationDoesNotPublishTrimDestination() async throws {
@@ -458,4 +586,9 @@ private final class ProgressRecorder: @unchecked Sendable {
     private var recorded: [Double] = []
     var values: [Double] { lock.lock(); defer { lock.unlock() }; return recorded }
     func record(_ value: Double) { lock.lock(); defer { lock.unlock() }; recorded.append(value) }
+}
+
+private struct TrimChildMarker: Decodable {
+    let directory: String
+    let pid: Int32
 }

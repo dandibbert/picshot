@@ -28,13 +28,25 @@ struct GIFProcessConfiguration: @unchecked Sendable {
     let arguments: [String]
     let wallSeconds: TimeInterval
     let residentLimitBytes: UInt64
+    let stopActions: GIFProcessStopActions
     static var production: Self { Self(executable: { try GIFHelperExecutable.verified() }) }
     init(executable: @escaping @Sendable () throws -> URL,
          arguments: [String] = ["--picshot-gif-helper"],
-         wallSeconds: TimeInterval = 300, residentLimitBytes: UInt64 = 1_073_741_824) {
+         wallSeconds: TimeInterval = 300, residentLimitBytes: UInt64 = 1_073_741_824,
+         stopActionsForTesting: GIFProcessStopActions? = nil) {
         self.executable = executable; self.arguments = arguments
         self.wallSeconds = wallSeconds; self.residentLimitBytes = residentLimitBytes
+        self.stopActions = stopActionsForTesting ?? .production
     }
+}
+
+/// Explicit constructor-only injection permits a bounded synthetic child to
+/// outlive the escalation window in tests. Production timings/signals and
+/// actual Process exit observation are never replaced or environment-driven.
+struct GIFProcessStopActions: Sendable {
+    let terminate: @Sendable (Process) -> Void
+    let kill: @Sendable (Int32) -> Void
+    static let production = Self(terminate: { $0.terminate() }, kill: { _ = Darwin.kill($0, SIGKILL) })
 }
 
 enum GIFHelperExecutable {
@@ -109,6 +121,7 @@ actor GIFExportProcessService {
 
     func export(sourceURL: URL, destinationURL: URL? = nil, options: GIFExportOptions = .init(),
                 frameExtraction: GIFFrameExtraction = .asynchronous,
+                trimStage: OwnedVideoExportStage? = nil,
                 progress: (@Sendable (Double) -> Void)? = nil) async throws -> URL {
         refreshStrandedJob()
         try options.validate(); try Task.checkCancellation()
@@ -121,7 +134,7 @@ actor GIFExportProcessService {
             let result = try await withTaskCancellationHandler {
                 try await Task.detached(priority: .userInitiated) {
                     try Self.run(sourceURL: sourceURL, destinationURL: destinationURL, options: options,
-                                 extraction: frameExtraction, configuration: configuration, job: job, progress: progress)
+                                 extraction: frameExtraction, trimStage: trimStage, configuration: configuration, job: job, progress: progress)
                 }.value
             } onCancel: { job.cancel() }
             complete(job); return result
@@ -159,20 +172,19 @@ actor GIFExportProcessService {
     }
 
     private nonisolated static func run(sourceURL: URL, destinationURL: URL?, options: GIFExportOptions,
-        extraction: GIFFrameExtraction, configuration: GIFProcessConfiguration, job: GIFProcessJob,
+        extraction: GIFFrameExtraction, trimStage: OwnedVideoExportStage?, configuration: GIFProcessConfiguration, job: GIFProcessJob,
         progress: (@Sendable (Double) -> Void)?) throws -> URL {
         let started = ProcessInfo.processInfo.systemUptime
         defer { job.update { $0.elapsedSeconds = max(0, ProcessInfo.processInfo.systemUptime - started) } }
-        var directory: URL?
-        var ownedDestinationDirectory: URL?
+        var directory: OwnedGIFJobDirectory?
+        var ownedDestinationDirectory: OwnedGIFOutputDirectory?
         var completed = false
         defer {
             let state = job.snapshot()
             if !state.childLaunched || state.childExitConfirmed {
-                if let directory { try? FileManager.default.removeItem(at: directory) }
-                let removed = directory.map(removalConfirmed) ?? true
+                let jobRemoved = directory?.cleanup() ?? true
+                let removed = jobRemoved && (completed || (ownedDestinationDirectory?.cleanupEmpty() ?? true))
                 job.update { $0.temporaryDirectoryRemoved = removed }
-                if !completed, let ownedDestinationDirectory { try? FileManager.default.removeItem(at: ownedDestinationDirectory) }
             }
         }
         do {
@@ -188,19 +200,24 @@ actor GIFExportProcessService {
                 guard destinationURL.isFileURL else { throw GIFExportProcessError.invalidSource }
                 destination = destinationURL.standardizedFileURL
             } else {
-                let root = FileManager.default.temporaryDirectory.appendingPathComponent("PicShot-GIF-" + UUID().uuidString,
-                                                                                       isDirectory: true).resolvingSymlinksInPath()
-                try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-                ownedDestinationDirectory = root; destination = root.appendingPathComponent("recording.gif")
+                let root = try OwnedGIFOutputDirectory.create(in: FileManager.default.temporaryDirectory)
+                ownedDestinationDirectory = root; destination = root.url.appendingPathComponent("recording.gif")
+                job.setOwnedDestinationDirectory(root)
             }
             guard removalConfirmed(destination) else { throw GIFExportError.destinationExists }
-            let jobDirectory = destination.deletingLastPathComponent().resolvingSymlinksInPath()
-                .appendingPathComponent(".picshot-gif-job-" + UUID().uuidString, isDirectory: true)
-            try FileManager.default.createDirectory(at: jobDirectory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-            directory = jobDirectory; job.setDirectory(jobDirectory, ownedDestinationDirectory: ownedDestinationDirectory)
+            let ownedJob: OwnedGIFJobDirectory
+            if let trimStage {
+                ownedJob = try trimStage.makeSiblingGIFJob(sourceURL: sourceURL, destinationURL: destination)
+            } else {
+                ownedJob = try OwnedGIFJobDirectory.create(in: destination.deletingLastPathComponent())
+            }
+            let jobDirectory = ownedJob.url
+            directory = ownedJob; job.setDirectory(ownedJob, ownedDestinationDirectory: ownedDestinationDirectory)
             job.update { $0.lastStage = "sourceSnapshot" }
             try copySource(sourceURL, to: jobDirectory.appendingPathComponent("source.mp4"), job: job,
                            deadline: started + configuration.wallSeconds)
+            try ownedJob.recordSource()
+            if let trimStage { try trimStage.validateGIFPaths(sourceURL: sourceURL, destinationURL: destination) }
             try job.checkCancellation()
             let request = GIFHelperRequest(options: options, frameExtraction: extraction)
             let inputData = try GIFHelperProtocol.encodeRequestLine(request)
@@ -264,8 +281,8 @@ actor GIFExportProcessService {
                         if inputSafe { try? input.fileHandleForWriting.write(contentsOf: Data("{\"cancel\":true}\n".utf8)) }
                     }
                     let elapsed = now - stopStarted!
-                    if elapsed >= 0.3, !sentTerminate { process.terminate(); sentTerminate = true }
-                    if elapsed >= 0.8, !sentKill, process.isRunning { _ = kill(process.processIdentifier, SIGKILL); sentKill = true }
+                    if elapsed >= 0.3, !sentTerminate { configuration.stopActions.terminate(process); sentTerminate = true }
+                    if elapsed >= 0.8, !sentKill, process.isRunning { configuration.stopActions.kill(process.processIdentifier); sentKill = true }
                     if elapsed >= 3.8, process.isRunning {
                         job.update { $0.outcome = "exitUnconfirmed" }
                         throw GIFExportProcessError.exitUnconfirmed
@@ -319,16 +336,17 @@ actor GIFExportProcessService {
             }
             try job.checkCancellation()
             guard ProcessInfo.processInfo.systemUptime < started + configuration.wallSeconds else { throw GIFExportProcessError.timedOut }
-            // The private job sits beside the destination, so this publication is
-            // on one filesystem and cannot replace a concurrently-created file.
+            // The private job and destination remain on the same filesystem.
+            // A trim job is beside its caller's stage, never nested inside it.
+            if let trimStage { try trimStage.validateGIFPaths(sourceURL: sourceURL, destinationURL: destination) }
             job.update { $0.lastStage = "publication" }
             try FileManager.default.moveItem(at: result, to: destination)
             completed = true
             job.markPublished()
+            try trimStage?.recordGIF()
             job.update { $0.outputBytes = bytes; $0.outcome = "succeeded" }
             job.update { $0.lastStage = "stagingCleanup" }
-            try FileManager.default.removeItem(at: jobDirectory)
-            guard removalConfirmed(jobDirectory) else { throw GIFExportProcessError.failed("GIF staging cleanup could not be confirmed.") }
+            guard ownedJob.cleanup() else { throw GIFExportProcessError.failed("GIF staging cleanup could not be confirmed.") }
             job.update { $0.temporaryDirectoryRemoved = true }
             job.update { $0.lastStage = "complete" }
             sample(job: job, child: nil)
@@ -423,8 +441,8 @@ private final class GIFProcessJob: @unchecked Sendable {
     private var stranded = false
     private var published = false
     private var process: Process?
-    private var directory: URL?
-    private var ownedDestinationDirectory: URL?
+    private var directory: OwnedGIFJobDirectory?
+    private var ownedDestinationDirectory: OwnedGIFOutputDirectory?
     init(configuration: GIFProcessConfiguration) {
         metrics.configuredWallSeconds = configuration.wallSeconds
         metrics.configuredChildResidentLimitBytes = configuration.residentLimitBytes
@@ -435,7 +453,10 @@ private final class GIFProcessJob: @unchecked Sendable {
     var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
     func checkCancellation() throws { if isCancelled || Task.isCancelled { cancel(); throw CancellationError() } }
     func setProcess(_ value: Process) { lock.lock(); defer { lock.unlock() }; process = value; metrics.childLaunched = true }
-    func setDirectory(_ value: URL, ownedDestinationDirectory: URL?) {
+    func setOwnedDestinationDirectory(_ value: OwnedGIFOutputDirectory) {
+        lock.lock(); defer { lock.unlock() }; ownedDestinationDirectory = value
+    }
+    func setDirectory(_ value: OwnedGIFJobDirectory, ownedDestinationDirectory: OwnedGIFOutputDirectory?) {
         lock.lock(); defer { lock.unlock() }; directory = value; self.ownedDestinationDirectory = ownedDestinationDirectory
     }
     func recordExit(_ process: Process) {
@@ -474,10 +495,12 @@ private final class GIFProcessJob: @unchecked Sendable {
             metrics.childExitConfirmed = true; metrics.terminationStatus = process.terminationStatus
             metrics.terminationReason = process.terminationReason == .exit ? "exit" : "uncaughtSignal"
         }
-        if let directory { try? FileManager.default.removeItem(at: directory) }
-        metrics.temporaryDirectoryRemoved = directory.map(GIFExportProcessService.removalConfirmed) ?? true
-        if !published, let ownedDestinationDirectory { try? FileManager.default.removeItem(at: ownedDestinationDirectory) }
+        let jobRemoved = directory?.cleanup() ?? true
+        metrics.temporaryDirectoryRemoved = jobRemoved && (published || (ownedDestinationDirectory?.cleanupEmpty() ?? true))
         guard metrics.temporaryDirectoryRemoved else { return false }
+        // Cross-format recovery can finish before this actor is called again.
+        // Keep only its accounting marker, not open directory/process handles.
+        directory = nil; process = nil; ownedDestinationDirectory = nil
         // Keep the recovery marker until the owning actor observes completion.
         // The shared admission may reclaim this job before that actor wakes.
         return true

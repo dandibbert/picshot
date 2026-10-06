@@ -427,6 +427,180 @@ final class GIFProcessTests: XCTestCase {
         }
     }
 
+    func testConfirmedExitWithUnknownJobFileRetainsLeaseUntilOwnedCleanupCanFinish() async throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = try stubSource(in: root)
+        let sourceBytes = try Data(contentsOf: source)
+        let marker = root.appendingPathComponent("job-directory.txt")
+        let target = root.appendingPathComponent("unpublished.gif")
+        let service = try pythonService("""
+        import os,sys
+        sys.stdin.buffer.readline()
+        with open(sys.argv[1], 'x') as marker:
+            marker.write(os.getcwd())
+        with open('unrecognized-user-file', 'x') as unknown:
+            unknown.write('preserve this unknown entry')
+        sys.exit(1)
+        """, arguments: [marker.path])
+        _ = try await exportFailure(service, source: source, destination: target)
+        let job = URL(fileURLWithPath: try String(contentsOf: marker, encoding: .utf8), isDirectory: true)
+        let unknown = job.appendingPathComponent("unrecognized-user-file")
+        do {
+            let blocked = await service.snapshot()
+            XCTAssertTrue(blocked.active)
+            XCTAssertEqual(blocked.lastJob?.childExitConfirmed, true)
+            XCTAssertEqual(blocked.lastJob?.temporaryDirectoryRemoved, false)
+            XCTAssertEqual(try String(contentsOf: unknown, encoding: .utf8), "preserve this unknown entry")
+            XCTAssertEqual(try Data(contentsOf: job.appendingPathComponent("source.mp4")), sourceBytes,
+                "The complete entry set must be checked before deleting even known artifacts")
+            if let lease = NativeExportAdmission.shared.acquire() {
+                NativeExportAdmission.shared.release(lease)
+                XCTFail("Cleanup failure must retain the shared native-export lease")
+            }
+            try FileManager.default.removeItem(at: unknown) // Explicit fixture-owned obstacle.
+            let recovered = await service.snapshot()
+            XCTAssertFalse(recovered.active)
+            XCTAssertEqual(recovered.lastJob?.temporaryDirectoryRemoved, true)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: job.path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: target.path))
+            XCTAssertEqual(try Data(contentsOf: source), sourceBytes)
+        } catch {
+            try? FileManager.default.removeItem(at: unknown)
+            _ = await service.snapshot()
+            throw error
+        }
+    }
+
+    func testGeneratedDestinationRootCannotBypassUnknownChildFileCleanupRefusal() async throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = try stubSource(in: root)
+        let marker = root.appendingPathComponent("job-directory.txt")
+        let service = try pythonService("""
+        import os,sys
+        sys.stdin.buffer.readline()
+        with open(sys.argv[1], 'x') as marker:
+            marker.write(os.getcwd())
+        with open('unknown-child-file', 'x') as unknown:
+            unknown.write('must survive refused child cleanup')
+        sys.exit(1)
+        """, arguments: [marker.path])
+        _ = try await exportFailure(service, source: source, destination: nil)
+        let job = URL(fileURLWithPath: try String(contentsOf: marker, encoding: .utf8), isDirectory: true)
+        let generated = job.deletingLastPathComponent()
+        let unknown = job.appendingPathComponent("unknown-child-file")
+        do {
+            let state = await service.snapshot()
+            XCTAssertTrue(state.active)
+            XCTAssertEqual(state.lastJob?.childExitConfirmed, true)
+            XCTAssertEqual(state.lastJob?.temporaryDirectoryRemoved, false)
+            XCTAssertTrue(generated.lastPathComponent.hasPrefix("PicShot-GIF-"))
+            XCTAssertEqual(try String(contentsOf: unknown, encoding: .utf8), "must survive refused child cleanup")
+            XCTAssertEqual(try Data(contentsOf: job.appendingPathComponent("source.mp4")), try Data(contentsOf: source))
+            try FileManager.default.removeItem(at: unknown)
+            let recovered = await service.snapshot()
+            XCTAssertFalse(recovered.active)
+            XCTAssertEqual(recovered.lastJob?.temporaryDirectoryRemoved, true)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: generated.path))
+        } catch {
+            try? FileManager.default.removeItem(at: unknown)
+            _ = await service.snapshot()
+            throw error
+        }
+    }
+
+    func testUnknownGeneratedRootContentRetainsGateAfterChildDirectoryIsCleaned() async throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = try stubSource(in: root)
+        let marker = root.appendingPathComponent("job-directory.txt")
+        let service = try pythonService("""
+        import os,sys
+        sys.stdin.buffer.readline()
+        with open(sys.argv[1], 'x') as marker:
+            marker.write(os.getcwd())
+        with open('../unknown-root-file', 'x') as unknown:
+            unknown.write('must survive refused root cleanup')
+        sys.exit(1)
+        """, arguments: [marker.path])
+        _ = try await exportFailure(service, source: source, destination: nil)
+        let job = URL(fileURLWithPath: try String(contentsOf: marker, encoding: .utf8), isDirectory: true)
+        let generated = job.deletingLastPathComponent()
+        let unknown = generated.appendingPathComponent("unknown-root-file")
+        do {
+            let state = await service.snapshot()
+            XCTAssertTrue(state.active)
+            XCTAssertEqual(state.lastJob?.childExitConfirmed, true)
+            XCTAssertEqual(state.lastJob?.temporaryDirectoryRemoved, false)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: job.path))
+            XCTAssertEqual(try String(contentsOf: unknown, encoding: .utf8), "must survive refused root cleanup")
+            if let token = NativeExportAdmission.shared.acquire() {
+                NativeExportAdmission.shared.release(token)
+                XCTFail("Unknown generated-root contents must keep cleanup unconfirmed")
+            }
+            try FileManager.default.removeItem(at: unknown)
+            let recovered = await service.snapshot()
+            XCTAssertFalse(recovered.active)
+            XCTAssertEqual(recovered.lastJob?.temporaryDirectoryRemoved, true)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: generated.path))
+        } catch {
+            try? FileManager.default.removeItem(at: unknown)
+            _ = await service.snapshot()
+            throw error
+        }
+    }
+
+    func testSubstitutedGeneratedRootIsNeverRecursivelyDeleted() async throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = try stubSource(in: root)
+        let original = try Data(contentsOf: source)
+        let marker = root.appendingPathComponent("generated-root.txt")
+        let service = try pythonService("""
+        import os,sys
+        sys.stdin.buffer.readline()
+        root=os.path.dirname(os.getcwd())
+        with open(sys.argv[1], 'x') as marker:
+            marker.write(root)
+        os.rename(root, root+'-moved-by-fixture')
+        os.mkdir(root, 0o700)
+        with open(os.path.join(root,'replacement-user-file'), 'x') as replacement:
+            replacement.write('preserve substituted root')
+        sys.exit(1)
+        """, arguments: [marker.path])
+        _ = try await exportFailure(service, source: source, destination: nil)
+        let generated = URL(fileURLWithPath: try String(contentsOf: marker, encoding: .utf8), isDirectory: true)
+        let moved = URL(fileURLWithPath: generated.path + "-moved-by-fixture", isDirectory: true)
+        let replacement = generated.appendingPathComponent("replacement-user-file")
+        func restoreOwnedRoot() throws {
+            try FileManager.default.removeItem(at: replacement)
+            guard Darwin.rmdir(generated.path) == 0 else { throw GIFProcessTestSupportError.failed("Fixture replacement root was not empty") }
+            try FileManager.default.moveItem(at: moved, to: generated)
+        }
+        do {
+            let state = await service.snapshot()
+            XCTAssertTrue(state.active)
+            XCTAssertEqual(state.lastJob?.childExitConfirmed, true)
+            XCTAssertEqual(state.lastJob?.temporaryDirectoryRemoved, false)
+            XCTAssertEqual(try String(contentsOf: replacement, encoding: .utf8), "preserve substituted root")
+            let originalJob = try XCTUnwrap(FileManager.default.contentsOfDirectory(at: moved, includingPropertiesForKeys: nil)
+                .first { $0.lastPathComponent.hasPrefix(".picshot-gif-job-") })
+            XCTAssertEqual(try Data(contentsOf: originalJob.appendingPathComponent("source.mp4")), original)
+            XCTAssertEqual(try Data(contentsOf: source), original)
+            try restoreOwnedRoot()
+            let recovered = await service.snapshot()
+            XCTAssertFalse(recovered.active)
+            XCTAssertEqual(recovered.lastJob?.temporaryDirectoryRemoved, true)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: generated.path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: moved.path))
+        } catch {
+            try? restoreOwnedRoot()
+            _ = await service.snapshot()
+            throw error
+        }
+    }
+
     private func pythonService(_ script: String, arguments: [String] = []) throws -> GIFExportProcessService {
         let python = URL(fileURLWithPath: "/usr/bin/python3")
         guard FileManager.default.isExecutableFile(atPath: python.path) else {
@@ -435,7 +609,7 @@ final class GIFProcessTests: XCTestCase {
         return GIFExportProcessService(configuration: .init(executable: { python }, arguments: ["-u", "-c", script] + arguments, wallSeconds: 5))
     }
 
-    private func exportFailure(_ service: GIFExportProcessService, source: URL, destination: URL) async throws -> Error {
+    private func exportFailure(_ service: GIFExportProcessService, source: URL, destination: URL?) async throws -> Error {
         let operation = InferenceTestOperation {
             try await service.export(sourceURL: source, destinationURL: destination)
         }

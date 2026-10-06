@@ -48,10 +48,11 @@ enum GIFExporter {
 
     static func export(sourceURL: URL, destinationURL: URL? = nil, options: GIFExportOptions = .init(),
                        frameExtraction: GIFFrameExtraction = .asynchronous,
+                       trimStage: OwnedVideoExportStage? = nil,
                        progress: (@Sendable (Double) -> Void)? = nil) async throws -> URL {
         let service = processServiceForTests ?? .shared
         return try await service.export(sourceURL: sourceURL, destinationURL: destinationURL, options: options,
-                                        frameExtraction: frameExtraction, progress: progress)
+                                        frameExtraction: frameExtraction, trimStage: trimStage, progress: progress)
     }
     static func processResourceSnapshot() async -> GIFExportProcessSnapshot {
         await (processServiceForTests ?? .shared).snapshot()
