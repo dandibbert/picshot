@@ -308,7 +308,7 @@ struct PinImageState {
     @objc private func closePin() { close() }
 
     var presentation: PinPresentation {
-        PinPresentation(frame: PinWindowFrame(window?.frame ?? .zero), opacity: window?.alphaValue ?? 1,
+        PinPresentation(frame: PinWindowFrame(window?.frame ?? .zero), opacity: Double(window?.alphaValue ?? 1),
                         zoom: fixedZoom.map { Double($0) }, clickThrough: window?.ignoresMouseEvents ?? false,
                         locked: locked).normalized()
     }
