@@ -12,7 +12,8 @@ enum GIFResourceAttributionFixture {
     /// The returned JSON object can be written directly as its launch report.
     /// A mode-specific JSON file is also written, including partial failure data.
     static func verify(evidenceDirectory: URL, mode: Mode,
-                       profile: GIFResourceSmokeFixture.Profile = .installedSmoke) async throws -> [String: Any] {
+                       profile: GIFResourceSmokeFixture.Profile = .installedSmoke,
+                       frameExtraction: GIFFrameExtraction = .asynchronous) async throws -> [String: Any] {
         guard evidenceDirectory.isFileURL, profile == .installedSmoke || profile == .quickTest else {
             throw failure("Unsupported diagnostic directory/profile")
         }
@@ -27,6 +28,8 @@ enum GIFResourceAttributionFixture {
         let invocations = GIFAttributionInvocations()
         var report: [String: Any] = [
             "status": "running", "diagnosticOnly": true, "mode": mode.rawValue, "profile": profile.name,
+            "frameExtraction": frameExtraction.rawValue,
+            "frameExtractionScope": "explicit diagnostic strategy; app default remains async-baseline; codec, timing, size limits and resource envelopes unchanged",
             "sourceCommit": Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String ?? "unknown",
             "bundlePath": Bundle.main.bundlePath, "operatingSystem": ProcessInfo.processInfo.operatingSystemVersionString,
             "captureStarted": false, "audioStarted": false, "externalDownloads": false,
@@ -34,7 +37,7 @@ enum GIFResourceAttributionFixture {
             "sourceWidth": profile.width, "sourceHeight": profile.height, "sourceFrames": profile.frameCount,
             "sourceDurationSeconds": profile.duration, "outputMaximumDimension": profile.outputDimension,
             "sampleIntervalSeconds": GIFResourceMemorySampler.interval,
-            "invocationScope": "counts track the fixture's full GIF validation and production export calls; AVFoundation video-frame decoding remains part of export",
+            "invocationScope": "counts track the fixture's full GIF validation and shared GIFExporter calls; AVFoundation video-frame decoding remains part of export",
             "memoryScope": "main-process RSS and physical footprint; framework services/GPU allocations excluded; sampled maxima are not kernel lifetime peaks",
             "interpretation": "raw growth/interval observations only; no automatic leak or no-leak conclusion; normal GIF acceptance workload and limits are unchanged",
             "diskScope": "one authored MP4 plus at most one GIF; output deleted between export-only cycles except the final validation input; only JSON retained after confirmed cleanup; abrupt process termination can leave temporary media",
@@ -51,9 +54,9 @@ enum GIFResourceAttributionFixture {
             let plan = try GIFFramePlan(duration: profile.duration, options: profile.options)
 
             // Export-only warm-up intentionally does NOT call ImageIO's decoder.
-            // Decode-only also needs one preparatory production export to obtain
+            // Decode-only also needs one preparatory strategy-selected export to obtain
             // an original input; it is excluded from decoder-cycle measurements.
-            let preparation = try await export(source: source, output: output, profile: profile, invocations: invocations)
+            let preparation = try await export(source: source, output: output, profile: profile, frameExtraction: frameExtraction, invocations: invocations)
             report[mode == .exportOnly ? "exportWarmup" : "inputPreparationExport"] = preparation
             try require(try byteCount(output) <= GIFExporter.maximumOutputBytes, "GIF exceeded output budget")
             if mode == .exportOnly {
@@ -69,7 +72,7 @@ enum GIFResourceAttributionFixture {
                 var settled: [GIFResourceMemoryReading] = []
                 var peaks: [GIFResourceMemoryReading] = []
                 for index in 0..<measuredCycles {
-                    var run = try await export(source: source, output: output, profile: profile, invocations: invocations)
+                    var run = try await export(source: source, output: output, profile: profile, frameExtraction: frameExtraction, invocations: invocations)
                     run["cycle"] = index + 1
                     let outputBytes = try byteCount(output)
                     try require(outputBytes > 0 && outputBytes <= GIFExporter.maximumOutputBytes, "Invalid output byte count")
@@ -105,7 +108,7 @@ enum GIFResourceAttributionFixture {
                 try files.removeItem(at: output)
                 try await settle()
                 report["afterFinalValidationAndRemoval"] = try object(try observedMemory())
-                report["scope"] = "one export warm-up plus eight serial unchanged production exports; zero GIF decoder calls before/during those cycles, then one complete validation of the final file"
+                report["scope"] = "one export warm-up plus eight serial exports using the explicitly selected frameExtraction strategy; zero GIF decoder calls before/during those cycles, then one complete validation of the final file"
             } else {
                 // The immutable file is opened afresh by each validation call.
                 // No export, rewrite, rename, duplicate or unlink occurs between
@@ -138,7 +141,7 @@ enum GIFResourceAttributionFixture {
                 let exportsDuringDecodeCycles = invocations.snapshot().exports - exportCallsBeforeCycles
                 report["exportsDuringMeasuredDecodeCycles"] = exportsDuringDecodeCycles
                 try require(exportsDuringDecodeCycles == 0, "Exports contaminated decoder-only measurements")
-                report["scope"] = "one preparatory production export, then decoder warm-up plus eight full sequential cache-disabled validations of the same immutable GIF; zero exports between decoder observations"
+                report["scope"] = "one preparatory export using the explicitly selected frameExtraction strategy, then decoder warm-up plus eight full sequential cache-disabled validations of the same immutable GIF; zero exports between decoder observations"
                 report["sameFileCachingLimit"] = "same pathname/inode and bytes can reuse OS/framework caches; a flat result does not rule out per-new-file provider retention, changed-file caching, or cross-export decoder interaction"
                 try files.removeItem(at: output)
                 try await settle()
@@ -168,7 +171,7 @@ enum GIFResourceAttributionFixture {
     /// The child task and exporter locals are out of scope before the caller's
     /// post-cleanup samples. Returned diagnostics contain only numbers/strings.
     private static func export(source: URL, output: URL,
-                               profile: GIFResourceSmokeFixture.Profile,
+                               profile: GIFResourceSmokeFixture.Profile, frameExtraction: GIFFrameExtraction,
                                invocations: GIFAttributionInvocations) async throws -> [String: Any] {
         invocations.recordExport()
         let before = try observedMemory()
@@ -177,12 +180,13 @@ enum GIFResourceAttributionFixture {
         let started = ProcessInfo.processInfo.systemUptime
         let progress = GIFAttributionProgress()
         let worker = Task {
-            try await GIFExporter.export(sourceURL: source, destinationURL: output, options: profile.options) { value in
+            try await GIFExporter.export(sourceURL: source, destinationURL: output, options: profile.options,
+                                     frameExtraction: frameExtraction) { value in
                 progress.record(value); sampler.sample()
             }
         }
         let result = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
-        try require(result == output && progress.completed, "Production export/progress did not complete")
+        try require(result == output && progress.completed, "Selected export strategy/progress did not complete")
         sampler.stop()
         let statistics = sampler.snapshot()
         try require(statistics.residentSampleCount > 0, "No valid export RSS samples")

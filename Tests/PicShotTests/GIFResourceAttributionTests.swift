@@ -52,6 +52,7 @@ final class GIFResourceAttributionTests: XCTestCase {
         XCTAssertEqual(report["status"] as? String, "completed")
         XCTAssertEqual(report["mode"] as? String, "export-only")
         XCTAssertEqual(report["profile"] as? String, "unit-test-short")
+        XCTAssertEqual(report["frameExtraction"] as? String, "async-baseline")
         XCTAssertEqual(report["diagnosticOnly"] as? Bool, true)
         XCTAssertEqual(report["captureStarted"] as? Bool, false)
         XCTAssertEqual(report["decoderInvocationsBeforeMeasuredExports"] as? Int, 0)
@@ -80,9 +81,11 @@ final class GIFResourceAttributionTests: XCTestCase {
     func testDecodeOnlyKeepsOnePreparedFileAndPerformsNoInterveningExports() async throws {
         let root = try directory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let report = try await GIFResourceAttributionFixture.verify(evidenceDirectory: root, mode: .decodeOnly, profile: .quickTest)
+        let report = try await GIFResourceAttributionFixture.verify(evidenceDirectory: root, mode: .decodeOnly, profile: .quickTest,
+                                                                     frameExtraction: .scopedSynchronous)
         XCTAssertEqual(report["status"] as? String, "completed")
         XCTAssertEqual(report["mode"] as? String, "decode-only")
+        XCTAssertEqual(report["frameExtraction"] as? String, "scoped-sync-candidate")
         XCTAssertEqual(report["exportsDuringMeasuredDecodeCycles"] as? Int, 0)
         XCTAssertEqual(report["totalExportInvocations"] as? Int, 1)
         XCTAssertEqual(report["totalGIFValidationInvocations"] as? Int, 9)

@@ -31,6 +31,14 @@ enum GIFExportError: LocalizedError {
     }
 }
 
+/// Internal diagnostic strategy. Keep the shipped async baseline as the
+/// default until native comparison establishes the scoped candidate's behavior.
+/// The streaming encoder, requested times, dimensions and tolerances are shared.
+enum GIFFrameExtraction: String, CaseIterable, Sendable {
+    case asynchronous = "async-baseline"
+    case scopedSynchronous = "scoped-sync-candidate"
+}
+
 /// Sequential, cancellable extraction and file-backed animation assembly.
 /// ImageIO receives one still frame at a time; no animated destination retains
 /// earlier rasters. The file sink enforces a hard 64 MiB output byte limit.
@@ -44,6 +52,7 @@ enum GIFExporter {
         sourceURL: URL,
         destinationURL: URL? = nil,
         options: GIFExportOptions = .init(),
+        frameExtraction: GIFFrameExtraction = .asynchronous,
         progress: (@Sendable (Double) -> Void)? = nil
     ) async throws -> URL {
         try options.validate()
@@ -87,10 +96,32 @@ enum GIFExporter {
                 for index in 0..<plan.frameCount {
                     try Task.checkCancellation()
                     let time = CMTime(seconds: plan.time(for: index), preferredTimescale: 600)
-                    let frame = try await generator.image(at: time)
-                    try Task.checkCancellation()
-                    try stream.append(image: frame.image, delay: plan.delay(for: index))
+                    switch frameExtraction {
+                    case .asynchronous:
+                        // Unchanged production baseline for controlled comparison.
+                        let frame = try await generator.image(at: time)
+                        try Task.checkCancellation()
+                        try stream.append(image: frame.image, delay: plan.delay(for: index))
+                    case .scopedSynchronous:
+                        // Intentional use of the still-available deprecated API:
+                        // extraction AND encoding now share one drained pool.
+                        // This nonisolated async function runs on Swift 5.9's
+                        // generic executor, never the caller's MainActor.
+                        try autoreleasepool {
+                            try Task.checkCancellation()
+                            let image = try generator.copyCGImage(at: time, actualTime: nil)
+                            try Task.checkCancellation()
+                            try stream.append(image: image, delay: plan.delay(for: index))
+                        }
+                    }
                     progress?(Double(index + 1) / Double(plan.frameCount + 1))
+                    if frameExtraction == .scopedSynchronous {
+                        // A synchronous framework call cannot be promised to
+                        // interrupt mid-call. Honor cancellation immediately on
+                        // return, and don't monopolize the executor across frames.
+                        await Task.yield()
+                        try Task.checkCancellation()
+                    }
                 }
                 try Task.checkCancellation()
                 try stream.finish()

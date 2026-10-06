@@ -18,7 +18,7 @@ configuration.environment = [
     "PICSHOT_SMOKE_TEST": "1",
     "PICSHOT_SMOKE_REPORT": CommandLine.arguments[2],
 ]
-for key in ["PICSHOT_SMOKE_FORMULA_MODEL_DIR", "PICSHOT_SMOKE_FORMULA_INPUT", "PICSHOT_SMOKE_TABLE_MODEL_DIR", "PICSHOT_SMOKE_TABLE_INPUT", "PICSHOT_SMOKE_ERASE_MODEL_DIR", "PICSHOT_UI_PREVIEW_ONLY", "PICSHOT_SMOKE_GIF_RESOURCES", "PICSHOT_GIF_DIAGNOSTIC_MODE"] {
+for key in ["PICSHOT_SMOKE_FORMULA_MODEL_DIR", "PICSHOT_SMOKE_FORMULA_INPUT", "PICSHOT_SMOKE_TABLE_MODEL_DIR", "PICSHOT_SMOKE_TABLE_INPUT", "PICSHOT_SMOKE_ERASE_MODEL_DIR", "PICSHOT_UI_PREVIEW_ONLY", "PICSHOT_SMOKE_GIF_RESOURCES", "PICSHOT_GIF_DIAGNOSTIC_MODE", "PICSHOT_GIF_EXTRACTION"] {
     if let value = ProcessInfo.processInfo.environment[key] { configuration.environment[key] = value }
 }
 var launched: NSRunningApplication?
@@ -31,7 +31,7 @@ NSWorkspace.shared.openApplication(at: appURL, configuration: configuration) { a
         callbackReceived = true
     }
 }
-let diagnosticMode = ProcessInfo.processInfo.environment["PICSHOT_GIF_DIAGNOSTIC_MODE"] ?? ""
+let diagnosticMode = ProcessInfo.processInfo.environment["PICSHOT_GIF_DIAGNOSTIC_MODE", "PICSHOT_GIF_EXTRACTION"] ?? ""
 let timeout: TimeInterval = ["export-only", "decode-only"].contains(diagnosticMode) ? 900 : 600
 let deadline = Date().addingTimeInterval(timeout)
 while Date() < deadline {

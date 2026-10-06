@@ -102,17 +102,17 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
-      - name: Test diagnostic phase separation and cleanup
+      - name: Test extraction equivalence, cancellation and diagnostic separation
         timeout-minutes: 8
         run: |
           mkdir -p dist
           set -o pipefail
-          swift test --filter GIFResourceAttributionTests 2>&1 | tee dist/gif-attribution-tests.log
-      - name: Package unchanged production exporter for isolated observation
+          swift test --filter 'GIFFrameExtractionTests|GIFResourceAttributionTests' 2>&1 | tee dist/gif-attribution-tests.log
+      - name: Package default-baseline exporter with an explicit diagnostic candidate
         run: |
           set -o pipefail
           bash scripts/package.sh 2>&1 | tee dist/package.log
-      - name: Observe export-only and decode-only in fresh installed processes
+      - name: Compare baseline and scoped extraction in fresh installed processes
         run: |
           set -o pipefail
           bash scripts/gif-attribution.sh 2>&1 | tee dist/gif-attribution.log

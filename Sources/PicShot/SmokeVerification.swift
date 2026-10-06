@@ -11,7 +11,9 @@ import PicShotFormulaRenderCore
             try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
             if let value=ProcessInfo.processInfo.environment["PICSHOT_GIF_DIAGNOSTIC_MODE"] {
                 guard let mode=GIFResourceAttributionFixture.Mode(rawValue:value) else {throw PicShotError.message("Unknown GIF diagnostic mode")}
-                let payload=try await GIFResourceAttributionFixture.verify(evidenceDirectory:directory,mode:mode)
+                let extractionValue=ProcessInfo.processInfo.environment["PICSHOT_GIF_EXTRACTION"] ?? GIFFrameExtraction.asynchronous.rawValue
+                guard let extraction=GIFFrameExtraction(rawValue:extractionValue) else {throw PicShotError.message("Unknown GIF diagnostic frame extraction")}
+                let payload=try await GIFResourceAttributionFixture.verify(evidenceDirectory:directory,mode:mode,frameExtraction:extraction)
                 try JSONSerialization.data(withJSONObject:payload,options:[.prettyPrinted,.sortedKeys]).write(to:url,options:.atomic)
                 try? FileManager.default.removeItem(at:history.directory)
                 NSApp.terminate(nil);return
