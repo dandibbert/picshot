@@ -67,7 +67,7 @@ final class CodecStillEncoderTests: XCTestCase {
                 PSCodecEncodeRGBA(rgba.baseAddress, UInt64(rgba.count), UInt32(raster.width), UInt32(raster.height),
                     UInt64(raster.width * 4), &options, { _, _, _, _ in 1 }, { _, _, _ in 1 }, nil, &error)
             }
-            XCTAssertEqual(result, PS_CODEC_LIMIT, "\(format)")
+            XCTAssertEqual(result, Int32(PS_CODEC_LIMIT), "\(format)")
         }
     }
     func testRealDecodersRejectTruncationCounterfeitsAndPixelCaps() throws {

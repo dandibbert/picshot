@@ -77,7 +77,7 @@ final class AnimatedWebPEncoderTests: XCTestCase {
         var uniqueFrames = Set<Data>()
         for index in 0..<12 {
             var pixels: UnsafePointer<UInt8>?, count: UInt64 = 0, duration: UInt32 = 0
-            XCTAssertEqual(PSCodecAnimationNext(animation, &pixels, &count, &duration, &error), PS_CODEC_OK)
+            XCTAssertEqual(PSCodecAnimationNext(animation, &pixels, &count, &duration, &error), Int32(PS_CODEC_OK))
             XCTAssertEqual(duration, 100)
             let decoded = Data(bytes: try XCTUnwrap(pixels), count: Int(count))
             let expectedImage = try generator.copyCGImage(at: CMTime(value: Int64(index), timescale: 10), actualTime: nil)

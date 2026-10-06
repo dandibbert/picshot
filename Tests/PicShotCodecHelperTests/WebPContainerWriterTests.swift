@@ -54,7 +54,7 @@ final class WebPContainerWriterTests: XCTestCase {
         let directory = try fixtureDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
         let url = directory.appendingPathComponent("lossy-alpha.webp")
         let writer = try makeWriter(url, width: 5, height: 3)
-        let pixels = Array(repeating: [UInt8(90), 180, 230, 127], count: 15).flatMap { $0 }
+        let pixels = Array(repeating: [90, 180, 230, 127] as [UInt8], count: 15).flatMap { $0 }
         let raster = try CodecRaster(width: 5, height: 3, rgba: pixels)
         let request = CodecExportRequest(kind: .animation, format: .webp, quality: 95, lossless: false,
                                         preserveAlpha: true, animation: .init())
@@ -76,7 +76,7 @@ final class WebPContainerWriterTests: XCTestCase {
     }
 
     func testMalformedContainersAndUnexpectedSubchunksAreRejectedBeforeAppend() throws {
-        let raster = try CodecRaster(width: 3, height: 5, rgba: Array(repeating: [UInt8(1), 2, 3, 255], count: 15).flatMap { $0 })
+        let raster = try CodecRaster(width: 3, height: 5, rgba: Array(repeating: [1, 2, 3, 255] as [UInt8], count: 15).flatMap { $0 })
         let packet = try AnimatedWebPEncoder.encodeFrame(raster: raster, request: losslessRequest)
         var badMagic = packet; badMagic[0] = 0
         var badSize = packet; badSize[4] ^= 1
@@ -196,12 +196,12 @@ final class WebPContainerWriterTests: XCTestCase {
         let count = Int(PSCodecAnimationFrameCount(animation))
         for _ in 0..<count {
             var pixels: UnsafePointer<UInt8>?, bytes: UInt64 = 0, duration: UInt32 = 0
-            XCTAssertEqual(PSCodecAnimationNext(animation, &pixels, &bytes, &duration, &error), PS_CODEC_OK)
+            XCTAssertEqual(PSCodecAnimationNext(animation, &pixels, &bytes, &duration, &error), Int32(PS_CODEC_OK))
             decoded.frames.append(Data(bytes: try XCTUnwrap(pixels), count: Int(bytes)))
             decoded.delays.append(Int(duration))
         }
         var pixels: UnsafePointer<UInt8>?, bytes: UInt64 = 0, duration: UInt32 = 0
-        XCTAssertEqual(PSCodecAnimationNext(animation, &pixels, &bytes, &duration, &error), PS_CODEC_END)
+        XCTAssertEqual(PSCodecAnimationNext(animation, &pixels, &bytes, &duration, &error), Int32(PS_CODEC_END))
         XCTAssertEqual(Int(PSCodecAnimationDurationMS(animation)), decoded.delays.reduce(0, +))
         return decoded
     }
