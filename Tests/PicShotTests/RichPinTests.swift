@@ -13,20 +13,38 @@ final class RichPinTests: XCTestCase {
         let coordinator = PinSessionCoordinator(store: store, presentWindows: false)
         defer { try? coordinator.prepareForTermination() }
         let content = PinTextContent(runs: [PinTextRun(text: "Hello "), PinTextRun(text: "world", bold: true)], importedHTML: true)
-        let id = try coordinator.add(rich: PreparedRichPin(document: PinRichDocument(text: content), title: "Text"))
-        XCTAssertEqual(coordinator.livePinCount, 1); XCTAssertTrue(coordinator.liveControllers.isEmpty)
-        XCTAssertEqual(coordinator.richControllers[id]?.richDocument?.text, content)
-        weak var previous = coordinator.richControllers[id]
-        try coordinator.hideAll(); XCTAssertNil(previous); XCTAssertEqual(store.entry(id: id)?.isVisible, true)
-        XCTAssertEqual(coordinator.livePinCount, 0)
-        try coordinator.showCurrentGroup(); XCTAssertEqual(coordinator.livePinCount, 1)
-        let panel = try XCTUnwrap(coordinator.richControllers[id]?.window)
-        coordinator.richControllers[id]?.close()
-        XCTAssertEqual(store.entry(id: id)?.isVisible, false); XCTAssertEqual(coordinator.livePinCount, 0)
-        XCTAssertNil(panel.contentView); XCTAssertNil(panel.delegate)
-        try coordinator.openPin(id: id)
-        XCTAssertEqual(coordinator.richControllers[id]?.richDocument?.text, content)
-        try coordinator.prepareForTermination()
+        let (id, hiddenProbe) = try autoreleasepool { () throws -> (UUID, ClosedAuxiliaryWindowProbe) in
+            let id = try coordinator.add(rich: PreparedRichPin(document: PinRichDocument(text: content), title: "Text"))
+            XCTAssertEqual(coordinator.livePinCount, 1); XCTAssertTrue(coordinator.liveControllers.isEmpty)
+            let controller = try XCTUnwrap(coordinator.richControllers[id])
+            XCTAssertEqual(controller.richDocument?.text, content)
+            let probe = try ClosedAuxiliaryWindowProbe(controller)
+            try coordinator.hideAll()
+            XCTAssertNil(controller.richDocument); XCTAssertNil(controller.onClose); XCTAssertNil(controller.onPresentationChange)
+            probe.assertDetached()
+            return (id, probe)
+        }
+        try await hiddenProbe.assertReleased()
+        XCTAssertEqual(store.entry(id: id)?.isVisible, true); XCTAssertEqual(coordinator.livePinCount, 0)
+        let archivedProbe = try autoreleasepool { () throws -> ClosedAuxiliaryWindowProbe in
+            try coordinator.showCurrentGroup(); XCTAssertEqual(coordinator.livePinCount, 1)
+            let controller = try XCTUnwrap(coordinator.richControllers[id])
+            let probe = try ClosedAuxiliaryWindowProbe(controller)
+            controller.close()
+            XCTAssertEqual(store.entry(id: id)?.isVisible, false); XCTAssertEqual(coordinator.livePinCount, 0)
+            probe.assertDetached()
+            return probe
+        }
+        try await archivedProbe.assertReleased()
+        let terminatedProbe = try autoreleasepool { () throws -> ClosedAuxiliaryWindowProbe in
+            try coordinator.openPin(id: id)
+            let controller = try XCTUnwrap(coordinator.richControllers[id])
+            XCTAssertEqual(controller.richDocument?.text, content)
+            let probe = try ClosedAuxiliaryWindowProbe(controller)
+            try coordinator.prepareForTermination(); probe.assertDetached()
+            return probe
+        }
+        try await terminatedProbe.assertReleased()
         let restored = try PinSessionStore(directory: directory)
         XCTAssertEqual(restored.index.version, 2)
         XCTAssertEqual(try JSONDecoder().decode(PinRichDocument.self, from: restored.richData(id: id)).text, content)
@@ -37,21 +55,37 @@ final class RichPinTests: XCTestCase {
         let store = try PinSessionStore(directory: directory)
         let coordinator = PinSessionCoordinator(store: store, presentWindows: false)
         defer { try? coordinator.prepareForTermination() }
-        let id = try coordinator.add(rich: text())
+        let id = try autoreleasepool { try coordinator.add(rich: text()) }
         let group = try store.createGroup(name: "Other")
+        var closed: [ClosedAuxiliaryWindowProbe] = []
         for _ in 0..<5 {
-            let value = PinPresentation(frame: PinWindowFrame(x: 25, y: 25, width: 550, height: 410), opacity: 0.4, zoom: 1.3, clickThrough: true, locked: true)
-            coordinator.richControllers[id]?.applyPresentation(value)
-            let expected = coordinator.richControllers[id]?.presentation
-            weak var previous = coordinator.richControllers[id]
-            try coordinator.switchGroup(id: group.id); XCTAssertNil(previous)
+            let (expected, probe) = try autoreleasepool { () throws -> (PinPresentation, ClosedAuxiliaryWindowProbe) in
+                let controller = try XCTUnwrap(coordinator.richControllers[id])
+                let value = PinPresentation(frame: PinWindowFrame(x: 25, y: 25, width: 550, height: 410), opacity: 0.4, zoom: 1.3, clickThrough: true, locked: true)
+                controller.applyPresentation(value)
+                let expected = controller.presentation, probe = try ClosedAuxiliaryWindowProbe(controller)
+                try coordinator.switchGroup(id: group.id)
+                XCTAssertNil(controller.richDocument); XCTAssertNil(controller.onClose); XCTAssertNil(controller.onPresentationChange)
+                probe.assertDetached()
+                return (expected, probe)
+            }
+            closed.append(probe); try await probe.assertReleased()
             XCTAssertEqual(store.entry(id: id)?.presentation, expected); XCTAssertEqual(store.entry(id: id)?.isVisible, true)
-            try coordinator.switchGroup(id: PinGroup.defaultID)
-            XCTAssertEqual(coordinator.livePinCount, 1)
+            try autoreleasepool {
+                try coordinator.switchGroup(id: PinGroup.defaultID)
+                XCTAssertEqual(coordinator.livePinCount, 1)
+            }
         }
-        try coordinator.recoverCurrentGroup()
-        XCTAssertEqual(coordinator.richControllers[id]?.presentation.opacity, 1)
-        XCTAssertEqual(coordinator.richControllers[id]?.presentation.clickThrough, false)
+        let last = try autoreleasepool { () throws -> ClosedAuxiliaryWindowProbe in
+            try coordinator.recoverCurrentGroup()
+            let controller = try XCTUnwrap(coordinator.richControllers[id])
+            XCTAssertEqual(controller.presentation.opacity, 1); XCTAssertEqual(controller.presentation.clickThrough, false)
+            let probe = try ClosedAuxiliaryWindowProbe(controller)
+            try coordinator.prepareForTermination(); probe.assertDetached()
+            return probe
+        }
+        closed.append(last)
+        for probe in closed { try await probe.assertReleased() }
     }
     @MainActor func testMixedLivePinsShareProtectionAndQuota() async throws {
         _ = NSApplication.shared
@@ -166,12 +200,23 @@ final class RichPinTests: XCTestCase {
         let coordinator = PinSessionCoordinator(store: store, presentWindows: false)
         defer { try? coordinator.prepareForTermination() }
         let prepared = try PreparedRichPin(animation: gif(), title: "GIF")
-        for _ in 0..<4 { try coordinator.add(rich: prepared) }
-        XCTAssertThrowsError(try coordinator.add(rich: prepared)); XCTAssertEqual(store.entries.count, 4)
-        weak var previous = coordinator.richControllers.values.first
-        try coordinator.hideAll(); XCTAssertNil(previous); XCTAssertEqual(coordinator.livePinCount, 0)
-        try coordinator.showCurrentGroup(); XCTAssertEqual(coordinator.livePinCount, 4)
-        try coordinator.prepareForTermination(); XCTAssertEqual(coordinator.livePinCount, 0)
+        let hidden = try autoreleasepool { () throws -> [ClosedAuxiliaryWindowProbe] in
+            for _ in 0..<4 { try coordinator.add(rich: prepared) }
+            XCTAssertThrowsError(try coordinator.add(rich: prepared)); XCTAssertEqual(store.entries.count, 4)
+            let probes = try coordinator.richControllers.values.map { try ClosedAuxiliaryWindowProbe($0) }
+            try coordinator.hideAll(); XCTAssertEqual(coordinator.livePinCount, 0)
+            for probe in probes { probe.assertDetached() }
+            return probes
+        }
+        for probe in hidden { try await probe.assertReleased() }
+        let terminated = try autoreleasepool { () throws -> [ClosedAuxiliaryWindowProbe] in
+            try coordinator.showCurrentGroup(); XCTAssertEqual(coordinator.livePinCount, 4)
+            let probes = try coordinator.richControllers.values.map { try ClosedAuxiliaryWindowProbe($0) }
+            try coordinator.prepareForTermination(); XCTAssertEqual(coordinator.livePinCount, 0)
+            for probe in probes { probe.assertDetached() }
+            return probes
+        }
+        for probe in terminated { try await probe.assertReleased() }
         let restored = try PinSessionStore(directory: directory); XCTAssertEqual(restored.entries.count, 4)
     }
     @MainActor func testColorContentSurvivesPersistence() async throws {

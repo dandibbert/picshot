@@ -16,7 +16,7 @@ final class AutomaticScrollScreenDriver: AutomaticScrollDriver {
     private let accept: (CGImage) async throws -> AutomaticScrollSample
     private var target: Target?
 
-    private struct Target: Equatable {
+    struct Target: Equatable {
         let pid: pid_t
         let windowID: CGWindowID
         let bounds: CGRect
@@ -54,35 +54,50 @@ final class AutomaticScrollScreenDriver: AutomaticScrollDriver {
               NSScreen.screens.contains(where: { $0.displayID == displayID && $0.frame.size == screenSize }) else {
             throw CaptureError.failed("The selected display changed or disconnected. Start a new scrolling capture.")
         }
-        guard let current = windowAtTarget(), current.pid != ProcessInfo.processInfo.processIdentifier,
-              NSWorkspace.shared.frontmostApplication?.processIdentifier == current.pid else {
+        target = try Self.checkedTarget(windowAtTarget(), locked: target, at: targetPoint,
+                                        frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
+                                        ownPID: ProcessInfo.processInfo.processIdentifier)
+    }
+
+    /// Window identity is a preflight safety check, not writable scroll-event metadata.
+    /// Keep this policy separate from OS lookup so synthetic tests can exercise failures
+    /// without activating apps, reading the screen, changing TCC, or posting input.
+    static func checkedTarget(_ current: Target?, locked: Target?, at point: CGPoint,
+                              frontmostPID: pid_t?, ownPID: pid_t) throws -> Target {
+        guard let current, current.pid > 0, current.pid != ownPID,
+              current.windowID != kCGNullWindowID,
+              point.x.isFinite, point.y.isFinite,
+              current.bounds.origin.x.isFinite, current.bounds.origin.y.isFinite,
+              current.bounds.size.width.isFinite, current.bounds.size.height.isFinite,
+              current.bounds.size.width > 0, current.bounds.size.height > 0,
+              current.bounds.contains(point), frontmostPID == current.pid else {
             throw CaptureError.failed("The target app must be frontmost, with the center of the selected region unobstructed. Return to it during the countdown, or use manual capture.")
         }
-        if let target, target != current {
+        if let locked, locked != current {
             throw CaptureError.failed("The target window moved, changed, or was covered. Automatic input stopped. Accepted frames are safe; start over or continue manually.")
         }
-        target = current
+        return current
     }
 
     func scroll(axis: ScrollAxis, points: Int) throws {
         try validateTarget()
         guard let target else { throw CaptureError.invalidRegion }
-        let event = try Self.makeScrollEvent(axis: axis, points: points, location: targetPoint, windowID: target.windowID)
-        // Direct delivery and a fresh window/foreground check bound the recipient. There
-        // is no pointer warp or generic HID event that can scroll whichever app is now active.
+        let event = try Self.makeScrollEvent(axis: axis, points: points, location: targetPoint)
+        // postToPid selects the validated process, while location carries the fixed target
+        // point. The window ID is checked above, not encoded in mouse-specific CGEvent
+        // fields: native scroll-wheel construction ignores those fields. How each app
+        // routes this event to a view still requires live-app acceptance testing.
         event.postToPid(target.pid)
     }
 
-    static func makeScrollEvent(axis: ScrollAxis, points: Int, location: CGPoint, windowID: CGWindowID) throws -> CGEvent {
-        guard (1...240).contains(points), location.x.isFinite, location.y.isFinite, windowID != kCGNullWindowID,
+    static func makeScrollEvent(axis: ScrollAxis, points: Int, location: CGPoint) throws -> CGEvent {
+        guard (1...240).contains(points), location.x.isFinite, location.y.isFinite,
               let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2,
                                   wheel1: axis == .vertical ? -Int32(points) : 0,
                                   wheel2: axis == .horizontal ? -Int32(points) : 0, wheel3: 0) else {
             throw CaptureError.failed("The bounded scroll event could not be created.")
         }
         event.location = location
-        event.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: Int64(windowID))
-        event.setIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent, value: Int64(windowID))
         event.flags = []
         return event
     }

@@ -96,6 +96,7 @@ enum CaptureUIPreviewFixture {
               saveCallbacks == 1, FileManager.default.fileExists(atPath: evidenceDirectory.appendingPathComponent("ui-synthetic-edited-result.png").path) else {
             throw failure("Native save callback did not export the synthetic edited fixture")
         }
+        let resizeEvidence = try await verifyBoundaryResize(light, presentation: presentation, evidenceDirectory: evidenceDirectory)
         light.close()
 
         NSApp.appearance = NSAppearance(named: .darkAqua)
@@ -127,12 +128,48 @@ enum CaptureUIPreviewFixture {
         guard let pinWindow = pins.last?.window, pinCallbacks == 1 else { throw failure("Pin action did not open a native image pin") }
         try await settle(pinWindow)
         try snapshot(pinWindow, to: evidenceDirectory.appendingPathComponent("ui-pin-image-only.png"))
+        let pinController = try unwrap(pins.last, "Missing native pin controller")
+        let pinImageBefore = pinController.currentImage
+        let pinStateBefore = pinController.presentation
+        let pinAnchor = try unwrap(pinController.annotationPresentation, "Pin has no exact annotation geometry")
+        let pinCanvas = try unwrap(descendants(pinWindow.contentView).compactMap { $0 as? NSScrollView }.first?.documentView,
+                                   "Pin has no native canvas for its Space handler")
+        pinWindow.makeFirstResponder(pinCanvas)
+        pinCanvas.keyDown(with: try key(pinCanvas, code: 49, value: " "))
+        let pinEditor = try unwrap(pinController.annotationEditor, "Space did not open the pin annotation surface")
+        guard !pinWindow.isVisible, pinEditor.window?.isVisible == true,
+              pinEditor.window?.styleMask.contains(.titled) == false,
+              pinEditor.captureBoundaryWorkspace.frozenImage == nil,
+              sameFrame(pinEditor.editorImageScreenFrame, pinAnchor.imageFrame),
+              sameFrame(pinEditor.pinnedViewportScreenFrame, pinAnchor.viewportFrame) else {
+            throw failure("Space editor did not preserve the real pin anchor")
+        }
+        try click("editor.tool.rectangle", in: pinEditor)
+        try drag(pinEditor.annotationCanvas,
+                 from: CGPoint(x: CGFloat(pinImageBefore.width) * 0.045, y: CGFloat(pinImageBefore.height) * 0.78),
+                 to: CGPoint(x: CGFloat(pinImageBefore.width) * 0.72, y: CGFloat(pinImageBefore.height) * 0.97))
+        guard pinEditor.annotationCanvas.annotations.count == 1 else { throw failure("Anchored pin editor did not accept native drawing") }
+        try await settle(pinEditor.window)
+        try snapshot(pinEditor.window, to: evidenceDirectory.appendingPathComponent("ui-pin-annotation.png"))
+        try click("editor.cancel", in: pinEditor)
+        guard pinController.annotationEditor == nil, pinWindow.isVisible,
+              pinController.currentImage === pinImageBefore, pinController.presentation == pinStateBefore else {
+            throw failure("Cancelling the anchored editor changed or hid the original pin")
+        }
         pins.last?.close()
         let ocrSource = editor(captured)
         try click("editor.ocr", in: ocrSource)
         guard let resultWindow = results.last?.window, ocrCallbacks == 1 else { throw failure("OCR result callback did not open its native panel") }
         try await settle(resultWindow)
         try snapshot(resultWindow, to: evidenceDirectory.appendingPathComponent("ui-ocr-result.png"))
+        let priorResultAppearance = resultWindow.appearance
+        let originalResultText = results.last?.resultText
+        resultWindow.appearance = NSAppearance(named: .darkAqua)
+        try await settle(resultWindow)
+        guard resultWindow.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua,
+              results.last?.resultText == originalResultText else { throw failure("Dark OCR fixture changed its text or ignored appearance") }
+        try snapshot(resultWindow, to: evidenceDirectory.appendingPathComponent("ui-ocr-result-dark.png"))
+        resultWindow.appearance = priorResultAppearance
         results.last?.close()
 
         return ["status": "passed", "scope": "Native AppKit editor/pin/text-result rendering on a labeled synthetic desktop; no screen pixels, TCC, OCR inference, network, or preference writes",
@@ -141,8 +178,92 @@ enum CaptureUIPreviewFixture {
                 "backingScale": screen.backingScaleFactor, "sourcePixelWidth": desktop.width, "sourcePixelHeight": desktop.height,
                 "rectangleGesture": true, "inlineCancel": true, "inlineCommit": true, "appearanceRestoredOnExit": true,
                 "edgeClamping": true, "nativePinCallbackCount": pinCallbacks, "nativeOCRCallbackCount": ocrCallbacks,
-                "saveCallbackCount": saveCallbacks,
-                "files": ["ui-capture-rectangle-light.png", "ui-capture-text-light.png", "ui-capture-rectangle-dark.png", "ui-capture-edge.png", "ui-pin-image-only.png", "ui-ocr-result.png"]]
+                "saveCallbackCount": saveCallbacks, "captureResizeEvidence": resizeEvidence,
+                "pinSpaceAnchoredEditing": true, "pinAnnotationCancelPreservedImageAndPresentation": true,
+                "ocrDarkAppearance": true,
+                "files": ["ui-capture-rectangle-light.png", "ui-capture-text-light.png", "ui-capture-rectangle-dark.png", "ui-capture-edge.png", "ui-pin-image-only.png", "ui-ocr-result.png", "ui-capture-resized.png", "ui-pin-annotation.png", "ui-ocr-result-dark.png"]]
+    }
+
+    private static func verifyBoundaryResize(_ editor: ImageEditorController, presentation: FrozenCapturePresentation,
+                                             evidenceDirectory: URL) async throws -> [String: Any] {
+        let canvas = editor.annotationCanvas, workspace = editor.captureBoundaryWorkspace
+        let originalImage = canvas.image, originalFrame = editor.editorSelectionFrame, originalAnnotations = canvas.annotations
+        guard !originalAnnotations.isEmpty else { throw failure("Resize fixture needs existing editable annotations") }
+        try click("editor.tool.rectangle", in: editor)
+        let start = EditorBoundaryHandle.left.point(in: originalFrame)
+        let distance = min(32, originalFrame.minX / 2)
+        guard distance >= 2 else { throw failure("Synthetic selection has no resize margin") }
+        let target = CGPoint(x: start.x - distance, y: start.y)
+        let requested = EditorBoundaryHandle.left.resized(originalFrame, to: target, in: workspace.bounds)
+        let expectedFrame = try EditorBoundaryRenderer.alignedFrame(requested, presentation: presentation)
+        let hit = workspace.hitTest(workspace.convert(start, to: workspace.superview))
+        guard hit === workspace else { throw failure("Visible capture boundary handle failed native hit testing") }
+        workspace.mouseDown(with: try pointer(workspace, type: .leftMouseDown, point: start))
+        for step in 1...4 {
+            let point = CGPoint(x: start.x - distance * CGFloat(step) / 4, y: start.y)
+            workspace.mouseDragged(with: try pointer(workspace, type: .leftMouseDragged, point: point))
+            guard canvas.image === originalImage, sameAnnotations(canvas.annotations, originalAnnotations),
+                  canvas.isHidden, workspace.boundaryPreviewImage != nil else {
+                throw failure("Resize preview materialized a new raster or changed the model during mouse motion")
+            }
+        }
+        workspace.mouseUp(with: try pointer(workspace, type: .leftMouseUp, point: target))
+        let resizedImage = canvas.image
+        let expectedWidth = Int((expectedFrame.width * CGFloat(presentation.frozenImage.width) / presentation.displayFrame.width).rounded())
+        let expectedHeight = Int((expectedFrame.height * CGFloat(presentation.frozenImage.height) / presentation.displayFrame.height).rounded())
+        let offset = EditorBoundaryRenderer.annotationOffset(from: originalFrame, to: expectedFrame, presentation: presentation)
+        let translated = originalAnnotations.map { $0.translated(by: offset) }
+        guard !(resizedImage === originalImage), sameFrame(editor.editorSelectionFrame, expectedFrame),
+              resizedImage.width == expectedWidth, resizedImage.height == expectedHeight,
+              resizedImage.bytesPerRow == expectedWidth * 4,
+              CFDataGetLength(try unwrap(resizedImage.dataProvider?.data, "Resized image has no pixel provider")) == expectedWidth * expectedHeight * 4,
+              sameAnnotations(canvas.annotations, translated), !canvas.isHidden, workspace.boundaryPreviewImage == nil else {
+            throw failure("Committed native boundary resize did not produce an independent pixel-aligned crop")
+        }
+        try click("editor.undo", in: editor)
+        guard canvas.image === originalImage, sameFrame(editor.editorSelectionFrame, originalFrame),
+              sameAnnotations(canvas.annotations, originalAnnotations) else { throw failure("Resize undo did not restore original pixels and placement") }
+        // A second undo must reach the preceding text edit, not a mouse-move
+        // snapshot. Redo the text and leave the resize itself available to redo.
+        try click("editor.undo", in: editor)
+        guard canvas.annotations.count == originalAnnotations.count - 1 else { throw failure("A single resize gesture added multiple undo states") }
+        try click("editor.redo", in: editor)
+        guard sameAnnotations(canvas.annotations, originalAnnotations) else { throw failure("Pre-resize text redo failed") }
+        let cancelStart = EditorBoundaryHandle.bottom.point(in: editor.editorSelectionFrame)
+        let cancelTarget = CGPoint(x: cancelStart.x, y: cancelStart.y - min(18, cancelStart.y / 2))
+        workspace.mouseDown(with: try pointer(workspace, type: .leftMouseDown, point: cancelStart))
+        workspace.mouseDragged(with: try pointer(workspace, type: .leftMouseDragged, point: cancelTarget))
+        workspace.keyDown(with: try key(workspace, code: 53, value: "\u{1b}"))
+        workspace.mouseUp(with: try pointer(workspace, type: .leftMouseUp, point: cancelTarget))
+        guard canvas.image === originalImage, sameFrame(editor.editorSelectionFrame, originalFrame),
+              sameAnnotations(canvas.annotations, originalAnnotations), !canvas.isHidden,
+              !workspace.isResizingBoundary, workspace.boundaryPreviewImage == nil,
+              editor.window?.isVisible == true else { throw failure("Escape did not cancel only the boundary gesture") }
+        try click("editor.redo", in: editor)
+        guard canvas.image === resizedImage, sameFrame(editor.editorSelectionFrame, expectedFrame),
+              sameAnnotations(canvas.annotations, translated) else { throw failure("Cancelled boundary resize consumed the redo branch") }
+        try await settle(editor.window); try checkControls(editor)
+        try snapshot(editor.window, to: evidenceDirectory.appendingPathComponent("ui-capture-resized.png"))
+        return ["nativeHandleHitTest": true, "dragPreviewReusesRaster": true, "independentPixelAlignedCommit": true,
+                "annotationPlacementPreserved": true, "oneUndoStatePerGesture": true,
+                "escapeRestoresWithoutConsumingRedo": true, "pixelWidth": expectedWidth, "pixelHeight": expectedHeight,
+                "previewMouseMoves": 4, "selectionFrame": [expectedFrame.minX, expectedFrame.minY, expectedFrame.width, expectedFrame.height]]
+    }
+    private static func sameFrame(_ actual: CGRect?, _ expected: CGRect) -> Bool {
+        guard let actual else { return false }
+        return abs(actual.minX - expected.minX) < 0.01 && abs(actual.minY - expected.minY) < 0.01 &&
+               abs(actual.width - expected.width) < 0.01 && abs(actual.height - expected.height) < 0.01
+    }
+    private static func sameAnnotations(_ actual: [ImageAnnotation], _ expected: [ImageAnnotation]) -> Bool {
+        guard actual.count == expected.count else { return false }
+        return zip(actual, expected).allSatisfy { pair in
+            pair.0.id == pair.1.id && pair.0.tool == pair.1.tool && pair.0.points == pair.1.points &&
+            pair.0.rotation == pair.1.rotation && pair.0.text == pair.1.text
+        }
+    }
+    private static func pointer(_ view: NSView, type: NSEvent.EventType, point: CGPoint) throws -> NSEvent {
+        try unwrap(NSEvent.mouseEvent(with: type, location: view.convert(point, to: nil), modifierFlags: [], timestamp: 0,
+            windowNumber: view.window?.windowNumber ?? 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1), "Cannot make boundary pointer input")
     }
 
     private static func checkPlacement(_ editor: ImageEditorController, presentation: FrozenCapturePresentation) throws {
@@ -209,7 +330,7 @@ enum CaptureUIPreviewFixture {
         canvas.mouseDragged(with: try mouse(canvas, type: .leftMouseDragged, point: end))
         canvas.mouseUp(with: try mouse(canvas, type: .leftMouseUp, point: end))
     }
-    private static func key(_ canvas: ImageEditorCanvas, code: UInt16, value: String, flags: NSEvent.ModifierFlags = []) throws -> NSEvent {
+    private static func key(_ canvas: NSView, code: UInt16, value: String, flags: NSEvent.ModifierFlags = []) throws -> NSEvent {
         try unwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0,
             windowNumber: canvas.window?.windowNumber ?? 0, context: nil, characters: value,
             charactersIgnoringModifiers: value, isARepeat: false, keyCode: code), "Cannot make native keyboard input")

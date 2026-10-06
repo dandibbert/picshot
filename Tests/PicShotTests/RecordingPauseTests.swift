@@ -311,44 +311,75 @@ final class RecordingPauseTests: XCTestCase {
         let writer = try RecordingWriter(size: CGSize(width: 40, height: 24),
             options: RecordingOptions(frameRate: 10, capturesSystemAudio: true, capturesMicrophone: includeMicrophone),
             outputDirectory: directory, clock: { clock.now }) { stops.record($0) }
-        let preroll = try audioSample(at: time(9.9), channels: 2)
-        writer.queue.sync { XCTAssertFalse(writer.consume(preroll, of: .audio)) }
-        for (base, count, color) in [(10.0, 5, Color.red), (12.5, 5, Color.blue), (16.0, 3, Color.green)] {
-            if base > 10 {
-                clock.set(base)
-                _ = try await writer.setPaused(false)
-                // Late callbacks with timestamps in the removed interval must not
-                // sneak in after Resume. Neither duplicate nor stale audio is queued.
-                let stale = try audioSample(at: time(base - 0.1), channels: 2)
-                writer.queue.sync { XCTAssertFalse(writer.consume(stale, of: .audio)) }
-            }
-            for index in 0..<count {
-                let timestamp = time(base + Double(index) / 10)
-                clock.set(timestamp.seconds)
-                let screen = try screenSample(at: timestamp, color: color)
-                let audio = try audioSample(at: timestamp, channels: 2)
-                try await append(screen, to: writer, type: .screen)
-                try await append(audio, to: writer, type: .audio)
-                writer.queue.sync {
-                    XCTAssertFalse(writer.consume(screen, of: .screen), "Duplicate video PTS must not be appended")
-                    XCTAssertFalse(writer.consume(audio, of: .audio), "Overlapping audio packets must not be appended")
+        // PCM packet boundaries must be integer ticks. Going through Double
+        // seconds (for example 10.2 * 48_000) can put a timestamp one tick before
+        // the previous packet's exact end, which is correctly rejected forever.
+        let frameTicks: Int64 = 4_800
+        let frameDuration = CMTime(value: frameTicks, timescale: 48_000)
+        let segments: [(startTick: Int64, count: Int, color: Color)] = [
+            (480_000, 5, .red), (600_000, 5, .blue), (768_000, 3, .green)
+        ]
+        let url: URL
+        do {
+            let preroll = try audioSample(at: CMTime(value: 475_200, timescale: 48_000), channels: 2)
+            writer.queue.sync { XCTAssertFalse(writer.consume(preroll, of: .audio)) }
+            for (segmentIndex, segment) in segments.enumerated() {
+                let base = CMTime(value: segment.startTick, timescale: 48_000)
+                if segmentIndex > 0 {
+                    clock.set(base)
+                    _ = try await writer.setPaused(false)
+                    // Late callbacks from a removed interval remain rejected.
+                    let stale = try audioSample(at: CMTimeSubtract(base, frameDuration), channels: 2)
+                    writer.queue.sync { XCTAssertFalse(writer.consume(stale, of: .audio)) }
                 }
-                if includeMicrophone {
-                    #if compiler(>=6.0)
-                    if #available(macOS 15.0, *) {
-                        try await append(try audioSample(at: timestamp, channels: 1), to: writer, type: .microphone)
+                var previousPacketEnd: CMTime?
+                for index in 0..<segment.count {
+                    let timestamp = CMTime(value: segment.startTick + Int64(index) * frameTicks, timescale: 48_000)
+                    clock.set(timestamp)
+                    let screen = try screenSample(at: timestamp, color: segment.color)
+                    let audio = try audioSample(at: timestamp, channels: 2)
+                    let packetStart = CMSampleBufferGetPresentationTimeStamp(audio)
+                    let packetDuration = CMSampleBufferGetDuration(audio)
+                    XCTAssertEqual(CMTimeCompare(packetStart, timestamp), 0)
+                    XCTAssertEqual(CMTimeCompare(packetDuration, frameDuration), 0)
+                    if let previousPacketEnd {
+                        XCTAssertEqual(CMTimeCompare(packetStart, previousPacketEnd), 0,
+                            "PCM packets must be exactly adjacent, not one tick overlapping or gapped")
                     }
-                    #endif
+                    previousPacketEnd = CMTimeAdd(packetStart, packetDuration)
+                    var inputs: [(sample: CMSampleBuffer, type: SCStreamOutputType)] = [(screen, .screen), (audio, .audio)]
+                    if includeMicrophone {
+                        #if compiler(>=6.0)
+                        if #available(macOS 15.0, *) {
+                            let microphone = try audioSample(at: timestamp, channels: 1)
+                            XCTAssertEqual(CMTimeCompare(CMSampleBufferGetPresentationTimeStamp(microphone), packetStart), 0)
+                            XCTAssertEqual(CMTimeCompare(CMSampleBufferGetDuration(microphone), packetDuration), 0)
+                            inputs.append((microphone, .microphone))
+                        }
+                        #endif
+                    }
+                    // Do not block all producers while one input is backpressured:
+                    // the muxer can need another track to maintain interleaving.
+                    try await appendInterleaved(inputs, to: writer, stops: stops)
+                    writer.queue.sync {
+                        XCTAssertFalse(writer.consume(screen, of: .screen), "Duplicate video PTS must not be appended")
+                        XCTAssertFalse(writer.consume(audio, of: .audio), "Overlapping audio packets must not be appended")
+                    }
+                }
+                clock.set(CMTime(value: segment.startTick + Int64(segment.count) * frameTicks, timescale: 48_000))
+                if segmentIndex < segments.count - 1 {
+                    _ = try await writer.setPaused(true)
+                    let excluded = try screenSample(at: CMTime(value: segment.startTick + 38_400, timescale: 48_000), color: .white)
+                    writer.queue.sync { XCTAssertFalse(writer.consume(excluded, of: .screen)) }
                 }
             }
-            clock.set(base + Double(count) / 10)
-            if base < 16 {
-                _ = try await writer.setPaused(true)
-                let excluded = try screenSample(at: time(base + 0.8), color: .white)
-                writer.queue.sync { XCTAssertFalse(writer.consume(excluded, of: .screen)) }
-            }
+            url = try await writer.finish()
+        } catch {
+            // A failed fixture must not leave an encoder open while its staging
+            // directory is removed, obscuring later media tests with side effects.
+            await writer.discard()
+            throw error
         }
-        let url = try await writer.finish()
         XCTAssertTrue(stops.messages.isEmpty, "Unexpected writer failure: \(stops.messages)")
         let asset = AVURLAsset(url: url)
         let duration = try await asset.load(.duration).seconds
@@ -411,9 +442,34 @@ final class RecordingPauseTests: XCTestCase {
     }
 
     private func append(_ sample: CMSampleBuffer, to writer: RecordingWriter, type: SCStreamOutputType) async throws {
+        try await appendInterleaved([(sample, type)], to: writer)
+    }
+
+    private func appendInterleaved(_ inputs: [(sample: CMSampleBuffer, type: SCStreamOutputType)],
+                                   to writer: RecordingWriter, stops: StopRecorder? = nil) async throws {
+        // Fixed, tiny fixture batch: one sample per track, not a production queue.
+        precondition((1...3).contains(inputs.count))
         let deadline = Date().addingTimeInterval(10)
-        while !writer.queue.sync(execute: { writer.consume(sample, of: type) }) {
-            guard Date() < deadline else { throw RecordingError.failed("Synthetic sample was not accepted before its deadline.") }
+        var accepted = [Bool](repeating: false, count: inputs.count)
+        while accepted.contains(false) {
+            writer.queue.sync {
+                for index in inputs.indices where !accepted[index] {
+                    accepted[index] = writer.consume(inputs[index].sample, of: inputs[index].type)
+                }
+            }
+            if !accepted.contains(false) { return }
+            let stopMessages = stops?.messages ?? []
+            if !stopMessages.isEmpty || Date() >= deadline {
+                let snapshot = await writer.snapshot()
+                let pending = inputs.indices.filter { !accepted[$0] }.map { index in
+                    let input = inputs[index]
+                    let timestamp = CMSampleBufferGetPresentationTimeStamp(input.sample)
+                    let duration = CMSampleBufferGetDuration(input.sample)
+                    return "track=\(input.type.rawValue), pts=\(timestamp.value)/\(timestamp.timescale), duration=\(duration.value)/\(duration.timescale), samples=\(CMSampleBufferGetNumSamples(input.sample))"
+                }.joined(separator: "; ")
+                let reasons = stopMessages.map { $0 ?? "automatic stop" }.joined(separator: "; ")
+                throw RecordingError.failed("Synthetic append stalled: \(pending); elapsed=\(snapshot.elapsed), paused=\(snapshot.isPaused), writer stop=\(reasons.isEmpty ? "none" : reasons)")
+            }
             try await Task.sleep(nanoseconds: 1_000_000)
         }
     }
@@ -533,7 +589,8 @@ private final class TestClock: @unchecked Sendable {
     private var value: CMTime
     init(_ seconds: Double) { value = CMTime(seconds: seconds, preferredTimescale: 48_000) }
     var now: CMTime { lock.lock(); defer { lock.unlock() }; return value }
-    func set(_ seconds: Double) { lock.lock(); defer { lock.unlock() }; value = CMTime(seconds: seconds, preferredTimescale: 48_000) }
+    func set(_ seconds: Double) { set(CMTime(seconds: seconds, preferredTimescale: 48_000)) }
+    func set(_ timestamp: CMTime) { lock.lock(); defer { lock.unlock() }; value = timestamp }
 }
 
 private final class StopRecorder: @unchecked Sendable {

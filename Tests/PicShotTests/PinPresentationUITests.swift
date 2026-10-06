@@ -35,23 +35,34 @@ final class PinPresentationUITests: XCTestCase {
         XCTAssertTrue(controller.presentation.locked); XCTAssertGreaterThanOrEqual(writes, 4)
     }
 
-    @MainActor func testSpaceUsesSingleSharedEditorAndClosingPinReleasesIt() throws {
+    @MainActor func testSpaceUsesSingleSharedEditorAndClosingPinReleasesIt() async throws {
         _ = NSApplication.shared
-        var controller: PinController? = PinController(image: try raster())
-        let content = try XCTUnwrap(controller?.window?.contentView)
-        let scroll = try XCTUnwrap(descendants(content).compactMap { $0 as? NSScrollView }.first)
-        let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
-            windowNumber: controller?.window?.windowNumber ?? 0, context: nil, characters: " ", charactersIgnoringModifiers: " ", isARepeat: false, keyCode: 49))
-        scroll.documentView?.keyDown(with: event)
-        weak var editor = controller?.annotationEditor
-        XCTAssertNotNil(editor)
-        controller?.showAnnotations(); XCTAssertTrue(controller?.annotationEditor === editor)
-        editor?.close(); XCTAssertNil(controller?.annotationEditor)
-        controller?.showAnnotations(); weak var replacement = controller?.annotationEditor
-        XCTAssertNotNil(replacement)
-        let window = controller?.window
-        controller?.close(); controller = nil
-        XCTAssertNil(replacement); XCTAssertNil(window?.contentView); XCTAssertNil(window?.delegate)
+        // NSWindowController creation, responder events, and close all participate in
+        // AppKit's event-scoped autorelease lifetime. Keep every borrow in this pool.
+        let probes = try autoreleasepool { () throws -> [ClosedAuxiliaryWindowProbe] in
+            let controller = PinController(image: try raster())
+            let pinProbe = try ClosedAuxiliaryWindowProbe(controller)
+            let content = try XCTUnwrap(controller.window?.contentView)
+            let scroll = try XCTUnwrap(descendants(content).compactMap { $0 as? NSScrollView }.first)
+            let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                windowNumber: controller.window?.windowNumber ?? 0, context: nil, characters: " ", charactersIgnoringModifiers: " ", isARepeat: false, keyCode: 49))
+            scroll.documentView?.keyDown(with: event)
+            let editor = try XCTUnwrap(controller.annotationEditor)
+            let editorProbe = try ClosedAuxiliaryWindowProbe(editor)
+            controller.showAnnotations(); XCTAssertTrue(controller.annotationEditor === editor)
+            editor.close(); XCTAssertNil(controller.annotationEditor)
+            editorProbe.assertDetached()
+            controller.showAnnotations()
+            let replacement = try XCTUnwrap(controller.annotationEditor)
+            XCTAssertFalse(replacement === editor)
+            let replacementProbe = try ClosedAuxiliaryWindowProbe(replacement)
+            controller.close()
+            XCTAssertNil(controller.annotationEditor)
+            for probe in [pinProbe, replacementProbe] { probe.assertDetached() }
+            controller.close() // Repeated dismissal must not reinstall any callbacks.
+            return [pinProbe, editorProbe, replacementProbe]
+        }
+        for probe in probes { try await probe.assertReleased() }
     }
 
     @MainActor func testFlattenedAnnotationPersistenceFailurePreservesOriginalAndCurrent() throws {
@@ -96,5 +107,39 @@ final class PinPresentationUITests: XCTestCase {
             space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
         context.setFillColor(CGColor(red: 0.1, green: 0.4, blue: 0.8, alpha: 1))
         context.fill(CGRect(x: 0, y: 0, width: width, height: height)); return try XCTUnwrap(context.makeImage())
+    }
+}
+
+/// Shared by the pin/OCR UI tests. Keeping a closed window strongly alive models
+/// AppKit's window cache; it must not retain its controller or former content graph.
+@MainActor final class ClosedAuxiliaryWindowProbe {
+    weak var controller: NSWindowController?
+    weak var content: NSView?
+    let window: NSWindow
+
+    init(_ controller: NSWindowController) throws {
+        self.controller = controller
+        window = try XCTUnwrap(controller.window)
+        content = window.contentView
+    }
+
+    func assertDetached(file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertNil(window.contentView, "Close must detach the content synchronously", file: file, line: line)
+        XCTAssertNil(window.delegate, "Close must detach its delegate synchronously", file: file, line: line)
+        XCTAssertFalse(window.isVisible, file: file, line: line)
+    }
+
+    func assertReleased(file: StaticString = #filePath, line: UInt = #line) async throws {
+        let deadline = ProcessInfo.processInfo.systemUptime + 1
+        while !autoreleasepool(invoking: { controller == nil && content == nil }),
+              ProcessInfo.processInfo.systemUptime < deadline {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                DispatchQueue.main.async { continuation.resume() }
+            }
+            try await Task.sleep(nanoseconds: 25_000_000)
+        }
+        XCTAssertNil(controller, "Closed controller retained after scoped pools and bounded main-run-loop drain", file: file, line: line)
+        XCTAssertNil(content, "Closed window retained its former content/view graph", file: file, line: line)
+        assertDetached(file: file, line: line)
     }
 }

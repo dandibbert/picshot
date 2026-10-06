@@ -75,8 +75,8 @@ final class AutomaticScrollImageTests: XCTestCase {
     @MainActor
     func testScrollEventConstructionIsBoundedAndAxisSpecificWithoutPosting() throws {
         let point = CGPoint(x: -300, y: 241)
-        let vertical = try AutomaticScrollScreenDriver.makeScrollEvent(axis: .vertical, points: 47, location: point, windowID: 4242)
-        let horizontal = try AutomaticScrollScreenDriver.makeScrollEvent(axis: .horizontal, points: 53, location: point, windowID: 4242)
+        let vertical = try AutomaticScrollScreenDriver.makeScrollEvent(axis: .vertical, points: 47, location: point)
+        let horizontal = try AutomaticScrollScreenDriver.makeScrollEvent(axis: .horizontal, points: 53, location: point)
         XCTAssertEqual(vertical.type, .scrollWheel)
         XCTAssertEqual(vertical.location, point)
         XCTAssertEqual(vertical.getIntegerValueField(.scrollWheelEventPointDeltaAxis1), -47)
@@ -84,15 +84,47 @@ final class AutomaticScrollImageTests: XCTestCase {
         XCTAssertEqual(horizontal.getIntegerValueField(.scrollWheelEventPointDeltaAxis1), 0)
         XCTAssertEqual(horizontal.getIntegerValueField(.scrollWheelEventPointDeltaAxis2), -53)
         XCTAssertTrue(vertical.flags.isEmpty)
-        XCTAssertEqual(vertical.getIntegerValueField(.mouseEventWindowUnderMousePointer), 4242)
-        XCTAssertEqual(vertical.getIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent), 4242)
-        XCTAssertThrowsError(try AutomaticScrollScreenDriver.makeScrollEvent(axis: .vertical, points: 1,
-                                                                            location: point, windowID: 0))
         for amount in [Int.min, -1, 0, 241, Int.max] {
-            XCTAssertThrowsError(try AutomaticScrollScreenDriver.makeScrollEvent(axis: .vertical, points: amount, location: point, windowID: 4242))
+            XCTAssertThrowsError(try AutomaticScrollScreenDriver.makeScrollEvent(axis: .vertical, points: amount, location: point))
         }
         XCTAssertThrowsError(try AutomaticScrollScreenDriver.makeScrollEvent(axis: .vertical, points: 1,
-                                                                             location: CGPoint(x: CGFloat.nan, y: 0), windowID: 4242))
+                                                                             location: CGPoint(x: CGFloat.nan, y: 0)))
         // Intentionally no event.post, app activation, screen read or permission request.
     }
+
+    @MainActor
+    func testTargetPolicyLocksForegroundPIDWindowBoundsAndPointWithoutPosting() throws {
+        let point = CGPoint(x: -300, y: 241)
+        let target = AutomaticScrollScreenDriver.Target(pid: 100, windowID: 4242,
+                                                        bounds: CGRect(x: -500, y: 100, width: 400, height: 400))
+        let first = try AutomaticScrollScreenDriver.checkedTarget(target, locked: nil, at: point,
+                                                                  frontmostPID: 100, ownPID: 999)
+        XCTAssertEqual(first, target)
+        XCTAssertEqual(try AutomaticScrollScreenDriver.checkedTarget(target, locked: first, at: point,
+                                                                     frontmostPID: 100, ownPID: 999), target)
+        XCTAssertThrowsError(try AutomaticScrollScreenDriver.checkedTarget(nil, locked: target, at: point,
+                                                                           frontmostPID: 100, ownPID: 999))
+        XCTAssertThrowsError(try AutomaticScrollScreenDriver.checkedTarget(target, locked: target, at: point,
+                                                                           frontmostPID: 200, ownPID: 999))
+        XCTAssertThrowsError(try AutomaticScrollScreenDriver.checkedTarget(target, locked: target, at: point,
+                                                                           frontmostPID: nil, ownPID: 999))
+        XCTAssertThrowsError(try AutomaticScrollScreenDriver.checkedTarget(target, locked: target, at: point,
+                                                                           frontmostPID: 100, ownPID: 100))
+        XCTAssertThrowsError(try AutomaticScrollScreenDriver.checkedTarget(target, locked: target, at: .zero,
+                                                                           frontmostPID: 100, ownPID: 999))
+        let changedTargets = [
+            AutomaticScrollScreenDriver.Target(pid: 200, windowID: 4242, bounds: target.bounds),
+            AutomaticScrollScreenDriver.Target(pid: 100, windowID: 4243, bounds: target.bounds),
+            AutomaticScrollScreenDriver.Target(pid: 100, windowID: 4242,
+                                               bounds: target.bounds.offsetBy(dx: 1, dy: 0)),
+            AutomaticScrollScreenDriver.Target(pid: 100, windowID: 0, bounds: target.bounds)
+        ]
+        for changed in changedTargets {
+            XCTAssertThrowsError(try AutomaticScrollScreenDriver.checkedTarget(changed, locked: target, at: point,
+                                                                               frontmostPID: changed.pid, ownPID: 999))
+        }
+        // Window identity is verified in the preflight policy. Do not infer a writable
+        // scroll-window field or live application/view routing from CGEvent construction.
+    }
+
 }

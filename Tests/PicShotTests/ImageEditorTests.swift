@@ -201,7 +201,7 @@ final class ImageEditorTests: XCTestCase {
     }
 
     @MainActor
-    func testNativeZoomedShiftDragAndMoreMenuFreehand() throws {
+    func testNativeZoomedShiftDragDirectFreehandAndMoreMenu() throws {
         try withInteractiveEditor { editor in
             let canvas = editor.annotationCanvas
             canvas.zoom = 2
@@ -209,16 +209,37 @@ final class ImageEditorTests: XCTestCase {
             try drag(canvas, from: CGPoint(x: 10, y: 10), to: CGPoint(x: 110, y: 60), modifiers: .shift)
             XCTAssertEqual(canvas.annotations.first?.bounds, CGRect(x: 10, y: 10, width: 50, height: 50))
 
-            let more = try XCTUnwrap(allSubviews(editor.window?.contentView).compactMap { $0 as? NSPopUpButton }.first { $0.itemTitles.contains("更多") })
-            more.selectItem(withTitle: ImageEditorTool.freehand.title)
-            XCTAssertTrue(more.sendAction(more.action, to: more.target))
-            XCTAssertEqual(canvas.tool, .freehand)
+            // Freehand is a first-class icon in the floating strip. Exercise its
+            // real control rather than the removed text-based tool picker.
+            try clickTool(.freehand, in: editor)
+            XCTAssertEqual(canvas.zoom, 2)
             canvas.mouseDown(with: try mouseEvent(canvas, kind: .leftMouseDown, point: CGPoint(x: 160, y: 30)))
             canvas.mouseDragged(with: try mouseEvent(canvas, kind: .leftMouseDragged, point: CGPoint(x: 170, y: 45)))
             canvas.mouseDragged(with: try mouseEvent(canvas, kind: .leftMouseDragged, point: CGPoint(x: 180, y: 20)))
             canvas.mouseUp(with: try mouseEvent(canvas, kind: .leftMouseUp, point: CGPoint(x: 180, y: 20)))
             XCTAssertEqual(canvas.annotations.count, 2)
             XCTAssertEqual(canvas.annotations.last?.points.last, CGPoint(x: 180, y: 20))
+            XCTAssertEqual(canvas.annotations.last?.tool, .freehand)
+            XCTAssertEqual(canvas.annotations.last?.points.first, CGPoint(x: 160, y: 30))
+            XCTAssertEqual(Array(try XCTUnwrap(canvas.annotations.last).points.suffix(2)),
+                           [CGPoint(x: 170, y: 45), CGPoint(x: 180, y: 20)])
+
+            // Overflow entries now own their target/action. Dispatch through the
+            // actual NSMenu item, including its tool tag, and keep zoom unchanged.
+            let more = try XCTUnwrap(allSubviews(editor.window?.contentView).compactMap { $0 as? NSPopUpButton }
+                .first { $0.identifier?.rawValue == "editor.more" })
+            XCTAssertTrue(more.isEnabled); XCTAssertFalse(more.isHiddenOrHasHiddenAncestor)
+            let menu = try XCTUnwrap(more.menu)
+            let index = try XCTUnwrap(menu.items.firstIndex { $0.title == ImageEditorTool.ellipse.title })
+            XCTAssertNotNil(menu.items[index].target); XCTAssertNotNil(menu.items[index].action)
+            menu.performActionForItem(at: index)
+            XCTAssertEqual(canvas.tool, .ellipse); XCTAssertEqual(canvas.zoom, 2)
+            try drag(canvas, from: CGPoint(x: 10, y: 140), to: CGPoint(x: 90, y: 190), modifiers: .shift)
+            XCTAssertEqual(canvas.annotations.count, 3)
+            XCTAssertEqual(canvas.annotations.last?.tool, .ellipse)
+            XCTAssertEqual(canvas.annotations.last?.bounds, CGRect(x: 10, y: 140, width: 50, height: 50))
+            XCTAssertTrue(canvas.performKeyEquivalent(with: try keyEvent(canvas, key: "z", code: 6, modifiers: .command)))
+            XCTAssertEqual(canvas.annotations.count, 2)
             XCTAssertEqual(canvas.annotations.last?.tool, .freehand)
         }
     }
@@ -292,7 +313,9 @@ final class ImageEditorTests: XCTestCase {
 
     @MainActor
     private func clickTool(_ tool: ImageEditorTool, in editor: ImageEditorController) throws {
-        let button = try XCTUnwrap(allSubviews(editor.window?.contentView).compactMap { $0 as? NSButton }.first { $0.toolTip == tool.title })
+        let button = try XCTUnwrap(allSubviews(editor.window?.contentView).compactMap { $0 as? NSButton }
+            .first { $0.identifier?.rawValue == "editor.tool.\(tool.rawValue)" })
+        XCTAssertTrue(button.isEnabled); XCTAssertFalse(button.isHiddenOrHasHiddenAncestor)
         button.performClick(nil)
         XCTAssertEqual(editor.annotationCanvas.tool, tool)
         XCTAssertEqual(button.state, .on)

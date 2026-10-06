@@ -3,27 +3,35 @@ import AppKit
 @testable import PicShot
 
 final class TextResultPresentationTests: XCTestCase {
-    @MainActor func testCompactEditableResultHasWorkingPreferenceAndNoFakeLanguageControl() throws {
+    @MainActor func testCompactEditableResultHasWorkingPreferenceAndNoFakeLanguageControl() async throws {
         _ = NSApplication.shared
         let suite = "TextResultPresentationTests-" + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite)); defer { defaults.removePersistentDomain(forName: suite) }
-        var controller: TextResultController? = TextResultController(text: "Line one\nLine two", defaults: defaults)
-        let window = try XCTUnwrap(controller?.window), content = try XCTUnwrap(window.contentView)
-        content.layoutSubtreeIfNeeded()
-        XCTAssertEqual(window.contentRect(forFrameRect: window.frame).size, NSSize(width: 470, height: 310))
-        XCTAssertFalse(try XCTUnwrap(controller).offersLanguageSelection)
-        let text = try XCTUnwrap(descendants(content).compactMap { $0 as? NSTextView }.first)
-        XCTAssertTrue(text.isEditable); text.string = "Edited text"
-        XCTAssertEqual(controller?.resultText, "Edited text")
-        let checkbox = try XCTUnwrap(descendants(content).compactMap { $0 as? NSButton }.first { $0.title == "下次直接复制文本" })
-        checkbox.performClick(nil)
-        XCTAssertTrue(defaults.bool(forKey: TextResultController.directCopyPreferenceKey))
-        let copy = try XCTUnwrap(descendants(content).compactMap { $0 as? NSButton }.first { $0.title == "复制" })
-        XCTAssertEqual(copy.keyEquivalent, "\r")
-        var closes = 0; controller?.onClose = { closes += 1 }
-        weak var released = controller
-        controller?.close(); controller?.close(); controller = nil
-        XCTAssertEqual(closes, 1); XCTAssertNil(released); XCTAssertNil(window.contentView); XCTAssertNil(window.delegate)
+        var closes = 0
+        let probe = try autoreleasepool { () throws -> ClosedAuxiliaryWindowProbe in
+            let controller = TextResultController(text: "Line one\nLine two", defaults: defaults)
+            let probe = try ClosedAuxiliaryWindowProbe(controller)
+            let window = probe.window, content = try XCTUnwrap(window.contentView)
+            content.layoutSubtreeIfNeeded()
+            XCTAssertEqual(window.contentRect(forFrameRect: window.frame).size, NSSize(width: 470, height: 310))
+            XCTAssertFalse(controller.offersLanguageSelection)
+            let text = try XCTUnwrap(descendants(content).compactMap { $0 as? NSTextView }.first)
+            XCTAssertTrue(text.isEditable); text.string = "Edited text"
+            XCTAssertEqual(controller.resultText, "Edited text")
+            let checkbox = try XCTUnwrap(descendants(content).compactMap { $0 as? NSButton }.first { $0.title == "下次直接复制文本" })
+            checkbox.performClick(nil)
+            XCTAssertTrue(defaults.bool(forKey: TextResultController.directCopyPreferenceKey))
+            let copy = try XCTUnwrap(descendants(content).compactMap { $0 as? NSButton }.first { $0.title == "复制" })
+            XCTAssertEqual(copy.keyEquivalent, "\r")
+            controller.onClose = { closes += 1 }
+            controller.close(); controller.close()
+            XCTAssertEqual(closes, 1); XCTAssertNil(controller.onClose)
+            XCTAssertTrue(text.string.isEmpty, "Closed OCR results must clear the retained text view")
+            probe.assertDetached()
+            return probe
+        }
+        try await probe.assertReleased()
+        XCTAssertEqual(closes, 1)
     }
 
     @MainActor func testLanguageSelectorAppearsOnlyForAvailableVisionLanguagesAndSource() throws {
@@ -37,18 +45,20 @@ final class TextResultPresentationTests: XCTestCase {
 
     @MainActor func testClosingDuringLanguageRerunCannotResurrectResultWindow() async throws {
         _ = NSApplication.shared
-        let context = try XCTUnwrap(CGContext(data: nil, width: 20, height: 20, bitsPerComponent: 8, bytesPerRow: 80,
-            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
-        var controller: TextResultController? = TextResultController(text: "Keep old text", sourceImage: try XCTUnwrap(context.makeImage()))
-        let window = try XCTUnwrap(controller?.window), content = try XCTUnwrap(window.contentView)
-        let language = descendants(content).compactMap { $0 as? NSPopUpButton }.first { !$0.pullsDown && $0.numberOfItems > 1 }
-        if let language, let action = language.action {
-            language.selectItem(at: 1); XCTAssertTrue(NSApp.sendAction(action, to: language.target, from: language))
+        let probe = try autoreleasepool { () throws -> ClosedAuxiliaryWindowProbe in
+            let context = try XCTUnwrap(CGContext(data: nil, width: 20, height: 20, bitsPerComponent: 8, bytesPerRow: 80,
+                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            let controller = TextResultController(text: "Keep old text", sourceImage: try XCTUnwrap(context.makeImage()))
+            let probe = try ClosedAuxiliaryWindowProbe(controller)
+            let content = try XCTUnwrap(probe.window.contentView)
+            let language = descendants(content).compactMap { $0 as? NSPopUpButton }.first { !$0.pullsDown && $0.numberOfItems > 1 }
+            if let language, let action = language.action {
+                language.selectItem(at: 1); XCTAssertTrue(NSApp.sendAction(action, to: language.target, from: language))
+            }
+            controller.close(); probe.assertDetached()
+            return probe
         }
-        weak var released = controller
-        controller?.close(); controller = nil
-        await Task.yield()
-        XCTAssertNil(released); XCTAssertNil(window.contentView); XCTAssertNil(window.delegate)
+        try await probe.assertReleased()
     }
 
     @MainActor func testTextLayoutAndPasteboardUseEditedTextWithoutSourcePixels() {
