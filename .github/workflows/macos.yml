@@ -1,0 +1,53 @@
+name: Native macOS build and verification
+on:
+  push:
+    branches: ['feat/**']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: picshot-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Test native modules
+        run: |
+          mkdir -p dist
+          set -o pipefail
+          swift test 2>&1 | tee dist/test.log
+      - name: Package signed app, ZIP and DMG
+        run: bash scripts/package.sh 2>&1 | tee dist/package.log
+      - name: Install and launch both formats, render native UI, measure repeated cycles
+        run: bash scripts/smoke.sh 2>&1 | tee dist/smoke.log
+      - name: Upload verification evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-QA-${{ matrix.arch }}-${{ github.sha }}
+          path: |
+            dist/*.log
+            dist/evidence/
+          retention-days: 14
+      - name: Upload installer bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-macos-${{ matrix.arch }}-${{ github.sha }}
+          path: |
+            dist/PicShot-*.zip
+            dist/PicShot-*.dmg
+            dist/PicShot-*.json
+            dist/PicShot-*.sha256
+          if-no-files-found: error
+          retention-days: 14
