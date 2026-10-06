@@ -29,7 +29,7 @@ import Darwin
         NotificationCenter.default.addObserver(self,selector:#selector(windowClosed(_:)),name:NSWindow.willCloseNotification,object:nil)
         if smoke == nil {setupStatus();hotKeys=HotKeyService();hotKeys?.onAction={ [weak self] action in switch action {case 0:self?.startCapture(.region);case 1:self?.pastePin();default:self?.showMain()}};refreshHotkeys()}
         showMain()
-        if smoke != nil {DispatchQueue.main.asyncAfter(deadline:.now()+0.5){self.runSmoke()}}
+        if smoke != nil {DispatchQueue.main.asyncAfter(deadline:.now()+0.5){Task{await self.runSmoke()}}}
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender:NSApplication)->Bool {false}
     func applicationWillTerminate(_ notification:Notification){hotKeys?.invalidate()}
