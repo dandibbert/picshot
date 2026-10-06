@@ -155,14 +155,20 @@ final class PinTransformTests: XCTestCase {
     }
 
     private func pixels(_ image: CGImage) throws -> [[UInt8]] {
-        let bitmap = NSBitmapImageRep(cgImage: image)
+        // Sample in an explicit sRGB bitmap, bypassing AppKit's display-profile conversions.
+        let context = try XCTUnwrap(CGContext(data: nil, width: image.width, height: image.height,
+                                             bitsPerComponent: 8, bytesPerRow: image.width * 4,
+                                             space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue))
+        context.interpolationQuality = .none
+        context.setBlendMode(.copy)
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        let bytes = try XCTUnwrap(context.data).assumingMemoryBound(to: UInt8.self)
         var result: [[UInt8]] = []
         for y in 0..<image.height {
             for x in 0..<image.width {
-                let color = try XCTUnwrap(bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB))
-                result.append([color.redComponent, color.greenComponent, color.blueComponent, color.alphaComponent].map {
-                    UInt8(min(255, max(0, ($0 * 255).rounded())))
-                })
+                let offset = y * context.bytesPerRow + x * 4
+                result.append(Array(UnsafeBufferPointer(start: bytes.advanced(by: offset), count: 4)))
             }
         }
         return result
