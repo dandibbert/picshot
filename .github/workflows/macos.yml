@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
-    if: ${{ !contains(github.event.head_commit.message || '', '[gif-attribution]') }}
+    if: ${{ (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') }}
     strategy:
       fail-fast: false
       matrix:
@@ -115,11 +115,11 @@ jobs:
           set -o pipefail
           swift build --product PicShot
           swift test --filter 'GIF' 2>&1 | tee dist/gif-attribution-tests.log
-      - name: Package default-baseline exporter with an explicit diagnostic candidate
+      - name: Package signed exporter with explicit baseline and helper diagnostics
         run: |
           set -o pipefail
           bash scripts/package.sh 2>&1 | tee dist/package.log
-      - name: Compare baseline and scoped extraction in fresh installed processes
+      - name: Compare in-process and isolated-helper export in fresh installed processes
         run: |
           set -o pipefail
           bash scripts/gif-attribution.sh 2>&1 | tee dist/gif-attribution.log
@@ -131,4 +131,33 @@ jobs:
           path: |
             dist/*.log
             dist/evidence/gif-attribution/
+          retention-days: 14
+
+  gif-timing:
+    if: ${{ contains(github.event.head_commit.message || '', '[gif-timing]') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Inspect encoded samples and GIF extraction boundaries
+        run: |
+          mkdir -p dist
+          set -o pipefail
+          swift build --product PicShot
+          swift test --filter 'GIFRecordedInputCompatibilityTests' 2>&1 | tee dist/gif-timing.log
+      - name: Upload timing evidence without installer publication
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-GIF-Timing-${{ matrix.arch }}-${{ github.sha }}
+          path: dist/gif-timing.log
+          if-no-files-found: ignore
           retention-days: 14

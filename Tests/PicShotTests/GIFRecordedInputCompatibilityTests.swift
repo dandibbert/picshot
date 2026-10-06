@@ -35,8 +35,10 @@ final class GIFRecordedInputCompatibilityTests: XCTestCase {
             try await operation.value(timeout: 35, phase: "H.264/AAC recording through signed GIF helper")
         }
         XCTAssertEqual(result, destination)
+        let baseline = try await diagnoseTiming(sourceURL: source, gifURL: result, options: options,
+            phase: "finalized-recording", transitions: [8, 16])
         try validateGIF(result, frameCount: 24, duration: 2.4,
-                        expectedColors: Array(repeating: RecordedColor.red, count: 8) + Array(repeating: .blue, count: 8) + Array(repeating: .green, count: 8))
+                        expectedColors: Array(repeating: RecordedColor.red, count: 8) + Array(repeating: .blue, count: 8) + Array(repeating: .green, count: 8), baseline: baseline)
         XCTAssertEqual(try Data(contentsOf: source), original, "GIF conversion must preserve the published recording byte-for-byte")
         try await assertExitedAndCleaned(service, root: app.root)
         try assertPublishedJournal(source: source, root: app.root)
@@ -66,8 +68,10 @@ final class GIFRecordedInputCompatibilityTests: XCTestCase {
         }
         // The production writer uses a two-second H.264 keyframe interval.
         // Crossing the color boundary exercises later fragment media too.
+        let baseline = try await diagnoseTiming(sourceURL: fragment.prefix, gifURL: result, options: options,
+            phase: "interrupted-recording-prefix", transitions: [20])
         try validateGIF(result, frameCount: 24, duration: 2.4,
-            expectedColors: Array(repeating: RecordedColor.red, count: 20) + Array(repeating: .blue, count: 4))
+            expectedColors: Array(repeating: RecordedColor.red, count: 20) + Array(repeating: .blue, count: 4), baseline: baseline)
         XCTAssertEqual(try Data(contentsOf: fragment.original), original)
         XCTAssertEqual(try Data(contentsOf: fragment.prefix), prefixBefore)
         try await assertExitedAndCleaned(service, root: app.root)
@@ -100,7 +104,9 @@ final class GIFRecordedInputCompatibilityTests: XCTestCase {
         let directResult = try await GIFProcessTestDiagnostics.run(service: service, phase: "re-encoded H.264/AAC trim") {
             try await direct.value(timeout: 35, phase: "re-encoded H.264/AAC trim through signed GIF helper")
         }
-        try validateGIF(directResult, frameCount: 12, duration: 1.2, expectedColors: expected)
+        let directBaseline = try await diagnoseTiming(sourceURL: trimmed, gifURL: directResult, options: options,
+            phase: "retained-trim", transitions: [2, 10])
+        try validateGIF(directResult, frameCount: 12, duration: 1.2, expectedColors: expected, baseline: directBaseline)
         XCTAssertEqual(try Data(contentsOf: trimmed), trimmedBefore)
         try await assertExitedAndCleaned(service, root: app.root)
 
@@ -117,7 +123,9 @@ final class GIFRecordedInputCompatibilityTests: XCTestCase {
             try await pipeline.value(timeout: 65, phase: "production recording trim-to-GIF pipeline")
         }
         XCTAssertEqual(pipelineResult, destination.url)
-        try validateGIF(pipelineResult, frameCount: 12, duration: 1.2, expectedColors: expected)
+        let pipelineBaseline = try await diagnoseTiming(sourceURL: trimmed, gifURL: pipelineResult, options: options,
+            phase: "trim-pipeline-with-retained-trim-baseline", transitions: [2, 10])
+        try validateGIF(pipelineResult, frameCount: 12, duration: 1.2, expectedColors: expected, baseline: pipelineBaseline)
         XCTAssertEqual(try Data(contentsOf: source), original)
         XCTAssertEqual(try Data(contentsOf: trimmed), trimmedBefore)
         try await assertExitedAndCleaned(service, root: app.root)
@@ -287,8 +295,191 @@ final class GIFRecordedInputCompatibilityTests: XCTestCase {
         XCTAssertGreaterThan(encodedPackets, 0)
     }
 
-    private func validateGIF(_ url: URL, frameCount: Int, duration: Double, expectedColors: [RecordedColor]) throws {
+    private struct RationalTime: Encodable {
+        let value: Int64
+        let timescale: Int32
+        let flags: UInt32
+        let epoch: Int64
+        init(_ time: CMTime) {
+            value = time.value; timescale = time.timescale; flags = time.flags.rawValue; epoch = time.epoch
+        }
+    }
+    private struct VideoTimingRow: Encodable {
+        let index: Int
+        let samples: Int
+        let pts: RationalTime
+        let dts: RationalTime
+        let duration: RationalTime
+        let rgb: [Int]?
+    }
+    private struct GeneratorTimingRow: Encodable {
+        let index: Int
+        let mode: String
+        let planSeconds: Double
+        let planDoubleBits: String
+        let requested: RationalTime
+        let actual: RationalTime?
+        let rgb: [Int]?
+        let errorDomain: String?
+        let errorCode: Int?
+    }
+    private struct TimingReport: Encodable {
+        let phase: String
+        let assetDuration: RationalTime
+        let trackStart: RationalTime
+        let trackDuration: RationalTime
+        let tolerance: RationalTime
+        let compressed: [VideoTimingRow]
+        let decoded: [VideoTimingRow]
+        let generated: [GeneratorTimingRow]
+        let probes: [GeneratorTimingRow]
+        let gifRGB: [[Int]]
+        let gifMinusSourceRGB: [[Int]]
+    }
+
+    /// Synthetic-only evidence, capped at 128 source samples and 64 KiB JSON per
+    /// case. No paths or media bytes enter the diagnostic. Expectations below
+    /// remain authored independently; this does not change their thresholds.
+    private func diagnoseTiming(sourceURL: URL, gifURL: URL, options: GIFExportOptions,
+                                phase: String, transitions: [Int]) async throws -> [[Int]] {
+        let asset = AVURLAsset(url: sourceURL)
+        let duration = try await asset.load(.duration)
+        let videos = try await asset.loadTracks(withMediaType: .video)
+        let track = try XCTUnwrap(videos.first)
+        let range = try await track.load(.timeRange)
+        let plan = try GIFFramePlan(duration: duration.seconds, options: options)
+        guard plan.frameCount <= 24 else { throw RecordingError.failed("Timing diagnostic frame budget exceeded") }
+        let compressed = try timingRows(asset: asset, track: track, decode: false)
+        let decoded = try timingRows(asset: asset, track: track, decode: true)
+        let tolerance = CMTime(seconds: min(0.05, plan.duration / Double(plan.frameCount) / 2), preferredTimescale: 600)
+        func generator(tolerance: CMTime) -> AVAssetImageGenerator {
+            let value = AVAssetImageGenerator(asset: asset)
+            value.appliesPreferredTrackTransform = true
+            value.maximumSize = CGSize(width: options.maximumDimension, height: options.maximumDimension)
+            value.requestedTimeToleranceBefore = tolerance
+            value.requestedTimeToleranceAfter = tolerance
+            return value
+        }
+        let production = generator(tolerance: tolerance)
+        let nearest = generator(tolerance: tolerance)
+        let exact = generator(tolerance: .zero)
+        let watchdog = Task {
+            do { try await Task.sleep(nanoseconds: 20_000_000_000) } catch { return }
+            production.cancelAllCGImageGeneration(); nearest.cancelAllCGImageGeneration(); exact.cancelAllCGImageGeneration()
+        }
+        defer {
+            watchdog.cancel()
+            production.cancelAllCGImageGeneration(); nearest.cancelAllCGImageGeneration(); exact.cancelAllCGImageGeneration()
+        }
+        let deadline = ProcessInfo.processInfo.systemUptime + 20
+        func observe(_ generator: AVAssetImageGenerator, index: Int, request: CMTime, mode: String) async throws -> GeneratorTimingRow {
+            try Task.checkCancellation()
+            guard ProcessInfo.processInfo.systemUptime < deadline else { throw RecordingError.failed("Timing diagnostic deadline exceeded") }
+            let seconds = plan.time(for: index)
+            do {
+                let frame = try await generator.image(at: request)
+                let color = try averageColor(frame.image)
+                return GeneratorTimingRow(index: index, mode: mode, planSeconds: seconds,
+                    planDoubleBits: String(seconds.bitPattern, radix: 16), requested: RationalTime(request),
+                    actual: RationalTime(frame.actualTime), rgb: [color.0, color.1, color.2], errorDomain: nil, errorCode: nil)
+            } catch {
+                let failure = error as NSError
+                return GeneratorTimingRow(index: index, mode: mode, planSeconds: seconds,
+                    planDoubleBits: String(seconds.bitPattern, radix: 16), requested: RationalTime(request),
+                    actual: nil, rgb: nil, errorDomain: String(failure.domain.prefix(128)), errorCode: failure.code)
+            }
+        }
+        var generated: [GeneratorTimingRow] = []
+        for index in 0..<plan.frameCount {
+            let request = CMTime(seconds: plan.time(for: index), preferredTimescale: 600)
+            generated.append(try await observe(production, index: index, request: request, mode: "production"))
+        }
+        let probeIndices = Set(transitions.flatMap { [$0 - 1, $0, $0 + 1] }).filter { (0..<plan.frameCount).contains($0) }.sorted()
+        var probes: [GeneratorTimingRow] = []
+        for index in probeIndices {
+            let request = CMTime(seconds: plan.time(for: index), preferredTimescale: 600)
+            let nearestTick = CMTime(value: Int64((plan.time(for: index) * 600).rounded()), timescale: 600)
+            // Every authored compatibility source has a 10 fps timeline. This
+            // rational grid is diagnostic only, never a substituted request.
+            let authoredGrid = CMTime(value: Int64(index), timescale: 10)
+            probes.append(try await observe(nearest, index: index, request: nearestTick, mode: "nearest-tick-production-tolerance"))
+            probes.append(try await observe(exact, index: index, request: request, mode: "production-request-zero-tolerance"))
+            probes.append(try await observe(exact, index: index, request: authoredGrid, mode: "authored-grid-zero-tolerance"))
+        }
+        let gif = try XCTUnwrap(CGImageSourceCreateWithURL(gifURL as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary))
+        guard CGImageSourceGetCount(gif) <= 128 else { throw RecordingError.failed("Timing diagnostic GIF budget exceeded") }
+        var gifRGB: [[Int]] = []
+        for index in 0..<CGImageSourceGetCount(gif) {
+            let rgb = try autoreleasepool { () throws -> [Int] in
+                let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(gif, index, [kCGImageSourceShouldCache: false] as CFDictionary))
+                let color = try averageColor(image)
+                return [color.0, color.1, color.2]
+            }
+            gifRGB.append(rgb)
+        }
+        let deltas = zip(gifRGB, generated).map { output, source -> [Int] in
+            guard let rgb = source.rgb else { return [] }
+            return zip(output, rgb).map { pair in pair.0 - pair.1 }
+        }
+        let report = TimingReport(phase: phase, assetDuration: RationalTime(duration), trackStart: RationalTime(range.start),
+            trackDuration: RationalTime(range.duration), tolerance: RationalTime(tolerance), compressed: compressed, decoded: decoded,
+            generated: generated, probes: probes, gifRGB: gifRGB, gifMinusSourceRGB: deltas)
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(report)
+        guard data.count <= 65_536 else { throw RecordingError.failed("Timing diagnostic JSON exceeded 64 KiB") }
+        print("GIF recorded input timing diagnostic: " + String(decoding: data, as: UTF8.self))
+        let baseline = generated.compactMap(\.rgb)
+        guard baseline.count == plan.frameCount else { throw RecordingError.failed("Source generator diagnostic failed; see bounded timing JSON") }
+        return baseline
+    }
+
+    private func timingRows(asset: AVAsset, track: AVAssetTrack, decode: Bool) throws -> [VideoTimingRow] {
+        let reader = try AVAssetReader(asset: asset)
+        defer { if reader.status == .reading { reader.cancelReading() } }
+        let settings: [String: Any]? = decode ? [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA] : nil
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: settings)
+        output.alwaysCopiesSampleData = false
+        guard reader.canAdd(output) else { throw RecordingError.failed("Timing diagnostic track unsupported") }
+        reader.add(output)
+        guard reader.startReading() else { throw RecordingError.failed("Timing diagnostic reader failed to start") }
+        var rows: [VideoTimingRow] = []
+        while let sample = output.copyNextSampleBuffer() {
+            try Task.checkCancellation()
+            guard rows.count < 128 else { throw RecordingError.failed("Timing diagnostic source sample budget exceeded") }
+            let samples = CMSampleBufferGetNumSamples(sample)
+            var rgb: [Int]?
+            if decode, samples > 0 {
+                let pixel = try XCTUnwrap(CMSampleBufferGetImageBuffer(sample))
+                let width = CVPixelBufferGetWidth(pixel), height = CVPixelBufferGetHeight(pixel)
+                guard width == 40, height == 24 else { throw RecordingError.failed("Timing diagnostic raster outside fixture dimensions") }
+                CVPixelBufferLockBaseAddress(pixel, .readOnly)
+                defer { CVPixelBufferUnlockBaseAddress(pixel, .readOnly) }
+                let base = try XCTUnwrap(CVPixelBufferGetBaseAddress(pixel))
+                let stride = CVPixelBufferGetBytesPerRow(pixel)
+                var red = 0, green = 0, blue = 0
+                for y in 0..<height { for x in 0..<width {
+                    let value = base.advanced(by: y * stride + x * 4).assumingMemoryBound(to: UInt8.self)
+                    blue += Int(value[0]); green += Int(value[1]); red += Int(value[2])
+                } }
+                let count = width * height
+                rgb = [red / count, green / count, blue / count]
+            }
+            rows.append(VideoTimingRow(index: rows.count, samples: samples,
+                pts: RationalTime(CMSampleBufferGetPresentationTimeStamp(sample)),
+                dts: RationalTime(CMSampleBufferGetDecodeTimeStamp(sample)),
+                duration: RationalTime(CMSampleBufferGetDuration(sample)), rgb: rgb))
+        }
+        guard reader.status == .completed else { throw RecordingError.failed("Timing diagnostic reader did not finish") }
+        return rows
+    }
+
+    private func dominantChannel(_ rgb: [Int]) -> Int? {
+        rgb.indices.max { rgb[$0] < rgb[$1] }
+    }
+
+    private func validateGIF(_ url: URL, frameCount: Int, duration: Double, expectedColors: [RecordedColor], baseline: [[Int]]) throws {
         XCTAssertEqual(expectedColors.count, frameCount)
+        XCTAssertEqual(baseline.count, frameCount)
         let source = try XCTUnwrap(CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary))
         XCTAssertEqual(CGImageSourceGetCount(source), frameCount)
         var totalDuration = 0.0
@@ -304,6 +495,10 @@ final class GIFRecordedInputCompatibilityTests: XCTestCase {
                 XCTAssertEqual(delay, 0.1, accuracy: 0.00001)
                 totalDuration += delay
                 let rgb = try averageColor(image)
+                if index < baseline.count {
+                    XCTAssertEqual(dominantChannel([rgb.0, rgb.1, rgb.2]), dominantChannel(baseline[index]),
+                        "GIF/source-decoder color diverged at frame \(index): GIF=\(rgb), source=\(baseline[index])")
+                }
                 guard index < expectedColors.count else { return XCTFail("Unexpected extra GIF frame") }
                 switch expectedColors[index] {
                 case .red: XCTAssertGreaterThan(rgb.0, max(rgb.1, rgb.2) + 100, "Wrong recorded frame at \(index)")
