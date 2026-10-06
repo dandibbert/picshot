@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 swift build -c release
 bin=$(swift build -c release --show-bin-path)
-version=0.3.0
+version=0.4.0
 arch=$(uname -m)
 sha=$(git rev-parse HEAD)
 app=dist/PicShot.app
@@ -47,7 +47,7 @@ cat > "$staging/安装说明.txt" <<'TEXT'
 此包使用 ad-hoc 签名，未经 Developer ID 签名和 Apple 公证。
 首次打开若被阻止，请确认来源后在系统设置 → 隐私与安全性中允许打开。
 点击截图或录屏后，按系统提示授予屏幕录制权限。应用不会自动上传截图。
-快捷键：⌃⌘A 区域截图；⌃⌘P 剪贴板贴图；⌃⌘H 历史记录。可在设置修改。
+新安装快捷键：⌃1 区域截图；⌃2 剪贴板贴图；⌃3 恢复最后关闭的贴图；⌃⌘H 历史记录。旧版已保存的自定义快捷键保留，可在设置修改。
 录屏：最长 10 分钟，最多 1 GB；可选择最多 30 秒的录制片段导出 GIF。
 MP4 修剪单独导出新副本，不覆盖原录制。
 TEXT

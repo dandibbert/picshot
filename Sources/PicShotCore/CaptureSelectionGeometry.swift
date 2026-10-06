@@ -203,7 +203,9 @@ public struct CaptureSelectionGeometry: Sendable {
         if case .polygon(let points) = shape { newPoints = points.count } else { newPoints = 4 }
         guard totalPoints + newPoints <= Self.maximumPoints else { throw CaptureSelectionError.complexityLimit }
         let clipped = shape.bounds.intersection(CGRect(origin: .zero, size: pointSize))
-        guard !clipped.isNull, clipped.width >= 2, clipped.height >= 2 else { throw CaptureSelectionError.invalidShape }
+        // CGRect intersection may turn an exact 2-point side at a fractional
+        // origin into 1.9999999999999998. Allow only numerical epsilon here.
+        guard !clipped.isNull, clipped.width >= 2 - 1e-9, clipped.height >= 2 - 1e-9 else { throw CaptureSelectionError.invalidShape }
         operations.append(CaptureSelectionOperation(shape: shape, subtracts: subtracts))
     }
 

@@ -1,0 +1,18 @@
+#!/bin/bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+ditto -x -k "dist/PicShot-0.4.0-macos-$(uname -m).zip" "$work"
+app="$work/PicShot.app"
+codesign --verify --deep --strict "$app"
+mkdir -p dist/evidence/ui
+export PICSHOT_UI_PREVIEW_ONLY=1
+swift scripts/launch-smoke-app.swift "$app" "$PWD/dist/evidence/ui/preview.json"
+python3 - "$PWD/dist/evidence/ui/preview.json" "$(git rev-parse HEAD)" <<'PY'
+import json,sys
+r=json.load(open(sys.argv[1]));assert r['status']=='passed',r
+assert r['uiPreviewOnly'] and not r['captureStarted'],r
+assert r['sourceCommit']==sys.argv[2],r
+print(json.dumps(r,indent=2))
+PY

@@ -141,11 +141,11 @@ import PicShotCore
             table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         } else { table.deselectAll(nil); selectedPinID = nil }
         updateSelection()
-        let bytes = store.entries.flatMap(\.assets).reduce(Int64(0)) { $0 + $1.byteCount }
+        let bytes = store.entries.reduce(Int64(0)) { $0 + $1.storedByteCount }
         let size = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
         let visibility = store.index.allHidden ? " · 全部已隐藏" : ""
         let archivedCount = store.entries.filter { !$0.isVisible }.count
-        status.stringValue = "已保存 \(store.entries.count)/\(store.policy.maxPins) 张（含归档 \(archivedCount) 张）· \(size)\(visibility)\n关闭贴图会归档；选择归档项可重新打开。最多同时显示 20 张，总计最多 1 亿像素 / 512 MiB。\n受保护组与正在显示的贴图不会被自动淘汰；其他保存项在超限时按最近使用时间保留。"
+        status.stringValue = "已保存 \(store.entries.count)/\(store.policy.maxPins) 项（含归档 \(archivedCount) 项）· \(size)\(visibility)\n关闭贴图会归档；选择归档项可重新打开。最多同时显示 20 项（动画最多 4 个），总计最多 1 亿工作像素 / 512 MiB。\n受保护组与正在显示的贴图不会被自动淘汰；其他保存项在超限时按最近使用时间保留。"
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int { displayedEntries.count }
@@ -158,7 +158,7 @@ import PicShotCore
         cell.thumbnail.image = store.thumbnail(id: entry.id)
         cell.heading.stringValue = entry.title
         let visibility = entry.isVisible ? "会话中" : "已归档"
-        cell.subtitle.stringValue = "\(visibility) · \(entry.current.width) × \(entry.current.height) · \(entry.updatedAt.formatted(date: .abbreviated, time: .shortened))"
+        cell.subtitle.stringValue = "\(visibility) · \(entry.contentLabel) · \(entry.updatedAt.formatted(date: .abbreviated, time: .shortened))"
         return cell
     }
     func tableViewSelectionDidChange(_ notification: Notification) { updateSelection() }
@@ -169,7 +169,12 @@ import PicShotCore
         preview.image = entry.flatMap { store.thumbnail(id: $0.id) }
         if let entry {
             let modified = entry.original.filename == entry.current.filename ? "原始图片" : "已编辑；原图仍可恢复"
-            details.stringValue = "\(entry.title)\n\(entry.current.width) × \(entry.current.height) 像素 · \(modified)" + (entry.isVisible ? "" : "\n已归档：重新打开后恢复原图与编辑结果")
+            if let rich = entry.richContent {
+                let extra = rich.kind == .animation ? "\(rich.width) × \(rich.height) · \(rich.frameCount) 帧" : rich.kind == .files ? "仅保存引用，不读取文件内容" : "本机保存的内容"
+                details.stringValue = "\(entry.title)\n\(entry.contentLabel) · \(extra)" + (entry.isVisible ? "" : "\n已归档：选择重新打开可恢复")
+            } else {
+                details.stringValue = "\(entry.title)\n\(entry.current.width) × \(entry.current.height) 像素 · \(modified)" + (entry.isVisible ? "" : "\n已归档：重新打开后恢复原图与编辑结果")
+            }
             if let groupIndex = store.groups.firstIndex(where: { $0.id == entry.groupID }) { movePicker.selectItem(at: groupIndex) }
         } else { details.stringValue = displayedEntries.isEmpty ? "此组还没有贴图\n新贴图将保存到当前组" : "选择贴图以预览" }
         openButton.title = entry?.isVisible == false ? "重新打开" : "显示贴图"
@@ -237,7 +242,7 @@ import PicShotCore
     @objc private func removeSelected() {
         guard let id = selectedPinID, let entry = store.entry(id: id) else { return }
         let alert = NSAlert(); alert.messageText = "移除“\(entry.title)”贴图？"
-        alert.informativeText = "这会删除保存的原图和当前图片；关闭贴图只会归档。截图历史和已导出的文件不受影响。"
+        alert.informativeText = "这会删除保存的贴图内容与预览；关闭贴图只会归档。被引用的文件、截图历史和已导出的文件不受影响。"
         alert.addButton(withTitle: "移除贴图"); alert.addButton(withTitle: "取消")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         change { try store.remove(id: id) }

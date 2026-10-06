@@ -22,6 +22,23 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Package signed native app for early pixel review
+        run: |
+          mkdir -p dist
+          set -o pipefail
+          bash scripts/package.sh 2>&1 | tee dist/package.log
+      - name: Render native UI from installed ZIP before slow verification
+        run: |
+          set -o pipefail
+          bash scripts/ui-preview.sh 2>&1 | tee dist/ui-preview.log
+      - name: Upload early native UI preview
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-UI-${{ matrix.arch }}-${{ github.sha }}
+          path: dist/evidence/ui/
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Test native modules
         run: |
           mkdir -p dist
@@ -38,10 +55,6 @@ jobs:
           export PICSHOT_TEST_ML_HELPER="$(swift build --show-bin-path)/PicShotMLHelper"
           swift build --product PicShotMLHelper
           swift test --filter 'FormulaEngineTests|RecordedModelOutputTests|SmartEraseEngineTests' 2>&1 | tee dist/model-inference.log
-      - name: Package signed app, ZIP and DMG
-        run: |
-          set -o pipefail
-          bash scripts/package.sh 2>&1 | tee dist/package.log
       - name: Install and launch both formats, render native UI, measure repeated cycles
         run: |
           set -o pipefail

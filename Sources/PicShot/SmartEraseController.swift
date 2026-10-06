@@ -222,23 +222,31 @@ private struct SmartEraseEditorView: View {
 
 actor SmartEraseProcessService {
     static let shared = SmartEraseProcessService()
-    private var working = false
+    private let resources: LocalInferenceResources
+    init(resources: LocalInferenceResources = .shared) { self.resources = resources }
+
     func erase(image: CGImage, mask: Data, modelDirectory: URL) async throws -> CGImage {
-        guard !working else { throw SmartEraseError.busy }
-        working = true; defer { working = false }
-        let control = SmartEraseProcessControl()
-        return try await withTaskCancellationHandler(operation: {
-            try await Task.detached(priority: .userInitiated) {
-                try Self.run(image: image, mask: mask, directory: modelDirectory, control: control)
-            }.value
-        }, onCancel: { control.cancel() })
+        try await resources.withJob(.smartErase) { recorder in
+            let control = SmartEraseProcessControl()
+            return try await withTaskCancellationHandler(operation: {
+                try await Task.detached(priority: .userInitiated) {
+                    try Self.run(image: image, mask: mask, directory: modelDirectory, control: control, recorder: recorder)
+                }.value
+            }, onCancel: { control.cancel() })
+        }
     }
-    private nonisolated static func run(image: CGImage, mask: Data, directory: URL, control: SmartEraseProcessControl) throws -> CGImage {
+    private nonisolated static func run(image: CGImage, mask: Data, directory: URL,
+                                        control: SmartEraseProcessControl, recorder: LocalInferenceJobRecorder) throws -> CGImage {
+        guard !control.isCancelled else { throw CancellationError() }
         _ = try SmartEraseMask.crop(width: image.width, height: image.height, mask: mask)
         let executable = try verifiedHelper()
         let fm = FileManager.default
+        recorder.willCreateTemporaryDirectory()
         let job = try SmartEraseTemporaryJob.create(in: fm.temporaryDirectory)
-        defer { SmartEraseTemporaryJob.removeOwned(job) }
+        defer {
+            SmartEraseTemporaryJob.removeOwned(job)
+            recorder.recordCleanup(confirmed: LocalInferenceResources.removalIsConfirmed(at: job))
+        }
         let input = job.appendingPathComponent("input.png"), maskURL = job.appendingPathComponent("mask.bin")
         let output = job.appendingPathComponent("output.png"), errors = job.appendingPathComponent("error.txt")
         for (url, data) in [(input, try SmartEraseRaster.png(image)), (maskURL, mask), (errors, Data())] {
@@ -251,21 +259,33 @@ actor SmartEraseProcessService {
         process.currentDirectoryURL = job
         process.environment = ["HOME": job.path, "TMPDIR": job.path, "LANG": "en_US.UTF-8"]
         process.standardInput = FileHandle.nullDevice; process.standardOutput = FileHandle.nullDevice; process.standardError = errorHandle
-        try control.start(process)
+        do { try control.start(process) }
+        catch {
+            recorder.recordOutcome(error is CancellationError ? .cancelled : .launchFailed)
+            throw error
+        }
+        recorder.recordLaunch()
         let started = ProcessInfo.processInfo.systemUptime
         var failure: Error?
         while process.isRunning {
-            if control.isCancelled { failure = CancellationError() }
-            if ProcessInfo.processInfo.systemUptime - started > SmartEraseLimits.seconds { failure = SmartEraseError.timeout }
             var info = proc_taskinfo()
             let read = proc_pidinfo(process.processIdentifier, PROC_PIDTASKINFO, 0, &info, Int32(MemoryLayout<proc_taskinfo>.size))
-            if read == Int32(MemoryLayout<proc_taskinfo>.size), info.pti_resident_size > SmartEraseLimits.residentBytes { failure = SmartEraseError.memory }
+            let resident = read == Int32(MemoryLayout<proc_taskinfo>.size) ? info.pti_resident_size : nil
+            recorder.recordResidentBytes(resident)
+            if control.isCancelled { failure = CancellationError(); recorder.recordOutcome(.cancelled) }
+            if failure == nil, ProcessInfo.processInfo.systemUptime - started > SmartEraseLimits.seconds {
+                failure = SmartEraseError.timeout; recorder.recordOutcome(.timedOut)
+            }
+            if failure == nil, let resident, resident > SmartEraseLimits.residentBytes {
+                failure = SmartEraseError.memory; recorder.recordOutcome(.memoryLimit)
+            }
             if failure != nil { control.stop() }
-            Thread.sleep(forTimeInterval: 0.1)
+            Thread.sleep(forTimeInterval: LocalInferenceJobRecorder.sampleIntervalSeconds)
         }
         process.waitUntilExit()
-        if let failure { throw failure }
+        recorder.recordExit(status: process.terminationStatus, reason: process.terminationReason == .exit ? .exit : .uncaughtSignal)
         if control.isCancelled { throw CancellationError() }
+        if let failure { throw failure }
         guard process.terminationStatus == 0 else {
             try errorHandle.seek(toOffset: 0)
             let data = try errorHandle.read(upToCount: 4_096) ?? Data()
@@ -292,7 +312,7 @@ actor SmartEraseProcessService {
     }
 }
 
-private final class SmartEraseProcessControl: @unchecked Sendable {
+final class SmartEraseProcessControl: @unchecked Sendable {
     private let lock = NSLock()
     private var cancelled = false
     private var process: Process?

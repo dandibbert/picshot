@@ -60,6 +60,7 @@ import PicShotCore
                 guard let verified = try inspectedAsset(asset) else { complete = false; break }
                 assets[asset.filename] = verified
             }
+            if complete, let rich = entry.richContent { complete = try inspectedRichAsset(rich) }
             if complete, let original = assets[entry.original.filename], let current = assets[entry.current.filename] {
                 var verified = entry; verified.original = original; verified.current = current
                 usable.append(verified)
@@ -69,6 +70,64 @@ import PicShotCore
         loaded.entries = try policy.retaining(loaded)
         try commit(loaded)
         cleanupStaleFiles()
+    }
+
+    @discardableResult func add(rich prepared: PreparedRichPin, presentation: PinPresentation = PinPresentation(),
+                                protecting protectedIDs: Set<UUID> = [], revealingGroup: Bool = false) throws -> PinSessionEntry {
+        guard PinSessionIndex.validName(prepared.title, limit: 120) else { throw PinSessionError.invalidName }
+        let rich = prepared.asset
+        guard rich.isValid else { throw RichPinError.invalidContent }
+        let poster = try writeAsset(prepared.poster)
+        var committed = false
+        defer { if !committed { removeAssetIfSafe(poster.filename); removeAssetIfSafe(rich.filename) } }
+        let temporary = directory.appendingPathComponent(".pin-write-" + rich.filename)
+        defer { try? fileManager.removeItem(at: temporary) }
+        try prepared.data.write(to: temporary, options: .atomic)
+        _ = try checkedRegularFile(temporary)
+        try fileManager.moveItem(at: temporary, to: assetURL(rich.filename))
+        guard try inspectedRichAsset(rich) else { throw RichPinError.invalidContent }
+        let entry = PinSessionEntry(groupID: index.activeGroupID, title: prepared.title, original: poster,
+                                    presentation: presentation.normalized(), richContent: rich)
+        var next = index; next.version = PinSessionIndex.schemaVersion; next.entries.insert(entry, at: 0)
+        if revealingGroup {
+            next.allHidden = false
+            if let position = next.groups.firstIndex(where: { $0.id == next.activeGroupID }) { next.groups[position].isHidden = false }
+        }
+        next.entries = try policy.retaining(next, requiring: [entry.id], protecting: protectedIDs)
+        try commit(next); committed = true
+        return entry
+    }
+
+    /// A bounded payload read never follows the referenced file paths inside a document.
+    func richData(id: UUID) throws -> Data {
+        guard let rich = entry(id: id)?.richContent else { throw PinSessionError.missingPin }
+        let data = try readRichAsset(rich)
+        guard try validRichData(data, asset: rich) else { throw RichPinError.invalidContent }
+        return data
+    }
+    private func readRichAsset(_ asset: PinRichAsset) throws -> Data {
+        guard asset.isValid else { throw PinSessionError.invalidManifest }
+        let url = try assetURL(asset.filename)
+        let values = try checkedRegularFile(url)
+        guard values.fileSize == Int(asset.byteCount) else { throw RichPinError.invalidContent }
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let data = try handle.read(upToCount: Int(asset.byteCount) + 1) ?? Data()
+        guard data.count == Int(asset.byteCount) else { throw RichPinError.invalidContent }
+        return data
+    }
+    private func validRichData(_ data: Data, asset: PinRichAsset) throws -> Bool {
+        if asset.kind == .animation {
+            let info = try RichPinAnimationInfo.inspect(data)
+            return info.width == asset.width && info.height == asset.height && info.frameCount == asset.frameCount && asset.filename.hasSuffix("." + info.fileExtension)
+        }
+        let document = try JSONDecoder().decode(PinRichDocument.self, from: data)
+        return document.kind == asset.kind && document.isValid
+    }
+    private func inspectedRichAsset(_ asset: PinRichAsset) throws -> Bool {
+        do { return try validRichData(readRichAsset(asset), asset: asset) }
+        catch let error as PinSessionError where error == .unsafePath { throw error }
+        catch { return false }
     }
 
     func entry(id: UUID) -> PinSessionEntry? { index.entry(id: id) }
@@ -100,6 +159,7 @@ import PicShotCore
     /// Save only after a pixel edit, not on move/resize/opacity events. Preserves the original PNG.
     func replaceImage(_ image: CGImage, id: UUID, protecting protectedIDs: Set<UUID> = []) throws {
         guard let position = index.entries.firstIndex(where: { $0.id == id }) else { throw PinSessionError.missingPin }
+        guard index.entries[position].richContent == nil else { throw RichPinError.invalidContent }
         let asset = try writeAsset(image)
         var committed = false
         defer { if !committed { removeAssetIfSafe(asset.filename) } }
@@ -111,6 +171,7 @@ import PicShotCore
 
     func resetImage(id: UUID) throws {
         guard let position = index.entries.firstIndex(where: { $0.id == id }) else { throw PinSessionError.missingPin }
+        guard index.entries[position].richContent == nil else { throw RichPinError.invalidContent }
         var next = index; next.entries[position].current = next.entries[position].original
         next.entries[position].updatedAt = Date(); try commit(next)
         removeThumbnail(id: id)
@@ -135,6 +196,7 @@ import PicShotCore
     func archive(id: UUID, presentation: PinPresentation? = nil) throws {
         guard let position = index.entries.firstIndex(where: { $0.id == id }) else { throw PinSessionError.missingPin }
         var next = index; next.entries[position].isVisible = false
+        if index.entries[position].isVisible { next.entries[position].archiveSequence = index.nextArchiveSequence }
         if let presentation { next.entries[position].presentation = presentation.normalized() }
         guard next != index else { return }
         next.entries[position].updatedAt = Date()
@@ -148,7 +210,7 @@ import PicShotCore
         var next = index
         let groupID = next.entries[position].groupID
         guard let groupPosition = next.groups.firstIndex(where: { $0.id == groupID }) else { throw PinSessionError.missingGroup }
-        next.entries[position].isVisible = true
+        next.entries[position].isVisible = true; next.entries[position].archiveSequence = nil
         next.activeGroupID = groupID; next.allHidden = false; next.groups[groupPosition].isHidden = false
         guard next != index else { return }
         next.entries[position].updatedAt = Date()
@@ -264,7 +326,7 @@ import PicShotCore
     }
 
     private func assetURL(_ filename: String) throws -> URL {
-        guard PinRasterAsset.isSafeFilename(filename) else { throw PinSessionError.unsafePath }
+        guard PinRasterAsset.isSafeFilename(filename) || PinRichAsset.isSafeFilename(filename) else { throw PinSessionError.unsafePath }
         let url = directory.appendingPathComponent(filename)
         guard url.standardizedFileURL.deletingLastPathComponent().path == directory.path else { throw PinSessionError.unsafePath }
         return url
@@ -303,8 +365,8 @@ import PicShotCore
         try data.write(to: manifest, options: .atomic)
         let previous = index
         index = next
-        let keep = Set(next.entries.flatMap { $0.assets.map(\.filename) })
-        for asset in previous.entries.flatMap(\.assets) where !keep.contains(asset.filename) { removeAssetIfSafe(asset.filename) }
+        let keep = Set(next.entries.flatMap(\.assetFilenames))
+        for filename in previous.entries.flatMap(\.assetFilenames) where !keep.contains(filename) { removeAssetIfSafe(filename) }
         let keptIDs = Set(next.entries.map(\.id))
         for entry in previous.entries where !keptIDs.contains(entry.id) { removeThumbnail(id: entry.id) }
     }
@@ -313,12 +375,13 @@ import PicShotCore
         try? fileManager.removeItem(at: url)
     }
     private func cleanupStaleFiles() {
-        let referenced = Set(index.entries.flatMap { $0.assets.map(\.filename) })
+        let referenced = Set(index.entries.flatMap(\.assetFilenames))
         guard let files = try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey]) else { return }
         for file in files {
             let name = file.lastPathComponent
-            let temporary = name.hasPrefix(".pin-write-") && PinRasterAsset.isSafeFilename(String(name.dropFirst(".pin-write-".count)))
-            let orphan = PinRasterAsset.isSafeFilename(name) && !referenced.contains(name)
+            let suffix = String(name.dropFirst(".pin-write-".count))
+            let temporary = name.hasPrefix(".pin-write-") && (PinRasterAsset.isSafeFilename(suffix) || PinRichAsset.isSafeFilename(suffix))
+            let orphan = (PinRasterAsset.isSafeFilename(name) || PinRichAsset.isSafeFilename(name)) && !referenced.contains(name)
             guard temporary || orphan, (try? checkedRegularFile(file)) != nil else { continue }
             try? fileManager.removeItem(at: file)
         }

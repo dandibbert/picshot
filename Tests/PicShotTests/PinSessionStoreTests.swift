@@ -278,14 +278,33 @@ final class PinSessionStoreTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = try PinSessionStore(directory: directory)
         let entry = try store.add(image: image())
-        var controller: PinGroupsController? = PinGroupsController(store: store)
-        weak var weakController = controller
-        XCTAssertNotNil(controller?.window?.contentView)
-        controller?.close(); controller?.reload()
+        weak var weakController: PinGroupsController?
+        // Preserve a real reusable window while scoping all temporary controller borrows.
+        let retainedWindow = try autoreleasepool { () throws -> NSWindow in
+            let controller = PinGroupsController(store: store)
+            weakController = controller
+            let window = try XCTUnwrap(controller.window)
+            controller.showWindow(nil)
+            XCTAssertTrue(window.isVisible); XCTAssertNotNil(window.contentView)
+            controller.close(); controller.reload()
+            XCTAssertEqual(store.entries.map(\.id), [entry.id])
+            XCTAssertNotNil(window.contentView, "The manager must remain reusable after close")
+            controller.showWindow(nil)
+            XCTAssertTrue(window.isVisible)
+            controller.close()
+            return window
+        }
+        defer { retainedWindow.close() }
+        for _ in 0..<40 {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                DispatchQueue.main.async { continuation.resume() }
+            }
+            try await Task.sleep(nanoseconds: 25_000_000)
+            if autoreleasepool(invoking: { weakController == nil }) { break }
+        }
+        XCTAssertNil(weakController, "The Combine subscription or cached window still retains the manager after pool/run-loop drain")
+        XCTAssertFalse(retainedWindow.isVisible)
         XCTAssertEqual(store.entries.map(\.id), [entry.id])
-        XCTAssertNotNil(controller?.window?.contentView)
-        controller = nil
-        XCTAssertNil(weakController, "The Combine subscription must not retain the manager")
     }
 
     private func temporaryDirectory() throws -> URL {

@@ -249,14 +249,14 @@ final class ImageEditorTests: XCTestCase {
             try clickTool(.select, in: editor)
             canvas.mouseDown(with: try mouseEvent(canvas, kind: .leftMouseDown, point: CGPoint(x: 30, y: 30)))
             canvas.mouseUp(with: try mouseEvent(canvas, kind: .leftMouseUp, point: CGPoint(x: 30, y: 30)))
-            let color = try XCTUnwrap(allSubviews(editor.window?.contentView).compactMap { $0 as? NSColorWell }.first)
+            let color = try XCTUnwrap(allSubviews(editor.window?.contentView).compactMap { $0 as? NSColorWell }.first { $0.identifier?.rawValue == "annotation.color" })
             color.color = NSColor(srgbRed: 0, green: 0, blue: 1, alpha: 1)
             XCTAssertTrue(color.sendAction(color.action, to: color.target))
             XCTAssertEqual(canvas.annotations.first?.color, color.color.cgColor)
-            let width = try XCTUnwrap(allSubviews(editor.window?.contentView).compactMap { $0 as? NSSlider }.first)
-            width.doubleValue = 9
+            let width = try XCTUnwrap(allSubviews(editor.window?.contentView).compactMap { $0 as? NSPopUpButton }.first { $0.identifier?.rawValue == "annotation.lineWidth" })
+            width.selectItem(withTitle: "6")
             XCTAssertTrue(width.sendAction(width.action, to: width.target))
-            XCTAssertEqual(canvas.annotations.first?.lineWidth, 9)
+            XCTAssertEqual(canvas.annotations.first?.lineWidth, 6)
 
             let text = ImageAnnotation(tool: .text, points: [CGPoint(x: 160, y: 120)], text: "Original")
             canvas.add(text)

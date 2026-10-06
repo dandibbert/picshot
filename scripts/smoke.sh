@@ -6,7 +6,7 @@ export PICSHOT_SMOKE_FORMULA_MODEL_DIR="$PWD/.build/model-fixtures/formula"
 export PICSHOT_SMOKE_FORMULA_INPUT="$PWD/Tests/PicShotMLHelperTests/Fixtures/energy.png"
 export PICSHOT_SMOKE_TABLE_MODEL_DIR="$PWD/.build/model-fixtures/table"
 export PICSHOT_SMOKE_TABLE_INPUT="$PWD/Tests/PicShotTableEngineTests/Fixtures/merged-table.png"
-base="PicShot-0.3.0-macos-$(uname -m)"
+base="PicShot-0.4.0-macos-$(uname -m)"
 work=$(mktemp -d)
 mounted=false
 trap 'if [[ "$mounted" == true ]];then hdiutil detach "$work/mount" || true;fi;rm -rf "$work"' EXIT
@@ -20,6 +20,7 @@ hdiutil detach "$work/mount"
 mounted=false
 for format in zip dmg;do
   app="$work/$format/PicShot.app"
+  if [[ "$format" == zip ]];then export PICSHOT_SMOKE_GIF_RESOURCES=1;else unset PICSHOT_SMOKE_GIF_RESOURCES;fi
   codesign --verify --deep --strict "$app"
   test "$(lipo -archs "$app/Contents/MacOS/PicShot")" = "$(uname -m)"
   mkdir -p "dist/evidence/$format"

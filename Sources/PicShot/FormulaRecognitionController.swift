@@ -190,46 +190,62 @@ enum MLHelperError: LocalizedError {
     }
 }
 
-/// One process/job globally, shared by formula and (when enabled) table engines.
+/// Shares the one-heavy-job gate with smart erase; rendering remains independent.
 actor MLHelperService {
     static let shared = MLHelperService()
-    private var working = false
+    private let resources: LocalInferenceResources
+    init(resources: LocalInferenceResources = .shared) { self.resources = resources }
 
     func formula(image: CGImage, modelDirectory: URL) async throws -> FormulaRecognitionResult {
-        let data = try await run(mode: "formula", image: image, modelDirectory: modelDirectory)
-        let result = try JSONDecoder().decode(FormulaRecognitionResult.self, from: data)
-        guard !result.latex.isEmpty, result.latex.utf8.count <= MLJobLimits.formulaTextBytes,
-              result.tokenCount >= 0, result.tokenCount <= MLJobLimits.formulaTokens,
-              result.modelID == ModelPackManifest.formula.id else { throw FormulaError.invalidTensor }
-        return result
+        try await run(mode: "formula", image: image, modelDirectory: modelDirectory) { data in
+            let result = try JSONDecoder().decode(FormulaRecognitionResult.self, from: data)
+            guard !result.latex.isEmpty, result.latex.utf8.count <= MLJobLimits.formulaTextBytes,
+                  result.tokenCount >= 0, result.tokenCount <= MLJobLimits.formulaTokens,
+                  result.modelID == ModelPackManifest.formula.id else { throw FormulaError.invalidTensor }
+            return result
+        }
     }
 
     func table(image: CGImage, modelDirectory: URL) async throws -> TableRecognitionResult {
-        let data = try await run(mode: "table", image: image, modelDirectory: modelDirectory)
-        return try JSONDecoder().decode(TableRecognitionResult.self, from: data)
+        try await run(mode: "table", image: image, modelDirectory: modelDirectory) { data in
+            try JSONDecoder().decode(TableRecognitionResult.self, from: data)
+        }
     }
 
     func run(mode: String, image: CGImage, modelDirectory: URL) async throws -> Data {
-        guard !working else { throw MLHelperError.busy }
-        guard ["formula", "table"].contains(mode) else { throw FormulaError.invalidInput }
-        working = true
-        defer { working = false }
-        let control = MLProcessControl()
-        return try await withTaskCancellationHandler(operation: {
-            try await Task.detached(priority: .userInitiated) {
-                try Self.runSynchronously(mode: mode, image: image, modelDirectory: modelDirectory, control: control)
-            }.value
-        }, onCancel: { control.cancel() })
+        try await run(mode: mode, image: image, modelDirectory: modelDirectory, decode: { $0 })
     }
 
-    private nonisolated static func runSynchronously(mode: String, image: CGImage, modelDirectory: URL, control: MLProcessControl) throws -> Data {
+    private func run<Result>(mode: String, image: CGImage, modelDirectory: URL,
+                             decode: @escaping @Sendable (Data) throws -> Result) async throws -> Result {
+        guard mode == "formula" || mode == "table" else { throw FormulaError.invalidInput }
+        return try await resources.withJob(mode == "formula" ? .formula : .table) { recorder in
+            let control = MLProcessControl()
+            let data = try await withTaskCancellationHandler(operation: {
+                try await Task.detached(priority: .userInitiated) {
+                    try Self.runSynchronously(mode: mode, image: image, modelDirectory: modelDirectory, control: control, recorder: recorder)
+                }.value
+            }, onCancel: { control.cancel() })
+            // Invalid output is a failed job, even when the child exited 0.
+            // Keep ownership until the returned data has been decoded/validated.
+            return try decode(data)
+        }
+    }
+
+    private nonisolated static func runSynchronously(mode: String, image: CGImage, modelDirectory: URL,
+                                                    control: MLProcessControl, recorder: LocalInferenceJobRecorder) throws -> Data {
+        guard !control.isCancelled else { throw CancellationError() }
         guard image.width <= MLJobLimits.inputDimension, image.height <= MLJobLimits.inputDimension,
               image.width * image.height <= MLJobLimits.inputPixels else { throw FormulaError.invalidInput }
         let executable = try verifiedHelper()
         let fm = FileManager.default
         let folder = fm.temporaryDirectory.appendingPathComponent("picshot-ml-\(UUID().uuidString)", isDirectory: true)
+        recorder.willCreateTemporaryDirectory()
         try fm.createDirectory(at: folder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-        defer { try? fm.removeItem(at: folder) }
+        defer {
+            try? fm.removeItem(at: folder)
+            recorder.recordCleanup(confirmed: LocalInferenceResources.removalIsConfirmed(at: folder))
+        }
         let input = folder.appendingPathComponent("input.png")
         let output = folder.appendingPathComponent("output.json")
         let errors = folder.appendingPathComponent("error.txt")
@@ -237,7 +253,7 @@ actor MLHelperService {
               png.count <= MLJobLimits.inputBytes else { throw FormulaError.invalidInput }
         guard fm.createFile(atPath: input.path, contents: png, attributes: [.posixPermissions: 0o600]),
               fm.createFile(atPath: errors.path, contents: nil, attributes: [.posixPermissions: 0o600]) else { throw CocoaError(.fileWriteNoPermission) }
-        let errorHandle = try FileHandle(forWritingTo: errors)
+        let errorHandle = try FileHandle(forUpdating: errors)
         defer { try? errorHandle.close() }
         let process = Process()
         process.executableURL = executable
@@ -249,21 +265,36 @@ actor MLHelperService {
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
         process.standardError = errorHandle
-        try control.start(process)
-        let started = Date()
+        do { try control.start(process) }
+        catch {
+            recorder.recordOutcome(error is CancellationError ? .cancelled : .launchFailed)
+            throw error
+        }
+        recorder.recordLaunch()
+        let started = ProcessInfo.processInfo.systemUptime
         var failure: Error?
         while process.isRunning {
-            if control.isCancelled { failure = CancellationError(); control.stop() }
-            if Date().timeIntervalSince(started) > MLJobLimits.seconds { failure = FormulaError.timeLimit; control.stop() }
-            if residentBytes(process.processIdentifier) > 1_073_741_824 { failure = MLHelperError.memoryLimit; control.stop() }
-            Thread.sleep(forTimeInterval: 0.1)
+            let resident = residentBytes(process.processIdentifier)
+            recorder.recordResidentBytes(resident)
+            if control.isCancelled { failure = CancellationError(); recorder.recordOutcome(.cancelled) }
+            if failure == nil, ProcessInfo.processInfo.systemUptime - started > MLJobLimits.seconds {
+                failure = FormulaError.timeLimit; recorder.recordOutcome(.timedOut)
+            }
+            if failure == nil, let resident, resident > LocalInferenceJobKind.formula.residentLimitBytes {
+                failure = MLHelperError.memoryLimit; recorder.recordOutcome(.memoryLimit)
+            }
+            if failure != nil { control.stop() }
+            Thread.sleep(forTimeInterval: LocalInferenceJobRecorder.sampleIntervalSeconds)
         }
         process.waitUntilExit()
-        if let failure { throw failure }
+        recorder.recordExit(status: process.terminationStatus, reason: process.terminationReason == .exit ? .exit : .uncaughtSignal)
         if control.isCancelled { throw CancellationError() }
+        if let failure { throw failure }
         guard process.terminationStatus == 0 else {
-            let data = (try? Data(contentsOf: errors)) ?? Data()
-            throw MLHelperError.failed(String(data: data.prefix(4096), encoding: .utf8) ?? "辅助进程异常退出。")
+            // Read a bounded prefix instead of loading an unbounded stderr file.
+            try errorHandle.seek(toOffset: 0)
+            let data = try errorHandle.read(upToCount: 4_096) ?? Data()
+            throw MLHelperError.failed(String(data: data, encoding: .utf8) ?? "辅助进程异常退出。")
         }
         let values = try output.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey])
         guard values.isRegularFile == true, values.isSymbolicLink != true,
@@ -271,10 +302,10 @@ actor MLHelperService {
         return try Data(contentsOf: output)
     }
 
-    private nonisolated static func residentBytes(_ pid: Int32) -> UInt64 {
+    private nonisolated static func residentBytes(_ pid: Int32) -> UInt64? {
         var info = proc_taskinfo()
         let count = proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &info, Int32(MemoryLayout<proc_taskinfo>.size))
-        return count == Int32(MemoryLayout<proc_taskinfo>.size) ? info.pti_resident_size : 0
+        return count == Int32(MemoryLayout<proc_taskinfo>.size) ? info.pti_resident_size : nil
     }
 
     private nonisolated static func verifiedHelper() throws -> URL {
@@ -293,11 +324,11 @@ actor MLHelperService {
     }
 }
 
-private final class MLProcessControl: @unchecked Sendable {
+final class MLProcessControl: @unchecked Sendable {
     private let lock = NSLock()
     private var cancelled = false
     private var process: Process?
-    private var stopDate: Date?
+    private var stopTime: TimeInterval?
     var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
     func start(_ process: Process) throws {
         lock.lock(); defer { lock.unlock() }
@@ -308,10 +339,10 @@ private final class MLProcessControl: @unchecked Sendable {
     func stop() {
         lock.lock(); defer { lock.unlock() }
         guard let process, process.isRunning else { return }
-        if let stopDate {
-            if Date().timeIntervalSince(stopDate) > 1 { kill(process.processIdentifier, SIGKILL) }
+        if let stopTime {
+            if ProcessInfo.processInfo.systemUptime - stopTime > 1 { kill(process.processIdentifier, SIGKILL) }
         } else {
-            stopDate = Date(); process.terminate()
+            stopTime = ProcessInfo.processInfo.systemUptime; process.terminate()
         }
     }
 }

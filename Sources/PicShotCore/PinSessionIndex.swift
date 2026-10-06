@@ -41,7 +41,7 @@ public struct PinWindowFrame: Codable, Equatable, Sendable {
             width > 0 && height > 0 && width <= 100_000 && height <= 100_000
     }
 
-    /// Fits the complete window (including its title bar) onto an available display.
+    /// Fits the complete pin window onto an available display.
     /// Handles removed displays, negative display origins, and smaller replacement screens.
     public func recovered(in screens: [PinWindowFrame]) -> PinWindowFrame {
         let frame = isValid ? self : PinWindowFrame()
@@ -61,8 +61,8 @@ public struct PinWindowFrame: Codable, Equatable, Sendable {
             if overlap(candidate) > overlap(screen) ||
                 (overlap(candidate) == overlap(screen) && distance(candidate) < distance(screen)) { screen = candidate }
         }
-        let width = min(max(344, frame.width), screen.width)
-        let height = min(max(116, frame.height), screen.height)
+        let width = min(max(32, frame.width), screen.width)
+        let height = min(max(24, frame.height), screen.height)
         return PinWindowFrame(x: min(max(frame.x, screen.x), screen.x + screen.width - width),
                               y: min(max(frame.y, screen.y), screen.y + screen.height - height),
                               width: width, height: height)
@@ -123,19 +123,22 @@ public struct PinSessionEntry: Codable, Identifiable, Equatable, Sendable {
     public var original: PinRasterAsset
     public var current: PinRasterAsset
     public var presentation: PinPresentation
+    public var richContent: PinRichAsset?
     /// false means archived in pin history. Group visibility is a separate concern.
     public var isVisible: Bool
+    /// Actual close order. Older archives without this metadata are never guessed from creation/update dates.
+    public var archiveSequence: UInt64?
     public init(id: UUID = UUID(), groupID: UUID = PinGroup.defaultID, title: String = "贴图",
                 createdAt: Date = Date(), updatedAt: Date = Date(), original: PinRasterAsset,
                 current: PinRasterAsset? = nil, presentation: PinPresentation = PinPresentation(),
-                isVisible: Bool = true) {
+                isVisible: Bool = true, richContent: PinRichAsset? = nil, archiveSequence: UInt64? = nil) {
         self.id = id; self.groupID = groupID; self.title = title
         self.createdAt = createdAt; self.updatedAt = updatedAt
         self.original = original; self.current = current ?? original; self.presentation = presentation
-        self.isVisible = isVisible
+        self.isVisible = isVisible; self.richContent = richContent; self.archiveSequence = archiveSequence
     }
     private enum CodingKeys: String, CodingKey {
-        case id, groupID, title, createdAt, updatedAt, original, current, presentation, isVisible
+        case id, groupID, title, createdAt, updatedAt, original, current, presentation, isVisible, richContent, archiveSequence
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -148,7 +151,14 @@ public struct PinSessionEntry: Codable, Identifiable, Equatable, Sendable {
                   current: try values.decode(PinRasterAsset.self, forKey: .current),
                   presentation: try values.decode(PinPresentation.self, forKey: .presentation),
                   // Schema-1 sessions before pin history implicitly had every pin open.
-                  isVisible: try values.decodeIfPresent(Bool.self, forKey: .isVisible) ?? true)
+                  isVisible: try values.decodeIfPresent(Bool.self, forKey: .isVisible) ?? true,
+                  richContent: try values.decodeIfPresent(PinRichAsset.self, forKey: .richContent),
+                  archiveSequence: try values.decodeIfPresent(UInt64.self, forKey: .archiveSequence))
+    }
+    public var assetFilenames: [String] { assets.map(\.filename) + (richContent.map { [$0.filename] } ?? []) }
+    public var storedByteCount: Int64 { assets.reduce(0) { $0 + $1.byteCount } + (richContent?.byteCount ?? 0) }
+    public var contentLabel: String {
+        switch richContent?.kind { case .text: return "文字 / HTML"; case .files: return "文件引用"; case .color: return "颜色"; case .animation: return "动态图片"; case nil: return "图片" }
     }
     public var assets: [PinRasterAsset] { original.filename == current.filename ? [original] : [original, current] }
 }
@@ -187,6 +197,10 @@ public struct PinSessionPolicy: Equatable, Sendable {
         guard entries.count <= maxPins else { return false }
         var pixels: Int64 = 0, bytes: Int64 = 0
         for entry in entries {
+            if let rich = entry.richContent {
+                guard rich.isValid, rich.byteCount <= maxDiskBytes - bytes, rich.workingPixelCount <= maxPixelCount - pixels else { return false }
+                bytes += rich.byteCount; pixels += rich.workingPixelCount
+            }
             for asset in entry.assets {
                 guard asset.isValid, asset.pixelCount <= maxPixelCount - pixels,
                       asset.byteCount <= maxDiskBytes - bytes else { return false }
@@ -217,7 +231,7 @@ public struct PinSessionPolicy: Equatable, Sendable {
 }
 
 public struct PinSessionIndex: Codable, Equatable, Sendable {
-    public static let schemaVersion = 1
+    public static let schemaVersion = 2
     public var version: Int
     public var groups: [PinGroup]
     public var entries: [PinSessionEntry]
@@ -225,7 +239,7 @@ public struct PinSessionIndex: Codable, Equatable, Sendable {
     public var allHidden: Bool
     public init(groups: [PinGroup] = [PinGroup(id: PinGroup.defaultID, name: "默认", color: .gray)],
                 entries: [PinSessionEntry] = [], activeGroupID: UUID = PinGroup.defaultID, allHidden: Bool = false) {
-        version = Self.schemaVersion; self.groups = groups; self.entries = entries
+        version = entries.contains(where: { $0.richContent != nil }) ? Self.schemaVersion : 1; self.groups = groups; self.entries = entries
         self.activeGroupID = activeGroupID; self.allHidden = allHidden
     }
     public var visibleEntries: [PinSessionEntry] {
@@ -233,11 +247,16 @@ public struct PinSessionIndex: Codable, Equatable, Sendable {
         return entries.filter { $0.groupID == activeGroupID && $0.isVisible }
     }
     public func entry(id: UUID) -> PinSessionEntry? { entries.first { $0.id == id } }
+    public var lastArchivedEntry: PinSessionEntry? {
+        entries.filter { !$0.isVisible && $0.archiveSequence != nil }.max { ($0.archiveSequence ?? 0) < ($1.archiveSequence ?? 0) }
+    }
+    public var nextArchiveSequence: UInt64 { (entries.compactMap(\.archiveSequence).max() ?? 0) + 1 }
+
 
     /// Strictly reject unknown schemas, traversal, duplicate identities and unreasonable metadata.
     /// Presentation values are independently recoverable, so normalize them rather than lose a pin.
     public func validated() throws -> PinSessionIndex {
-        guard version == Self.schemaVersion else { throw PinSessionError.unsupportedVersion }
+        guard (1...Self.schemaVersion).contains(version) else { throw PinSessionError.unsupportedVersion }
         guard !groups.isEmpty, groups.count <= 32, entries.count <= 256,
               Set(groups.map(\.id)).count == groups.count, Set(entries.map(\.id)).count == entries.count,
               groups.contains(where: { $0.id == PinGroup.defaultID }), groups.contains(where: { $0.id == activeGroupID })
@@ -246,6 +265,8 @@ public struct PinSessionIndex: Codable, Equatable, Sendable {
             guard Self.validName(group.name, limit: 48) else { throw PinSessionError.invalidManifest }
         }
         let groupIDs = Set(groups.map(\.id))
+        let sequences = entries.compactMap(\.archiveSequence)
+        guard sequences.allSatisfy({ $0 > 0 && $0 < UInt64.max }), Set(sequences).count == sequences.count else { throw PinSessionError.invalidManifest }
         var filenames = Set<String>()
         var result = self
         for i in entries.indices {
@@ -253,6 +274,11 @@ public struct PinSessionIndex: Codable, Equatable, Sendable {
             guard groupIDs.contains(entry.groupID), Self.validName(entry.title, limit: 120),
                   entry.createdAt.timeIntervalSince1970.isFinite, entry.updatedAt.timeIntervalSince1970.isFinite
             else { throw PinSessionError.invalidManifest }
+            if let rich = entry.richContent {
+                guard PinRichAsset.isSafeFilename(rich.filename) else { throw PinSessionError.unsafePath }
+                guard version >= 2, rich.isValid, filenames.insert(rich.filename.lowercased()).inserted,
+                      entry.original == entry.current else { throw PinSessionError.invalidManifest }
+            }
             if entry.original.filename == entry.current.filename && entry.original != entry.current { throw PinSessionError.invalidManifest }
             for asset in entry.assets {
                 guard PinRasterAsset.isSafeFilename(asset.filename) else { throw PinSessionError.unsafePath }

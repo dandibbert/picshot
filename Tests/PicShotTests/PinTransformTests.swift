@@ -19,6 +19,14 @@ final class PinTransformTests: XCTestCase {
         XCTAssertEqual(try pixels(original), [red, green, blue, yellow, cyan, magenta])
     }
 
+    func testCounterclockwiseRotationIsInverseOfClockwise() throws {
+        let original = try fixture()
+        let left = try XCTUnwrap(PinImageRenderer.render(image: original, transform: .rotateCounterclockwise))
+        XCTAssertEqual(left.width, 3); XCTAssertEqual(left.height, 2)
+        let restored = try XCTUnwrap(PinImageRenderer.render(image: left, transform: .rotateClockwise))
+        XCTAssertEqual(try pixels(restored), try pixels(original))
+    }
+
     func testHorizontalAndVerticalFlipsAreDistinct() throws {
         let original = try fixture()
         let horizontal = try XCTUnwrap(PinImageRenderer.render(image: original, transform: .flipHorizontal))

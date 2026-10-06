@@ -10,66 +10,87 @@ final class PinSessionCoordinatorTests: XCTestCase {
     @MainActor func testExplicitCloseArchivesSessionEntryAndDetachesCachedWindow() async throws {
         let (directory, store, coordinator) = try fixture()
         defer { try? FileManager.default.removeItem(at: directory) }
-        let id = try coordinator.add(image: image())
-        var controller: PinController? = try XCTUnwrap(coordinator.liveControllers[id])
-        weak var weakController = controller
-        let window = try XCTUnwrap(controller?.window)
-        controller?.close()
+        // Drain construction and close temporaries before testing controller ownership.
+        let (id, probe) = try autoreleasepool { () throws -> (UUID, ClosedPinLifetimeProbe) in
+            let id = try coordinator.add(image: image())
+            let controller = try XCTUnwrap(coordinator.liveControllers[id])
+            let probe = try ClosedPinLifetimeProbe(controller)
+            controller.close()
+            XCTAssertNil(controller.onClose); XCTAssertNil(controller.onPixelChange)
+            XCTAssertNil(controller.onPresentationChange)
+            XCTAssertNil(probe.window.contentView); XCTAssertNil(probe.window.delegate)
+            controller.close() // Repeated close is harmless.
+            return (id, probe)
+        }
+        try await assertReleased(probe)
         XCTAssertTrue(coordinator.liveControllers.isEmpty)
         XCTAssertEqual(store.entry(id: id)?.isVisible, false)
         XCTAssertNotNil(store.image(id: id)); XCTAssertEqual(try pngNames(directory).count, 1)
         XCTAssertTrue(store.visibleEntries.isEmpty)
-        XCTAssertNil(controller?.onClose); XCTAssertNil(controller?.onPixelChange)
-        XCTAssertNil(controller?.onPresentationChange)
-        XCTAssertNil(window.contentView); XCTAssertNil(window.delegate)
-        controller?.close() // Repeated close is harmless.
-        controller = nil
-        XCTAssertNil(weakController, "AppKit's cached window must not retain its controller")
     }
 
     @MainActor func testSwitchFlushesPresentationAndReleasesOldControllerWithoutDeletingPin() async throws {
         let (directory, store, coordinator) = try fixture(debounce: 30_000_000_000)
         defer { try? coordinator.prepareForTermination(); try? FileManager.default.removeItem(at: directory) }
-        let id = try coordinator.add(image: image())
         let other = try store.createGroup(name: "Other")
-        var controller: PinController? = try XCTUnwrap(coordinator.liveControllers[id])
-        weak var oldController = controller
-        let window = try XCTUnwrap(controller?.window)
-        let before = try XCTUnwrap(store.entry(id: id)?.presentation)
-        controller?.applyPresentation(examplePresentation())
-        controller?.windowDidMove(Notification(name: NSWindow.didMoveNotification, object: window))
-        let expected = try XCTUnwrap(controller?.presentation)
-        XCTAssertEqual(store.entry(id: id)?.presentation, before, "Moves must be debounced")
-        try coordinator.switchGroup(id: other.id)
+        let (id, expected, probe) = try autoreleasepool { () throws -> (UUID, PinPresentation, ClosedPinLifetimeProbe) in
+            let id = try coordinator.add(image: image())
+            let controller = try XCTUnwrap(coordinator.liveControllers[id])
+            let probe = try ClosedPinLifetimeProbe(controller)
+            let before = try XCTUnwrap(store.entry(id: id)?.presentation)
+            controller.applyPresentation(examplePresentation())
+            controller.windowDidMove(Notification(name: NSWindow.didMoveNotification, object: probe.window))
+            let expected = controller.presentation
+            XCTAssertEqual(store.entry(id: id)?.presentation, before, "Moves must be debounced")
+            try coordinator.switchGroup(id: other.id)
+            XCTAssertNil(probe.window.contentView); XCTAssertNil(probe.window.delegate)
+            return (id, expected, probe)
+        }
+        try await assertReleased(probe)
         XCTAssertTrue(coordinator.liveControllers.isEmpty)
         XCTAssertEqual(store.entry(id: id)?.presentation, expected)
         XCTAssertEqual(store.entry(id: id)?.isVisible, true)
-        XCTAssertNil(window.contentView); XCTAssertNil(window.delegate)
-        controller = nil; XCTAssertNil(oldController)
-        try coordinator.switchGroup(id: PinGroup.defaultID)
-        XCTAssertEqual(coordinator.liveControllers.count, 1)
-        XCTAssertEqual(coordinator.liveControllers[id]?.presentation, expected)
+        try autoreleasepool {
+            try coordinator.switchGroup(id: PinGroup.defaultID)
+            XCTAssertEqual(coordinator.liveControllers.count, 1)
+            XCTAssertEqual(coordinator.liveControllers[id]?.presentation, expected)
+        }
         XCTAssertEqual(try pngNames(directory).count, 1)
     }
 
     @MainActor func testRepeatedHideShowDoesNotDuplicateWindowsOrRetainHiddenImages() async throws {
         let (directory, store, coordinator) = try fixture()
         defer { try? coordinator.prepareForTermination(); try? FileManager.default.removeItem(at: directory) }
-        let id = try coordinator.add(image: image())
+        let id = try autoreleasepool { try coordinator.add(image: image()) }
         let asset = try XCTUnwrap(store.entry(id: id)?.original)
+        var closed: [ClosedPinLifetimeProbe] = []
         for _ in 0..<16 {
-            weak var oldController = coordinator.liveControllers[id]
-            try coordinator.hideCurrentGroup()
-            XCTAssertNil(oldController); XCTAssertTrue(coordinator.liveControllers.isEmpty)
+            let probe = try autoreleasepool { () throws -> ClosedPinLifetimeProbe in
+                let controller = try XCTUnwrap(coordinator.liveControllers[id])
+                let probe = try ClosedPinLifetimeProbe(controller)
+                try coordinator.hideCurrentGroup()
+                return probe
+            }
+            closed.append(probe)
+            try await assertReleased(probe)
+            XCTAssertTrue(coordinator.liveControllers.isEmpty)
             XCTAssertEqual(store.entry(id: id)?.original, asset)
             XCTAssertEqual(store.entry(id: id)?.isVisible, true)
-            try coordinator.showCurrentGroup()
-            let first = try XCTUnwrap(coordinator.liveControllers[id])
-            try coordinator.showCurrentGroup(); try coordinator.reconcileVisiblePins()
-            XCTAssertTrue(coordinator.liveControllers[id] === first)
-            XCTAssertEqual(coordinator.liveControllers.count, 1)
+            try autoreleasepool {
+                try coordinator.showCurrentGroup()
+                let first = try XCTUnwrap(coordinator.liveControllers[id])
+                try coordinator.showCurrentGroup(); try coordinator.reconcileVisiblePins()
+                XCTAssertTrue(coordinator.liveControllers[id] === first)
+                XCTAssertEqual(coordinator.liveControllers.count, 1)
+            }
         }
-        try coordinator.hideAll()
+        let last = try autoreleasepool { () throws -> ClosedPinLifetimeProbe in
+            let probe = try ClosedPinLifetimeProbe(XCTUnwrap(coordinator.liveControllers[id]))
+            try coordinator.hideAll()
+            return probe
+        }
+        closed.append(last)
+        for probe in closed { try await assertReleased(probe) }
         XCTAssertTrue(store.index.allHidden); XCTAssertTrue(coordinator.liveControllers.isEmpty)
         XCTAssertEqual(try pngNames(directory), [asset.filename])
     }
@@ -227,16 +248,20 @@ final class PinSessionCoordinatorTests: XCTestCase {
     @MainActor func testTerminationSavesPendingMoveAndPreservesSessionOnDisk() async throws {
         let (directory, store, coordinator) = try fixture(debounce: 30_000_000_000)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let id = try coordinator.add(image: image())
-        var controller: PinController? = try XCTUnwrap(coordinator.liveControllers[id])
-        weak var weakController = controller
-        controller?.applyPresentation(examplePresentation())
-        controller?.windowDidMove(Notification(name: NSWindow.didMoveNotification, object: controller?.window))
-        let expected = try XCTUnwrap(controller?.presentation)
-        try coordinator.prepareForTermination()
+        let (id, expected, probe) = try autoreleasepool { () throws -> (UUID, PinPresentation, ClosedPinLifetimeProbe) in
+            let id = try coordinator.add(image: image())
+            let controller = try XCTUnwrap(coordinator.liveControllers[id])
+            let probe = try ClosedPinLifetimeProbe(controller)
+            controller.applyPresentation(examplePresentation())
+            controller.windowDidMove(Notification(name: NSWindow.didMoveNotification, object: probe.window))
+            let expected = controller.presentation
+            try coordinator.prepareForTermination()
+            XCTAssertNil(probe.window.contentView)
+            return (id, expected, probe)
+        }
+        try await assertReleased(probe)
         XCTAssertTrue(coordinator.liveControllers.isEmpty)
-        XCTAssertNotNil(store.entry(id: id)); XCTAssertNil(controller?.window?.contentView)
-        controller = nil; XCTAssertNil(weakController)
+        XCTAssertNotNil(store.entry(id: id))
         let reopened = try PinSessionStore(directory: directory)
         XCTAssertEqual(reopened.entry(id: id)?.presentation, expected)
         XCTAssertEqual(reopened.entry(id: id)?.isVisible, true)
@@ -250,15 +275,25 @@ final class PinSessionCoordinatorTests: XCTestCase {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = try PinSessionStore(directory: directory)
-        var coordinator: PinSessionCoordinator? = PinSessionCoordinator(store: store, presentWindows: false,
-                                                                       debounceNanoseconds: 30_000_000_000)
-        weak var weakCoordinator = coordinator
-        let id = try XCTUnwrap(coordinator?.add(image: image()))
-        weak var weakController = coordinator?.liveControllers[id]
-        coordinator?.liveControllers[id]?.windowDidMove(Notification(name: NSWindow.didMoveNotification))
-        coordinator = nil
+        weak var weakCoordinator: PinSessionCoordinator?
+        weak var weakController: PinController?
+        weak var weakWindow: NSWindow?
+        defer { weakWindow?.close() }
+        let id = try autoreleasepool { () throws -> UUID in
+            var coordinator: PinSessionCoordinator? = PinSessionCoordinator(store: store, presentWindows: false,
+                                                                           debounceNanoseconds: 30_000_000_000)
+            weakCoordinator = coordinator
+            let id = try XCTUnwrap(coordinator?.add(image: image()))
+            weakController = coordinator?.liveControllers[id]
+            weakWindow = weakController?.window
+            coordinator?.liveControllers[id]?.windowDidMove(Notification(name: NSWindow.didMoveNotification))
+            // Intentionally no prepareForTermination/close: this tests weak callback ownership.
+            coordinator = nil
+            return id
+        }
+        try await drainAppKitUntil { weakCoordinator == nil && weakController == nil }
         XCTAssertNil(weakCoordinator, "The debounce task and controller callbacks must capture weakly")
-        XCTAssertNil(weakController)
+        XCTAssertNil(weakController, "The cancelled 30-second debounce must not retain a pin")
         XCTAssertNotNil(store.entry(id: id))
     }
 
@@ -380,31 +415,36 @@ final class PinSessionCoordinatorTests: XCTestCase {
     @MainActor func testCloseArchiveReopenPreservesOriginalEditedPixelsAndPresentation() async throws {
         let (directory, store, coordinator) = try fixture()
         defer { try? coordinator.prepareForTermination(); try? FileManager.default.removeItem(at: directory) }
-        let id = try coordinator.add(image: image(width: 12, height: 8))
-        var controller: PinController? = try XCTUnwrap(coordinator.liveControllers[id])
-        try controller?.cropImage(to: CGRect(x: 0, y: 0, width: 5, height: 3))
-        controller?.applyPresentation(examplePresentation())
-        let presentation = try XCTUnwrap(controller?.presentation)
-        let assets = try XCTUnwrap(store.entry(id: id)?.assets)
-        weak var oldController = controller
-        controller?.close(); controller = nil
-        XCTAssertNil(oldController)
+        let (id, presentation, assets, probe) = try autoreleasepool { () throws -> (UUID, PinPresentation, [PinRasterAsset], ClosedPinLifetimeProbe) in
+            let id = try coordinator.add(image: image(width: 12, height: 8))
+            let controller = try XCTUnwrap(coordinator.liveControllers[id])
+            try controller.cropImage(to: CGRect(x: 0, y: 0, width: 5, height: 3))
+            controller.applyPresentation(examplePresentation())
+            let presentation = controller.presentation
+            let assets = try XCTUnwrap(store.entry(id: id)?.assets)
+            let probe = try ClosedPinLifetimeProbe(controller)
+            controller.close()
+            return (id, presentation, assets, probe)
+        }
+        try await assertReleased(probe)
         XCTAssertEqual(store.entry(id: id)?.isVisible, false)
         XCTAssertEqual(store.entry(id: id)?.presentation, presentation)
         XCTAssertEqual(store.entry(id: id)?.assets, assets)
-        try coordinator.showCurrentGroup()
-        try coordinator.recoverCurrentGroup()
-        XCTAssertTrue(coordinator.liveControllers.isEmpty, "Show/Recover must not reopen archived history")
-        try coordinator.openPin(id: id)
-        let restored = try XCTUnwrap(coordinator.liveControllers[id])
-        XCTAssertEqual(store.entry(id: id)?.isVisible, true)
-        XCTAssertEqual(restored.presentation, presentation)
-        XCTAssertEqual(restored.image.width, 12); XCTAssertEqual(restored.image.height, 8)
-        XCTAssertEqual(restored.currentImage.width, 5); XCTAssertEqual(restored.currentImage.height, 3)
-        XCTAssertEqual(try pngNames(directory), Set(assets.map(\.filename)))
-        try coordinator.openPin(id: id)
-        XCTAssertTrue(coordinator.liveControllers[id] === restored)
-        XCTAssertEqual(coordinator.liveControllers.count, 1)
+        try autoreleasepool {
+            try coordinator.showCurrentGroup()
+            try coordinator.recoverCurrentGroup()
+            XCTAssertTrue(coordinator.liveControllers.isEmpty, "Show/Recover must not reopen archived history")
+            try coordinator.openPin(id: id)
+            let restored = try XCTUnwrap(coordinator.liveControllers[id])
+            XCTAssertEqual(store.entry(id: id)?.isVisible, true)
+            XCTAssertEqual(restored.presentation, presentation)
+            XCTAssertEqual(restored.image.width, 12); XCTAssertEqual(restored.image.height, 8)
+            XCTAssertEqual(restored.currentImage.width, 5); XCTAssertEqual(restored.currentImage.height, 3)
+            XCTAssertEqual(try pngNames(directory), Set(assets.map(\.filename)))
+            try coordinator.openPin(id: id)
+            XCTAssertTrue(coordinator.liveControllers[id] === restored)
+            XCTAssertEqual(coordinator.liveControllers.count, 1)
+        }
     }
 
     @MainActor func testArchivePersistsAcrossLaunchAndGroupChangesUntilExplicitReopen() async throws {
@@ -489,21 +529,54 @@ final class PinSessionCoordinatorTests: XCTestCase {
     @MainActor func testRepeatedCloseArchiveReopenKeepsSingleControllerAndOriginalAssets() async throws {
         let (directory, store, coordinator) = try fixture()
         defer { try? coordinator.prepareForTermination(); try? FileManager.default.removeItem(at: directory) }
-        let id = try coordinator.add(image: image())
+        let id = try autoreleasepool { try coordinator.add(image: image()) }
         let original = try XCTUnwrap(store.entry(id: id)?.original)
+        var closed: [ClosedPinLifetimeProbe] = []
         for _ in 0..<12 {
-            weak var oldController = coordinator.liveControllers[id]
-            coordinator.liveControllers[id]?.close()
-            XCTAssertNil(oldController); XCTAssertTrue(coordinator.liveControllers.isEmpty)
+            let probe = try autoreleasepool { () throws -> ClosedPinLifetimeProbe in
+                let controller = try XCTUnwrap(coordinator.liveControllers[id])
+                let probe = try ClosedPinLifetimeProbe(controller)
+                controller.close()
+                return probe
+            }
+            closed.append(probe)
+            try await assertReleased(probe)
+            XCTAssertTrue(coordinator.liveControllers.isEmpty)
             XCTAssertEqual(store.entry(id: id)?.isVisible, false)
             XCTAssertEqual(try pngNames(directory), [original.filename])
-            try coordinator.showCurrentGroup()
-            XCTAssertTrue(coordinator.liveControllers.isEmpty)
-            try coordinator.openPin(id: id)
-            XCTAssertEqual(store.entry(id: id)?.isVisible, true)
-            XCTAssertEqual(coordinator.liveControllers.count, 1)
-            XCTAssertEqual(store.entry(id: id)?.original, original)
+            try autoreleasepool {
+                try coordinator.showCurrentGroup()
+                XCTAssertTrue(coordinator.liveControllers.isEmpty)
+                try coordinator.openPin(id: id)
+                XCTAssertEqual(store.entry(id: id)?.isVisible, true)
+                XCTAssertEqual(coordinator.liveControllers.count, 1)
+                XCTAssertEqual(store.entry(id: id)?.original, original)
+            }
         }
+        for probe in closed { try await assertReleased(probe) }
+    }
+
+    /// AppKit can enqueue temporary autoreleased owners during window construction/close.
+    /// The callers scope all those operations in pools; this additionally lets pending main
+    /// queue/run-loop work finish. A genuine reference cycle still fails after one second.
+    @MainActor private func drainAppKitUntil(_ released: @MainActor () -> Bool) async throws {
+        for _ in 0..<40 {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                DispatchQueue.main.async { continuation.resume() }
+            }
+            try await Task.sleep(nanoseconds: 25_000_000)
+            if autoreleasepool(invoking: { released() }) { return }
+        }
+    }
+    @MainActor private func assertReleased(_ probe: ClosedPinLifetimeProbe,
+                                           file: StaticString = #filePath, line: UInt = #line) async throws {
+        try await drainAppKitUntil { probe.controller == nil && probe.content == nil }
+        XCTAssertNil(probe.controller, "Closed pin still has a strong owner after scoped pools and run-loop drain", file: file, line: line)
+        XCTAssertNil(probe.content, "Closed pin retained its original content/view graph", file: file, line: line)
+        // Deliberately keep the window strongly alive, like an AppKit cached panel.
+        XCTAssertNil(probe.window.contentView, file: file, line: line)
+        XCTAssertNil(probe.window.delegate, file: file, line: line)
+        XCTAssertFalse(probe.window.isVisible, file: file, line: line)
     }
 
     @MainActor private func fixture(policy: PinSessionPolicy = PinSessionPolicy(),
@@ -534,5 +607,17 @@ final class PinSessionCoordinatorTests: XCTestCase {
         context.setFillColor(CGColor(red: 0.8, green: 0.2, blue: 0.4, alpha: 1))
         context.fill(CGRect(x: 0, y: 0, width: width, height: height))
         return try XCTUnwrap(context.makeImage())
+    }
+}
+
+/// A strong cached window must not keep the closed controller or its former content alive.
+@MainActor private final class ClosedPinLifetimeProbe {
+    weak var controller: PinController?
+    weak var content: NSView?
+    let window: NSWindow
+    init(_ controller: PinController) throws {
+        self.controller = controller
+        window = try XCTUnwrap(controller.window)
+        content = window.contentView
     }
 }

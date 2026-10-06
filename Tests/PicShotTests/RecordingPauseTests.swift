@@ -1,0 +1,539 @@
+import XCTest
+import AVFoundation
+import CoreMedia
+import ScreenCaptureKit
+@testable import PicShot
+
+final class RecordingPauseTests: XCTestCase {
+    func testTimelineUsesOneOffsetForEveryTrackAndRejectsDelayedPausedSamples() throws {
+        var timeline = RecordingTimeline()
+        timeline.start(at: time(100))
+        timeline.committed(through: time(101))
+        timeline.pause(at: time(101))
+        timeline.pause(at: time(102)) // Idempotent, preserves the original boundary.
+        XCTAssertFalse(timeline.accepts(time(102)))
+        timeline.resume(at: time(106))
+        timeline.resume(at: time(107))
+        XCTAssertEqual(timeline.removedDuration.seconds, 5)
+        XCTAssertFalse(timeline.accepts(time(105.9)))
+        XCTAssertEqual(try XCTUnwrap(timeline.presentationTime(for: time(106))).seconds, 1)
+        timeline.committed(through: time(107))
+        timeline.pause(at: time(107))
+        timeline.resume(at: time(109))
+        XCTAssertEqual(try XCTUnwrap(timeline.presentationTime(for: time(109))).seconds, 2)
+        timeline.stop(at: time(110))
+        XCTAssertEqual(timeline.activeDuration(at: time(900)).seconds, 3)
+        XCTAssertFalse(timeline.accepts(time(111)))
+    }
+
+    func testQuickPauseCutsAfterAlreadyEncodedAudioAndNeverOverlaps() throws {
+        var timeline = RecordingTimeline()
+        timeline.start(at: time(100))
+        timeline.committed(through: time(100.1))
+        timeline.pause(at: time(100.05))
+        timeline.resume(at: time(100.08))
+        XCTAssertFalse(timeline.accepts(time(100.09)))
+        XCTAssertEqual(timeline.removedDuration.seconds, 0)
+        XCTAssertEqual(try XCTUnwrap(timeline.presentationTime(for: time(100.1))).seconds, 0.1, accuracy: 0.00001)
+    }
+
+    func testPauseBeforeFirstFrameDoesNotCreateLeadingGap() throws {
+        var timeline = RecordingTimeline()
+        timeline.pause(at: time(10))
+        timeline.resume(at: time(15))
+        XCTAssertFalse(timeline.accepts(time(14.9)))
+        timeline.start(at: time(15.1))
+        XCTAssertEqual(try XCTUnwrap(timeline.presentationTime(for: time(15.1))).seconds, 0)
+        XCTAssertEqual(timeline.activeDuration(at: time(15.6)).seconds, 0.5, accuracy: 0.00001)
+    }
+
+    func testRetimingPreservesPCMFrameDurationsAndEveryPTSAndDTS() throws {
+        let input = try audioSample(at: time(10), channels: 2, frames: 4, distinctTiming: true)
+        let result = try RecordingSampleTiming.copy(input, subtracting: time(9.5))
+        var count: CMItemCount = 0
+        XCTAssertEqual(CMSampleBufferGetSampleTimingInfoArray(result, entryCount: 0, arrayToFill: nil, entriesNeededOut: &count), noErr)
+        XCTAssertEqual(count, 4)
+        for index in 0..<count {
+            var entry = CMSampleTimingInfo()
+            XCTAssertEqual(CMSampleBufferGetSampleTimingInfo(result, at: index, timingInfoOut: &entry), noErr)
+            XCTAssertEqual(entry.presentationTimeStamp.seconds, 0.5 + Double(index) / 48_000, accuracy: 0.000001)
+            XCTAssertEqual(entry.decodeTimeStamp.seconds, 0.4 + Double(index) / 48_000, accuracy: 0.000001)
+            XCTAssertEqual(entry.duration, CMTime(value: 1, timescale: 48_000))
+        }
+        XCTAssertEqual(CMSampleBufferGetNumSamples(result), 4)
+        XCTAssertEqual(CMSampleBufferGetTotalSampleSize(result), CMSampleBufferGetTotalSampleSize(input))
+        XCTAssertEqual(CMSampleBufferGetPresentationTimeStamp(input), time(10), "Retiming must not mutate the input")
+    }
+
+    func testH264AndAACRemoveMultiplePausesAndKeepDecodedTracksSynchronized() async throws {
+        try await verifyEncodedPauseRecording(includeMicrophone: false)
+    }
+
+    func testBothSystemAndMicrophoneAACTracksUseTheSamePauseOffset() async throws {
+        #if compiler(>=6.0)
+        if #available(macOS 15.0, *) { try await verifyEncodedPauseRecording(includeMicrophone: true) }
+        else { throw XCTSkip("ScreenCaptureKit microphone output requires macOS 15; no permission is requested") }
+        #else
+        throw XCTSkip("ScreenCaptureKit microphone output requires Xcode 16; no permission is requested")
+        #endif
+    }
+
+    func testStillScreenStoppedWhilePausedHasOnlyActiveDuration() async throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let clock = TestClock(100)
+        let writer = try makeWriter(in: directory, clock: clock)
+        try await append(try screenSample(at: time(100), color: .red), to: writer, type: .screen)
+        clock.set(101)
+        let paused = try await writer.setPaused(true)
+        XCTAssertTrue(paused.isPaused)
+        clock.set(112)
+        let snapshot = await writer.stopAccepting()
+        XCTAssertEqual(snapshot.elapsed, 1, accuracy: 0.00001)
+        clock.set(200) // A slow SCStream teardown must not lengthen the file.
+        let url = try await writer.finish()
+        let duration = try await AVURLAsset(url: url).load(.duration).seconds
+        XCTAssertEqual(duration, 1, accuracy: 0.015)
+        let again = try await writer.finish()
+        XCTAssertEqual(again, url)
+        let saved = try RecordingFileStorage.publish(from: url, in: directory)
+        await writer.discard()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: saved.path))
+    }
+
+    func testStillScreenResumedWithoutNewVideoFramesHasCorrectDuration() async throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let clock = TestClock(100)
+        let writer = try makeWriter(in: directory, clock: clock)
+        try await append(try screenSample(at: time(100), color: .red), to: writer, type: .screen)
+        clock.set(101)
+        _ = try await writer.setPaused(true)
+        clock.set(110)
+        _ = try await writer.setPaused(false)
+        clock.set(110.5)
+        let url = try await writer.finish()
+        let duration = try await AVURLAsset(url: url).load(.duration).seconds
+        XCTAssertEqual(duration, 1.5, accuracy: 0.015)
+    }
+
+    func testFirstFrameArrivingDuringPauseCanStartAtResumeWithoutAnotherFrame() async throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let clock = TestClock(100)
+        let writer = try makeWriter(in: directory, clock: clock)
+        _ = try await writer.setPaused(true)
+        let frame = try screenSample(at: time(101), color: .blue)
+        writer.queue.sync { XCTAssertFalse(writer.consume(frame, of: .screen)) }
+        clock.set(110)
+        _ = try await writer.setPaused(false)
+        clock.set(111)
+        let url = try await writer.finish()
+        let asset = AVURLAsset(url: url)
+        let duration = try await asset.load(.duration).seconds
+        XCTAssertEqual(duration, 1, accuracy: 0.015)
+        let image = try await AVAssetImageGenerator(asset: asset).image(at: .zero).image
+        let color = try centerColor(image)
+        XCTAssertGreaterThan(color.2, color.0 + 100)
+    }
+
+    func testDesktopChangedDuringPauseIsCurrentAfterResumeWithoutNewFrames() async throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let clock = TestClock(100)
+        let writer = try makeWriter(in: directory, clock: clock)
+        try await append(try screenSample(at: time(100), color: .red), to: writer, type: .screen)
+        clock.set(101)
+        _ = try await writer.setPaused(true)
+        let changed = try screenSample(at: time(105), color: .blue)
+        writer.queue.sync { XCTAssertFalse(writer.consume(changed, of: .screen)) }
+        clock.set(110)
+        _ = try await writer.setPaused(false)
+        clock.set(111)
+        let url = try await writer.finish()
+        let asset = AVURLAsset(url: url)
+        let duration = try await asset.load(.duration).seconds
+        XCTAssertEqual(duration, 2, accuracy: 0.015)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.requestedTimeToleranceBefore = CMTime(seconds: 1, preferredTimescale: 600)
+        generator.requestedTimeToleranceAfter = .zero
+        let oldImage = try await generator.image(at: time(0.5)).image
+        let newImage = try await generator.image(at: time(1.5)).image
+        let before = try centerColor(oldImage)
+        let after = try centerColor(newImage)
+        XCTAssertGreaterThan(before.0, before.2 + 100)
+        XCTAssertGreaterThan(after.2, after.0 + 100)
+    }
+
+    func testPausedInputsKeepAtMostTwoFramesAndWallLimitStillStops() async throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let clock = TestClock(100)
+        let stops = StopRecorder()
+        let options = RecordingOptions(frameRate: 10, capturesSystemAudio: true, maximumDuration: 2, maximumWallDuration: 3)
+        let writer = try RecordingWriter(size: CGSize(width: 40, height: 24), options: options,
+            outputDirectory: directory, clock: { clock.now }) { stops.record($0) }
+        try await append(try screenSample(at: time(100), color: .red), to: writer, type: .screen)
+        try await append(try audioSample(at: time(100), channels: 2), to: writer, type: .audio)
+        clock.set(100.5)
+        _ = try await writer.setPaused(true)
+        let frame = try screenSample(at: time(101), color: .green)
+        let audio = try audioSample(at: time(101), channels: 2)
+        writer.queue.sync {
+            for _ in 0..<20_000 {
+                XCTAssertFalse(writer.consume(frame, of: .screen))
+                XCTAssertFalse(writer.consume(audio, of: .audio))
+            }
+        }
+        let paused = await writer.snapshot()
+        XCTAssertEqual(paused.retainedVideoFrames, 2)
+        XCTAssertEqual(paused.elapsed, 0.5, accuracy: 0.00001)
+        clock.set(104)
+        writer.queue.sync { XCTAssertFalse(writer.consume(frame, of: .screen)) }
+        XCTAssertEqual(stops.messages.count, 1)
+        XCTAssertTrue(stops.messages.compactMap { $0 }.first?.contains("total time limit") == true)
+        let url = try await writer.finish()
+        let duration = try await AVURLAsset(url: url).load(.duration).seconds
+        XCTAssertEqual(duration, 0.5, accuracy: 0.015)
+        let finished = await writer.snapshot()
+        XCTAssertEqual(finished.retainedVideoFrames, 0)
+    }
+
+    func testDiscardRacingFinishCannotPublishOrResumeAndCompletesBothCalls() async throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let clock = TestClock(100)
+        let writer = try makeWriter(in: directory, clock: clock)
+        try await append(try screenSample(at: time(100), color: .red), to: writer, type: .screen)
+        clock.set(100.5)
+        let finishing = Task { try await writer.finish() }
+        await writer.discard()
+        _ = await finishing.result // Either ordering is valid; nothing is promoted.
+        await writer.discard()
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
+        do { _ = try await writer.setPaused(false); XCTFail("A discarded writer cannot resume") }
+        catch RecordingError.notRecording { }
+        do { _ = try await writer.finish(); XCTFail("A discarded writer cannot finish") }
+        catch is CancellationError { }
+    }
+
+    func testDurationAndWallBoundsRejectNonfiniteAndUnsafeOptions() {
+        XCTAssertNoThrow(try RecordingOptions(maximumDuration: 1, maximumWallDuration: 1).validate())
+        for wall in [Double.nan, .infinity, 0, 599, 7_201] {
+            XCTAssertThrowsError(try RecordingOptions(maximumWallDuration: wall).validate())
+        }
+    }
+
+    @MainActor
+    func testDelayCancellationAndIdlePauseNeverAskForScreenPermission() async throws {
+        for delay in [Double.nan, .infinity, -1, 30.01] { XCTAssertThrowsError(try RecordingService.validateDelay(delay)) }
+        let service = serviceWithoutScreenAccess()
+        do { try await service.pause(); XCTFail("Idle pause should fail") } catch RecordingError.notRecording { }
+        do { try await service.resume(); XCTFail("Idle resume should fail") } catch RecordingError.notRecording { }
+        let starting = Task { try await service.start(displayID: 0, delay: 30) }
+        try await waitUntil { service.isStarting && service.countdown != nil }
+        XCTAssertFalse(service.isRecording)
+        XCTAssertEqual(service.elapsed, 0)
+        do { try await service.start(displayID: 0, delay: 30); XCTFail("Countdown reserves the service") }
+        catch RecordingError.busy { }
+        await service.cancel()
+        do { try await starting.value; XCTFail("Cancelled countdown cannot capture") } catch is CancellationError { }
+        XCTAssertFalse(service.isStarting)
+        XCTAssertFalse(service.isRecording)
+        XCTAssertFalse(service.isPaused)
+        XCTAssertNil(service.countdown)
+        XCTAssertNil(service.outputURL)
+        XCTAssertNil(service.error)
+    }
+
+    @MainActor
+    func testStopDuringDelayCancelsRatherThanStartingAStream() async throws {
+        let service = serviceWithoutScreenAccess()
+        let starting = Task { try await service.start(displayID: 0, delay: 30) }
+        try await waitUntil { service.countdown != nil }
+        do { _ = try await service.stop(); XCTFail("A countdown has no movie to save") } catch is CancellationError { }
+        _ = await starting.result
+        XCTAssertFalse(service.isStarting)
+        XCTAssertFalse(service.isRecording)
+        XCTAssertNil(service.outputURL)
+        XCTAssertNil(service.error)
+    }
+
+    @MainActor
+    func testRestartAndCancelDuringCountdownCannotLeakAnOlderStartGeneration() async throws {
+        let service = serviceWithoutScreenAccess()
+        let starting = Task { try await service.start(displayID: 0, delay: 30) }
+        try await waitUntil { service.countdown != nil }
+        let restarting = Task { try await service.restart(discardUnfinished: true, delay: 29) }
+        try await waitUntil { service.isRestarting && service.countdown == 29 }
+        do { try await starting.value; XCTFail("Original countdown must be cancelled") } catch is CancellationError { }
+        XCTAssertTrue(service.isStarting)
+        await service.cancel()
+        do { _ = try await restarting.value; XCTFail("Restart countdown must be cancellable") } catch is CancellationError { }
+        XCTAssertFalse(service.isRestarting)
+        XCTAssertFalse(service.isStarting)
+        XCTAssertNil(service.countdown)
+        XCTAssertNil(service.error)
+        // A later start uses a fresh generation; cancelling it requires no TCC.
+        let next = Task { try await service.start(displayID: 0, delay: 30) }
+        try await waitUntil { service.countdown == 30 }
+        await service.cancel()
+        _ = await next.result
+        XCTAssertFalse(service.isStarting)
+    }
+
+    @MainActor
+    func testLaterStopWinsOverRestartCountdown() async throws {
+        let service = serviceWithoutScreenAccess()
+        let starting = Task { try await service.start(displayID: 0, delay: 30) }
+        try await waitUntil { service.countdown != nil }
+        // Saving an unstarted countdown restarts it without manufacturing a clip.
+        let restarting = Task { try await service.restart(delay: 29) }
+        try await waitUntil { service.isRestarting && service.countdown == 29 }
+        do { _ = try await service.stop(); XCTFail("Stop cancels the restart countdown") } catch is CancellationError { }
+        _ = await starting.result
+        do { _ = try await restarting.value; XCTFail("A later Stop must prevent the new take") } catch is CancellationError { }
+        XCTAssertFalse(service.isStarting)
+        XCTAssertFalse(service.isRestarting)
+        XCTAssertFalse(service.isRecording)
+        XCTAssertNil(service.countdown)
+        XCTAssertNil(service.outputURL)
+        XCTAssertNil(service.error)
+    }
+
+    // MARK: Actual media, independent of displays, microphones, TCC and sleep timing
+
+    private func verifyEncodedPauseRecording(includeMicrophone: Bool) async throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let clock = TestClock(10)
+        let stops = StopRecorder()
+        let writer = try RecordingWriter(size: CGSize(width: 40, height: 24),
+            options: RecordingOptions(frameRate: 10, capturesSystemAudio: true, capturesMicrophone: includeMicrophone),
+            outputDirectory: directory, clock: { clock.now }) { stops.record($0) }
+        let preroll = try audioSample(at: time(9.9), channels: 2)
+        writer.queue.sync { XCTAssertFalse(writer.consume(preroll, of: .audio)) }
+        for (base, count, color) in [(10.0, 5, Color.red), (12.5, 5, Color.blue), (16.0, 3, Color.green)] {
+            if base > 10 {
+                clock.set(base)
+                _ = try await writer.setPaused(false)
+                // Late callbacks with timestamps in the removed interval must not
+                // sneak in after Resume. Neither duplicate nor stale audio is queued.
+                let stale = try audioSample(at: time(base - 0.1), channels: 2)
+                writer.queue.sync { XCTAssertFalse(writer.consume(stale, of: .audio)) }
+            }
+            for index in 0..<count {
+                let timestamp = time(base + Double(index) / 10)
+                clock.set(timestamp.seconds)
+                let screen = try screenSample(at: timestamp, color: color)
+                let audio = try audioSample(at: timestamp, channels: 2)
+                try await append(screen, to: writer, type: .screen)
+                try await append(audio, to: writer, type: .audio)
+                writer.queue.sync {
+                    XCTAssertFalse(writer.consume(screen, of: .screen), "Duplicate video PTS must not be appended")
+                    XCTAssertFalse(writer.consume(audio, of: .audio), "Overlapping audio packets must not be appended")
+                }
+                if includeMicrophone {
+                    #if compiler(>=6.0)
+                    if #available(macOS 15.0, *) {
+                        try await append(try audioSample(at: timestamp, channels: 1), to: writer, type: .microphone)
+                    }
+                    #endif
+                }
+            }
+            clock.set(base + Double(count) / 10)
+            if base < 16 {
+                _ = try await writer.setPaused(true)
+                let excluded = try screenSample(at: time(base + 0.8), color: .white)
+                writer.queue.sync { XCTAssertFalse(writer.consume(excluded, of: .screen)) }
+            }
+        }
+        let url = try await writer.finish()
+        XCTAssertTrue(stops.messages.isEmpty, "Unexpected writer failure: \(stops.messages)")
+        let asset = AVURLAsset(url: url)
+        let duration = try await asset.load(.duration).seconds
+        XCTAssertEqual(duration, 1.3, accuracy: 0.025, "The 5 paused seconds must be removed")
+        let videoTracks = try await asset.loadTracks(withMediaType: .video)
+        let audioTracks = try await asset.loadTracks(withMediaType: .audio)
+        XCTAssertEqual(videoTracks.count, 1)
+        XCTAssertEqual(audioTracks.count, includeMicrophone ? 2 : 1)
+        let videoTrack = try XCTUnwrap(videoTracks.first)
+        let videoFormats = try await videoTrack.load(.formatDescriptions)
+        XCTAssertEqual(CMFormatDescriptionGetMediaSubType(try XCTUnwrap(videoFormats.first)), kCMVideoCodecType_H264)
+        try decodeAndCheck(asset: asset, track: videoTrack, audio: false, expectedDuration: 1.3)
+        for track in audioTracks {
+            let formats = try await track.load(.formatDescriptions)
+            XCTAssertEqual(CMFormatDescriptionGetMediaSubType(try XCTUnwrap(formats.first)), kAudioFormatMPEG4AAC)
+            try decodeAndCheck(asset: asset, track: track, audio: true, expectedDuration: 1.3)
+            let range = try await track.load(.timeRange)
+            XCTAssertEqual(range.duration.seconds, 1.3, accuracy: 0.06, "AAC must not keep pause-sized gaps")
+        }
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .zero
+        for (timestamp, expected) in [(0.1, Color.red), (0.6, Color.blue), (1.1, Color.green)] {
+            let image = try await generator.image(at: time(timestamp)).image
+            let color = try centerColor(image)
+            switch expected {
+            case .red: XCTAssertGreaterThan(color.0, max(color.1, color.2) + 100)
+            case .blue: XCTAssertGreaterThan(color.2, max(color.0, color.1) + 100)
+            case .green: XCTAssertGreaterThan(color.1, max(color.0, color.2) + 100)
+            case .white: XCTFail("Paused white pixels must never be encoded")
+            }
+        }
+    }
+
+    private func decodeAndCheck(asset: AVAsset, track: AVAssetTrack, audio: Bool, expectedDuration: Double) throws {
+        let reader = try AVAssetReader(asset: asset)
+        let settings: [String: Any] = audio ? [AVFormatIDKey: kAudioFormatLinearPCM, AVLinearPCMIsFloatKey: true] :
+            [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: settings)
+        reader.add(output)
+        XCTAssertTrue(reader.startReading())
+        var previous = CMTime.invalid
+        var end = 0.0
+        var samples = 0
+        while let sample = output.copyNextSampleBuffer() {
+            let timestamp = CMSampleBufferGetPresentationTimeStamp(sample)
+            if previous.isValid { XCTAssertGreaterThan(CMTimeCompare(timestamp, previous), 0) }
+            XCTAssertGreaterThanOrEqual(timestamp.seconds, -0.03) // AAC encoder priming may precede zero.
+            XCTAssertLessThan(timestamp.seconds, expectedDuration + 0.03)
+            let duration = CMSampleBufferGetDuration(sample)
+            end = max(end, timestamp.seconds + (duration.isNumeric ? duration.seconds : 0))
+            previous = timestamp
+            samples += 1
+            if audio { XCTAssertNotNil(CMSampleBufferGetDataBuffer(sample)) }
+            else { XCTAssertNotNil(CMSampleBufferGetImageBuffer(sample)) }
+        }
+        XCTAssertEqual(reader.status, .completed, reader.error?.localizedDescription ?? "Decode did not complete")
+        XCTAssertGreaterThan(samples, audio ? 20 : 10)
+        XCTAssertEqual(end, expectedDuration, accuracy: audio ? 0.06 : 0.025)
+    }
+
+    private func append(_ sample: CMSampleBuffer, to writer: RecordingWriter, type: SCStreamOutputType) async throws {
+        let deadline = Date().addingTimeInterval(10)
+        while !writer.queue.sync(execute: { writer.consume(sample, of: type) }) {
+            guard Date() < deadline else { throw RecordingError.failed("Synthetic sample was not accepted before its deadline.") }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+    }
+
+    private func makeWriter(in directory: URL, clock: TestClock) throws -> RecordingWriter {
+        try RecordingWriter(size: CGSize(width: 40, height: 24), options: RecordingOptions(frameRate: 10),
+            outputDirectory: directory, clock: { clock.now }) { _ in }
+    }
+
+    @MainActor
+    private func serviceWithoutScreenAccess() -> RecordingService {
+        // Even if a countdown regresses or a CI process is suspended for 30s,
+        // these service tests can never ask for real screen/TCC access.
+        RecordingService(screenPermissionCheck: { throw RecordingError.failed("A countdown test attempted live capture.") })
+    }
+
+    @MainActor
+    private func waitUntil(_ predicate: () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(5)
+        while !predicate() {
+            guard Date() < deadline else { throw RecordingError.failed("Recording state did not settle.") }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+    }
+
+    private func makeDirectory() throws -> URL {
+        let result = FileManager.default.temporaryDirectory.appendingPathComponent("PicShot-Pause-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: result, withIntermediateDirectories: true)
+        return result
+    }
+
+    private func time(_ seconds: Double) -> CMTime { CMTime(seconds: seconds, preferredTimescale: 48_000) }
+    private enum Color: Equatable { case red, blue, green, white }
+
+    private func screenSample(at timestamp: CMTime, color: Color) throws -> CMSampleBuffer {
+        let attributes = [kCVPixelBufferCGImageCompatibilityKey: true,
+                          kCVPixelBufferCGBitmapContextCompatibilityKey: true] as CFDictionary
+        var buffer: CVPixelBuffer?
+        XCTAssertEqual(CVPixelBufferCreate(kCFAllocatorDefault, 40, 24, kCVPixelFormatType_32BGRA, attributes, &buffer), kCVReturnSuccess)
+        let pixel = try XCTUnwrap(buffer)
+        CVPixelBufferLockBaseAddress(pixel, [])
+        let context = try XCTUnwrap(CGContext(data: CVPixelBufferGetBaseAddress(pixel), width: 40, height: 24,
+            bitsPerComponent: 8, bytesPerRow: CVPixelBufferGetBytesPerRow(pixel), space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue))
+        let red: CGFloat = color == .red || color == .white ? 1 : 0
+        let green: CGFloat = color == .green || color == .white ? 1 : 0
+        let blue: CGFloat = color == .blue || color == .white ? 1 : 0
+        context.setFillColor(CGColor(red: red, green: green, blue: blue, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 40, height: 24))
+        CVPixelBufferUnlockBaseAddress(pixel, [])
+        var format: CMVideoFormatDescription?
+        XCTAssertEqual(CMVideoFormatDescriptionCreateForImageBuffer(allocator: kCFAllocatorDefault, imageBuffer: pixel, formatDescriptionOut: &format), noErr)
+        var timing = CMSampleTimingInfo(duration: CMTime(value: 1, timescale: 10), presentationTimeStamp: timestamp, decodeTimeStamp: .invalid)
+        var result: CMSampleBuffer?
+        XCTAssertEqual(CMSampleBufferCreateReadyWithImageBuffer(allocator: kCFAllocatorDefault, imageBuffer: pixel,
+            formatDescription: try XCTUnwrap(format), sampleTiming: &timing, sampleBufferOut: &result), noErr)
+        let sample = try XCTUnwrap(result)
+        let attachments = try XCTUnwrap(CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: true))
+        let attachment = unsafeBitCast(CFArrayGetValueAtIndex(attachments, 0), to: NSMutableDictionary.self)
+        attachment[SCStreamFrameInfo.status.rawValue] = SCFrameStatus.complete.rawValue
+        return sample
+    }
+
+    private func audioSample(at timestamp: CMTime, channels: Int, frames: Int = 4_800,
+                             distinctTiming: Bool = false) throws -> CMSampleBuffer {
+        let bytesPerFrame = channels * MemoryLayout<Float>.size
+        var format = AudioStreamBasicDescription(mSampleRate: 48_000, mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked, mBytesPerPacket: UInt32(bytesPerFrame),
+            mFramesPerPacket: 1, mBytesPerFrame: UInt32(bytesPerFrame), mChannelsPerFrame: UInt32(channels),
+            mBitsPerChannel: 32, mReserved: 0)
+        var description: CMAudioFormatDescription?
+        XCTAssertEqual(CMAudioFormatDescriptionCreate(allocator: kCFAllocatorDefault, asbd: &format,
+            layoutSize: 0, layout: nil, magicCookieSize: 0, magicCookie: nil, extensions: nil,
+            formatDescriptionOut: &description), noErr)
+        var block: CMBlockBuffer?
+        XCTAssertEqual(CMBlockBufferCreateWithMemoryBlock(allocator: kCFAllocatorDefault, memoryBlock: nil,
+            blockLength: frames * bytesPerFrame, blockAllocator: kCFAllocatorDefault, customBlockSource: nil,
+            offsetToData: 0, dataLength: frames * bytesPerFrame, flags: 0, blockBufferOut: &block), noErr)
+        let data = try XCTUnwrap(block)
+        let values = (0..<(frames * channels)).map { Float(sin(Double($0 / channels) * 2 * .pi * 440 / 48_000) * 0.25) }
+        values.withUnsafeBytes { bytes in
+            XCTAssertEqual(CMBlockBufferReplaceDataBytes(with: bytes.baseAddress!, blockBuffer: data,
+                offsetIntoDestination: 0, dataLength: bytes.count), noErr)
+        }
+        let entryCount = distinctTiming ? frames : 1
+        var timings = (0..<entryCount).map { index in
+            CMSampleTimingInfo(duration: CMTime(value: 1, timescale: 48_000),
+                presentationTimeStamp: CMTimeAdd(timestamp, CMTime(value: Int64(index), timescale: 48_000)),
+                decodeTimeStamp: distinctTiming ? CMTimeAdd(CMTimeSubtract(timestamp, time(0.1)), CMTime(value: Int64(index), timescale: 48_000)) : .invalid)
+        }
+        var sampleSize = bytesPerFrame
+        var result: CMSampleBuffer?
+        XCTAssertEqual(CMSampleBufferCreateReady(allocator: kCFAllocatorDefault, dataBuffer: data,
+            formatDescription: try XCTUnwrap(description), sampleCount: frames, sampleTimingEntryCount: entryCount,
+            sampleTimingArray: &timings, sampleSizeEntryCount: 1, sampleSizeArray: &sampleSize, sampleBufferOut: &result), noErr)
+        return try XCTUnwrap(result)
+    }
+
+    private func centerColor(_ image: CGImage) throws -> (Int, Int, Int) {
+        var pixel = [UInt8](repeating: 0, count: 4)
+        try pixel.withUnsafeMutableBytes { bytes in
+            let context = try XCTUnwrap(CGContext(data: bytes.baseAddress, width: 1, height: 1, bitsPerComponent: 8,
+                bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            context.draw(image, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        }
+        return (Int(pixel[0]), Int(pixel[1]), Int(pixel[2]))
+    }
+}
+
+private final class TestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: CMTime
+    init(_ seconds: Double) { value = CMTime(seconds: seconds, preferredTimescale: 48_000) }
+    var now: CMTime { lock.lock(); defer { lock.unlock() }; return value }
+    func set(_ seconds: Double) { lock.lock(); defer { lock.unlock() }; value = CMTime(seconds: seconds, preferredTimescale: 48_000) }
+}
+
+private final class StopRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [String?] = []
+    func record(_ message: String?) { lock.lock(); defer { lock.unlock() }; storage.append(message) }
+    var messages: [String?] { lock.lock(); defer { lock.unlock() }; return storage }
+}

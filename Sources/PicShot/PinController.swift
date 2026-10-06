@@ -6,11 +6,12 @@ import PicShotCore
 
 /// Pixel edits are independent from a pin's presentation zoom, opacity, and position.
 enum PinTransform: CaseIterable {
-    case rotateClockwise, flipHorizontal, flipVertical, grayscale, invert
+    case rotateClockwise, rotateCounterclockwise, flipHorizontal, flipVertical, grayscale, invert
 
     var title: String {
         switch self {
-        case .rotateClockwise: return "顺时针旋转 90°"
+        case .rotateClockwise: return "向右旋转 90°"
+        case .rotateCounterclockwise: return "向左旋转 90°"
         case .flipHorizontal: return "水平翻转"
         case .flipVertical: return "垂直翻转"
         case .grayscale: return "灰度"
@@ -36,6 +37,7 @@ enum PinImageRenderer {
         let output: CIImage
         switch transform {
         case .rotateClockwise: output = source.oriented(.right)
+        case .rotateCounterclockwise: output = source.oriented(.left)
         case .flipHorizontal: output = source.oriented(.upMirrored)
         case .flipVertical: output = source.oriented(.downMirrored)
         case .grayscale: output = source.applyingFilter("CIColorControls", parameters: [kCIInputSaturationKey: 0])
@@ -102,18 +104,20 @@ struct PinImageState {
     var onPresentationChange: ((PinPresentation) -> Void)?
     var currentImage: CGImage { state.current }
     private var state: PinImageState
+    private var pixelRevision: UInt = 0
     private let canvas = PinCanvas()
     private let scrollView = NSScrollView()
-    private let zoomPicker = NSPopUpButton()
-    private let opacity = NSSlider(value: 1, minValue: 0.15, maxValue: 1, target: nil, action: nil)
-    private let cropButton = NSButton()
     private var fixedZoom: CGFloat?
     private var locked = false
     private var closed = false
     private var updatingLayout = false
     private var applyingPresentation = false
     private var exportPanel: NSSavePanel?
-    private let toolbarHeight: CGFloat = 36
+    private(set) var annotationEditor: ImageEditorController?
+    private(set) var recognitionWindow: TextResultController?
+    private var recognitionTask: Task<Void, Never>?
+    private var recognitionGeneration = UUID()
+    var actionMenu: NSMenu? { canvas.menu }
 
     convenience init(image: CGImage) {
         self.init(originalImage: image, currentImage: image, isModified: false)
@@ -123,99 +127,158 @@ struct PinImageState {
         image = originalImage
         state = PinImageState(original: originalImage, current: currentImage, isModified: isModified)
         let scale = min(1, 680 / CGFloat(max(currentImage.width, currentImage.height)))
-        let size = NSSize(width: max(344, CGFloat(currentImage.width) * scale), height: max(120, CGFloat(currentImage.height) * scale) + 36)
-        let panel = NSPanel(contentRect: NSRect(origin: .zero, size: size),
-                            styleMask: [.titled, .closable, .resizable, .utilityWindow], backing: .buffered, defer: false)
+        let size = NSSize(width: max(32, CGFloat(currentImage.width) * scale), height: max(24, CGFloat(currentImage.height) * scale))
+        let panel = PinPanel(contentRect: NSRect(origin: .zero, size: size),
+                             styleMask: [.borderless, .resizable], backing: .buffered, defer: false)
         super.init(window: panel)
         panel.level = .floating; panel.isReleasedWhenClosed = false; panel.isFloatingPanel = true
         panel.hidesOnDeactivate = false; panel.delegate = self
-        panel.isExcludedFromWindowsMenu = true
+        panel.isExcludedFromWindowsMenu = true; panel.hasShadow = true
+        panel.isOpaque = false; panel.backgroundColor = .clear
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.contentMinSize = NSSize(width: 344, height: 116)
+        panel.contentMinSize = NSSize(width: 32, height: 24)
         panel.center()
 
         scrollView.hasVerticalScroller = true; scrollView.hasHorizontalScroller = true
-        scrollView.autohidesScrollers = true; scrollView.borderType = .noBorder
-        scrollView.drawsBackground = false; scrollView.documentView = canvas
+        scrollView.scrollerStyle = .overlay; scrollView.autohidesScrollers = true
+        scrollView.borderType = .noBorder; scrollView.drawsBackground = false
+        scrollView.contentView.drawsBackground = false; scrollView.documentView = canvas
         canvas.image = currentImage
         canvas.onCrop = { [weak self] rectangle in self?.applyCrop(rectangle) }
         canvas.onCancelCrop = { [weak self] in self?.setCropping(false) }
-        canvas.onSelectionChanged = { [weak self] in self?.updateCropButton() }
+        canvas.onAnnotate = { [weak self] in self?.showAnnotations() }
+        canvas.onClose = { [weak self] in self?.close() }
+        canvas.onCopy = { [weak self] in self?.copyPin() }
         canvas.menu = makeActionMenu()
-
-        let copy = button(symbol: "doc.on.doc", title: "复制当前图片", action: #selector(copyPin))
-        let save = button(symbol: "square.and.arrow.down", title: "保存当前图片为 PNG", action: #selector(savePin))
-        let actions = NSPopUpButton(frame: .zero, pullsDown: true)
-        actions.bezelStyle = .texturedRounded; actions.controlSize = .small
-        let actionMenu = makeActionMenu()
-        let heading = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-        heading.image = NSImage(systemSymbolName: "slider.horizontal.3", accessibilityDescription: "更多贴图操作")
-        actionMenu.insertItem(heading, at: 0); actions.menu = actionMenu
-        actions.toolTip = "旋转、翻转、滤镜、原图、锁定与鼠标穿透"
-        actions.setAccessibilityLabel("更多贴图操作")
-        configure(cropButton, symbol: "crop", title: "裁剪：拖动选择，回车确认，Esc 取消", action: #selector(toggleCrop))
-        zoomPicker.addItems(withTitles: ["适合", "25%", "50%", "100%", "200%", "400%"])
-        zoomPicker.target = self; zoomPicker.action = #selector(changeZoom(_:))
-        zoomPicker.controlSize = .small; zoomPicker.toolTip = "显示缩放；复制和保存仍使用当前图片像素"
-        zoomPicker.setAccessibilityLabel("贴图缩放")
-        opacity.target = self; opacity.action = #selector(changeOpacity(_:)); opacity.controlSize = .small
-        opacity.toolTip = "窗口不透明度 15%–100%；不会改变导出的图片"
-        opacity.setAccessibilityLabel("贴图不透明度")
-        let alphaIcon = NSImageView(image: NSImage(systemSymbolName: "circle.lefthalf.filled", accessibilityDescription: "不透明度")!)
-        let bar = NSStackView(views: [copy, save, actions, cropButton, zoomPicker, alphaIcon, opacity])
-        bar.orientation = .horizontal; bar.spacing = 5
-        bar.edgeInsets = NSEdgeInsets(top: 4, left: 8, bottom: 4, right: 8)
-        let root = NSView(); root.addSubview(scrollView); root.addSubview(bar); panel.contentView = root
-        scrollView.translatesAutoresizingMaskIntoConstraints = false; bar.translatesAutoresizingMaskIntoConstraints = false
+        canvas.setAccessibilityLabel("图片贴图，空格标注，右键显示操作")
+        let root = NSView(); root.addSubview(scrollView); panel.contentView = root
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
             scrollView.topAnchor.constraint(equalTo: root.topAnchor), scrollView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: root.trailingAnchor), scrollView.bottomAnchor.constraint(equalTo: bar.topAnchor),
-            bar.leadingAnchor.constraint(equalTo: root.leadingAnchor), bar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            bar.bottomAnchor.constraint(equalTo: root.bottomAnchor), bar.heightAnchor.constraint(equalToConstant: toolbarHeight),
-            actions.widthAnchor.constraint(equalToConstant: 42), zoomPicker.widthAnchor.constraint(equalToConstant: 72),
-            alphaIcon.widthAnchor.constraint(equalToConstant: 16), opacity.widthAnchor.constraint(greaterThanOrEqualToConstant: 54)
+            scrollView.trailingAnchor.constraint(equalTo: root.trailingAnchor), scrollView.bottomAnchor.constraint(equalTo: root.bottomAnchor)
         ])
+        panel.initialFirstResponder = canvas
         root.layoutSubtreeIfNeeded(); updateLayout(); updateTitle()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    private func configure(_ button: NSButton, symbol: String, title: String, action: Selector) {
-        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
-        button.title = ""; button.target = self; button.action = action
-        button.bezelStyle = .texturedRounded; button.controlSize = .small
-        button.toolTip = title; button.setAccessibilityLabel(title)
-        button.widthAnchor.constraint(equalToConstant: 28).isActive = true
-    }
-    private func button(symbol: String, title: String, action: Selector) -> NSButton {
-        let result = NSButton(); configure(result, symbol: symbol, title: title, action: action); return result
-    }
-
     private func makeActionMenu() -> NSMenu {
         let menu = NSMenu(); menu.delegate = self
+        let recognition = NSMenu(title: "识别")
+        addItem("识别文字…", action: #selector(recognizeText), to: recognition)
+        addItem("直接复制识别文本", action: #selector(copyRecognizedText), to: recognition)
+        recognition.delegate = self
+        addItem("下次直接复制文本", action: #selector(toggleDirectCopy), to: recognition)
+        menu.addItem(withTitle: "识别", action: nil, keyEquivalent: "").submenu = recognition
+        let processing = NSMenu(title: "图像处理"); processing.delegate = self
         for (index, transform) in PinTransform.allCases.enumerated() {
-            let item = menu.addItem(withTitle: transform.title, action: #selector(transformImage(_:)), keyEquivalent: "")
-            item.target = self; item.tag = index
+            let item = addItem(transform.title, action: #selector(transformImage(_:)), to: processing)
+            item.tag = index
         }
+        processing.addItem(.separator())
+        let alpha = NSMenu(title: "不透明度"); alpha.delegate = self
+        for percent in [100, 80, 60, 40, 20, 15] {
+            let item = addItem("\(percent)%", action: #selector(selectOpacity(_:)), to: alpha); item.tag = percent
+        }
+        processing.addItem(withTitle: "不透明度", action: nil, keyEquivalent: "").submenu = alpha
+        addItem("重置所有处理", action: #selector(resetImage), to: processing)
+        menu.addItem(withTitle: "图像处理", action: nil, keyEquivalent: "").submenu = processing
+        addItem("复制当前图像", action: #selector(copyPin), to: menu)
+        addItem("当前图像另存为…", action: #selector(savePin), to: menu)
         menu.addItem(.separator())
-        for (title, action) in [("裁剪当前图片…", #selector(toggleCrop)), ("恢复原图", #selector(resetImage)),
-                                ("复制当前图片", #selector(copyPin)), ("保存当前图片为 PNG…", #selector(savePin)),
-                                ("复制原始图片", #selector(copyOriginal)), ("保存原始图片为 PNG…", #selector(saveOriginal))] {
-            menu.addItem(withTitle: title, action: action, keyEquivalent: "").target = self
+        addItem("标注", action: #selector(showAnnotations), key: " ", to: menu)
+        addItem("裁剪当前图片…", action: #selector(toggleCrop), to: menu)
+        let zoom = NSMenu(title: "缩放"); zoom.delegate = self
+        for (index, title) in ["适合窗口", "25%", "50%", "100%", "200%", "400%"].enumerated() {
+            let item = addItem(title, action: #selector(selectZoom(_:)), to: zoom); item.tag = index
         }
+        menu.addItem(withTitle: "缩放", action: nil, keyEquivalent: "").submenu = zoom
+        addItem("鼠标穿透（菜单栏恢复当前组）", action: #selector(clickThrough), to: menu)
+        addItem("窗口阴影", action: #selector(toggleShadow), to: menu)
+        addItem("窗口置顶", action: #selector(toggleFloating), to: menu)
         menu.addItem(.separator())
-        for (title, action) in [("适合窗口", #selector(fitToWindow)), ("100% 像素尺寸", #selector(actualSize)),
-                                ("锁定位置与窗口大小", #selector(toggleLock)), ("鼠标穿透（菜单栏恢复当前组）", #selector(clickThrough)),
-                                ("关闭贴图", #selector(closePin))] {
-            menu.addItem(withTitle: title, action: action, keyEquivalent: "").target = self
-        }
+        let original = NSMenu(title: "原始图片")
+        addItem("复制原始图片", action: #selector(copyOriginal), to: original)
+        addItem("保存原始图片为 PNG…", action: #selector(saveOriginal), to: original)
+        menu.addItem(withTitle: "原始图片", action: nil, keyEquivalent: "").submenu = original
+        addItem("锁定", action: #selector(toggleLock), to: menu)
+        addItem("关闭", action: #selector(closePin), key: "\u{1b}", to: menu)
         return menu
+    }
+
+    @discardableResult private func addItem(_ title: String, action: Selector, key: String = "", to menu: NSMenu) -> NSMenuItem {
+        let item = menu.addItem(withTitle: title, action: action, keyEquivalent: key)
+        item.target = self; item.keyEquivalentModifierMask = []; return item
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         for item in menu.items {
+            if item.action == #selector(toggleDirectCopy) { item.state = TextResultController.copyDirectlyNextTime ? .on : .off }
             if item.action == #selector(toggleLock) { item.state = locked ? .on : .off }
             if item.action == #selector(toggleCrop) { item.state = canvas.isCropping ? .on : .off }
+            if item.action == #selector(toggleShadow) { item.state = window?.hasShadow == true ? .on : .off }
+            if item.action == #selector(toggleFloating) { item.state = window?.level == .floating ? .on : .off }
+            if item.action == #selector(selectOpacity(_:)) { item.state = abs(Double(window?.alphaValue ?? 1) - Double(item.tag) / 100) < 0.005 ? .on : .off }
+            if item.action == #selector(selectZoom(_:)) {
+                let scales: [CGFloat?] = [nil, 0.25, 0.5, 1, 2, 4]
+                item.state = scales[item.tag] == fixedZoom ? .on : .off
+            }
+        }
+    }
+
+    @objc func showAnnotations() {
+        guard !closed, exportPanel == nil else { return }
+        if let annotationEditor { annotationEditor.showWindow(nil); annotationEditor.window?.makeKeyAndOrderFront(nil); return }
+        setCropping(false)
+        var editingRevision = pixelRevision
+        let apply: (CGImage) -> Bool = { [weak self] image in
+            guard let self, !self.closed, self.exportPanel == nil else { return false }
+            guard self.pixelRevision == editingRevision else {
+                showError(PicShotError.message("贴图已在其他操作中更改。当前标注仍可复制或导出；请重新打开标注后再应用到贴图。")); return false
+            }
+            do {
+                try self.applyAnnotatedImage(image); editingRevision = self.pixelRevision; return true
+            } catch { showError(error); return false }
+        }
+        let editor = ImageEditorController(image: state.current, onSave: { _ = apply($0) },
+            onPin: { _ = apply($0) }, onOCR: { [weak self] image in self?.recognize(image, copyDirectly: false) }, onApply: apply)
+        editor.onClose = { [weak self] in self?.annotationEditor = nil }
+        annotationEditor = editor
+        editor.show(near: window?.frame ?? .zero)
+    }
+
+    /// Keep persistence transactional when flattening the shared annotation editor.
+    func applyAnnotatedImage(_ image: CGImage) throws {
+        guard !closed, exportPanel == nil else { return }
+        guard PinImageRenderer.allowsRasterSize(width: image.width, height: image.height) else { throw renderFailure }
+        try acceptImageState(PinImageState(original: state.original, current: image, isModified: true))
+    }
+
+    @objc private func toggleDirectCopy() { UserDefaults.standard.set(!TextResultController.copyDirectlyNextTime, forKey: TextResultController.directCopyPreferenceKey) }
+    @objc private func recognizeText() { recognize(state.current, copyDirectly: false) }
+    @objc private func copyRecognizedText() { recognize(state.current, copyDirectly: true) }
+    private func recognize(_ image: CGImage, copyDirectly: Bool) {
+        guard !closed else { return }
+        recognitionTask?.cancel()
+        let generation = UUID(); recognitionGeneration = generation
+        recognitionTask = Task { [weak self] in
+            do {
+                let result = try await RecognitionService.recognize(image)
+                guard !Task.isCancelled, let self, !self.closed, self.recognitionGeneration == generation else { return }
+                self.recognitionTask = nil
+                if (copyDirectly || TextResultController.copyDirectlyNextTime), !result.displayText.isEmpty {
+                    TextResultController.copyToPasteboard(result.displayText); return
+                }
+                self.recognitionWindow?.close()
+                let resultWindow = TextResultController(text: result.displayText, sourceImage: image)
+                resultWindow.onClose = { [weak self] in self?.recognitionWindow = nil }
+                self.recognitionWindow = resultWindow
+                resultWindow.showWindow(nil); resultWindow.window?.makeKeyAndOrderFront(nil)
+            } catch is CancellationError {} catch {
+                guard !Task.isCancelled, self?.closed == false, self?.recognitionGeneration == generation else { return }
+                self?.recognitionTask = nil; showError(error)
+            }
         }
     }
 
@@ -248,8 +311,18 @@ struct PinImageState {
     }
     private func acceptImageState(_ next: PinImageState) throws {
         try onPixelChange?(next.current, !next.isModified)
-        state = next
+        let previousSize = CGSize(width: state.current.width, height: state.current.height)
+        state = next; pixelRevision &+= 1
         setCropping(false); canvas.image = state.current
+        if fixedZoom == nil, !locked, previousSize != CGSize(width: state.current.width, height: state.current.height), let window {
+            let screen = window.screen?.visibleFrame ?? window.frame
+            let scale = min(canvas.zoom, min(screen.width / CGFloat(state.current.width), screen.height / CGFloat(state.current.height)))
+            let size = NSSize(width: max(32, CGFloat(state.current.width) * scale), height: max(24, CGFloat(state.current.height) * scale))
+            var frame = NSRect(x: window.frame.minX, y: window.frame.maxY - size.height, width: size.width, height: size.height)
+            frame.origin.x = min(max(frame.minX, screen.minX), screen.maxX - frame.width)
+            frame.origin.y = min(max(frame.minY, screen.minY), screen.maxY - frame.height)
+            window.setFrame(frame, display: true)
+        }
         updateLayout(); updateTitle()
     }
     private var renderFailure: Error {
@@ -263,15 +336,10 @@ struct PinImageState {
     }
     private func setCropping(_ value: Bool) {
         canvas.isCropping = value; canvas.selection = nil
+        canvas.toolTip = value ? "拖动选择，按 Return 裁剪，Esc 取消" : nil
         if value { window?.makeFirstResponder(canvas) }
-        updateCropButton(); updateTitle()
+        updateTitle()
     }
-    private func updateCropButton() {
-        let ready = canvas.isCropping && canvas.selection != nil
-        cropButton.image = NSImage(systemSymbolName: ready ? "checkmark" : "crop", accessibilityDescription: ready ? "应用裁剪" : "裁剪")
-        cropButton.state = canvas.isCropping ? .on : .off
-    }
-
     @objc private func copyPin() { copyImage(state.current) }
     @objc private func copyOriginal() { copyImage(image) }
     @objc private func savePin() { save(original: false) }
@@ -291,20 +359,22 @@ struct PinImageState {
         }
     }
 
-    @objc private func changeOpacity(_ sender: NSSlider) { window?.alphaValue = sender.doubleValue; presentationDidChange() }
-    @objc private func changeZoom(_ sender: NSPopUpButton) {
-        let scales: [CGFloat?] = [nil, 0.25, 0.5, 1, 2, 4]
-        guard scales.indices.contains(sender.indexOfSelectedItem) else { return }
-        fixedZoom = scales[sender.indexOfSelectedItem]; updateLayout(); updateTitle(); presentationDidChange()
+    @objc private func selectOpacity(_ sender: NSMenuItem) {
+        window?.alphaValue = min(1, max(0.15, Double(sender.tag) / 100)); presentationDidChange()
     }
-    @objc private func fitToWindow() { fixedZoom = nil; zoomPicker.selectItem(at: 0); updateLayout(); updateTitle(); presentationDidChange() }
-    @objc private func actualSize() { fixedZoom = 1; zoomPicker.selectItem(at: 3); updateLayout(); updateTitle(); presentationDidChange() }
+    @objc private func selectZoom(_ sender: NSMenuItem) {
+        let scales: [CGFloat?] = [nil, 0.25, 0.5, 1, 2, 4]
+        guard scales.indices.contains(sender.tag) else { return }
+        fixedZoom = scales[sender.tag]; updateLayout(); updateTitle(); presentationDidChange()
+    }
+    @objc private func toggleShadow() { window?.hasShadow.toggle() }
+    @objc private func toggleFloating() { window?.level = window?.level == .floating ? .normal : .floating }
     @objc private func toggleLock() {
         locked.toggle(); window?.isMovable = !locked
         if locked { window?.styleMask.remove(.resizable) } else { window?.styleMask.insert(.resizable) }
         updateTitle(); presentationDidChange()
     }
-    @objc private func clickThrough() { setCropping(false); window?.ignoresMouseEvents = true; presentationDidChange() }
+    @objc private func clickThrough() { setCropping(false); annotationEditor?.close(); window?.ignoresMouseEvents = true; presentationDidChange() }
     @objc private func closePin() { close() }
 
     var presentation: PinPresentation {
@@ -321,10 +391,8 @@ struct PinImageState {
         let value = value.normalized()
         // Set the frame before locking; NSWindow may enforce its content minimum size.
         window?.setFrame(value.frame.rect, display: true)
-        window?.alphaValue = value.opacity; opacity.doubleValue = value.opacity
+        window?.alphaValue = value.opacity
         fixedZoom = value.zoom.map { CGFloat($0) }
-        let scales: [Double?] = [nil, 0.25, 0.5, 1, 2, 4]
-        zoomPicker.selectItem(at: scales.firstIndex(of: value.zoom) ?? 0)
         locked = value.locked; window?.isMovable = !locked
         if locked { window?.styleMask.remove(.resizable) } else { window?.styleMask.insert(.resizable) }
         window?.ignoresMouseEvents = value.clickThrough
@@ -350,7 +418,11 @@ struct PinImageState {
     func windowWillClose(_ notification: Notification) {
         guard !closed else { return }; closed = true
         exportPanel?.cancel(nil); exportPanel = nil
-        canvas.onCrop = nil; canvas.onCancelCrop = nil; canvas.onSelectionChanged = nil
+        recognitionGeneration = UUID(); recognitionTask?.cancel(); recognitionTask = nil
+        annotationEditor?.onClose = nil; annotationEditor?.close(); annotationEditor = nil
+        recognitionWindow?.onClose = nil; recognitionWindow?.close(); recognitionWindow = nil
+        canvas.onCrop = nil; canvas.onCancelCrop = nil
+        canvas.onAnnotate = nil; canvas.onClose = nil; canvas.onCopy = nil
         let completion = onClose
         onClose = nil; onPixelChange = nil; onPresentationChange = nil
         completion?()
@@ -382,14 +454,23 @@ struct PinImageState {
     }
 }
 
+/// Borderless pins still need keyboard focus for Space, Escape, and crop confirmation.
+@MainActor final class PinPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+    override func cancelOperation(_ sender: Any?) { close() }
+}
+
 @MainActor private final class PinCanvas: NSView {
     var image: CGImage? { didSet { needsDisplay = true } }
     var zoom: CGFloat = 1
     var isCropping = false { didSet { needsDisplay = true; window?.invalidateCursorRects(for: self) } }
-    var selection: CGRect? { didSet { needsDisplay = true; onSelectionChanged?() } }
+    var selection: CGRect? { didSet { needsDisplay = true } }
     var onCrop: ((CGRect) -> Void)?
     var onCancelCrop: (() -> Void)?
-    var onSelectionChanged: (() -> Void)?
+    var onAnnotate: (() -> Void)?
+    var onClose: (() -> Void)?
+    var onCopy: (() -> Void)?
     private var anchor: CGPoint?
     override var acceptsFirstResponder: Bool { true }
 
@@ -404,10 +485,12 @@ struct PinImageState {
                        y: min(max(0, (location.y - imageRect.minY) / zoom), CGFloat(image?.height ?? 0)))
     }
     override func draw(_ dirtyRect: NSRect) {
-        NSColor.controlBackgroundColor.setFill(); dirtyRect.fill()
+        NSColor.clear.setFill(); dirtyRect.fill(using: .copy)
         guard let image, let context = NSGraphicsContext.current?.cgContext else { return }
         context.interpolationQuality = zoom > 1 ? .none : .high
         context.draw(image, in: imageRect)
+        context.setStrokeColor(NSColor.black.withAlphaComponent(0.18).cgColor)
+        context.setLineWidth(1); context.stroke(imageRect.insetBy(dx: 0.5, dy: 0.5))
         guard isCropping, let selection else { return }
         let visibleSelection = CGRect(x: imageRect.minX + selection.minX * zoom, y: imageRect.minY + selection.minY * zoom,
                                       width: selection.width * zoom, height: selection.height * zoom)
@@ -420,6 +503,7 @@ struct PinImageState {
     }
     override func resetCursorRects() { if isCropping { addCursorRect(imageRect, cursor: .crosshair) } }
     override func mouseDown(with event: NSEvent) {
+        window?.makeKey(); window?.makeFirstResponder(self)
         if !isCropping {
             if window?.isMovable == true { window?.performDrag(with: event) }
             return
@@ -441,6 +525,11 @@ struct PinImageState {
             if let selection { onCrop?(selection) } else { NSSound.beep() }
             return
         }
+        if event.modifierFlags.intersection([.command, .control, .option]).isEmpty {
+            if event.keyCode == 49 { onAnnotate?(); return }
+            if event.keyCode == 53 { onClose?(); return }
+        }
+        if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "c" { onCopy?(); return }
         super.keyDown(with: event)
     }
 }

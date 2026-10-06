@@ -9,6 +9,22 @@ import PicShotFormulaRenderCore
         let url=URL(fileURLWithPath:report);let directory=url.deletingLastPathComponent()
         do{
             try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
+            if ProcessInfo.processInfo.environment["PICSHOT_UI_PREVIEW_ONLY"] == "1" {
+                let previews=try await CaptureUIPreviewFixture.verify(evidenceDirectory:directory)
+                let originalAppearance=NSApp.appearance
+                for dark in [false,true] {
+                    NSApp.appearance=NSAppearance(named:dark ? .darkAqua : .aqua)
+                    let settings=SettingsController(onChange:{})
+                    settings.selectCategory(dark ? .capture : .shortcuts);settings.showWindow(nil)
+                    try await Task.sleep(nanoseconds:200_000_000)
+                    if let window=settings.window {try snapshot(window,to:directory.appendingPathComponent(dark ? "ui-settings-dark.png" : "ui-settings-light.png"))}
+                    settings.close()
+                }
+                NSApp.appearance=originalAppearance
+                let payload:[String:Any] = ["status":"passed","uiPreviewOnly":true,"captureStarted":false,"bundlePath":Bundle.main.bundlePath,"sourceCommit":Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String ?? "unknown","previews":previews,"scope":"Real native AppKit UI over an original synthetic frozen-desktop fixture; no screen-capture permission or live desktop capture"]
+                try JSONSerialization.data(withJSONObject:payload,options:[.prettyPrinted,.sortedKeys]).write(to:url,options:.atomic)
+                NSApp.terminate(nil);return
+            }
             var modelEvidence:[String:Any]=[:]
             let env=ProcessInfo.processInfo.environment
             if let formulaPath=env["PICSHOT_SMOKE_FORMULA_MODEL_DIR"],let formulaInput=env["PICSHOT_SMOKE_FORMULA_INPUT"],let formulaImage=CGImage.read(url:URL(fileURLWithPath:formulaInput)) {
@@ -25,6 +41,10 @@ import PicShotFormulaRenderCore
             if let erasePath=env["PICSHOT_SMOKE_ERASE_MODEL_DIR"] {
                 modelEvidence["smartErase"]=try await SmartEraseSmokeFixture.verifyPackagedHelper(modelDirectory:URL(fileURLWithPath:erasePath),evidenceDirectory:directory)
             }
+            let resourceMetrics=LocalInferenceResources.shared.snapshot()
+            guard resourceMetrics.activeJob == nil else {throw PicShotError.message("Inference gate remained occupied after helper completion")}
+            let resourceJSON=try JSONSerialization.jsonObject(with:JSONEncoder().encode(resourceMetrics))
+            modelEvidence["processResources"]=resourceJSON
             let formulaPreview=FormulaRenderController(latex:"E=mc^{2}")
             formulaPreview.showWindow(nil)
             let renderedFormula=try await formulaPreview.renderForVerification()
@@ -35,6 +55,8 @@ import PicShotFormulaRenderCore
             try renderedFormula.pdf.write(to:directory.appendingPathComponent("formula-render.pdf"))
             modelEvidence["formulaRender"]=["width":renderedFormula.width,"height":renderedFormula.height,"pngBytes":renderedFormula.png.count,"pdfBytes":renderedFormula.pdf.count,"mathMLBytes":renderedFormula.mathML.utf8.count,"svgBytes":renderedFormula.svg.utf8.count]
             let pinSessionEvidence=try await PinSessionSmokeFixture.verify(evidenceDirectory:directory)
+            var gifResourceEvidence:[String:Any]=["status":"not-run","scope":"Full GIF resource fixture is run from the ZIP install only"]
+            if env["PICSHOT_SMOKE_GIF_RESOURCES"] == "1" {gifResourceEvidence=try await GIFResourceSmokeFixture.verify(evidenceDirectory:directory)}
             let sample=ImageEditorRenderer.makeSampleImage()
             let record=try history.add(sample,title:"示例截图")
             try history.updateText("PicShot native screenshot fixture",id:record.id)
@@ -59,7 +81,7 @@ import PicShotFormulaRenderCore
             let final=residentBytes();let growth=Int64(final)-Int64(baseline);let lastIntervalGrowth=Int64(samples.last ?? final)-Int64(samples.dropLast().last ?? baseline);let windowsStable=windowCount()<=baselineWindows+3 && retainedOwned == 0
             let visible=mainWindow.isVisible && mainWindow.contentView != nil
             let source=(Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String) ?? "unknown"
-            let payload:[String:Any] = ["status":visible && growth<160*1024*1024 && lastIntervalGrowth<32*1024*1024 && windowsStable ? "passed":"failed","bundlePath":Bundle.main.bundlePath,"bundleIdentifier":Bundle.main.bundleIdentifier ?? "", "sourceCommit":source,"mainWindowVisible":visible,"arguments":CommandLine.arguments,"safeMode":true,"captureStarted":false,"packagedModelEvidence":modelEvidence,"pinSessionEvidence":pinSessionEvidence,"windowTitle":mainWindow.title,"resourceCycleCount":40,"warmupCycleCount":10,"rssSamplesEveryTenCycles":samples,"windowCountsEveryTenCycles":windowCounts,"baselineWindowCount":baselineWindows,"finalWindowCount":windowCount(),"weakCycleWindowCounts":weakCounts,"finalRetainedCycleWindows":retained.count,"retainedCycleWindowDetails":retained,"finalRetainedAppControllersOrContent":retainedOwned,"lastTenCyclesGrowthBytes":lastIntervalGrowth,"baselineRSSBytes":baseline,"peakRSSBytes":peak,"finalRSSBytes":final,"growthRSSBytes":growth,"resourceScope":"10 warm-up plus 40 synthetic editor/pin create-render-close cycles; not a screen-capture or recording leak test"]
+            let payload:[String:Any] = ["status":visible && growth<160*1024*1024 && lastIntervalGrowth<32*1024*1024 && windowsStable ? "passed":"failed","bundlePath":Bundle.main.bundlePath,"bundleIdentifier":Bundle.main.bundleIdentifier ?? "", "sourceCommit":source,"mainWindowVisible":visible,"arguments":CommandLine.arguments,"safeMode":true,"captureStarted":false,"packagedModelEvidence":modelEvidence,"pinSessionEvidence":pinSessionEvidence,"gifResourceEvidence":gifResourceEvidence,"windowTitle":mainWindow.title,"resourceCycleCount":40,"warmupCycleCount":10,"rssSamplesEveryTenCycles":samples,"windowCountsEveryTenCycles":windowCounts,"baselineWindowCount":baselineWindows,"finalWindowCount":windowCount(),"weakCycleWindowCounts":weakCounts,"finalRetainedCycleWindows":retained.count,"retainedCycleWindowDetails":retained,"finalRetainedAppControllersOrContent":retainedOwned,"lastTenCyclesGrowthBytes":lastIntervalGrowth,"baselineRSSBytes":baseline,"peakRSSBytes":peak,"finalRSSBytes":final,"growthRSSBytes":growth,"resourceScope":"10 warm-up plus 40 synthetic editor/pin create-render-close cycles; not a screen-capture or recording leak test"]
             try JSONSerialization.data(withJSONObject:payload,options:[.prettyPrinted,.sortedKeys]).write(to:url,options:.atomic)
             try? FileManager.default.removeItem(at:history.directory)
         }catch{try? JSONSerialization.data(withJSONObject:["status":"failed","error":error.localizedDescription]).write(to:url)}

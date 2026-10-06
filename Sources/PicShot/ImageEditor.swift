@@ -35,24 +35,41 @@ struct ImageAnnotation {
     var lineWidth: CGFloat = 4
     var text = ""
     var number = 1
+    /// Radians counterclockwise around localBounds' center. Image coordinates are y-up.
+    var rotation: CGFloat = 0
+    var opacity: CGFloat = 1
+    var strokeStyle: AnnotationStrokeStyle = .solid
+    var fillEnabled = false
+    var fillColor: CGColor = CGColor(srgbRed: 1, green: 0.91, blue: 0.52, alpha: 1)
+    var cornerRadius: CGFloat = 0
+    var fontName = "Helvetica"
+    var fontSize: CGFloat? = nil
+    var bold = false
+    var italic = false
+    var underline = false
+    /// Optional explicit box; text wraps to its width and remains clipped to its height.
+    var textBoxSize: CGSize? = nil
 
-    var bounds: CGRect {
+    var localBounds: CGRect {
         guard let first = points.first else { return .zero }
-        let xs = points.map(\.x), ys = points.map(\.y)
-        let minimumX = xs.min() ?? first.x, minimumY = ys.min() ?? first.y
-        let box = CGRect(x: minimumX, y: minimumY, width: (xs.max() ?? first.x) - minimumX, height: (ys.max() ?? first.y) - minimumY)
         if tool == .text {
-            let size = max(16, lineWidth * 5)
-            let font = CTFontCreateWithName("Helvetica" as CFString, size, nil)
-            let attributes: [NSAttributedString.Key: Any] = [NSAttributedString.Key(kCTFontAttributeName as String): font]
-            let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attributes))
-            return CGRect(x: first.x, y: first.y, width: max(16, CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))), height: size * 1.3)
+            return CGRect(origin: first, size: AnnotationTextLayout.size(for: self))
         }
         if tool == .number {
             let radius = max(14, lineWidth * 4)
             return CGRect(x: first.x - radius, y: first.y - radius, width: radius * 2, height: radius * 2)
         }
-        return box
+        let xs = points.map(\.x), ys = points.map(\.y)
+        let x = xs.min() ?? first.x, y = ys.min() ?? first.y
+        return CGRect(x: x, y: y, width: (xs.max() ?? x) - x, height: (ys.max() ?? y) - y)
+    }
+
+    var bounds: CGRect { localBounds.applying(transform) }
+
+    var transform: CGAffineTransform {
+        let box = localBounds
+        return CGAffineTransform(translationX: box.midX, y: box.midY)
+            .rotated(by: rotation).translatedBy(x: -box.midX, y: -box.midY)
     }
 
     func translated(by delta: CGSize) -> ImageAnnotation {
@@ -85,53 +102,16 @@ enum ImageEditorRenderer {
         context.draw(image, in: extent)
         for annotation in annotations {
             context.saveGState()
+            // Obscuring pixels is a security boundary: redaction ignores both color alpha
+            // and global opacity. Blur and pixelation remain cosmetic effects only.
+            context.setAlpha(annotation.tool == .redact ? 1 : min(1, max(0, annotation.opacity)))
             context.setStrokeColor(annotation.color)
             context.setFillColor(annotation.color)
             context.setLineWidth(max(1, annotation.lineWidth))
-            context.setLineCap(.round)
-            context.setLineJoin(.round)
-            let rect = annotation.bounds.standardized
-            switch annotation.tool {
-            case .select, .crop: break
-            case .rectangle: context.stroke(rect)
-            case .ellipse: context.strokeEllipse(in: rect)
-            case .redact:
-                // Always opaque: even a translucent chosen color cannot reveal the original pixels.
-                context.setFillColor(annotation.color.copy(alpha: 1) ?? CGColor(gray: 0, alpha: 1))
-                context.setShouldAntialias(false)
-                context.fill(rect.integral)
-            case .highlighter:
-                context.setFillColor(annotation.color.copy(alpha: 0.32) ?? annotation.color)
-                context.fill(rect)
-            case .line, .arrow, .freehand:
-                if let first = annotation.points.first, let last = annotation.points.last {
-                    context.beginPath(); context.move(to: first)
-                    for point in annotation.points.dropFirst() { context.addLine(to: point) }
-                    context.strokePath()
-                    if annotation.tool == .arrow {
-                        let angle = atan2(last.y - first.y, last.x - first.x)
-                        let length = max(12, annotation.lineWidth * 4)
-                        context.beginPath(); context.move(to: last)
-                        context.addLine(to: CGPoint(x: last.x - length * cos(angle - .pi / 6), y: last.y - length * sin(angle - .pi / 6)))
-                        context.move(to: last)
-                        context.addLine(to: CGPoint(x: last.x - length * cos(angle + .pi / 6), y: last.y - length * sin(angle + .pi / 6)))
-                        context.strokePath()
-                    }
-                }
-            case .text:
-                if let point = annotation.points.first {
-                    drawText(annotation.text, point: point, size: max(16, annotation.lineWidth * 5), color: annotation.color, context: context)
-                }
-            case .number:
-                context.fillEllipse(in: rect)
-                let value = String(annotation.number)
-                let fontSize = rect.height * 0.58
-                let font = CTFontCreateWithName("Helvetica-Bold" as CFString, fontSize, nil)
-                let line = CTLineCreateWithAttributedString(NSAttributedString(string: value, attributes: [NSAttributedString.Key(kCTFontAttributeName as String): font]))
-                let width = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
-                drawText(value, point: CGPoint(x: rect.midX - width / 2, y: rect.midY - fontSize * 0.37), size: fontSize, color: CGColor(gray: 1, alpha: 1), context: context, bold: true)
-            case .blur, .pixelate:
-                let region = rect.integral.intersection(extent)
+            context.setLineCap(.round); context.setLineJoin(.round)
+            context.setLineDash(phase: 0, lengths: annotation.strokeStyle.pattern(width: annotation.lineWidth))
+            if annotation.tool == .blur || annotation.tool == .pixelate {
+                let region = annotation.bounds.integral.intersection(extent)
                 if !region.isEmpty, let snapshot = context.makeImage() {
                     let input = CIImage(cgImage: snapshot)
                     let filtered: CIImage
@@ -141,10 +121,42 @@ enum ImageEditorRenderer {
                         filtered = input.applyingFilter("CIPixellate", parameters: [kCIInputScaleKey: max(8, annotation.lineWidth * 4), kCIInputCenterKey: CIVector(x: 0, y: 0)])
                     }
                     if let patch = filterContext.createCGImage(filtered.cropped(to: region), from: region) {
-                        context.interpolationQuality = .none
-                        context.draw(patch, in: region)
+                        var transform = annotation.transform
+                        if let clip = annotation.outline.copy(using: &transform) { context.addPath(clip); context.clip() }
+                        context.interpolationQuality = .none; context.draw(patch, in: region)
                     }
                 }
+                context.restoreGState(); continue
+            }
+            context.concatenate(annotation.transform)
+            let rect = annotation.localBounds.standardized
+            switch annotation.tool {
+            case .select, .crop, .blur, .pixelate: break
+            case .rectangle, .ellipse:
+                if annotation.fillEnabled {
+                    context.setFillColor(annotation.fillColor); context.addPath(annotation.outline); context.fillPath()
+                }
+                context.addPath(annotation.outline); context.strokePath()
+            case .redact:
+                context.setFillColor(annotation.color.copy(alpha: 1) ?? CGColor(gray: 0, alpha: 1))
+                context.setShouldAntialias(false); context.fill(rect.integral)
+            case .highlighter:
+                context.setFillColor(annotation.color.copy(alpha: 0.32) ?? annotation.color); context.fill(rect)
+            case .line, .arrow, .freehand:
+                context.addPath(annotation.strokePath); context.strokePath()
+            case .text:
+                if annotation.fillEnabled {
+                    context.setFillColor(annotation.fillColor); context.addPath(annotation.outline); context.fillPath()
+                }
+                AnnotationTextLayout.draw(annotation, context: context)
+            case .number:
+                context.fillEllipse(in: rect)
+                let value = String(annotation.number)
+                let fontSize = rect.height * 0.58
+                let font = CTFontCreateWithName("Helvetica-Bold" as CFString, fontSize, nil)
+                let line = CTLineCreateWithAttributedString(NSAttributedString(string: value, attributes: [NSAttributedString.Key(kCTFontAttributeName as String): font]))
+                let width = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
+                drawText(value, point: CGPoint(x: rect.midX - width / 2, y: rect.midY - fontSize * 0.37), size: fontSize, color: CGColor(gray: 1, alpha: 1), context: context, bold: true)
             }
             context.restoreGState()
         }
@@ -218,10 +230,13 @@ enum ImageEditorHistoryBudget {
 final class ImageEditorCanvas: NSView {
     var image: CGImage
     var annotations: [ImageAnnotation] = []
-    var tool: ImageEditorTool = .arrow { didSet { draft = nil; cropRect = nil; needsDisplay = true } }
-    var color = NSColor.systemRed.cgColor
-    var strokeWidth: CGFloat = 4
+    var tool: ImageEditorTool = .arrow { didSet { cancelInteraction(); cropRect = nil; needsDisplay = true } }
+    var style = ImageAnnotation(tool: .arrow, points: [], color: NSColor.systemRed.cgColor, fontSize: 20)
+    var color: CGColor { get { style.color } set { style.color = newValue } }
+    var strokeWidth: CGFloat { get { style.lineWidth } set { style.lineWidth = newValue } }
     var zoom: CGFloat = 1 { didSet { resizeCanvas() } }
+    var verticalZoom: CGFloat?
+    var displayScaleY: CGFloat { verticalZoom ?? zoom }
     var cropRect: CGRect?
     var onWillChange: (() -> Void)?
     var onChange: (() -> Void)?
@@ -231,10 +246,14 @@ final class ImageEditorCanvas: NSView {
     var onApplyCrop: (() -> Void)?
     var onCopy: (() -> Void)?
     var onExport: (() -> Void)?
+    var onCancel: (() -> Void)?
+    var onBeforeInteraction: (() -> Void)?
+    var editingAnnotationID: UUID? { didSet { cachedImage = nil; needsDisplay = true } }
     private var selection: UUID?
     private var draft: ImageAnnotation?
     private var dragOrigin: CGPoint?
     private var movingOriginal: ImageAnnotation?
+    private var activeHandle: AnnotationHandle?
     private var didBeginMoving = false
     private var cachedImage: CGImage?
     var selectedAnnotation: ImageAnnotation? { annotations.first { $0.id == selection } }
@@ -249,17 +268,26 @@ final class ImageEditorCanvas: NSView {
     override var isOpaque: Bool { true }
 
     private func resizeCanvas() {
-        setFrameSize(NSSize(width: CGFloat(image.width) * zoom, height: CGFloat(image.height) * zoom))
+        setFrameSize(NSSize(width: CGFloat(image.width) * zoom, height: CGFloat(image.height) * displayScaleY))
         needsDisplay = true
     }
 
     func setContent(image: CGImage, annotations: [ImageAnnotation]) {
         self.image = image; self.annotations = annotations
         selection = nil; draft = nil; cropRect = nil; cachedImage = nil
+        movingOriginal = nil; dragOrigin = nil; activeHandle = nil; didBeginMoving = false
         resizeCanvas(); onChange?()
     }
 
     func flattened() -> CGImage? { ImageEditorRenderer.render(image: image, annotations: annotations) }
+
+    func makeAnnotation(tool: ImageEditorTool, points: [CGPoint], text: String = "") -> ImageAnnotation {
+        var result = style
+        result.id = UUID(); result.tool = tool; result.points = points; result.text = text
+        result.rotation = 0; result.textBoxSize = nil
+        if tool == .redact { result.color = CGColor(gray: 0, alpha: 1); result.opacity = 1 }
+        return result
+    }
 
     func add(_ annotation: ImageAnnotation) {
         onWillChange?()
@@ -267,73 +295,103 @@ final class ImageEditorCanvas: NSView {
         changed()
     }
 
-    private func changed() {
-        cachedImage = nil; needsDisplay = true; onChange?()
-    }
+    private func changed() { cachedImage = nil; needsDisplay = true; onChange?() }
 
     override func draw(_ dirtyRect: NSRect) {
         NSColor.white.setFill(); bounds.fill()
         guard let context = NSGraphicsContext.current?.cgContext else { return }
-        context.saveGState(); context.scaleBy(x: zoom, y: zoom)
+        context.saveGState(); context.scaleBy(x: zoom, y: displayScaleY)
         let imageBounds = CGRect(x: 0, y: 0, width: CGFloat(image.width), height: CGFloat(image.height))
-        if cachedImage == nil { cachedImage = flattened() }
+        if cachedImage == nil { cachedImage = ImageEditorRenderer.render(image: image, annotations: annotations.filter { $0.id != editingAnnotationID }) }
         let displayed = draft.flatMap { ImageEditorRenderer.render(image: cachedImage ?? image, annotations: [$0]) } ?? cachedImage ?? image
         context.draw(displayed, in: imageBounds)
-        if let selected = annotations.first(where: { $0.id == selection }), tool == .select {
-            drawSelection(selected.bounds.insetBy(dx: -4 / zoom, dy: -4 / zoom), context: context)
+        if let selected = selectedAnnotation, tool == .select { drawSelection(selected, context: context) }
+        if let cropRect { drawSelectionBox(CGPath(rect: cropRect, transform: nil), context: context) }
+        context.restoreGState()
+    }
+
+    private func drawSelection(_ annotation: ImageAnnotation, context: CGContext) {
+        var transform = annotation.transform
+        let box = CGPath(rect: annotation.localBounds, transform: &transform)
+        if !annotation.isLinear { drawSelectionBox(box, context: context) }
+        let handles = annotation.handles(zoom: zoom)
+        if let rotate = handles.first(where: { $0.0 == .rotation })?.1 {
+            let start = CGPoint(x: annotation.localBounds.midX, y: annotation.localBounds.maxY).applying(annotation.transform)
+            context.saveGState(); context.setStrokeColor(NSColor.controlAccentColor.cgColor); context.setLineWidth(1 / zoom)
+            context.move(to: start); context.addLine(to: rotate); context.strokePath(); context.restoreGState()
         }
-        if let cropRect { drawSelection(cropRect, context: context) }
-        context.restoreGState()
+        for (handle, point) in handles {
+            let size: CGFloat = handle == .rotation ? 9 : 7
+            let rect = CGRect(x: point.x - size / (2 * zoom), y: point.y - size / (2 * zoom), width: size / zoom, height: size / zoom)
+            context.saveGState(); context.setFillColor(NSColor.white.cgColor)
+            context.setStrokeColor(NSColor.controlAccentColor.cgColor); context.setLineWidth(1.5 / zoom)
+            if handle == .rotation { context.fillEllipse(in: rect); context.strokeEllipse(in: rect) }
+            else { context.fill(rect); context.stroke(rect) }
+            context.restoreGState()
+        }
     }
 
-    private func drawSelection(_ rect: CGRect, context: CGContext) {
+    private func drawSelectionBox(_ path: CGPath, context: CGContext) {
         context.saveGState()
-        context.setStrokeColor(NSColor.white.cgColor); context.setLineWidth(3 / zoom); context.stroke(rect)
+        context.setStrokeColor(NSColor.white.cgColor); context.setLineWidth(3 / zoom); context.addPath(path); context.strokePath()
         context.setStrokeColor(NSColor.controlAccentColor.cgColor); context.setLineWidth(1.5 / zoom)
-        context.setLineDash(phase: 0, lengths: [5 / zoom, 3 / zoom]); context.stroke(rect)
+        context.setLineDash(phase: 0, lengths: [5 / zoom, 3 / zoom]); context.addPath(path); context.strokePath()
         context.restoreGState()
     }
 
-    private func imagePoint(_ event: NSEvent) -> CGPoint {
-        let point = convert(event.locationInWindow, from: nil)
-        return CGPoint(x: min(max(0, point.x / zoom), CGFloat(image.width)), y: min(max(0, point.y / zoom), CGFloat(image.height)))
+    private func imagePoint(_ event: NSEvent, clamped: Bool = true) -> CGPoint {
+        let viewPoint = convert(event.locationInWindow, from: nil)
+        let point = CGPoint(x: viewPoint.x / zoom, y: viewPoint.y / displayScaleY)
+        guard clamped else { return point }
+        return CGPoint(x: min(max(0, point.x), CGFloat(image.width)), y: min(max(0, point.y), CGFloat(image.height)))
     }
 
     override func mouseDown(with event: NSEvent) {
+        onBeforeInteraction?()
+        cancelInteraction()
         window?.makeFirstResponder(self)
-        let point = imagePoint(event)
-        dragOrigin = point; didBeginMoving = false; movingOriginal = nil
+        let point = imagePoint(event, clamped: tool != .select)
+        dragOrigin = point
         if tool == .select {
-            selection = annotations.reversed().first { $0.bounds.insetBy(dx: -8 / zoom, dy: -8 / zoom).contains(point) }?.id
-            movingOriginal = annotations.first { $0.id == selection }
+            if event.clickCount != 2, let selected = selectedAnnotation, let handle = selected.handle(at: point, zoom: zoom) {
+                activeHandle = handle; movingOriginal = selected
+            } else {
+                selection = annotations.reversed().first { $0.hitTest(point, tolerance: 6 / zoom) }?.id
+                movingOriginal = selectedAnnotation
+            }
             if let selected = selectedAnnotation {
-                color = selected.color; strokeWidth = selected.lineWidth
+                style = selected
                 if event.clickCount == 2, selected.tool == .text {
-                    onRequestText?(selected.points.first ?? point, selected.id)
+                    movingOriginal = nil; onRequestText?(selected.points.first ?? point, selected.id)
                 }
             }
             needsDisplay = true; onChange?()
         } else if tool == .text {
             onRequestText?(point, nil)
         } else if tool == .number {
-            let next = (annotations.filter { $0.tool == .number }.map(\.number).max() ?? 0) + 1
-            add(ImageAnnotation(tool: .number, points: [point], color: color, lineWidth: strokeWidth, number: next))
+            var annotation = makeAnnotation(tool: .number, points: [point])
+            annotation.number = (annotations.filter { $0.tool == .number }.map(\.number).max() ?? 0) + 1
+            add(annotation)
         } else {
-            draft = ImageAnnotation(tool: tool, points: [point, point], color: color, lineWidth: strokeWidth)
-            if tool == .redact { draft?.color = CGColor(gray: 0, alpha: 1) }
-            cropRect = nil
+            draft = makeAnnotation(tool: tool, points: [point, point]); cropRect = nil
         }
     }
 
     override func mouseDragged(with event: NSEvent) {
-        let point = imagePoint(event)
+        let point = imagePoint(event, clamped: tool != .select)
         guard let origin = dragOrigin else { return }
         if tool == .select, let original = movingOriginal, let index = annotations.firstIndex(where: { $0.id == original.id }) {
-            if !didBeginMoving {
-                guard hypot(point.x - origin.x, point.y - origin.y) > 1 / zoom else { return }
-                onWillChange?(); didBeginMoving = true
+            guard didBeginMoving || hypot(point.x - origin.x, point.y - origin.y) > 1 / zoom else { return }
+            didBeginMoving = true
+            if let activeHandle {
+                annotations[index] = original.edited(handle: activeHandle, from: origin, to: point, shift: event.modifierFlags.contains(.shift))
+            } else {
+                var delta = CGSize(width: point.x - origin.x, height: point.y - origin.y)
+                if event.modifierFlags.contains(.shift) {
+                    if abs(delta.width) > abs(delta.height) { delta.height = 0 } else { delta.width = 0 }
+                }
+                annotations[index] = original.translated(by: delta)
             }
-            annotations[index] = original.translated(by: CGSize(width: point.x - origin.x, height: point.y - origin.y))
             changed()
         } else if tool == .freehand {
             draft?.points.append(point); needsDisplay = true
@@ -342,27 +400,53 @@ final class ImageEditorCanvas: NSView {
             if event.modifierFlags.contains(.shift), [.rectangle, .ellipse, .crop].contains(tool) {
                 let length = min(abs(point.x - origin.x), abs(point.y - origin.y))
                 end = CGPoint(x: origin.x + (point.x >= origin.x ? length : -length), y: origin.y + (point.y >= origin.y ? length : -length))
+            } else if event.modifierFlags.contains(.shift), tool == .line || tool == .arrow {
+                let length = hypot(point.x - origin.x, point.y - origin.y)
+                let angle = (atan2(point.y - origin.y, point.x - origin.x) / (.pi / 4)).rounded() * (.pi / 4)
+                end = CGPoint(x: origin.x + length * cos(angle), y: origin.y + length * sin(angle))
             }
             draft?.points = [origin, end]
-            if tool == .crop { cropRect = draft?.bounds; onChange?() }
+            if tool == .crop { cropRect = draft?.localBounds; onChange?() }
             needsDisplay = true
         }
     }
 
     override func mouseUp(with event: NSEvent) {
-        defer { draft = nil; dragOrigin = nil; movingOriginal = nil; needsDisplay = true }
+        defer { draft = nil; dragOrigin = nil; movingOriginal = nil; activeHandle = nil; didBeginMoving = false; needsDisplay = true }
+        if didBeginMoving, let original = movingOriginal, let index = annotations.firstIndex(where: { $0.id == original.id }) {
+            let edited = annotations[index]
+            annotations[index] = original
+            onWillChange?() // Exactly one original snapshot for an entire gesture, none for Escape.
+            annotations[index] = edited; style = edited; changed()
+        }
         guard let draft else { return }
-        if tool == .crop { cropRect = draft.bounds; onChange?(); return }
+        if tool == .crop { cropRect = draft.localBounds; onChange?(); return }
         guard draft.bounds.width > 1 || draft.bounds.height > 1 else { return }
         add(draft)
     }
 
-    func updateSelectedStyle(color newColor: CGColor? = nil, width: CGFloat? = nil) {
+    private func cancelInteraction() {
+        if didBeginMoving, let original = movingOriginal, let index = annotations.firstIndex(where: { $0.id == original.id }) {
+            annotations[index] = original; changed()
+        }
+        draft = nil; dragOrigin = nil; movingOriginal = nil; activeHandle = nil; didBeginMoving = false
+    }
+
+    func updateSelected(_ edit: (inout ImageAnnotation) -> Void) {
         guard let selection, let index = annotations.firstIndex(where: { $0.id == selection }) else { return }
-        onWillChange?()
-        if let newColor { annotations[index].color = newColor }
-        if let width { annotations[index].lineWidth = max(1, width) }
-        changed()
+        onWillChange?(); edit(&annotations[index]); style = annotations[index]; changed()
+    }
+
+    func updateSelectedStyle(color newColor: CGColor? = nil, width: CGFloat? = nil) {
+        updateSelected {
+            if let newColor { $0.color = newColor }
+            if let width { $0.lineWidth = max(1, width) }
+        }
+    }
+
+    func replaceAnnotation(id: UUID, with annotation: ImageAnnotation) {
+        guard let index = annotations.firstIndex(where: { $0.id == id }) else { return }
+        onWillChange?(); annotations[index] = annotation; selection = id; changed()
     }
 
     func updateText(id: UUID, text: String) {
@@ -370,7 +454,15 @@ final class ImageEditorCanvas: NSView {
         onWillChange?(); annotations[index].text = text; changed()
     }
 
+    func duplicateSelection() {
+        cancelInteraction()
+        guard let selected = selectedAnnotation else { return }
+        var copy = selected.translated(by: CGSize(width: 20, height: -20)); copy.id = UUID()
+        add(copy)
+    }
+
     func deleteSelection() {
+        cancelInteraction()
         guard let selection, annotations.contains(where: { $0.id == selection }) else { return }
         onWillChange?(); annotations.removeAll { $0.id == selection }; self.selection = nil; changed()
     }
@@ -381,8 +473,10 @@ final class ImageEditorCanvas: NSView {
         }
         switch key {
         case "z":
+            cancelInteraction()
             if event.modifierFlags.contains(.shift) { onRedo?() } else { onUndo?() }
             return true
+        case "d": duplicateSelection(); return true
         case "c": onCopy?(); return true
         case "s": onExport?(); return true
         default: return super.performKeyEquivalent(with: event)
@@ -392,254 +486,404 @@ final class ImageEditorCanvas: NSView {
     override func keyDown(with event: NSEvent) {
         switch event.keyCode {
         case 51, 117: deleteSelection()
-        case 36, 76: if cropRect != nil { onApplyCrop?() } else { super.keyDown(with: event) }
-        case 53: selection = nil; draft = nil; cropRect = nil; needsDisplay = true; onChange?()
+        case 36, 76:
+            if cropRect != nil { onApplyCrop?() }
+            else if let selected = selectedAnnotation, selected.tool == .text {
+                onRequestText?(selected.points.first ?? .zero, selected.id)
+            } else { super.keyDown(with: event) }
+        case 53:
+            let wasEditing = draft != nil || didBeginMoving || cropRect != nil || (tool == .select && selection != nil)
+            cancelInteraction(); selection = nil; cropRect = nil; needsDisplay = true; onChange?()
+            if !wasEditing { onCancel?() }
+        case 123, 124, 125, 126:
+            cancelInteraction()
+            guard tool == .select, selectedAnnotation != nil else { super.keyDown(with: event); return }
+            let step: CGFloat = event.modifierFlags.contains(.shift) ? 10 : 1
+            let delta = CGSize(width: event.keyCode == 123 ? -step : (event.keyCode == 124 ? step : 0),
+                               height: event.keyCode == 125 ? -step : (event.keyCode == 126 ? step : 0))
+            updateSelected { $0 = $0.translated(by: delta) }
         default: super.keyDown(with: event)
         }
     }
 }
 
 @MainActor
-final class ImageEditorController: NSWindowController {
-    private struct Snapshot { var image: CGImage; var annotations: [ImageAnnotation] }
+final class ImageEditorController: NSWindowController, NSWindowDelegate {
+    private struct Snapshot { var image: CGImage; var annotations: [ImageAnnotation]; var selectionFrame: CGRect? }
     private let canvas: ImageEditorCanvas
     private let scrollView = NSScrollView()
+    private let workspace = EditorWorkspaceView(frame: .zero)
+    private let toolbar = NSStackView()
+    private let inspector = AnnotationInspector(frame: .zero)
     private let onSave: (CGImage) -> Void
     private let onPin: (CGImage) -> Void
     private let onOCR: (CGImage) -> Void
+    private let onTranslate: ((CGImage) -> Void)?
+    private let onApply: ((CGImage) -> Bool)?
+    private var presentation: FrozenCapturePresentation?
+    private var screenObserver: NSObjectProtocol?
     private var undoStates: [Snapshot] = []
     private var redoStates: [Snapshot] = []
-    private let status = NSTextField(labelWithString: "")
-    private let toolPicker = NSPopUpButton()
-    private let commonTools: [ImageEditorTool] = [.select, .arrow, .rectangle, .text, .redact, .crop]
-    private let moreTools: [ImageEditorTool] = [.ellipse, .line, .freehand, .number, .highlighter, .blur, .pixelate]
     private var toolButtons: [ImageEditorTool: NSButton] = [:]
-    var annotationCanvas: ImageEditorCanvas { canvas }
-    private let colorWell = NSColorWell()
-    private let widthSlider = NSSlider(value: 4, minValue: 1, maxValue: 20, target: nil, action: nil)
     private var undoButton: NSButton!
     private var redoButton: NSButton!
     private var cropButton: NSButton!
-    private var zoomPicker = NSPopUpButton()
-    private let zoomValues: [CGFloat] = [0.25, 0.5, 0.75, 1, 1.5, 2, 3]
+    private let overflow = NSPopUpButton()
+    private let status = NSTextField(labelWithString: "")
+    private var fitToWindow = true
+    private var layingOut = false
+    private var lastLayoutSize: CGSize = .zero
+    private var lastImageSize: CGSize = .zero
+    private var needsFit = true
+    private var inlineBox: InlineAnnotationTextBox?
+    private var inlineAnnotation: ImageAnnotation?
+    private var inlineExistingID: UUID?
+    var onClose: (() -> Void)?
+    var annotationCanvas: ImageEditorCanvas { canvas }
+    var activeInlineTextView: InlineAnnotationTextView? { inlineBox?.input }
+    var floatingToolbarFrame: CGRect { toolbar.frame }
+    var contextualPaletteFrame: CGRect { inspector.frame }
+    var contextualPaletteVisible: Bool { !inspector.isHidden }
+    var editorSelectionFrame: CGRect { workspace.selectionFrame }
 
-    init(image: CGImage, onSave: @escaping (CGImage) -> Void, onPin: @escaping (CGImage) -> Void, onOCR: @escaping (CGImage) -> Void) {
+    init(image: CGImage, presentation: FrozenCapturePresentation? = nil,
+         onSave: @escaping (CGImage) -> Void, onPin: @escaping (CGImage) -> Void,
+         onOCR: @escaping (CGImage) -> Void, onTranslate: ((CGImage) -> Void)? = nil,
+         onApply: ((CGImage) -> Bool)? = nil) {
         canvas = ImageEditorCanvas(image: image)
+        self.presentation = presentation
         self.onSave = onSave; self.onPin = onPin; self.onOCR = onOCR
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1080, height: 760), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        window.title = "PicShot · 图片编辑"
-        window.minSize = NSSize(width: 790, height: 420)
+        self.onTranslate = onTranslate; self.onApply = onApply
+        let window: NSWindow
+        if let presentation {
+            window = EditorOverlayWindow(contentRect: presentation.displayFrame, styleMask: [.borderless], backing: .buffered, defer: false)
+            window.level = .floating; window.hasShadow = false
+            window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        } else {
+            window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1080, height: 780), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+            window.title = "PicShot · 图片编辑"; window.minSize = NSSize(width: 760, height: 380)
+        }
         window.isReleasedWhenClosed = false
         super.init(window: window)
+        window.delegate = self
         buildInterface()
         canvas.onWillChange = { [weak self] in self?.recordChange() }
         canvas.onChange = { [weak self] in self?.updateStatus() }
-        canvas.onRequestText = { [weak self] point, id in self?.requestText(at: point, editing: id) }
+        canvas.onRequestText = { [weak self] point, id in self?.beginInlineText(at: point, editing: id) }
         canvas.onUndo = { [weak self] in self?.undoEdit() }
         canvas.onRedo = { [weak self] in self?.redoEdit() }
         canvas.onApplyCrop = { [weak self] in self?.applyCrop() }
         canvas.onCopy = { [weak self] in self?.copyResult() }
         canvas.onExport = { [weak self] in self?.exportResult() }
-        updateStatus(); window.center()
-        DispatchQueue.main.async { [weak self] in self?.fitImage() }
+        canvas.onCancel = { [weak self] in self?.cancelEditor() }
+        canvas.onBeforeInteraction = { [weak self] in self?.finishInlineText(commit: true) }
+        inspector.onEdit = { [weak self] edit in
+            guard let self else { return }
+            edit(&self.canvas.style)
+            if var annotation = self.inlineAnnotation, let box = self.inlineBox {
+                edit(&annotation); self.inlineAnnotation = annotation
+                box.applyStyle(annotation, zoom: self.canvas.zoom)
+                self.updateStatus(); return
+            }
+            if self.canvas.tool == .select { self.canvas.updateSelected(edit) }
+            self.updateStatus()
+        }
+        workspace.onLayout = { [weak self] in self?.layoutInterface() }
+        workspace.onDismiss = { [weak self] in self?.cancelEditor() }
+        workspace.onOutsideClick = { [weak self] in self?.finishInlineText(commit: true) }
+        if presentation != nil {
+            screenObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.cancelEditor() }
+            }
+        } else { window.center() }
+        updateStatus(); layoutInterface()
     }
-
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    private func button(_ title: String, action: Selector, tooltip: String? = nil) -> NSButton {
-        let button = NSButton(title: title, target: self, action: action)
-        button.bezelStyle = .rounded; button.controlSize = .small; button.toolTip = tooltip
-        return button
+    func show(near screenFrame: CGRect) {
+        guard presentation == nil, let window else { showWindow(nil); return }
+        let screen = NSScreen.screens.first { $0.frame.intersects(screenFrame) } ?? NSScreen.main
+        let visible = screen?.visibleFrame ?? screenFrame.insetBy(dx: -200, dy: -150)
+        let size = CGSize(width: min(visible.width, max(760, screenFrame.width + 40)),
+                          height: min(visible.height, max(380, screenFrame.height + 156)))
+        let origin = CGPoint(x: max(visible.minX, min(screenFrame.minX - 20, visible.maxX - size.width)),
+                             y: max(visible.minY, min(screenFrame.maxY - size.height + 20, visible.maxY - size.height)))
+        window.setFrame(CGRect(origin: origin, size: size), display: true)
+        showWindow(nil); window.makeKeyAndOrderFront(nil)
     }
 
-    private func iconButton(_ symbol: String, title: String, action: Selector) -> NSButton {
+    private func iconButton(_ symbol: String, title: String, id: String, action: Selector) -> NSButton {
         let control = NSButton(image: NSImage(systemSymbolName: symbol, accessibilityDescription: title) ?? NSImage(), target: self, action: action)
-        control.bezelStyle = .texturedRounded; control.controlSize = .small
-        control.imagePosition = .imageOnly; control.toolTip = title; control.setAccessibilityLabel(title)
+        control.isBordered = false; control.bezelStyle = .regularSquare; control.imagePosition = .imageOnly
+        control.contentTintColor = .labelColor; control.toolTip = title; control.setAccessibilityLabel(title)
+        control.identifier = NSUserInterfaceItemIdentifier(id)
         control.translatesAutoresizingMaskIntoConstraints = false
-        control.widthAnchor.constraint(equalToConstant: 28).isActive = true
+        NSLayoutConstraint.activate([control.widthAnchor.constraint(equalToConstant: 29), control.heightAnchor.constraint(equalToConstant: 32)])
+        control.wantsLayer = true; control.layer?.cornerRadius = 4
         return control
     }
-
+    private func divider() {
+        let view = NSBox(); view.boxType = .separator
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.widthAnchor.constraint(equalToConstant: 1).isActive = true
+        view.heightAnchor.constraint(equalToConstant: 22).isActive = true
+        toolbar.addArrangedSubview(view)
+    }
     private func buildInterface() {
-        guard let content = window?.contentView else { return }
-        let toolbar = NSStackView(); toolbar.orientation = .horizontal; toolbar.spacing = 5
-        toolbar.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
-        let symbols = ["cursorarrow", "arrow.up.right", "rectangle", "textformat", "square.fill", "crop"]
-        for (tool, symbol) in zip(commonTools, symbols) {
-            let control = iconButton(symbol, title: tool.title, action: #selector(selectCommonTool(_:)))
-            control.setButtonType(.toggle)
+        guard let window else { return }
+        workspace.frame = window.contentView?.bounds ?? .zero
+        workspace.autoresizingMask = [.width, .height]; window.contentView = workspace
+        workspace.frozenImage = presentation?.frozenImage
+        toolbar.orientation = .horizontal; toolbar.detachesHiddenViews = true; toolbar.spacing = 3; toolbar.alignment = .centerY
+        toolbar.edgeInsets = NSEdgeInsets(top: 4, left: 7, bottom: 4, right: 7)
+        toolbar.identifier = NSUserInterfaceItemIdentifier("editor.floatingToolbar")
+        styleFloatingSurface(toolbar)
+        let tools: [(ImageEditorTool, String)] = [(.select, "cursorarrow"), (.rectangle, "rectangle"), (.ellipse, "circle"),
+            (.freehand, "pencil.tip"), (.arrow, "arrow.up.right"), (.line, "line.diagonal"), (.text, "textformat"),
+            (.number, "1.circle"), (.highlighter, "highlighter"), (.pixelate, "square.grid.2x2.fill"), (.redact, "eraser.fill"), (.crop, "crop")]
+        for (tool, symbol) in tools {
+            let control = iconButton(symbol, title: tool.title, id: "editor.tool.\(tool.rawValue)", action: #selector(selectTool(_:)))
             control.tag = ImageEditorTool.allCases.firstIndex(of: tool) ?? 0
-            control.state = tool == canvas.tool ? .on : .off
+            control.setButtonType(.toggle)
             toolButtons[tool] = control; toolbar.addArrangedSubview(control)
         }
-        toolPicker.addItems(withTitles: ["更多"] + moreTools.map(\.title))
-        toolPicker.controlSize = .small
-        toolPicker.target = self; toolPicker.action = #selector(changeTool)
-        toolPicker.toolTip = "选择工具可移动标注，Delete 删除；敏感信息请用不透明遮盖，模糊与马赛克仅为视觉效果"
-        toolPicker.setAccessibilityLabel("标注工具")
-        colorWell.color = .systemRed; colorWell.target = self; colorWell.action = #selector(changeColor)
-        colorWell.translatesAutoresizingMaskIntoConstraints = false; colorWell.widthAnchor.constraint(equalToConstant: 32).isActive = true
-        colorWell.setAccessibilityLabel("标注颜色")
-        widthSlider.target = self; widthSlider.action = #selector(changeWidth); widthSlider.isContinuous = false
-        widthSlider.translatesAutoresizingMaskIntoConstraints = false; widthSlider.widthAnchor.constraint(equalToConstant: 56).isActive = true
-        widthSlider.toolTip = "线宽 / 字号 / 模糊强度"; widthSlider.setAccessibilityLabel("线宽")
-        undoButton = iconButton("arrow.uturn.backward", title: "撤销 · ⌘Z", action: #selector(undoEdit))
-        redoButton = iconButton("arrow.uturn.forward", title: "重做 · ⇧⌘Z", action: #selector(redoEdit))
-        cropButton = button("应用裁剪", action: #selector(applyCrop), tooltip: "先用裁剪工具拖动选区，再按 Return")
-        for view in [toolPicker, colorWell, widthSlider, undoButton!, redoButton!, iconButton("trash", title: "删除标注 · Delete", action: #selector(deleteAnnotation)), cropButton!] as [NSView] { toolbar.addArrangedSubview(view) }
-        let spacer = NSView(); spacer.setContentHuggingPriority(.defaultLow, for: .horizontal); toolbar.addArrangedSubview(spacer)
-        toolbar.addArrangedSubview(button("复制", action: #selector(copyResult), tooltip: "⌘C · 复制合成图片"))
-        toolbar.addArrangedSubview(button("导出…", action: #selector(exportResult), tooltip: "⌘S · PNG / JPEG / TIFF / PDF"))
-        let footer = NSStackView(); footer.orientation = .horizontal; footer.spacing = 10
-        footer.edgeInsets = NSEdgeInsets(top: 7, left: 12, bottom: 7, right: 12)
-        status.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-        status.textColor = .secondaryLabelColor
-        status.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        footer.addArrangedSubview(status)
-        zoomPicker.addItems(withTitles: ["适合窗口"] + zoomValues.map { "\(Int($0 * 100))%" })
-        zoomPicker.target = self; zoomPicker.action = #selector(changeZoom); zoomPicker.setAccessibilityLabel("缩放")
-        footer.addArrangedSubview(zoomPicker)
-        footer.addArrangedSubview(button("识别文字", action: #selector(recognizeResult)))
-        footer.addArrangedSubview(button("贴图", action: #selector(pinResult)))
-        footer.addArrangedSubview(button("保存到历史", action: #selector(saveResult)))
-        scrollView.hasVerticalScroller = true; scrollView.hasHorizontalScroller = true
-        scrollView.backgroundColor = .underPageBackgroundColor; scrollView.drawsBackground = true
-        scrollView.documentView = canvas
-        for view in [toolbar, scrollView, footer] as [NSView] { view.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(view) }
-        NSLayoutConstraint.activate([
-            toolbar.topAnchor.constraint(equalTo: content.topAnchor), toolbar.leadingAnchor.constraint(equalTo: content.leadingAnchor), toolbar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            scrollView.topAnchor.constraint(equalTo: toolbar.bottomAnchor), scrollView.leadingAnchor.constraint(equalTo: content.leadingAnchor), scrollView.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            footer.topAnchor.constraint(equalTo: scrollView.bottomAnchor), footer.leadingAnchor.constraint(equalTo: content.leadingAnchor), footer.trailingAnchor.constraint(equalTo: content.trailingAnchor), footer.bottomAnchor.constraint(equalTo: content.bottomAnchor)
-        ])
-        window?.makeFirstResponder(canvas)
-    }
-
-    /// Seeds real annotations for a reproducible native-window verification capture.
-    /// This uses the same model, redraw, history, and export path as interactive edits.
-    func setVerificationAnnotations(_ annotations: [ImageAnnotation]) {
-        recordChange()
-        canvas.setContent(image: canvas.image, annotations: annotations)
-        canvas.displayIfNeeded()
-    }
-
-    private var snapshot: Snapshot { Snapshot(image: canvas.image, annotations: canvas.annotations) }
-    private func recordChange() {
-        undoStates.append(snapshot)
-        redoStates.removeAll()
-        trimHistory(preferUndo: true); updateStatus()
-    }
-    private func trimHistory(preferUndo: Bool) {
-        // Oldest entries are first in each stack. Protect the nearest state in
-        // the direction the user just created, preserving immediate undo/redo.
-        let first = preferUndo ? redoStates : undoStates
-        let second = preferUndo ? undoStates : redoStates
-        let count = ImageEditorHistoryBudget.retainedSuffixStart(images: (first + second).map(\.image))
-        let firstCount = min(count, first.count)
-        let secondCount = count - firstCount
-        if preferUndo {
-            redoStates.removeFirst(firstCount); undoStates.removeFirst(secondCount)
+        divider()
+        undoButton = iconButton("arrow.uturn.backward", title: "撤销 · ⌘Z", id: "editor.undo", action: #selector(undoEdit))
+        redoButton = iconButton("arrow.uturn.forward", title: "重做 · ⇧⌘Z", id: "editor.redo", action: #selector(redoEdit))
+        toolbar.addArrangedSubview(undoButton); toolbar.addArrangedSubview(redoButton)
+        cropButton = iconButton("checkmark", title: "应用裁剪 · Return", id: "editor.applyCrop", action: #selector(applyCrop))
+        toolbar.addArrangedSubview(cropButton)
+        divider()
+        toolbar.addArrangedSubview(iconButton("text.viewfinder", title: "识别文字", id: "editor.ocr", action: #selector(recognizeResult)))
+        if onTranslate != nil { toolbar.addArrangedSubview(iconButton("character.bubble", title: "翻译", id: "editor.translate", action: #selector(translateResult))) }
+        if onApply != nil {
+            toolbar.addArrangedSubview(iconButton("checkmark.circle", title: "应用到贴图", id: "editor.applyToPin", action: #selector(applyResult)))
+        } else { toolbar.addArrangedSubview(iconButton("pin", title: "贴图", id: "editor.pin", action: #selector(pinResult))) }
+        toolbar.addArrangedSubview(iconButton("arrow.down.to.line", title: "保存图片… · ⌘S", id: "editor.save", action: #selector(exportResult)))
+        toolbar.addArrangedSubview(iconButton("xmark", title: "取消 · Escape", id: "editor.cancel", action: #selector(cancelEditor)))
+        toolbar.addArrangedSubview(iconButton("square.on.square", title: "复制图片 · ⌘C", id: "editor.copy", action: #selector(copyResult)))
+        overflow.pullsDown = true; overflow.isBordered = false; overflow.addItem(withTitle: "")
+        overflow.image = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "更多操作")
+        overflow.imagePosition = .imageOnly; overflow.setAccessibilityLabel("更多操作")
+        overflow.identifier = NSUserInterfaceItemIdentifier("editor.more")
+        for tool in [ImageEditorTool.select, .ellipse, .line, .highlighter, .crop] {
+            let item = NSMenuItem(title: tool.title, action: #selector(selectMenuTool(_:)), keyEquivalent: "")
+            item.target = self; item.tag = ImageEditorTool.allCases.firstIndex(of: tool) ?? 0; overflow.menu?.addItem(item)
+        }
+        overflow.menu?.addItem(.separator())
+        addMenu("模糊", action: #selector(selectBlur)); addMenu("创建标注副本 · ⌘D", action: #selector(duplicateAnnotation))
+        addMenu("删除标注 · Delete", action: #selector(deleteAnnotation)); overflow.menu?.addItem(.separator())
+        addMenu(onApply == nil ? "保存到历史" : "保存编辑", action: #selector(saveResult))
+        addMenu("适合窗口", action: #selector(fitImage)); addMenu("100% 像素", action: #selector(actualSize))
+        overflow.translatesAutoresizingMaskIntoConstraints = false; overflow.widthAnchor.constraint(equalToConstant: 29).isActive = true
+        overflow.heightAnchor.constraint(equalToConstant: 32).isActive = true; toolbar.addArrangedSubview(overflow)
+        inspector.identifier = NSUserInterfaceItemIdentifier("editor.contextPalette"); styleFloatingSurface(inspector)
+        if presentation != nil {
+            workspace.addSubview(canvas)
         } else {
-            undoStates.removeFirst(firstCount); redoStates.removeFirst(secondCount)
+            scrollView.hasVerticalScroller = true; scrollView.hasHorizontalScroller = true; scrollView.autohidesScrollers = true
+            scrollView.drawsBackground = false; scrollView.borderType = .noBorder; scrollView.documentView = canvas
+            workspace.addSubview(scrollView)
         }
+        workspace.addSubview(toolbar); workspace.addSubview(inspector)
+        window.makeFirstResponder(canvas)
     }
-    private func restore(_ state: Snapshot) { canvas.setContent(image: state.image, annotations: state.annotations); updateStatus() }
-    private func updateStatus() {
-        status.stringValue = "\(canvas.image.width) × \(canvas.image.height) px · \(Int(canvas.zoom * 100))% · \(canvas.annotations.count) 个标注"
-        undoButton?.isEnabled = !undoStates.isEmpty; redoButton?.isEnabled = !redoStates.isEmpty
-        cropButton?.isEnabled = (canvas.cropRect?.width ?? 0) >= 1 && (canvas.cropRect?.height ?? 0) >= 1
-        for (tool, button) in toolButtons { button.state = canvas.tool == tool ? .on : .off }
-        if canvas.tool == .select, let selected = canvas.selectedAnnotation {
-            colorWell.color = NSColor(cgColor: selected.color) ?? colorWell.color
-            widthSlider.doubleValue = Double(selected.lineWidth)
+    private func addMenu(_ title: String, action: Selector) {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: ""); item.target = self; overflow.menu?.addItem(item)
+    }
+    private func styleFloatingSurface(_ view: NSView) {
+        view.appearance = NSAppearance(named: .aqua)
+        view.wantsLayer = true; view.layer?.backgroundColor = NSColor(calibratedWhite: 0.99, alpha: 1).cgColor
+        view.layer?.cornerRadius = 7; view.layer?.borderWidth = 0.5
+        view.layer?.borderColor = NSColor.black.withAlphaComponent(0.15).cgColor
+        view.shadow = NSShadow(); view.shadow?.shadowColor = NSColor.black.withAlphaComponent(0.24)
+        view.shadow?.shadowBlurRadius = 9; view.shadow?.shadowOffset = NSSize(width: 0, height: -2)
+    }
+    private func layoutInterface() {
+        guard !layingOut, workspace.bounds.width > 0 else { return }
+        layingOut = true; defer { layingOut = false }
+        let selection: CGRect
+        if let presentation {
+            selection = presentation.selectionFrame
+            canvas.verticalZoom = selection.height / CGFloat(canvas.image.height)
+            canvas.zoom = selection.width / CGFloat(canvas.image.width)
+            canvas.frame = selection
+        } else {
+            let available = CGRect(x: 22, y: 126, width: max(1, workspace.bounds.width - 44), height: max(1, workspace.bounds.height - 164))
+            let imageSize = CGSize(width: canvas.image.width, height: canvas.image.height)
+            if fitToWindow && (needsFit || lastLayoutSize != workspace.bounds.size || lastImageSize != imageSize) {
+                canvas.zoom = min(1, max(0.05, min(available.width / CGFloat(canvas.image.width), available.height / CGFloat(canvas.image.height))))
+            }
+            needsFit = false; lastLayoutSize = workspace.bounds.size; lastImageSize = imageSize
+            let displayed = CGSize(width: min(available.width, canvas.frame.width), height: min(available.height, canvas.frame.height))
+            scrollView.frame = CGRect(x: available.midX - displayed.width / 2, y: available.maxY - displayed.height, width: displayed.width, height: displayed.height)
+            selection = scrollView.frame
         }
+        workspace.selectionFrame = selection
+        workspace.pixelSize = CGSize(width: canvas.image.width, height: canvas.image.height)
+        for button in toolButtons.values { button.isHidden = false }
+        var preferredWidth = max(40, toolbar.fittingSize.width)
+        for tool in [ImageEditorTool.ellipse, .line, .highlighter, .select, .crop] where preferredWidth > workspace.bounds.width - 20 {
+            if let button = toolButtons[tool] { button.isHidden = true; preferredWidth -= 32 }
+        }
+        toolbar.setFrameSize(CGSize(width: preferredWidth, height: 40))
+        toolbar.layoutSubtreeIfNeeded(); inspector.layoutSubtreeIfNeeded()
+        let active = toolButtons[canvas.tool].map { toolbar.convert($0.bounds, from: $0).midX } ?? 18
+        let frames = EditorFloatingLayout.frames(selection: selection, available: workspace.bounds,
+            toolbarSize: CGSize(width: preferredWidth, height: 40),
+            paletteSize: inspector.isHidden ? .zero : CGSize(width: inspector.fittingSize.width, height: max(38, inspector.fittingSize.height)), activeToolOffset: active)
+        toolbar.frame = frames.toolbar; inspector.frame = frames.palette
     }
 
-    private func chooseTool(_ tool: ImageEditorTool) {
-        canvas.tool = tool
-        toolPicker.selectItem(at: moreTools.firstIndex(of: tool).map { $0 + 1 } ?? 0)
-        updateStatus(); window?.makeFirstResponder(canvas)
+    func setVerificationAnnotations(_ annotations: [ImageAnnotation]) {
+        recordChange(); canvas.setContent(image: canvas.image, annotations: annotations); canvas.displayIfNeeded()
     }
-    @objc private func selectCommonTool(_ sender: NSButton) {
-        guard ImageEditorTool.allCases.indices.contains(sender.tag) else { return }
-        chooseTool(ImageEditorTool.allCases[sender.tag])
+    private var snapshot: Snapshot { Snapshot(image: canvas.image, annotations: canvas.annotations, selectionFrame: presentation?.selectionFrame) }
+    private func recordChange() { undoStates.append(snapshot); redoStates.removeAll(); trimHistory(preferUndo: true); updateStatus() }
+    private func trimHistory(preferUndo: Bool) {
+        let first = preferUndo ? redoStates : undoStates, second = preferUndo ? undoStates : redoStates
+        let count = ImageEditorHistoryBudget.retainedSuffixStart(images: (first + second).map(\.image))
+        let firstCount = min(count, first.count), secondCount = count - firstCount
+        if preferUndo { redoStates.removeFirst(firstCount); undoStates.removeFirst(secondCount) }
+        else { undoStates.removeFirst(firstCount); redoStates.removeFirst(secondCount) }
     }
-    @objc private func changeTool() {
-        let index = toolPicker.indexOfSelectedItem - 1
-        guard moreTools.indices.contains(index) else { return }
-        chooseTool(moreTools[index])
+    private func restore(_ state: Snapshot) {
+        if let old = presentation, let frame = state.selectionFrame {
+            presentation = FrozenCapturePresentation(frozenImage: old.frozenImage, displayID: old.displayID, displayFrame: old.displayFrame, selectionFrame: frame)
+        }
+        canvas.setContent(image: state.image, annotations: state.annotations); updateStatus(); layoutInterface()
     }
-    @objc private func changeColor() {
-        canvas.color = colorWell.color.cgColor
-        if canvas.tool == .select { canvas.updateSelectedStyle(color: canvas.color) }
+    private func updateStatus() {
+        status.stringValue = "\(canvas.image.width) × \(canvas.image.height) px · \(canvas.annotations.count) 个标注"
+        undoButton?.isEnabled = !undoStates.isEmpty; redoButton?.isEnabled = !redoStates.isEmpty
+        cropButton?.isHidden = canvas.tool != .crop
+        cropButton?.isEnabled = (canvas.cropRect?.width ?? 0) >= 1 && (canvas.cropRect?.height ?? 0) >= 1
+        for (tool, button) in toolButtons {
+            button.state = canvas.tool == tool ? .on : .off
+            button.contentTintColor = canvas.tool == tool ? .systemBlue : .labelColor
+            button.layer?.backgroundColor = canvas.tool == tool ? NSColor.systemBlue.withAlphaComponent(0.12).cgColor : NSColor.clear.cgColor
+        }
+        let selected = canvas.tool == .select ? canvas.selectedAnnotation : nil
+        var inspected = selected ?? canvas.style; inspected.tool = selected?.tool ?? canvas.tool
+        let enabled = canvas.tool != .crop && (canvas.tool != .select || selected != nil)
+        inspector.isHidden = !enabled
+        inspector.display(annotation: inspected, selected: selected != nil, enabled: enabled)
+        layoutInterface()
     }
-    @objc private func changeWidth() {
-        canvas.strokeWidth = CGFloat(widthSlider.doubleValue)
-        if canvas.tool == .select { canvas.updateSelectedStyle(width: canvas.strokeWidth) }
+    func chooseTool(_ tool: ImageEditorTool) {
+        finishInlineText(commit: true); canvas.tool = tool; updateStatus(); window?.makeFirstResponder(canvas)
     }
-    @objc private func deleteAnnotation() { canvas.deleteSelection() }
+    @objc private func selectTool(_ sender: NSButton) {
+        guard ImageEditorTool.allCases.indices.contains(sender.tag) else { return }; chooseTool(ImageEditorTool.allCases[sender.tag])
+    }
+    @objc private func selectMenuTool(_ sender: NSMenuItem) {
+        guard ImageEditorTool.allCases.indices.contains(sender.tag) else { return }; chooseTool(ImageEditorTool.allCases[sender.tag])
+    }
+    @objc private func selectBlur() { chooseTool(.blur) }
+    @objc private func duplicateAnnotation() { finishInlineText(commit: true); canvas.duplicateSelection() }
+    @objc private func deleteAnnotation() { finishInlineText(commit: false); canvas.deleteSelection() }
     @objc private func undoEdit() {
+        finishInlineText(commit: true)
         guard let state = undoStates.popLast() else { return }
         redoStates.append(snapshot); trimHistory(preferUndo: false); restore(state)
     }
     @objc private func redoEdit() {
+        finishInlineText(commit: false)
         guard let state = redoStates.popLast() else { return }
         undoStates.append(snapshot); trimHistory(preferUndo: true); restore(state)
     }
     @objc private func applyCrop() {
+        finishInlineText(commit: true)
         guard let rect = canvas.cropRect, let flattened = canvas.flattened(), let cropped = ImageEditorRenderer.crop(image: flattened, to: rect) else { return }
-        recordChange(); canvas.setContent(image: cropped, annotations: []); fitImage()
-    }
-    @objc private func changeZoom() {
-        let index = zoomPicker.indexOfSelectedItem
-        if index == 0 { fitImage() }
-        else if zoomValues.indices.contains(index - 1) { canvas.zoom = zoomValues[index - 1]; updateStatus() }
-    }
-    private func fitImage() {
-        let available = scrollView.contentSize
-        guard available.width > 0, available.height > 0 else { return }
-        canvas.zoom = min(1, max(0.05, min(available.width / CGFloat(canvas.image.width), available.height / CGFloat(canvas.image.height))))
-        zoomPicker.selectItem(at: 0); updateStatus()
-    }
-    private func result(_ action: (CGImage) -> Void) {
-        guard let image = canvas.flattened() else { showError(PicShotError.message("无法合成图片，可能内存不足")); return }
-        action(image)
-    }
-    @objc private func copyResult() { result { copyImage($0) } }
-    @objc private func saveResult() { result(onSave) }
-    @objc private func pinResult() { result(onPin) }
-    @objc private func recognizeResult() { result(onOCR) }
-
-    private func requestText(at point: CGPoint, editing id: UUID?) {
-        guard let window else { return }
-        let existing = id.flatMap { identifier in canvas.annotations.first { $0.id == identifier } }
-        let alert = NSAlert(); alert.messageText = existing == nil ? "添加文字" : "编辑文字"; alert.informativeText = "文字大小由工具栏的粗细控制；选择工具下双击文字可再次编辑"
-        alert.addButton(withTitle: existing == nil ? "添加" : "保存"); alert.addButton(withTitle: "取消")
-        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 26)); input.placeholderString = "输入标注文字"
-        input.stringValue = existing?.text ?? ""
-        alert.accessoryView = input
-        alert.beginSheetModal(for: window) { [weak self] response in
-            guard response == .alertFirstButtonReturn, let self, !input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-            if let id { self.canvas.updateText(id: id, text: input.stringValue) }
-            else { self.canvas.add(ImageAnnotation(tool: .text, points: [point], color: self.canvas.color, lineWidth: self.canvas.strokeWidth, text: input.stringValue)) }
-            window.makeFirstResponder(self.canvas)
+        recordChange()
+        if let old = presentation {
+            let scaleX = old.selectionFrame.width / CGFloat(canvas.image.width), scaleY = old.selectionFrame.height / CGFloat(canvas.image.height)
+            let clipped = rect.standardized.integral.intersection(CGRect(x: 0, y: 0, width: canvas.image.width, height: canvas.image.height))
+            presentation = FrozenCapturePresentation(frozenImage: old.frozenImage, displayID: old.displayID, displayFrame: old.displayFrame,
+                selectionFrame: CGRect(x: old.selectionFrame.minX + clipped.minX * scaleX, y: old.selectionFrame.minY + clipped.minY * scaleY, width: clipped.width * scaleX, height: clipped.height * scaleY))
         }
-        alert.window.initialFirstResponder = input
+        canvas.setContent(image: cropped, annotations: []); fitImage()
     }
+    @objc private func fitImage() { finishInlineText(commit: true); fitToWindow = true; needsFit = true; layoutInterface() }
+    @objc private func actualSize() { guard presentation == nil else { return }; finishInlineText(commit: true); fitToWindow = false; canvas.zoom = 1; layoutInterface() }
+    private func result(close: Bool = false, _ action: (CGImage) -> Void) {
+        finishInlineText(commit: true)
+        guard let image = canvas.flattened() else { showError(PicShotError.message("无法合成图片，可能内存不足")); return }
+        if close { window?.close() }; action(image)
+    }
+    @objc private func copyResult() { result(close: presentation != nil) { copyImage($0) } }
+    @objc private func saveResult() { result(onSave) }
+    @objc private func pinResult() { result(close: presentation != nil, onPin) }
+    @objc private func recognizeResult() { result(close: presentation != nil, onOCR) }
+    @objc private func translateResult() { if let onTranslate { result(close: presentation != nil, onTranslate) } }
+    @objc private func applyResult() {
+        guard let onApply else { return }
+        result { image in if onApply(image) { window?.close() } }
+    }
+    @objc private func cancelEditor() { finishInlineText(commit: false); window?.close() }
+
+    func beginInlineText(at point: CGPoint, editing id: UUID?) {
+        finishInlineText(commit: true)
+        let existing = id.flatMap { identifier in canvas.annotations.first { $0.id == identifier && $0.tool == .text } }
+        var annotation = existing ?? canvas.makeAnnotation(tool: .text, points: [point])
+        let zoom = canvas.zoom, scaleY = canvas.displayScaleY
+        let width = min(max(150, (existing?.localBounds.width ?? 260 / zoom) * zoom + 8), max(80, canvas.bounds.width))
+        let height = min(max(58, (existing?.localBounds.height ?? 66 / scaleY) * scaleY + 8), max(40, canvas.bounds.height))
+        let origin = CGPoint(x: min(max(0, point.x * zoom), max(0, canvas.bounds.width - width)),
+                             y: min(max(0, point.y * scaleY - (existing == nil ? height : 0)), max(0, canvas.bounds.height - height)))
+        if existing == nil { annotation.points = [CGPoint(x: origin.x / zoom, y: origin.y / scaleY)] }
+        let box = InlineAnnotationTextBox(frame: CGRect(origin: origin, size: CGSize(width: width, height: height)), annotation: annotation, zoom: zoom)
+        box.onAccept = { [weak self] in self?.finishInlineText(commit: true) }
+        box.onCancel = { [weak self] in self?.finishInlineText(commit: false) }
+        inlineBox = box; inlineAnnotation = annotation; inlineExistingID = existing?.id
+        canvas.editingAnnotationID = existing?.id
+        canvas.addSubview(box); box.layoutSubtreeIfNeeded()
+        window?.makeFirstResponder(box.input); box.input.setSelectedRange(NSRange(location: box.input.string.utf16.count, length: 0))
+    }
+    func finishInlineText(commit: Bool) {
+        guard let box = inlineBox, var annotation = inlineAnnotation else { return }
+        let text = box.input.string, existingID = inlineExistingID
+        inlineBox = nil; inlineAnnotation = nil; inlineExistingID = nil
+        box.removeFromSuperview(); canvas.editingAnnotationID = nil
+        if commit && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            annotation.text = text
+            if existingID == nil || box.wasResized {
+                annotation.points = [CGPoint(x: (box.frame.minX + 6) / canvas.zoom, y: (box.frame.minY + 5) / canvas.displayScaleY)]
+                annotation.textBoxSize = CGSize(width: max(2, (box.bounds.width - 12) / canvas.zoom), height: max(2, (box.bounds.height - 10) / canvas.displayScaleY))
+            }
+            if let existingID { canvas.replaceAnnotation(id: existingID, with: annotation) }
+            else { canvas.add(annotation) }
+        }
+        window?.makeFirstResponder(canvas)
+    }
+    func windowWillClose(_ notification: Notification) {
+        finishInlineText(commit: false)
+        if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }; screenObserver = nil
+        workspace.frozenImage = nil; presentation = nil
+        undoStates.removeAll(); redoStates.removeAll()
+        canvas.onWillChange = nil; canvas.onChange = nil; canvas.onRequestText = nil
+        canvas.onUndo = nil; canvas.onRedo = nil; canvas.onApplyCrop = nil
+        canvas.onCopy = nil; canvas.onExport = nil; canvas.onCancel = nil; canvas.onBeforeInteraction = nil
+        inspector.onEdit = nil; inspector.deactivateColorWells()
+        workspace.onLayout = nil; workspace.onDismiss = nil; workspace.onOutsideClick = nil
+        if let sheet = window?.attachedSheet { window?.endSheet(sheet, returnCode: .cancel); sheet.orderOut(nil) }
+        window?.contentView = nil; window?.delegate = nil
+        let completion = onClose; onClose = nil; completion?()
+    }
+    func windowDidResize(_ notification: Notification) { finishInlineText(commit: true); layoutInterface() }
 
     @objc private func exportResult() {
+        finishInlineText(commit: true)
         guard let window, let image = canvas.flattened() else { return }
-        let panel = NSSavePanel(); panel.title = "导出图片"; panel.nameFieldStringValue = "PicShot.png"
+        let panel = NSSavePanel(); panel.title = "保存图片"; panel.nameFieldStringValue = "PicShot.png"
         panel.allowedContentTypes = [.png]; panel.canCreateDirectories = true
-        let formats = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 180, height: 28))
-        formats.addItems(withTitles: ["PNG", "JPEG", "TIFF", "PDF"])
-        let accessory = ExportFormatAccessory(picker: formats, panel: panel)
-        panel.accessoryView = accessory
+        let formats = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 180, height: 28)); formats.addItems(withTitles: ["PNG", "JPEG", "TIFF", "PDF"])
+        let accessory = ExportFormatAccessory(picker: formats, panel: panel); panel.accessoryView = accessory
         panel.beginSheetModal(for: window) { [weak self, accessory] response in
             guard response == .OK, let url = panel.url else { return }
             do {
                 try Self.writeFlattened(image, to: url, format: accessory.picker.indexOfSelectedItem)
-                self?.status.stringValue = "已导出 \(url.lastPathComponent)"
+                if self?.presentation != nil { self?.window?.close() }
             } catch { showError(error) }
         }
     }
