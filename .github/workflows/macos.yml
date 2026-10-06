@@ -1,3 +1,4 @@
+# Independent Intel 0.6 retry: application and all product/test gates are unchanged.
 name: Native macOS build and verification
 on:
   push:
