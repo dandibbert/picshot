@@ -35,13 +35,14 @@ import PicShotCore
         guard let image = CGImage.read(url: url(for: record), maxDimension: 160) else { return nil }
         let value = image.nsImage; thumbnails.setObject(value, forKey: record.id as NSUUID, cost: image.bytesPerRow * image.height); return value
     }
-    @discardableResult func add(_ image: CGImage, title: String = "截图") throws -> CaptureRecord {
+    @discardableResult func add(_ image: CGImage, title: String = "截图", capturedAt: Date? = nil) throws -> CaptureRecord {
+        guard capturedAt.map({ $0.timeIntervalSinceReferenceDate.isFinite }) ?? true else { throw PicShotError.message("截图时间无效") }
         guard image.width * image.height <= 100_000_000 else { throw PicShotError.message("图片超过 1 亿像素，请先缩小或分段保存") }
         let id = UUID(), filename = UUID().uuidString + ".png", now = Date()
         let target = directory.appendingPathComponent(filename)
         try image.writePNG(to: target)
         let size = (try target.resourceValues(forKeys: [.fileSizeKey])).fileSize ?? 0
-        let record = CaptureRecord(id: id, createdAt: now, title: "\(title) · \(now.formatted(date: .omitted, time: .shortened))", filename: filename, width: image.width, height: image.height, byteCount: Int64(size))
+        let record = CaptureRecord(id: id, createdAt: now, title: "\(title) · \(now.formatted(date: .omitted, time: .shortened))", filename: filename, width: image.width, height: image.height, byteCount: Int64(size), capturedAt: capturedAt)
         let proposed = [record] + records
         let kept = policy.retained(proposed)
         guard kept.contains(where: { $0.id == id }) else { try? FileManager.default.removeItem(at: target); throw PicShotError.message("历史空间不足。请调整保留上限或取消一些收藏，然后重试") }

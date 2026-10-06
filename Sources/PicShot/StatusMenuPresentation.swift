@@ -2,7 +2,7 @@ import AppKit
 import PicShotCore
 
 enum StatusMenuCommand: String, CaseIterable {
-    case capture, moreCapture, scroll, record, cancelCapture
+    case capture, moreCapture, scroll, record, recoverRecordings, cancelCapture
     case clipboardPin, restoreLastPin, morePins, pinGroups, history, settings, quit
     var title: String {
         switch self {
@@ -10,6 +10,7 @@ enum StatusMenuCommand: String, CaseIterable {
         case .moreCapture: return "更多截图"
         case .scroll: return "滚动长截图…"
         case .record: return "录屏…"
+        case .recoverRecordings: return "恢复未完成的录屏…"
         case .cancelCapture: return "取消当前截图"
         case .clipboardPin: return "剪贴板贴图"
         case .restoreLastPin: return "恢复上次关闭的贴图"
@@ -38,7 +39,7 @@ enum StatusMenuCommand: String, CaseIterable {
 
 enum StatusMenuLayout {
     static let groups: [[StatusMenuCommand]] = [
-        [.capture, .moreCapture, .scroll, .record, .cancelCapture],
+        [.capture, .moreCapture, .scroll, .record, .recoverRecordings, .cancelCapture],
         [.clipboardPin, .restoreLastPin, .morePins],
         [.pinGroups], [.history, .settings], [.quit]
     ]
@@ -67,6 +68,7 @@ enum StatusMenuLayout {
                 case .moreCapture: item.submenu = additionalCaptureMenu()
                 case .scroll: item.action = #selector(scroll)
                 case .record: item.action = #selector(record)
+                case .recoverRecordings: item.action = #selector(recoverRecordings)
                 case .cancelCapture: item.action = #selector(cancelCapture); item.isEnabled = busy
                 case .clipboardPin: item.action = #selector(pastePin)
                 case .restoreLastPin: item.action = #selector(restoreLastClosedPin); item.isEnabled = pinSession?.store.index.lastArchivedEntry != nil

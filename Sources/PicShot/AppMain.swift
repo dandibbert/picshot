@@ -6,7 +6,7 @@ import Darwin
 import ImageIO
 
 @main struct PicShotMain {
-    @MainActor static func main(){let app=NSApplication.shared;let delegate=AppDelegate();app.delegate=delegate;app.setActivationPolicy(AppLaunchPresentation.usesMenuBarOnly(isSmoke:delegate.smoke != nil) ? .accessory:.regular);app.run();withExtendedLifetime(delegate){}}
+    @MainActor static func main(){if RecordingRecoveryFixture.runIfRequested(){return};let app=NSApplication.shared;let delegate=AppDelegate();app.delegate=delegate;app.setActivationPolicy(AppLaunchPresentation.usesMenuBarOnly(isSmoke:delegate.smoke != nil) ? .accessory:.regular);app.run();withExtendedLifetime(delegate){}}
 }
 
 @MainActor final class AppDelegate:NSObject,NSApplicationDelegate {
@@ -16,6 +16,9 @@ import ImageIO
     let recorder=RecordingService()
     var mainWindow:NSWindow!
     var recordingController:RecordingPanelController?
+    let recordingPreviews=RecordingPreviewWindowStore()
+    var recordingRecovery:RecordingRecoveryCoordinator?
+    private var isTerminating=false
     var status:NSStatusItem?
     var controllers:[NSWindowController]=[]
     // Transient fallback only: smoke runs and unavailable/corrupt session storage.
@@ -60,11 +63,14 @@ import ImageIO
         if smoke == nil {
             do {try pinSession?.restoreOnLaunch(enabled:PinSessionStore.restoreOnLaunch,isSmoke:false)}catch{showError(error)}
             if let pinSessionLoadError {showError(pinSessionLoadError)}
+            setupRecordingRecovery()
+            recordingRecovery?.presentPending()
         }
         if smoke != nil {DispatchQueue.main.asyncAfter(deadline:.now()+0.5){Task{await self.runSmoke()}}}
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender:NSApplication)->Bool {false}
     func applicationWillTerminate(_ notification:Notification){
+        isTerminating=true
         // Saving/cancelling is awaited by applicationShouldTerminate. Starting
         // an async cancel here would race process exit and could discard a take.
         if recorder.controlState.hasSessionActivity {
@@ -75,11 +81,11 @@ import ImageIO
     }
     func applicationShouldTerminate(_ sender:NSApplication)->NSApplication.TerminateReply {
         let state=recorder.controlState
-        guard state.terminationAction != .none else{return .terminateNow}
+        guard state.terminationAction != .none else{isTerminating=true;return .terminateNow}
         let alert=NSAlert()
-        alert.messageText=state.canCancelCountdown ? "取消录屏倒计时并退出？" : "保存录屏并退出？"
-        alert.informativeText="尚未开始的倒计时会取消；正在录制或暂停的内容会先保存到电影/PicShot。已保存的原片不会删除。"
-        alert.addButton(withTitle:state.canCancelCountdown ? "取消倒计时并退出" : "保存并退出")
+        alert.messageText=state.hasPendingTake ? "保护未保存的录屏并退出？" : (state.canCancelCountdown ? "取消录屏倒计时并退出？" : "保存录屏并退出？")
+        alert.informativeText=state.hasPendingTake ? "这段录屏尚未安全保留。只有成功保护原始文件后才能退出；下次打开 PicShot 时可尝试恢复。保护失败时请保持 PicShot 打开。" : "尚未开始的倒计时会取消；正在录制或暂停的内容会先保存到电影/PicShot。已保存的原片不会删除。"
+        alert.addButton(withTitle:state.hasPendingTake ? "重试保护并退出" : (state.canCancelCountdown ? "取消倒计时并退出" : "保存并退出"))
         alert.addButton(withTitle:"留在 PicShot")
         guard alert.runModal() == .alertFirstButtonReturn else{return .terminateCancel}
         Task {
@@ -89,7 +95,9 @@ import ImageIO
                 try await RecordingTerminationCoordinator.finish(
                     snapshot:{self.recorder.controlState},
                     cancelCountdown:{await self.recorder.cancel()},
-                    save:{_ = try await self.recorder.stop()})
+                    save:{_ = try await self.recorder.stop()},
+                    preserve:{try await self.recorder.retryPendingTakePreservation(presentRecovery:false)})
+                self.isTerminating=true
                 sender.reply(toApplicationShouldTerminate:true)
             } catch {
                 showError(error)
@@ -114,6 +122,7 @@ import ImageIO
         edit.addItem(withTitle:"撤销",action:Selector(("undo:")),keyEquivalent:"z");let redo=edit.addItem(withTitle:"重做",action:Selector(("redo:")),keyEquivalent:"Z");redo.keyEquivalentModifierMask=[.command,.shift]
         for (title,selector,key) in [("剪切","cut:","x"),("复制","copy:","c"),("粘贴","paste:","v"),("全选","selectAll:","a")] {edit.addItem(withTitle:title,action:Selector(selector),keyEquivalent:key)}
         let windowItem=NSMenuItem();menu.addItem(windowItem);let wm=NSMenu(title:"窗口");windowItem.submenu=wm;NSApp.windowsMenu=wm
+        wm.addItem(withTitle:"恢复未完成的录屏…",action:#selector(recoverRecordings),keyEquivalent:"").target=self
         wm.addItem(withTitle:"历史记录",action:#selector(showMain),keyEquivalent:"0").target=self;wm.addItem(withTitle:"贴图组与历史…",action:#selector(managePinGroups),keyEquivalent:"").target=self
         wm.addItem(withTitle:"文件或文件夹贴图…",action:#selector(importFilePin),keyEquivalent:"").target=self
         wm.addItem(withTitle:"动态 GIF / WebP 贴图…",action:#selector(importAnimationPin),keyEquivalent:"").target=self
@@ -168,7 +177,7 @@ import ImageIO
                 try await Task.sleep(nanoseconds:180_000_000)
                 let result=try await operation()
                 try Task.checkCancellation()
-                try self.history.add(result.image,title:title);self.openEditor(result.image,presentation:result.presentation)
+                try self.history.add(result.image,title:title,capturedAt:result.presentation?.capturedAt);self.openEditor(result.image,presentation:result.presentation)
             }catch CaptureError.cancelled{}catch is CancellationError{}catch{self.showMain();showError(error)}
         }
     }
@@ -183,7 +192,7 @@ import ImageIO
     }
     func recognizeFormula(_ image:CGImage){let c=FormulaRecognitionController(image:image);retain(c);c.showWindow(nil)}
     func recognizeTable(_ image:CGImage){let c=TableRecognitionController(image:image){[weak self] table,warnings in guard let self else{return};let editor=TableEditorController(table:table,sourceImage:image);self.retain(editor);editor.showWindow(nil);if !warnings.isEmpty{let alert=NSAlert();alert.messageText="请核对表格识别结果";alert.informativeText=warnings.joined(separator:"\n");alert.runModal()}};retain(c);c.showWindow(nil)}
-    func openEditor(_ image:CGImage,presentation:FrozenCapturePresentation?=nil){
+    func openEditor(_ image:CGImage,presentation:FrozenCapturePresentation?=nil,captureDate:Date?=nil){
         if presentation != nil, !frozenEditorAdmission.shouldStart(isBusy:false,
             isClosed:{$0.isClosed},focus:{self.focusEditor($0)}) { return }
         let editors=controllers.compactMap{$0 as? ImageEditorController}.filter{!$0.isClosed}
@@ -191,7 +200,8 @@ import ImageIO
             incomingRasterBytes:EditorRasterEstimate.openingBytes(image:image,presentation:presentation)) == nil else {
             if editorAdmissionNotices.recordRefusal(){showEditorAdmissionNotice()};return
         }
-        let c=ImageEditorController(image:image,presentation:presentation,onSave:{[weak self] img in do{try self?.history.add(img,title:"编辑")}catch{showError(error)}},onPin:{[weak self] img in self?.pin(img)},onOCR:{[weak self] img in self?.recognize(img)},onTranslate:{[weak self] img in self?.translateImage(img)})
+        let knownCaptureDate=presentation?.capturedAt ?? captureDate
+        let c=ImageEditorController(image:image,presentation:presentation,onSave:{[weak self] img in do{try self?.history.add(img,title:"编辑",capturedAt:knownCaptureDate)}catch{showError(error)}},onPin:{[weak self] img in self?.pin(img)},onOCR:{[weak self] img in self?.recognize(img)},onTranslate:{[weak self] img in self?.translateImage(img)},captureDate:knownCaptureDate)
         c.onClose={ [weak self,weak c] in
             guard let self,let c else{return}
             self.frozenEditorAdmission.editorDidClose(c)
@@ -315,7 +325,7 @@ import ImageIO
         }
     }
     func translate(_ text:String){if #available(macOS 15.0,*){let c=LocalTranslationController(text:text);retain(c);c.showWindow(nil)}else{showError(PicShotError.message("本机翻译需要 macOS 15 或更新版本；当前系统可正常截图和识别文字。"))}}
-    func openRecord(_ r:CaptureRecord){if let image=history.image(for:r){openEditor(image)}}
+    func openRecord(_ r:CaptureRecord){if let image=history.image(for:r){openEditor(image,captureDate:r.capturedAt)}}
     @objc func importImage(){let p=NSOpenPanel();p.allowedContentTypes=[.image];p.allowsMultipleSelection=true;if p.runModal() == .OK{importURLs(p.urls)}}
     private func importURLs(_ urls:[URL]){
         editorAdmissionNotices.beginBatch()
@@ -337,7 +347,25 @@ import ImageIO
         if let image=CGImage.read(url:url){do{try history.add(image,title:url.deletingPathExtension().lastPathComponent);openEditor(image)}catch{showError(error)}}else{showError(PicShotError.message("无法读取图片。支持 PNG、JPEG、GIF、TIFF 等系统可解码格式；动态 GIF / WebP 会作为动态贴图打开"))}
     }
     @objc func scroll(){guard frozenEditorAdmission.shouldStart(isBusy:busy || captureTask != nil,isClosed:{$0.isClosed},focus:{self.focusEditor($0)}) else{return};let c=ScrollCaptureController{[weak self] image in do{try self?.history.add(image,title:"长截图");self?.openEditor(image)}catch{showError(error)}};retain(c);c.showWindow(nil)}
-    @objc func record(){if recordingController == nil{recordingController=RecordingPanelController(service:recorder,capture:capture)};recordingController?.showWindow(nil);NSApp.activate(ignoringOtherApps:true)}
+    private func setupRecordingRecovery() {
+        guard smoke == nil else{return}
+        recorder.onPendingTakePreserved={ [weak self] in self?.recoverRecordings() }
+        guard recordingRecovery == nil else{return}
+        do {
+            let recovery=try RecordingRecoveryCoordinator()
+            recovery.onOpenPreview={ [weak self] url in self?.recordingPreviews.open(url:url) }
+            recordingPreviews.onIntentionalClose={ [weak self] url in
+                guard let self, !self.isTerminating else{return}
+                self.recordingRecovery?.previewDidClose(url:url)
+            }
+            recordingRecovery=recovery
+        } catch { showError(error) }
+    }
+    @objc func recoverRecordings() {
+        setupRecordingRecovery();recordingRecovery?.presentPending(showIfEmpty:true)
+        NSApp.activate(ignoringOtherApps:true)
+    }
+    @objc func record(){if recordingController == nil{recordingController=RecordingPanelController(service:recorder,capture:capture,previews:recordingPreviews)};recordingController?.showWindow(nil);NSApp.activate(ignoringOtherApps:true)}
     @objc func settings(){
         if let settingsController{settingsController.showWindow(nil);NSApp.activate(ignoringOtherApps:true);return}
         // Editing an existing global combination must not trigger capture behind Settings.

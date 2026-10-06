@@ -74,6 +74,7 @@ final class CaptureService {
             throw DisplayCompositeError.pixelLimit
         }
         let frozen = try await captureDisplayImmediately(displayID: displayID, showsCursor: options.showsCursor)
+        let capturedAt = Date() // Freeze pixel-acquisition time before the user selects a region.
         try watcher.validate(snapshot: snapshot)
         guard let currentScreen = NSScreen.screens.first(where: { $0.displayID == displayID }),
               currentScreen.frame == displayFrame, currentScreen.backingScaleFactor == displayScale else {
@@ -86,7 +87,7 @@ final class CaptureService {
         try Task.checkCancellation()
         try watcher.validate(snapshot: snapshot)
         return try CapturedImage.frozenRegion(image: frozen, displayID: displayID,
-                                              displayFrame: displayFrame, selection: rectangle)
+                                              displayFrame: displayFrame, selection: rectangle, capturedAt: capturedAt)
     }
 
     /// The caller owns this task and may cancel it during delay, selection, or SCK

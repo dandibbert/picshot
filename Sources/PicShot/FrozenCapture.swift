@@ -9,7 +9,7 @@ struct CapturedImage {
     let presentation: FrozenCapturePresentation?
 
     static func frozenRegion(image: CGImage, displayID: CGDirectDisplayID,
-                             displayFrame: CGRect, selection: CGRect) throws -> CapturedImage {
+                             displayFrame: CGRect, selection: CGRect, capturedAt: Date = Date()) throws -> CapturedImage {
         guard displayFrame.origin.x.isFinite, displayFrame.origin.y.isFinite,
               displayFrame.maxX.isFinite, displayFrame.maxY.isFinite else { throw CaptureError.invalidRegion }
         let geometry = try FrozenCaptureGeometry(pointSize: displayFrame.size,
@@ -38,7 +38,7 @@ struct CapturedImage {
         guard let result = context.makeImage() else { throw CaptureError.failed("Could not prepare the selected pixels.") }
         return CapturedImage(image: result, presentation: FrozenCapturePresentation(
             frozenImage: image, displayID: displayID, displayFrame: displayFrame,
-            selectionFrame: aligned.selectionFrame))
+            selectionFrame: aligned.selectionFrame, capturedAt: capturedAt))
     }
 }
 
@@ -49,6 +49,8 @@ struct FrozenCapturePresentation {
     let displayFrame: CGRect
     /// Display-local AppKit points, Y upwards, aligned to the original image pixels.
     let selectionFrame: CGRect
+    /// Fixed once when this frozen source capture is prepared.
+    var capturedAt: Date = Date()
 }
 
 /// Converts native selector coordinates to the exact frozen pixels, then derives

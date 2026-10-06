@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 swift build -c release
 bin=$(swift build -c release --show-bin-path)
-version=0.4.0
+version=0.5.0
 arch=$(uname -m)
 sha=$(git rev-parse HEAD)
 app=dist/PicShot.app
@@ -24,7 +24,7 @@ iconutil -c icns "$app/Contents/Resources/PicShot.iconset" -o "$app/Contents/Res
 rm -rf "$app/Contents/Resources/PicShot.iconset"
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict>
-<key>CFBundleExecutable</key><string>PicShot</string><key>CFBundleIdentifier</key><string>local.picshot.app</string><key>CFBundleName</key><string>PicShot</string><key>CFBundleDisplayName</key><string>PicShot</string><key>CFBundleIconFile</key><string>PicShot</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleShortVersionString</key><string>$version</string><key>CFBundleVersion</key><string>${GITHUB_RUN_NUMBER:-1}</string><key>LSMinimumSystemVersion</key><string>14.0</string><key>NSHighResolutionCapable</key><true/><key>PicShotSourceCommit</key><string>$sha</string><key>NSMicrophoneUsageDescription</key><string>仅在你选择麦克风录屏后录制声音。</string><key>NSScreenCaptureUsageDescription</key><string>仅在你点击截图或录屏后捕获所选屏幕内容。</string></dict></plist>
+<key>CFBundleExecutable</key><string>PicShot</string><key>CFBundleIdentifier</key><string>local.picshot.app</string><key>CFBundleName</key><string>PicShot</string><key>CFBundleDisplayName</key><string>PicShot</string><key>CFBundleIconFile</key><string>PicShot</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleShortVersionString</key><string>$version</string><key>CFBundleVersion</key><string>${GITHUB_RUN_NUMBER:-1}</string><key>LSMinimumSystemVersion</key><string>14.0</string><key>NSHighResolutionCapable</key><true/><key>PicShotSourceCommit</key><string>$sha</string><key>NSMicrophoneUsageDescription</key><string>仅在你选择麦克风录屏后录制声音。</string><key>NSCameraUsageDescription</key><string>仅在你启用录屏摄像头画中画后使用所选摄像头。</string><key>NSScreenCaptureUsageDescription</key><string>仅在你点击截图或录屏后捕获所选屏幕内容。</string></dict></plist>
 PLIST
 cat > "$app/Contents/Resources/build-info.json" <<JSON
 {"app":"PicShot","version":"$version","architecture":"$arch","sourceCommit":"$sha","minimumMacOS":"14.0","signing":"ad-hoc","notarized":false}

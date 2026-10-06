@@ -17,17 +17,19 @@ enum AnnotationStrokeStyle: String, CaseIterable {
 }
 
 enum AnnotationHandle: Equatable {
-    case corner(Int), edge(Int), rotation, start, end
+    case corner(Int), edge(Int), rotation, start, end, source, sourceCorner(Int)
 }
 
 extension ImageAnnotation {
     var effectiveFontSize: CGFloat { min(300, max(8, fontSize ?? max(16, lineWidth * 5))) }
     var isLinear: Bool { tool == .line || tool == .arrow }
     var hasShapeFill: Bool { tool == .rectangle || tool == .ellipse || tool == .text }
-    var supportsRotation: Bool { tool != .select && tool != .crop }
+    var supportsRotation: Bool { tool != .select && tool != .crop && tool != .magnifier }
 
     var outline: CGPath {
         let rect = localBounds.standardized
+        if tool == .spotlight { return spotlightShape.path(in: rect) }
+        if tool == .magnifier { return magnifierShape.path(in: rect) }
         if tool == .ellipse || tool == .number { return CGPath(ellipseIn: rect, transform: nil) }
         if tool == .rectangle || tool == .text {
             let radius = min(max(0, cornerRadius), min(rect.width, rect.height) / 2)
@@ -53,7 +55,13 @@ extension ImageAnnotation {
     }
 
     func hitTest(_ imagePoint: CGPoint, tolerance: CGFloat) -> Bool {
+        if tool == .eraser { return erases(imagePoint) }
+        if tool == .magnifier && magnifierShape.path(in: magnifierSourceRect).contains(imagePoint) { return true }
         let point = imagePoint.applying(transform.inverted())
+        if tool == .watermark {
+            guard localBounds.contains(point) else { return false }
+            return AnnotationWatermarkLayout.tileRects(for: self).contains { $0.insetBy(dx: -tolerance, dy: -tolerance).contains(point) }
+        }
         if isLinear || tool == .freehand {
             return strokePath.copy(strokingWithWidth: max(1, lineWidth) + tolerance * 2,
                                    lineCap: .round, lineJoin: .round, miterLimit: 10).contains(point)
@@ -75,6 +83,14 @@ extension ImageAnnotation {
                      CGPoint(x: box.midX, y: box.maxY), CGPoint(x: box.minX, y: box.midY)]
         var result: [(AnnotationHandle, CGPoint)] = corners.enumerated().map { (.corner($0.offset), $0.element.applying(transform)) }
         result += edges.enumerated().map { (.edge($0.offset), $0.element.applying(transform)) }
+        if tool == .magnifier {
+            let source = magnifierSourceRect
+            result += [(.source, CGPoint(x: source.midX, y: source.midY)),
+                (.sourceCorner(0), CGPoint(x: source.minX, y: source.minY)),
+                (.sourceCorner(1), CGPoint(x: source.maxX, y: source.minY)),
+                (.sourceCorner(2), CGPoint(x: source.maxX, y: source.maxY)),
+                (.sourceCorner(3), CGPoint(x: source.minX, y: source.maxY))]
+        }
         if supportsRotation {
             result.append((.rotation, CGPoint(x: box.midX, y: box.maxY + 24 / scale).applying(transform)))
         }
@@ -88,6 +104,19 @@ extension ImageAnnotation {
 
     func edited(handle: AnnotationHandle, from origin: CGPoint, to point: CGPoint, shift: Bool) -> ImageAnnotation {
         var result = self
+        if tool == .magnifier {
+            if handle == .source {
+                result.magnifierSource = magnifierSourceRect.offsetBy(dx: point.x - origin.x, dy: point.y - origin.y)
+                return result
+            }
+            if case .sourceCorner(let index) = handle {
+                var sourceShape = ImageAnnotation(tool: .rectangle,
+                    points: [magnifierSourceRect.origin, CGPoint(x: magnifierSourceRect.maxX, y: magnifierSourceRect.maxY)])
+                sourceShape = sourceShape.edited(handle: .corner(index), from: origin, to: point, shift: shift)
+                result.magnifierSource = sourceShape.localBounds
+                return result.resizedMagnifierLens(scale: effectiveMagnifierScale)
+            }
+        }
         let box = localBounds, center = CGPoint(x: box.midX, y: box.midY)
         if handle == .rotation {
             let start = atan2(origin.y - center.y, origin.x - center.x)
@@ -129,7 +158,7 @@ extension ImageAnnotation {
         if changesRight { maxX = max(local.x, minX + minimum) }
         if changesBottom { minY = min(local.y, maxY - minimum) }
         if changesTop { maxY = max(local.y, minY + minimum) }
-        if (shift || tool == .number), case .corner = handle, box.width > 0, box.height > 0 {
+        if (shift || tool == .number || tool == .magnifier), case .corner = handle, box.width > 0, box.height > 0 {
             let ratio = box.width / box.height
             let width = maxX - minX, height = maxY - minY
             if width / height > ratio {
@@ -162,6 +191,31 @@ extension ImageAnnotation {
                 return CGPoint(x: newBox.minX + x * newBox.width + delta.width, y: newBox.minY + y * newBox.height + delta.height)
             }
         }
+        if tool == .magnifier {
+            let source = magnifierSourceRect
+            let proposedScale = changesTop || changesBottom ? newBox.height / max(1, source.height) : newBox.width / max(1, source.width)
+            result = result.resizedMagnifierLens(scale: proposedScale)
+        }
+        return result
+    }
+
+    /// Moving a lens keeps its sample source fixed. Whole-object translation (used by
+    /// crop/boundary changes and duplication) deliberately moves both components.
+    func translatedLens(by delta: CGSize) -> ImageAnnotation {
+        var result = self
+        result.points = points.map { CGPoint(x: $0.x + delta.width, y: $0.y + delta.height) }
+        return result
+    }
+
+    func resizedMagnifierLens(scale: CGFloat) -> ImageAnnotation {
+        var result = self
+        result.magnifierScale = scale.isFinite ? min(8, max(1, scale)) : 2
+        let source = magnifierSourceRect, lens = localBounds
+        let size = CGSize(width: max(2, source.width) * result.magnifierScale,
+                          height: max(2, source.height) * result.magnifierScale)
+        result.points = [CGPoint(x: lens.midX - size.width / 2, y: lens.midY - size.height / 2),
+                         CGPoint(x: lens.midX + size.width / 2, y: lens.midY + size.height / 2)]
+        result.rotation = 0
         return result
     }
 }

@@ -6,7 +6,7 @@ export PICSHOT_SMOKE_FORMULA_MODEL_DIR="$PWD/.build/model-fixtures/formula"
 export PICSHOT_SMOKE_FORMULA_INPUT="$PWD/Tests/PicShotMLHelperTests/Fixtures/energy.png"
 export PICSHOT_SMOKE_TABLE_MODEL_DIR="$PWD/.build/model-fixtures/table"
 export PICSHOT_SMOKE_TABLE_INPUT="$PWD/Tests/PicShotTableEngineTests/Fixtures/merged-table.png"
-base="PicShot-0.4.0-macos-$(uname -m)"
+base="PicShot-0.5.0-macos-$(uname -m)"
 work=$(mktemp -d)
 mounted=false
 trap 'if [[ "$mounted" == true ]];then hdiutil detach "$work/mount" || true;fi;rm -rf "$work"' EXIT
@@ -48,6 +48,16 @@ for job in jobs['lastJobs']:
     assert job['outcome']=='succeeded' and job['childLaunched'] and job['childExitConfirmed'],job
     assert job['temporaryDirectoryCleanup']=='confirmed',job
     assert job.get('sampledPeakResidentBytes',0)>0 and job['residentSampleCount']>0,job
+composition=r['recordingCompositionEvidence']
+assert composition['status']=='passed' and composition['temporaryDirectoryRemoved'],composition
+assert composition['controllerCreationCount']==4 and composition['controllerReleaseCount']==4,composition
+assert composition['pipelineReleaseCount']==4 and len(composition['cycles'])==3,composition
+for cycle in composition['cycles']:
+    assert cycle['decodedFrames']==7 and cycle['decodedPixelChecks']>=39,cycle
+    assert cycle['writerRetainedFrameReferencesAtFinish']==0 and cycle['liveTrackedObjectsAfterRelease']==0,cycle
+    assert cycle['postStopMutationExcluded'] and cycle['temporaryFilesRemaining']==0,cycle
+for key in ['screenCaptureStarted','cameraCaptureStarted','microphoneStarted','permissionRequested']:
+    assert composition[key] is False,composition
 gif=r['gifResourceEvidence']
 if sys.argv[4]=='zip':
     assert gif['status']=='passed' and gif['profile']=='installed-30-second',gif

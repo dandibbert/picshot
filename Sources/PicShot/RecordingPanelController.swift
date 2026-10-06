@@ -10,25 +10,27 @@ struct RecordingControlState: Equatable {
     var isStarting = false
     var isRestarting = false
     var isStopping = false
+    var hasPendingTake = false
     var countdown: Int?
     var isWorking = false
 
-    var hasSessionActivity: Bool { isRecording || isStarting || isRestarting || isStopping }
+    var hasSessionActivity: Bool { isRecording || isStarting || isRestarting || isStopping || hasPendingTake }
     var blocksClosing: Bool { hasSessionActivity || isWorking }
     var optionsDisabled: Bool { blocksClosing }
     var canStart: Bool { !blocksClosing }
-    var canPauseOrStop: Bool { isRecording && !isStarting && !isRestarting && !isStopping && !isWorking }
+    var canPauseOrStop: Bool { isRecording && !isStarting && !isRestarting && !isStopping && !hasPendingTake && !isWorking }
     // Cancellation is deliberately available while start/restart is awaiting
     // the countdown; the ordinary busy guard must not disable this escape hatch.
-    var canCancelCountdown: Bool { isStarting && countdown != nil && !isRecording && !isStopping }
+    var canCancelCountdown: Bool { isStarting && countdown != nil && !isRecording && !isStopping && !hasPendingTake }
     var terminationAction: RecordingTerminationAction {
+        if hasPendingTake { return .preserve }
         if !hasSessionActivity { return .none }
         return canCancelCountdown ? .cancelCountdown : .save
     }
 }
 
 enum RecordingTerminationAction: Equatable {
-    case none, cancelCountdown, save
+    case none, cancelCountdown, save, preserve
 }
 
 /// A pending Quit must drain the cancelled restart/start generation before
@@ -37,12 +39,14 @@ enum RecordingTerminationAction: Equatable {
 enum RecordingTerminationCoordinator {
     static func finish(snapshot: () -> RecordingControlState,
                        cancelCountdown: () async -> Void,
-                       save: () async throws -> Void) async throws {
+                       save: () async throws -> Void,
+                       preserve: () async throws -> Void = { throw RecordingError.pendingTake }) async throws {
         do {
             switch snapshot().terminationAction {
             case .none: return
             case .cancelCountdown: await cancelCountdown()
             case .save: try await save()
+            case .preserve: try await preserve()
             }
         } catch is CancellationError {
             // Stop racing countdown cancellation has no movie to finalize.
@@ -51,6 +55,7 @@ enum RecordingTerminationCoordinator {
         while snapshot().isStarting || snapshot().isRestarting || snapshot().isStopping {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
+        guard !snapshot().hasPendingTake else { throw RecordingError.pendingTake }
         guard !snapshot().isRecording else { throw RecordingError.busy }
     }
 }
@@ -60,7 +65,7 @@ extension RecordingService {
     var controlState: RecordingControlState {
         RecordingControlState(isRecording: isRecording, isPaused: isPaused,
             isStarting: isStarting, isRestarting: isRestarting, isStopping: isStopping,
-            countdown: countdown)
+            hasPendingTake: hasPendingTake, countdown: countdown)
     }
 }
 
@@ -102,11 +107,12 @@ struct RecordingPreviewRoutingPolicy {
 @MainActor
 final class RecordingPanelController: NSWindowController, NSWindowDelegate {
     private let service: RecordingService
-    private let previews = RecordingPreviewWindowStore()
+    private let previews: RecordingPreviewWindowStore
     private var operationInFlight = false
 
-    init(service: RecordingService, capture: CaptureService) {
+    init(service: RecordingService, capture: CaptureService, previews: RecordingPreviewWindowStore? = nil) {
         self.service = service
+        self.previews = previews ?? RecordingPreviewWindowStore()
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 430),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         super.init(window: window)
@@ -135,9 +141,16 @@ final class RecordingPanelController: NSWindowController, NSWindowDelegate {
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         var state = service.controlState
         state.isWorking = operationInFlight
-        guard state.blocksClosing else { return true }
+        guard state.blocksClosing else {
+            service.overlay.hide()
+            Task { await service.camera.disable() }
+            return true
+        }
         let alert = NSAlert()
-        if state.canCancelCountdown {
+        if state.hasPendingTake {
+            alert.messageText = "录屏尚未安全保留"
+            alert.informativeText = "录制和摄像头已停止。请先点击「重试保护并恢复录屏」；在成功前请保持 PicShot 打开。"
+        } else if state.canCancelCountdown {
             alert.messageText = "录屏倒计时仍在进行"
             alert.informativeText = "请先点击「取消倒计时」，再关闭窗口。已保存的原片会保留。"
         } else if state.isRecording {
@@ -158,6 +171,7 @@ final class RecordingPanelController: NSWindowController, NSWindowDelegate {
 @MainActor
 final class RecordingPreviewWindowStore {
     private(set) var controllers: [URL: RecordingPreviewController] = [:]
+    var onIntentionalClose: ((URL) -> Void)?
     private let presentWindows: Bool
 
     init(presentWindows: Bool = true) { self.presentWindows = presentWindows }
@@ -181,6 +195,7 @@ final class RecordingPreviewWindowStore {
         preview.onClose = { [weak self, weak preview] in
             guard let self, let preview, self.controllers[key] === preview else { return }
             self.controllers.removeValue(forKey: key)
+            self.onIntentionalClose?(key)
         }
         if presentWindows { preview.showWindow(nil); preview.window?.makeKeyAndOrderFront(nil) }
         return preview
@@ -246,11 +261,13 @@ struct RecordingPanel: View {
                 .help(previous.lastPathComponent)
             }
             Divider()
+            RecordingEffectsControls(camera: service.camera, overlay: service.overlay, isRecording: service.isRecording)
+                .disabled(service.isStarting || service.isRestarting || service.isStopping || service.hasPendingTake || working)
             Text(service.error ?? message).font(.system(size: 11)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Text("停止后打开预览：逐帧、变速、音量、选段导出 MP4 / GIF，原片保留")
                 .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            Text("开发预览：暂不含摄像头画中画与录制中标注")
+            Text("摄像头需主动开启；标注 / 画中画写入视频。PicShot 窗口不录入。")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
             Spacer(minLength: 0)
         }
@@ -300,7 +317,12 @@ struct RecordingPanel: View {
                 Circle().fill(service.isPaused ? Color.orange : Color.red).frame(width: 10, height: 10)
                 Text(sessionStatus).monospacedDigit()
             }
-            if controls.canCancelCountdown {
+            if service.hasPendingTake {
+                Text("录制已停止。请腾出磁盘空间或恢复文件夹访问后重试；成功保护前无法开始另一段录屏。")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                Button(working ? "正在保护…" : "重试保护并恢复录屏", action: retryPreservation)
+                    .buttonStyle(.borderedProminent).disabled(working || service.isStopping)
+            } else if controls.canCancelCountdown {
                 Text("倒计时结束后开始录制；重录沿用上一段的区域和声音设置。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                 Button(cancellingCountdown ? "正在取消…" : "取消倒计时", action: cancelCountdown)
@@ -327,6 +349,7 @@ struct RecordingPanel: View {
     }
 
     private var sessionStatus: String {
+        if service.hasPendingTake { return "录屏等待安全保护" }
         if cancellingCountdown { return "正在取消倒计时…" }
         if let remaining = service.countdown { return "\(remaining) 秒后开始录制" }
         if service.isStopping { return "正在保存 MP4…" }
@@ -365,6 +388,18 @@ struct RecordingPanel: View {
         }
     }
 
+    private func retryPreservation() {
+        guard service.hasPendingTake, !working else { return }
+        beginOperation()
+        Task {
+            defer { endOperation() }
+            do {
+                try await service.retryPendingTakePreservation()
+                message = "原始录屏已安全保留，可在恢复窗口中尝试另存可播放片段。"
+            } catch { message = error.localizedDescription }
+        }
+    }
+
     private func togglePause() {
         guard controls.canPauseOrStop else { return }
         let shouldResume = service.isPaused
@@ -398,7 +433,7 @@ struct RecordingPanel: View {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "丢弃当前未保存的录屏并重录？"
-        alert.informativeText = "当前这一段将无法恢复。此前已经保存的 MP4 不会删除。"
+        alert.informativeText = "当前这一段会标记为丢弃，不再提示恢复；原始文件会安全保留。此前已经保存的 MP4 不会删除。"
         alert.addButton(withTitle: "保留本段")
         alert.addButton(withTitle: "丢弃本段并重录")
         guard alert.runModal() == .alertSecondButtonReturn else { return }

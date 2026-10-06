@@ -2,6 +2,7 @@ import XCTest
 import AVFoundation
 import CoreMedia
 import ScreenCaptureKit
+import PicShotCore
 @testable import PicShot
 
 final class RecordingPauseTests: XCTestCase {
@@ -96,8 +97,8 @@ final class RecordingPauseTests: XCTestCase {
         XCTAssertEqual(duration, 1, accuracy: 0.015)
         let again = try await writer.finish()
         XCTAssertEqual(again, url)
-        let saved = try RecordingFileStorage.publish(from: url, in: directory)
-        await writer.discard()
+        let saved = try await writer.publishFinished(mediaURL: url)
+        try await writer.discard()
         XCTAssertTrue(FileManager.default.fileExists(atPath: saved.path))
     }
 
@@ -207,10 +208,10 @@ final class RecordingPauseTests: XCTestCase {
         try await append(try screenSample(at: time(100), color: .red), to: writer, type: .screen)
         clock.set(100.5)
         let finishing = Task { try await writer.finish() }
-        await writer.discard()
+        try await writer.discard()
         _ = await finishing.result // Either ordering is valid; nothing is promoted.
-        await writer.discard()
-        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
+        try await writer.discard()
+        try assertArchivedRecordings(in: directory, count: 1)
         do { _ = try await writer.setPaused(false); XCTFail("A discarded writer cannot resume") }
         catch RecordingError.notRecording { }
         do { _ = try await writer.finish(); XCTFail("A discarded writer cannot finish") }
@@ -377,7 +378,7 @@ final class RecordingPauseTests: XCTestCase {
         } catch {
             // A failed fixture must not leave an encoder open while its staging
             // directory is removed, obscuring later media tests with side effects.
-            await writer.discard()
+            try await writer.discard()
             throw error
         }
         XCTAssertTrue(stops.messages.isEmpty, "Unexpected writer failure: \(stops.messages)")
@@ -607,6 +608,21 @@ final class RecordingPauseTests: XCTestCase {
             guard Date() < deadline else { throw RecordingError.failed("Recording state did not settle.") }
             try await Task.sleep(nanoseconds: 1_000_000)
         }
+    }
+
+    private func assertArchivedRecordings(in root: URL, count: Int) throws {
+        let stages = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix(".recording-") }
+        XCTAssertEqual(stages.count, count)
+        for stage in stages {
+            let journal = try JSONDecoder().decode(RecordingRecoveryJournal.self,
+                from: Data(contentsOf: stage.appendingPathComponent(RecordingRecoveryJournal.filename)))
+            XCTAssertEqual(journal.phase, .discarded)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: stage.appendingPathComponent(journal.mediaFilename).path))
+        }
+        let scan = try RecordingRecoveryStore(root: root).discover()
+        XCTAssertTrue(scan.candidates.isEmpty)
+        XCTAssertTrue(scan.warnings.isEmpty)
     }
 
     private func makeDirectory() throws -> URL {

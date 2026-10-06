@@ -1,10 +1,12 @@
 import AppKit
 
-/// A single compact contextual row. These controls edit the same model used by hit testing
+/// Compact contextual rows. These controls edit the same model used by hit testing
 /// and export; hidden controls have no separate preview-only state.
 @MainActor
 final class AnnotationInspector: EditorFloatingSurface {
     var onEdit: (((inout ImageAnnotation) -> Void) -> Void)?
+    var onClearAnnotations: (() -> Void)?
+    private var primaryRow = NSStackView()
     private let detailButton = NSButton(title: "…", target: nil, action: nil)
     private var detailsGroup = NSStackView()
     private var showsDetails = false
@@ -31,11 +33,31 @@ final class AnnotationInspector: EditorFloatingSurface {
     private let hint = NSTextField(labelWithString: "选择标注后拖动控制点；⇧ 保持比例 / 吸附角度")
     private var fillGroup = NSStackView(), dashGroup = NSStackView(), radiusGroup = NSStackView()
     private var opacityGroup = NSStackView(), rotationGroup = NSStackView(), textGroup = NSStackView()
+    private var textTraitsGroup = NSStackView()
+    private let eraserModePicker = NSPopUpButton()
+    private let clearAnnotationsButton = NSButton(title: "清空标注", target: nil, action: nil)
+    private var eraserGroup = NSStackView()
+    private let spotlightShapePicker = NSPopUpButton()
+    private let spotlightDimSlider = NSSlider(value: 0.55, minValue: 0, maxValue: 1, target: nil, action: nil)
+    private let spotlightBorderToggle = NSButton(checkboxWithTitle: "边框", target: nil, action: nil)
+    private var spotlightGroup = NSStackView()
+    private let watermarkTemplateField = NSTextField(string: "PicShot · $yyyy-MM-dd HH:mm:ss$")
+    private let watermarkPlacementPicker = NSPopUpButton()
+    private let watermarkSpacingField = NSTextField(string: "48")
+    private let watermarkTimestampButton = NSButton(title: "+ 时间", target: nil, action: nil)
+    private var watermarkGroup = NSStackView(), watermarkSpacingGroup = NSStackView()
+    private let magnifierShapePicker = NSPopUpButton()
+    private let magnifierScaleField = NSTextField(string: "2")
+    private let magnifierConnectorPicker = NSPopUpButton()
+    private let magnifierSmoothToggle = NSButton(checkboxWithTitle: "平滑", target: nil, action: nil)
+    private let magnifierShadowToggle = NSButton(checkboxWithTitle: "阴影", target: nil, action: nil)
+    private let magnifierAnnotationsToggle = NSButton(checkboxWithTitle: "包含标注", target: nil, action: nil)
+    private var magnifierGroup = NSStackView(), magnifierOptionsGroup = NSStackView()
     private let fontNames = ["Helvetica", "TimesNewRomanPSMT", "Menlo-Regular"]
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        orientation = .horizontal; spacing = 7; alignment = .centerY; detachesHiddenViews = true
+        orientation = .vertical; spacing = 5; alignment = .leading; detachesHiddenViews = true
         edgeInsets = NSEdgeInsets(top: 5, left: 9, bottom: 5, right: 9)
         widthPicker.addItems(withTitles: ["1", "3", "4", "6", "10", "16", "24"])
         widthPicker.target = self; widthPicker.action = #selector(changeWidth); widthPicker.controlSize = .small
@@ -70,7 +92,7 @@ final class AnnotationInspector: EditorFloatingSurface {
         dashGroup = group([dashPicker])
         opacitySlider.target = self; opacitySlider.action = #selector(changeOpacity); opacitySlider.isContinuous = false
         opacitySlider.identifier = NSUserInterfaceItemIdentifier("annotation.opacity")
-        opacitySlider.setAccessibilityLabel("不透明度"); opacitySlider.toolTip = "不透明遮盖始终为 100%，不会显示原始像素"
+        opacitySlider.setAccessibilityLabel("不透明度"); opacitySlider.toolTip = "调整当前标注的不透明度"
         fixedWidth(opacitySlider, 42); opacityGroup = group([label("不透明度"), opacitySlider])
         configureField(radiusField, id: "annotation.radius", label: "圆角半径（像素）", action: #selector(changeRadius))
         radiusGroup = group([label("圆角"), radiusField])
@@ -87,7 +109,9 @@ final class AnnotationInspector: EditorFloatingSurface {
             button.setAccessibilityLabel(title); button.toolTip = title
             button.target = self; button.action = #selector(changeTextTraits); fixedWidth(button, 25)
         }
-        textGroup = group([boldButton, italicButton, underlineButton, fontPicker, sizeField])
+        textTraitsGroup = group([boldButton, italicButton, underlineButton])
+        textGroup = group([textTraitsGroup, fontPicker, sizeField])
+        configureToolControls()
         hint.font = .systemFont(ofSize: 10); hint.textColor = .secondaryLabelColor
         hint.lineBreakMode = .byTruncatingTail; hint.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         detailButton.target = self; detailButton.action = #selector(toggleDetails)
@@ -96,7 +120,9 @@ final class AnnotationInspector: EditorFloatingSurface {
         detailButton.setAccessibilityLabel("更多样式：不透明度、旋转、圆角"); detailButton.toolTip = "更多样式"
         fixedWidth(detailButton, 24)
         detailsGroup = group([opacityGroup, rotationGroup, radiusGroup])
-        for view in [textGroup, widthGroup, dashGroup, fillGroup, colorGroup, detailButton, detailsGroup] as [NSView] { addArrangedSubview(view) }
+        primaryRow = group([textGroup, widthGroup, dashGroup, fillGroup, colorGroup, detailButton])
+        primaryRow.spacing = 7; detailsGroup.spacing = 7
+        addArrangedSubview(primaryRow); addArrangedSubview(detailsGroup)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -117,13 +143,108 @@ final class AnnotationInspector: EditorFloatingSurface {
         field.alignment = .right; field.target = self; field.action = action; fixedWidth(field, 35)
     }
 
+    private func configurePicker(_ picker: NSPopUpButton, titles: [String], id: String, label: String,
+                                 width: CGFloat = 68, action: Selector) {
+        picker.addItems(withTitles: titles); picker.target = self; picker.action = action; picker.controlSize = .small
+        picker.identifier = NSUserInterfaceItemIdentifier(id); picker.setAccessibilityLabel(label); picker.toolTip = label
+        fixedWidth(picker, width)
+    }
+
+    private func configureToggle(_ button: NSButton, id: String, label: String, action: Selector) {
+        button.target = self; button.action = action; button.controlSize = .small
+        button.identifier = NSUserInterfaceItemIdentifier(id); button.setAccessibilityLabel(label); button.toolTip = label
+    }
+
+    private func configureToolControls() {
+        configurePicker(eraserModePicker, titles: AnnotationEraserMode.allCases.map(\.title),
+                        id: "annotation.eraserMode", label: "橡皮擦模式", action: #selector(changeEraserMode))
+        eraserGroup = group([eraserModePicker])
+        clearAnnotationsButton.target = self; clearAnnotationsButton.action = #selector(clearAnnotations)
+        clearAnnotationsButton.bezelStyle = .rounded; clearAnnotationsButton.controlSize = .small
+        clearAnnotationsButton.identifier = NSUserInterfaceItemIdentifier("annotation.clearAnnotations")
+        clearAnnotationsButton.setAccessibilityLabel("清空全部标注")
+        clearAnnotationsButton.toolTip = "清空全部标注，可撤销；原始图片保持不变"
+
+        configurePicker(spotlightShapePicker, titles: AnnotationRegionShape.allCases.map(\.title),
+                        id: "annotation.spotlightShape", label: "聚光灯形状", action: #selector(changeSpotlightShape))
+        spotlightDimSlider.target = self; spotlightDimSlider.action = #selector(changeSpotlightDim); spotlightDimSlider.isContinuous = false
+        spotlightDimSlider.identifier = NSUserInterfaceItemIdentifier("annotation.spotlightDim")
+        spotlightDimSlider.setAccessibilityLabel("聚光灯外部暗度"); spotlightDimSlider.toolTip = "调整聚光灯外部的暗度"
+        fixedWidth(spotlightDimSlider, 66)
+        configureToggle(spotlightBorderToggle, id: "annotation.spotlightBorder", label: "显示聚光灯边框", action: #selector(changeSpotlightBorder))
+        spotlightGroup = group([spotlightShapePicker, label("暗度"), spotlightDimSlider, spotlightBorderToggle])
+
+        watermarkTemplateField.identifier = NSUserInterfaceItemIdentifier("annotation.watermarkTemplate")
+        watermarkTemplateField.setAccessibilityLabel("水印文字与时间模板")
+        watermarkTemplateField.toolTip = "可插入 $yyyy-MM-dd HH:mm:ss$；时间固定为此截图的时间，回车确认"
+        watermarkTemplateField.font = .systemFont(ofSize: 11); watermarkTemplateField.controlSize = .small
+        watermarkTemplateField.target = self; watermarkTemplateField.action = #selector(changeWatermarkTemplate)
+        watermarkTemplateField.placeholderString = "水印文字"; fixedWidth(watermarkTemplateField, 230)
+        watermarkTimestampButton.target = self; watermarkTimestampButton.action = #selector(insertWatermarkTimestamp)
+        watermarkTimestampButton.bezelStyle = .rounded; watermarkTimestampButton.controlSize = .small
+        watermarkTimestampButton.identifier = NSUserInterfaceItemIdentifier("annotation.watermarkTimestamp")
+        watermarkTimestampButton.setAccessibilityLabel("插入水印时间模板")
+        watermarkTimestampButton.toolTip = "插入 $yyyy-MM-dd HH:mm:ss$（使用水印创建时的时间）"
+        configurePicker(watermarkPlacementPicker, titles: AnnotationWatermarkPlacement.allCases.map(\.title),
+                        id: "annotation.watermarkPlacement", label: "水印位置", width: 88, action: #selector(changeWatermarkPlacement))
+        configureField(watermarkSpacingField, id: "annotation.watermarkSpacing", label: "平铺水印间距（像素）", action: #selector(changeWatermarkSpacing))
+        watermarkGroup = group([watermarkTemplateField, watermarkTimestampButton, watermarkPlacementPicker])
+        watermarkSpacingGroup = group([label("间距"), watermarkSpacingField])
+
+        configurePicker(magnifierShapePicker, titles: AnnotationRegionShape.allCases.map(\.title),
+                        id: "annotation.magnifierShape", label: "放大镜形状", action: #selector(changeMagnifierShape))
+        configureField(magnifierScaleField, id: "annotation.magnifierScale", label: "放大倍数（1–8 倍）", action: #selector(changeMagnifierScale))
+        configurePicker(magnifierConnectorPicker, titles: AnnotationMagnifierConnector.allCases.map(\.title),
+                        id: "annotation.magnifierConnector", label: "放大镜连接线", width: 80, action: #selector(changeMagnifierConnector))
+        configureToggle(magnifierSmoothToggle, id: "annotation.magnifierSmooth", label: "平滑放大像素", action: #selector(changeMagnifierOptions))
+        configureToggle(magnifierShadowToggle, id: "annotation.magnifierShadow", label: "显示放大镜阴影", action: #selector(changeMagnifierOptions))
+        configureToggle(magnifierAnnotationsToggle, id: "annotation.magnifierShowsAnnotations", label: "放大内容包含已有标注", action: #selector(changeMagnifierOptions))
+        magnifierAnnotationsToggle.toolTip = "隐藏普通标注；不透明遮盖始终保留，避免放大镜泄露已遮盖内容"
+        magnifierGroup = group([magnifierShapePicker, label("倍数"), magnifierScaleField])
+        magnifierOptionsGroup = group([label("连接线"), magnifierConnectorPicker, magnifierSmoothToggle, magnifierShadowToggle, magnifierAnnotationsToggle])
+    }
+
+    private func configureRows(for tool: ImageEditorTool) {
+        // Reparent only when the tool changes. No duplicate controls or independent style state.
+        for row in [primaryRow, detailsGroup] {
+            for view in row.arrangedSubviews { row.removeArrangedSubview(view); view.removeFromSuperview() }
+        }
+        let primary: [NSView], secondary: [NSView]
+        widthPicker.removeAllItems()
+        widthPicker.addItems(withTitles: tool == .eraser ? ["4", "8", "16", "24", "32", "48", "64", "96"] : ["1", "3", "4", "6", "10", "16", "24"])
+        switch tool {
+        case .eraser:
+            primary = [eraserGroup, widthGroup, clearAnnotationsButton]; secondary = []
+        case .spotlight:
+            primary = [spotlightGroup, widthGroup, colorGroup]; secondary = []
+        case .watermark:
+            primary = [watermarkGroup]; secondary = [textGroup, opacityGroup, watermarkSpacingGroup, colorGroup]
+        case .magnifier:
+            primary = [magnifierGroup, widthGroup, colorGroup]; secondary = [magnifierOptionsGroup]
+        default:
+            primary = [textGroup, widthGroup, dashGroup, fillGroup, colorGroup, detailButton]
+            secondary = [opacityGroup, rotationGroup, radiusGroup]
+        }
+        primary.forEach { primaryRow.addArrangedSubview($0) }
+        secondary.forEach { detailsGroup.addArrangedSubview($0) }
+    }
+
     func display(annotation: ImageAnnotation, selected: Bool, enabled: Bool) {
-        if previousTool != annotation.tool { showsDetails = false }
+        if previousTool != annotation.tool { showsDetails = false; configureRows(for: annotation.tool) }
         previousTool = annotation.tool; displayedAnnotation = annotation; displayedSelected = selected; displayedEnabled = enabled
-        detailsGroup.isHidden = !enabled || !showsDetails
-        detailButton.isHidden = !enabled
-        widthGroup.isHidden = !enabled || annotation.tool == .text
-        colorGroup.isHidden = !enabled || [.blur, .pixelate].contains(annotation.tool)
+        let dedicatedRows: [ImageEditorTool] = [.eraser, .spotlight, .watermark, .magnifier]
+        let alwaysShowsDetails = annotation.tool == .watermark || annotation.tool == .magnifier
+        primaryRow.isHidden = !enabled
+        detailsGroup.isHidden = !enabled || detailsGroup.arrangedSubviews.isEmpty || (!alwaysShowsDetails && !showsDetails)
+        detailButton.isHidden = !enabled || dedicatedRows.contains(annotation.tool)
+        detailButton.setAccessibilityValue(showsDetails ? "已展开" : "已收起")
+        widthGroup.isHidden = !enabled || [.text, .watermark].contains(annotation.tool)
+            || (annotation.tool == .spotlight && !annotation.spotlightBorder)
+            || (annotation.tool == .eraser && annotation.eraserMode == .rectangle)
+        widthPicker.setAccessibilityLabel(annotation.tool == .eraser ? "橡皮擦宽度（像素）" : "线宽（像素）")
+        widthPicker.toolTip = annotation.tool == .eraser ? "橡皮擦宽度（像素）" : "线宽（像素）"
+        colorGroup.isHidden = !enabled || [.blur, .pixelate, .eraser].contains(annotation.tool)
+            || (annotation.tool == .spotlight && !annotation.spotlightBorder)
         colorWell.color = NSColor(cgColor: annotation.color) ?? .systemRed
         let widthTitle = annotation.lineWidth.rounded() == annotation.lineWidth ? String(Int(annotation.lineWidth)) : String(format: "%.1f", annotation.lineWidth)
         if widthPicker.item(withTitle: widthTitle) == nil { widthPicker.addItem(withTitle: widthTitle) }
@@ -137,11 +258,12 @@ final class AnnotationInspector: EditorFloatingSurface {
         fillGroup.isHidden = !enabled || !annotation.hasShapeFill
         dashGroup.isHidden = !enabled || ![ImageEditorTool.rectangle, .ellipse, .line, .arrow, .freehand].contains(annotation.tool)
         radiusGroup.isHidden = !enabled || ![ImageEditorTool.rectangle, .text].contains(annotation.tool)
-        textGroup.isHidden = !enabled || annotation.tool != .text
+        textGroup.isHidden = !enabled || ![.text, .watermark].contains(annotation.tool)
+        textTraitsGroup.isHidden = annotation.tool == .watermark
         opacityGroup.isHidden = !enabled || annotation.tool == .redact
         rotationGroup.isHidden = !enabled || !selected
         hint.isHidden = enabled && annotation.tool == .text
-        hint.stringValue = annotation.tool == .redact ? "遮盖始终不透明；旋转 / 缩放后请确认覆盖范围" : "拖动控制点缩放 / 旋转 · ⇧ 约束 · ⌘D 副本"
+        hint.stringValue = annotation.tool == .redact ? "遮盖始终不透明；旋转 / 缩放后请确认覆盖范围" : "拖动控制点 · ⇧ 约束 · ⌥点击穿透 · ⌘D 副本"
         fillToggle.title = annotation.tool == .text ? "背景" : "填充"
         fillToggle.state = annotation.fillEnabled ? .on : .off
         fillWell.color = NSColor(cgColor: annotation.fillColor) ?? .yellow; fillWell.isEnabled = annotation.fillEnabled; fillWell.isHidden = !annotation.fillEnabled
@@ -153,6 +275,25 @@ final class AnnotationInspector: EditorFloatingSurface {
         sizeField.integerValue = Int(annotation.effectiveFontSize.rounded())
         boldButton.state = annotation.bold ? .on : .off; italicButton.state = annotation.italic ? .on : .off
         underlineButton.state = annotation.underline ? .on : .off
+
+        eraserModePicker.selectItem(at: AnnotationEraserMode.allCases.firstIndex(of: annotation.eraserMode) ?? 0)
+        clearAnnotationsButton.isEnabled = enabled && onClearAnnotations != nil
+        spotlightShapePicker.selectItem(at: AnnotationRegionShape.allCases.firstIndex(of: annotation.spotlightShape) ?? 0)
+        spotlightDimSlider.doubleValue = Double(annotation.spotlightDim)
+        spotlightBorderToggle.state = annotation.spotlightBorder ? .on : .off
+        watermarkTemplateField.toolTip = annotation.timestampIsCaptureDate
+            ? "可插入 $yyyy-MM-dd HH:mm:ss$；时间固定为此截图的时间，回车确认"
+            : "图片未提供拍摄时间；时间变量固定为本次编辑开始时间，回车确认"
+        if watermarkTemplateField.stringValue != annotation.watermarkTemplate { watermarkTemplateField.stringValue = annotation.watermarkTemplate }
+        watermarkPlacementPicker.selectItem(at: AnnotationWatermarkPlacement.allCases.firstIndex(of: annotation.watermarkPlacement) ?? 0)
+        watermarkSpacingField.integerValue = Int(annotation.watermarkSpacing.rounded())
+        watermarkSpacingGroup.isHidden = !enabled || annotation.watermarkPlacement != .tiled
+        magnifierShapePicker.selectItem(at: AnnotationRegionShape.allCases.firstIndex(of: annotation.magnifierShape) ?? 0)
+        magnifierScaleField.stringValue = String(format: "%g", Double(annotation.magnifierScale))
+        magnifierConnectorPicker.selectItem(at: AnnotationMagnifierConnector.allCases.firstIndex(of: annotation.magnifierConnector) ?? 0)
+        magnifierSmoothToggle.state = annotation.magnifierSmooth ? .on : .off
+        magnifierShadowToggle.state = annotation.magnifierShadow ? .on : .off
+        magnifierAnnotationsToggle.state = annotation.magnifierShowsAnnotations ? .on : .off
     }
 
     @objc private func toggleDetails() {
@@ -194,5 +335,74 @@ final class AnnotationInspector: EditorFloatingSurface {
     @objc private func changeTextTraits() {
         let bold = boldButton.state == .on, italic = italicButton.state == .on, underline = underlineButton.state == .on
         onEdit? { $0.bold = bold; $0.italic = italic; $0.underline = underline }
+    }
+
+    @objc private func changeEraserMode() {
+        let index = eraserModePicker.indexOfSelectedItem
+        guard AnnotationEraserMode.allCases.indices.contains(index) else { return }
+        let mode = AnnotationEraserMode.allCases[index]; onEdit? { $0.eraserMode = mode }
+    }
+    @objc private func clearAnnotations() {
+        guard displayedEnabled, displayedAnnotation.tool == .eraser else { return }
+        onClearAnnotations?()
+    }
+    @objc private func changeSpotlightShape() {
+        let index = spotlightShapePicker.indexOfSelectedItem
+        guard AnnotationRegionShape.allCases.indices.contains(index) else { return }
+        let shape = AnnotationRegionShape.allCases[index]; onEdit? { $0.spotlightShape = shape }
+    }
+    @objc private func changeSpotlightDim() {
+        let value = CGFloat(spotlightDimSlider.doubleValue); onEdit? { $0.spotlightDim = value }
+    }
+    @objc private func changeSpotlightBorder() {
+        let enabled = spotlightBorderToggle.state == .on; onEdit? { $0.spotlightBorder = enabled }
+    }
+    @objc private func changeWatermarkTemplate() {
+        let value = watermarkTemplateField.stringValue; onEdit? { $0.watermarkTemplate = value }
+    }
+    @objc private func insertWatermarkTimestamp() {
+        let token = "$yyyy-MM-dd HH:mm:ss$"
+        let value: String
+        if let editor = watermarkTemplateField.currentEditor() as? NSTextView {
+            editor.insertText(token, replacementRange: editor.selectedRange())
+            value = editor.string
+        } else {
+            let existing = watermarkTemplateField.stringValue
+            let separator = existing.isEmpty || existing.last?.isWhitespace == true ? "" : " "
+            value = existing + separator + token
+        }
+        watermarkTemplateField.stringValue = value
+        // Only the template changes. The annotation's timestamp/time zone stay frozen.
+        onEdit? { $0.watermarkTemplate = value }
+    }
+    @objc private func changeWatermarkPlacement() {
+        let index = watermarkPlacementPicker.indexOfSelectedItem
+        guard AnnotationWatermarkPlacement.allCases.indices.contains(index) else { return }
+        let placement = AnnotationWatermarkPlacement.allCases[index]; onEdit? { $0.watermarkPlacement = placement }
+    }
+    @objc private func changeWatermarkSpacing() {
+        let rawValue = watermarkSpacingField.doubleValue
+        guard rawValue.isFinite else { return }
+        let value = CGFloat(max(0, min(1_000, rawValue))); onEdit? { $0.watermarkSpacing = value }
+    }
+    @objc private func changeMagnifierShape() {
+        let index = magnifierShapePicker.indexOfSelectedItem
+        guard AnnotationRegionShape.allCases.indices.contains(index) else { return }
+        let shape = AnnotationRegionShape.allCases[index]; onEdit? { $0.magnifierShape = shape }
+    }
+    @objc private func changeMagnifierScale() {
+        let rawValue = magnifierScaleField.doubleValue
+        guard rawValue.isFinite else { return }
+        let value = CGFloat(max(1, min(8, rawValue))); onEdit? { $0.magnifierScale = value }
+    }
+    @objc private func changeMagnifierConnector() {
+        let index = magnifierConnectorPicker.indexOfSelectedItem
+        guard AnnotationMagnifierConnector.allCases.indices.contains(index) else { return }
+        let connector = AnnotationMagnifierConnector.allCases[index]; onEdit? { $0.magnifierConnector = connector }
+    }
+    @objc private func changeMagnifierOptions() {
+        let smooth = magnifierSmoothToggle.state == .on, shadow = magnifierShadowToggle.state == .on
+        let annotations = magnifierAnnotationsToggle.state == .on
+        onEdit? { $0.magnifierSmooth = smooth; $0.magnifierShadow = shadow; $0.magnifierShowsAnnotations = annotations }
     }
 }

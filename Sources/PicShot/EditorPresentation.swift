@@ -146,7 +146,7 @@ enum EditorBoundaryRenderer {
         context.draw(previousImage, in: CGRect(x: offset.width, y: offset.height, width: CGFloat(previousImage.width), height: CGFloat(previousImage.height)))
         guard let image = context.makeImage() else { throw PicShotError.message("无法完成截图区域调整") }
         return CapturedImage(image: image, presentation: FrozenCapturePresentation(frozenImage: source,
-            displayID: presentation.displayID, displayFrame: presentation.displayFrame, selectionFrame: aligned.selectionFrame))
+            displayID: presentation.displayID, displayFrame: presentation.displayFrame, selectionFrame: aligned.selectionFrame, capturedAt: presentation.capturedAt))
     }
     static func annotationOffset(from previous: CGRect, to next: CGRect, presentation: FrozenCapturePresentation) -> CGSize {
         CGSize(width: ((previous.minX - next.minX) * CGFloat(presentation.frozenImage.width) / presentation.displayFrame.width).rounded(),

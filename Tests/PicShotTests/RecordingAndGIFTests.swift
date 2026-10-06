@@ -3,6 +3,7 @@ import AVFoundation
 import CoreGraphics
 import ImageIO
 import ScreenCaptureKit
+import PicShotCore
 @testable import PicShot
 
 final class RecordingAndGIFTests: XCTestCase {
@@ -75,27 +76,27 @@ final class RecordingAndGIFTests: XCTestCase {
         let image = try await AVAssetImageGenerator(asset: asset).image(at: .zero).image
         XCTAssertEqual(image.width, 40)
         XCTAssertEqual(image.height, 24)
-        let saved = try RecordingFileStorage.publish(from: url, in: root)
+        let saved = try await writer.publishFinished(mediaURL: url)
         XCTAssertTrue(FileManager.default.fileExists(atPath: saved.path))
         // Discarding a now-finished writer must never delete the promoted movie.
-        await writer.discard()
+        try await writer.discard()
         XCTAssertTrue(FileManager.default.fileExists(atPath: saved.path))
     }
 
-    func testActualRecordingWriterNoFramesAndCancellationCleanUp() async throws {
+    func testActualRecordingWriterNoFramesAndCancellationArchiveOriginals() async throws {
         let root = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let writer = try RecordingWriter(size: CGSize(width: 40, height: 24), options: .init(), outputDirectory: root) { _ in }
         do { _ = try await writer.finish(); XCTFail("Empty recording must fail") }
         catch RecordingError.noFrames { } catch { XCTFail("Unexpected error: \(error)") }
-        await writer.discard()
-        await writer.discard()
-        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+        try await writer.discard()
+        try await writer.discard()
+        try assertArchivedRecordings(in: root, count: 1)
         let cancelled = try RecordingWriter(size: CGSize(width: 40, height: 24), options: .init(), outputDirectory: root) { _ in }
         let frame = try makeScreenSample()
         cancelled.queue.sync { cancelled.consume(frame, of: .screen) }
-        await cancelled.discard()
-        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+        try await cancelled.discard()
+        try assertArchivedRecordings(in: root, count: 2)
     }
 
     func testRecordingPublicationOwnsOnlyItsStagingDirectory() throws {
@@ -219,6 +220,21 @@ final class RecordingAndGIFTests: XCTestCase {
         catch is CancellationError { } catch { XCTFail("Unexpected error: \(error)") }
         XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
         XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: directory.path).contains { $0.hasPrefix(".picshot-") })
+    }
+
+    private func assertArchivedRecordings(in root: URL, count: Int) throws {
+        let stages = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix(".recording-") }
+        XCTAssertEqual(stages.count, count)
+        for stage in stages {
+            let journal = try JSONDecoder().decode(RecordingRecoveryJournal.self,
+                from: Data(contentsOf: stage.appendingPathComponent(RecordingRecoveryJournal.filename)))
+            XCTAssertEqual(journal.phase, .discarded)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: stage.appendingPathComponent(journal.mediaFilename).path))
+        }
+        let scan = try RecordingRecoveryStore(root: root).discover()
+        XCTAssertTrue(scan.candidates.isEmpty)
+        XCTAssertTrue(scan.warnings.isEmpty)
     }
 
     private func makeDirectory() throws -> URL {

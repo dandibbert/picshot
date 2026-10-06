@@ -7,7 +7,7 @@ import PicShotCore
 
 /// All annotation coordinates are image pixels, with the origin at the bottom left.
 enum ImageEditorTool: String, CaseIterable {
-    case select, rectangle, ellipse, arrow, line, freehand, text, number, highlighter, redact, blur, pixelate, crop
+    case select, rectangle, ellipse, arrow, line, freehand, text, number, highlighter, redact, blur, pixelate, crop, eraser, spotlight, watermark, magnifier
 
     var title: String {
         switch self {
@@ -24,6 +24,10 @@ enum ImageEditorTool: String, CaseIterable {
         case .blur: return "模糊"
         case .pixelate: return "马赛克"
         case .crop: return "裁剪"
+        case .eraser: return "橡皮擦"
+        case .spotlight: return "聚光灯"
+        case .watermark: return "水印"
+        case .magnifier: return "放大镜"
         }
     }
 }
@@ -50,6 +54,23 @@ struct ImageAnnotation {
     var underline = false
     /// Optional explicit box; text wraps to its width and remains clipped to its height.
     var textBoxSize: CGSize? = nil
+    var eraserMode: AnnotationEraserMode = .brush
+    var spotlightShape: AnnotationRegionShape = .ellipse
+    var spotlightDim: CGFloat = 0.55
+    var spotlightBorder = true
+    var watermarkPlacement: AnnotationWatermarkPlacement = .tiled
+    var watermarkSpacing: CGFloat = 48
+    var watermarkTemplate = "PicShot · $yyyy-MM-dd HH:mm:ss$"
+    var frozenTimestamp = Date(timeIntervalSince1970: 0)
+    var frozenTimeZoneIdentifier = "UTC"
+    var timestampIsCaptureDate = false
+    var magnifierSource: CGRect? = nil
+    var magnifierScale: CGFloat = 2
+    var magnifierShape: AnnotationRegionShape = .ellipse
+    var magnifierConnector: AnnotationMagnifierConnector = .line
+    var magnifierSmooth = false
+    var magnifierShowsAnnotations = true
+    var magnifierShadow = true
 
     var localBounds: CGRect {
         guard let first = points.first else { return .zero }
@@ -76,6 +97,7 @@ struct ImageAnnotation {
     func translated(by delta: CGSize) -> ImageAnnotation {
         var result = self
         result.points = points.map { CGPoint(x: $0.x + delta.width, y: $0.y + delta.height) }
+        if let source = magnifierSource { result.magnifierSource = source.offsetBy(dx: delta.width, dy: delta.height) }
         return result
     }
 }
@@ -101,11 +123,33 @@ enum ImageEditorRenderer {
         guard let context = makeContext(width: image.width, height: image.height) else { return nil }
         let extent = CGRect(x: 0, y: 0, width: CGFloat(image.width), height: CGFloat(image.height))
         context.draw(image, in: extent)
-        for annotation in annotations {
+        drawAnnotations(annotations, in: context, extent: extent, baseImage: image)
+        return context.makeImage()
+    }
+
+    /// Draw into an existing bottom-left, image-pixel context. Ordinary vector tools
+    /// (including erasure) allocate no additional full-frame bitmap, including in video.
+    static func drawAnnotations(_ annotations: [ImageAnnotation], in context: CGContext,
+                                extent: CGRect, baseImage: CGImage? = nil) {
+        // Build each eraser geometry once per frame, not once per underlying mark.
+        let erasers: [(index: Int, path: CGPath)] = annotations.enumerated().compactMap { index, mark in
+            guard mark.tool == .eraser else { return nil }
+            return (index, mark.mergedEraserPath)
+        }
+        for (index, annotation) in annotations.enumerated() where annotation.tool != .eraser {
             context.saveGState()
+            // Clip each later eraser separately: operation order is stable, and marks
+            // added after an eraser are not removed by an earlier operation.
+            let affectedBounds = annotation.tool == .spotlight ? extent :
+                (annotation.tool == .magnifier ? annotation.bounds.union(annotation.magnifierSourceRect) : annotation.bounds)
+                    .insetBy(dx: -max(annotation.tool == .magnifier ? 32 : 10, annotation.lineWidth * 4),
+                             dy: -max(annotation.tool == .magnifier ? 32 : 10, annotation.lineWidth * 4))
+            for eraser in erasers where eraser.index > index && eraser.path.boundingBoxOfPath.intersects(affectedBounds) {
+                context.addRect(extent); context.addPath(eraser.path); context.clip(using: .evenOdd)
+            }
             // Obscuring pixels is a security boundary: redaction ignores both color alpha
             // and global opacity. Blur and pixelation remain cosmetic effects only.
-            context.setAlpha(annotation.tool == .redact ? 1 : min(1, max(0, annotation.opacity)))
+            context.setAlpha([ImageEditorTool.redact, .spotlight, .magnifier].contains(annotation.tool) ? 1 : min(1, max(0, annotation.opacity)))
             context.setStrokeColor(annotation.color)
             context.setFillColor(annotation.color)
             context.setLineWidth(max(1, annotation.lineWidth))
@@ -129,10 +173,40 @@ enum ImageEditorRenderer {
                 }
                 context.restoreGState(); continue
             }
+            if annotation.tool == .magnifier {
+                // A snapshot is scoped to this one draw, never stored in the model/history.
+                // Keep redaction visible even when other lower marks are hidden in the lens.
+                autoreleasepool {
+                    var snapshot: CGImage?
+                    if !annotation.magnifierShowsAnnotations, let baseImage { snapshot = baseImage }
+                    else if let baseImage, !annotations.prefix(index).contains(where: { $0.tool != .eraser }) { snapshot = baseImage }
+                    else { snapshot = context.makeImage() }
+                    // A redaction added after a lens must also hide its magnified copy.
+                    // Apply these as vectors in source coordinates, avoiding another raster.
+                    let privacyMarks = annotations.filter { $0.tool == .redact || $0.tool == .eraser }
+                    if let snapshot {
+                        AnnotationMagnifierRenderer.draw(annotation, snapshot: snapshot, extent: extent,
+                                                         privacyMarks: privacyMarks, in: context)
+                    }
+                }
+                context.restoreGState(); continue
+            }
+            if annotation.tool == .spotlight {
+                var transform = annotation.transform
+                if let hole = annotation.spotlightShape.path(in: annotation.localBounds).copy(using: &transform) {
+                    context.saveGState(); context.addRect(extent); context.addPath(hole); context.clip(using: .evenOdd)
+                    context.setBlendMode(.sourceAtop) // Dim existing pixels without filling transparent capture gaps.
+                    context.setFillColor(CGColor(gray: 0, alpha: min(1, max(0, annotation.spotlightDim))))
+                    context.fill(extent); context.restoreGState()
+                    if annotation.spotlightBorder { context.addPath(hole); context.strokePath() }
+                }
+                context.restoreGState(); continue
+            }
             context.concatenate(annotation.transform)
             let rect = annotation.localBounds.standardized
             switch annotation.tool {
-            case .select, .crop, .blur, .pixelate: break
+            case .select, .crop, .blur, .pixelate, .eraser, .spotlight, .magnifier: break
+            case .watermark: AnnotationWatermarkLayout.draw(annotation, in: context)
             case .rectangle, .ellipse:
                 if annotation.fillEnabled {
                     context.setFillColor(annotation.fillColor); context.addPath(annotation.outline); context.fillPath()
@@ -161,7 +235,6 @@ enum ImageEditorRenderer {
             }
             context.restoreGState()
         }
-        return context.makeImage()
     }
 
     private static func drawText(_ text: String, point: CGPoint, size: CGFloat, color: CGColor, context: CGContext, bold: Bool = false) {
@@ -230,6 +303,9 @@ enum ImageEditorHistoryBudget {
 @MainActor
 final class ImageEditorCanvas: NSView {
     var image: CGImage
+    let captureDate: Date
+    let captureTimeZoneIdentifier: String
+    let captureTimestampKnown: Bool
     var annotations: [ImageAnnotation] = []
     var tool: ImageEditorTool = .arrow { didSet { cancelInteraction(); cropRect = nil; needsDisplay = true } }
     var style = ImageAnnotation(tool: .arrow, points: [], color: NSColor.systemRed.cgColor, fontSize: 20)
@@ -260,10 +336,12 @@ final class ImageEditorCanvas: NSView {
     var retainedPresentationRaster: CGImage? { cachedImage }
     var selectedAnnotation: ImageAnnotation? { annotations.first { $0.id == selection } }
 
-    init(image: CGImage) {
-        self.image = image
+    init(image: CGImage, captureDate: Date? = nil, timeZone: TimeZone = .current) {
+        self.image = image; self.captureDate = captureDate ?? Date(); self.captureTimeZoneIdentifier = timeZone.identifier
+        self.captureTimestampKnown = captureDate != nil
         super.init(frame: CGRect(x: 0, y: 0, width: CGFloat(image.width), height: CGFloat(image.height)))
         wantsLayer = true
+        if captureDate == nil { style.watermarkTemplate = "PicShot · 编辑于 $yyyy-MM-dd HH:mm:ss$" }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override var acceptsFirstResponder: Bool { true }
@@ -292,6 +370,11 @@ final class ImageEditorCanvas: NSView {
         var result = style
         result.id = UUID(); result.tool = tool; result.points = points; result.text = text
         result.rotation = 0; result.textBoxSize = nil
+        result.frozenTimestamp = captureDate; result.frozenTimeZoneIdentifier = captureTimeZoneIdentifier
+        result.timestampIsCaptureDate = captureTimestampKnown
+        result.magnifierSource = nil
+        if tool == .eraser { result.lineWidth = max(4, result.lineWidth) }
+        if tool == .spotlight || tool == .magnifier { result.opacity = 1 }
         if tool == .redact { result.color = CGColor(gray: 0, alpha: 1); result.opacity = 1 }
         return result
     }
@@ -310,9 +393,20 @@ final class ImageEditorCanvas: NSView {
         context.saveGState(); context.scaleBy(x: zoom, y: displayScaleY)
         let imageBounds = CGRect(x: 0, y: 0, width: CGFloat(image.width), height: CGFloat(image.height))
         if cachedImage == nil { cachedImage = ImageEditorRenderer.render(image: image, annotations: annotations.filter { $0.id != editingAnnotationID }) }
-        let displayed = draft.flatMap { ImageEditorRenderer.render(image: cachedImage ?? image, annotations: [$0]) } ?? cachedImage ?? image
+        let displayed: CGImage
+        if let draft {
+            // An eraser needs the original vector stack; a flattened preview would erase
+            // the captured pixels. No draft is retained in undo until mouse-up.
+            if draft.tool == .eraser || draft.tool == .magnifier {
+                displayed = ImageEditorRenderer.render(image: image, annotations: annotations + [draft]) ?? cachedImage ?? image
+            } else { displayed = ImageEditorRenderer.render(image: cachedImage ?? image, annotations: [draft]) ?? cachedImage ?? image }
+        } else { displayed = cachedImage ?? image }
         context.draw(displayed, in: imageBounds)
         if let selected = selectedAnnotation, tool == .select { drawSelection(selected, context: context) }
+        if let draft, draft.tool == .eraser {
+            context.saveGState(); context.setStrokeColor(NSColor.controlAccentColor.cgColor); context.setLineWidth(1 / zoom)
+            context.addPath(draft.mergedEraserPath); context.strokePath(); context.restoreGState()
+        }
         if let cropRect { drawSelectionBox(CGPath(rect: cropRect, transform: nil), context: context) }
         context.restoreGState()
     }
@@ -321,6 +415,9 @@ final class ImageEditorCanvas: NSView {
         var transform = annotation.transform
         let box = CGPath(rect: annotation.localBounds, transform: &transform)
         if !annotation.isLinear { drawSelectionBox(box, context: context) }
+        if annotation.tool == .magnifier {
+            drawSelectionBox(annotation.magnifierShape.path(in: annotation.magnifierSourceRect), context: context)
+        }
         let handles = annotation.handles(zoom: zoom)
         if let rotate = handles.first(where: { $0.0 == .rotation })?.1 {
             let start = CGPoint(x: annotation.localBounds.midX, y: annotation.localBounds.maxY).applying(annotation.transform)
@@ -360,11 +457,16 @@ final class ImageEditorCanvas: NSView {
         let point = imagePoint(event, clamped: tool != .select)
         dragOrigin = point
         if tool == .select {
-            if event.clickCount != 2, let selected = selectedAnnotation, let handle = selected.handle(at: point, zoom: zoom) {
+            if event.clickCount != 2, !event.modifierFlags.contains(.option), let selected = selectedAnnotation, let handle = selected.handle(at: point, zoom: zoom) {
                 activeHandle = handle; movingOriginal = selected
             } else {
-                selection = annotations.reversed().first { $0.hitTest(point, tolerance: 6 / zoom) }?.id
+                let hits = annotations.reversed().filter { $0.hitTest(point, tolerance: 6 / zoom) }
+                if event.modifierFlags.contains(.option), let current = hits.firstIndex(where: { $0.id == selection }), !hits.isEmpty {
+                    selection = hits[(current + 1) % hits.count].id
+                } else { selection = hits.first?.id }
                 movingOriginal = selectedAnnotation
+                if let selected = selectedAnnotation, selected.tool == .magnifier,
+                   selected.magnifierSourceRect.contains(point), !selected.localBounds.contains(point) { activeHandle = .source }
             }
             if let selected = selectedAnnotation {
                 style = selected
@@ -375,6 +477,11 @@ final class ImageEditorCanvas: NSView {
             needsDisplay = true; onChange?()
         } else if tool == .text {
             onRequestText?(point, nil)
+        } else if tool == .watermark {
+            var annotation = makeAnnotation(tool: .watermark,
+                points: [.zero, CGPoint(x: image.width, y: image.height)])
+            annotation.watermarkTemplate = style.watermarkTemplate
+            add(annotation)
         } else if tool == .number {
             var annotation = makeAnnotation(tool: .number, points: [point])
             annotation.number = (annotations.filter { $0.tool == .number }.map(\.number).max() ?? 0) + 1
@@ -397,14 +504,22 @@ final class ImageEditorCanvas: NSView {
                 if event.modifierFlags.contains(.shift) {
                     if abs(delta.width) > abs(delta.height) { delta.height = 0 } else { delta.width = 0 }
                 }
-                annotations[index] = original.translated(by: delta)
+                annotations[index] = original.tool == .magnifier ? original.translatedLens(by: delta) : original.translated(by: delta)
             }
             changed()
-        } else if tool == .freehand {
-            draft?.points.append(point); needsDisplay = true
+        } else if tool == .freehand || (tool == .eraser && draft?.eraserMode == .brush) {
+            if let last = draft?.points.last, hypot(point.x - last.x, point.y - last.y) >= 0.75 / zoom {
+                if (draft?.points.count ?? 0) >= ImageAnnotation.maximumGesturePoints {
+                    // Progressive decimation bounds vector history even during very long gestures.
+                    let reduced = draft!.points.enumerated().filter { $0.offset % 2 == 0 }.map(\.element)
+                    draft?.points = reduced
+                }
+                draft?.points.append(point)
+            }
+            needsDisplay = true
         } else if draft != nil {
             var end = point
-            if event.modifierFlags.contains(.shift), [.rectangle, .ellipse, .crop].contains(tool) {
+            if event.modifierFlags.contains(.shift), [.rectangle, .ellipse, .crop, .spotlight, .magnifier].contains(tool) {
                 let length = min(abs(point.x - origin.x), abs(point.y - origin.y))
                 end = CGPoint(x: origin.x + (point.x >= origin.x ? length : -length), y: origin.y + (point.y >= origin.y ? length : -length))
             } else if event.modifierFlags.contains(.shift), tool == .line || tool == .arrow {
@@ -426,7 +541,25 @@ final class ImageEditorCanvas: NSView {
             onWillChange?() // Exactly one original snapshot for an entire gesture, none for Escape.
             annotations[index] = edited; style = edited; changed()
         }
-        guard let draft else { return }
+        guard var draft else { return }
+        if tool == .eraser && draft.eraserMode == .brush {
+            let last = imagePoint(event)
+            if let previous = draft.points.last, previous != last {
+                if draft.points.count >= ImageAnnotation.maximumGesturePoints { draft.points[draft.points.count - 1] = last }
+                else { draft.points.append(last) }
+            }
+            if !annotations.isEmpty { add(draft) }; return
+        }
+        if tool == .magnifier {
+            let source = draft.localBounds.standardized
+            guard source.width > 1, source.height > 1 else { return }
+            draft.magnifierSource = source
+            draft = draft.resizedMagnifierLens(scale: draft.effectiveMagnifierScale)
+            let size = draft.localBounds.size
+            let x = min(max(0, source.maxX + 20), max(0, CGFloat(image.width) - size.width))
+            let y = min(max(0, source.midY - size.height / 2), max(0, CGFloat(image.height) - size.height))
+            draft.points = [CGPoint(x: x, y: y), CGPoint(x: x + size.width, y: y + size.height)]
+        }
         if tool == .crop { cropRect = draft.localBounds; onChange?(); return }
         guard draft.bounds.width > 1 || draft.bounds.height > 1 else { return }
         add(draft)
@@ -441,7 +574,13 @@ final class ImageEditorCanvas: NSView {
 
     func updateSelected(_ edit: (inout ImageAnnotation) -> Void) {
         guard let selection, let index = annotations.firstIndex(where: { $0.id == selection }) else { return }
-        onWillChange?(); edit(&annotations[index]); style = annotations[index]; changed()
+        onWillChange?()
+        let previousScale = annotations[index].magnifierScale
+        edit(&annotations[index])
+        if annotations[index].tool == .magnifier, annotations[index].magnifierScale != previousScale {
+            annotations[index] = annotations[index].resizedMagnifierLens(scale: annotations[index].effectiveMagnifierScale)
+        }
+        style = annotations[index]; changed()
     }
 
     func updateSelectedStyle(color newColor: CGColor? = nil, width: CGFloat? = nil) {
@@ -468,10 +607,56 @@ final class ImageEditorCanvas: NSView {
         add(copy)
     }
 
+    func clearAnnotations() {
+        cancelInteraction()
+        guard !annotations.isEmpty else { return }
+        onWillChange?(); annotations.removeAll(); selection = nil; changed()
+    }
+
     func deleteSelection() {
         cancelInteraction()
         guard let selection, annotations.contains(where: { $0.id == selection }) else { return }
         onWillChange?(); annotations.removeAll { $0.id == selection }; self.selection = nil; changed()
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        let delta = event.scrollingDeltaY
+        guard delta.isFinite, abs(delta) > 0.001 else { super.scrollWheel(with: event); return }
+        let active = tool == .select ? selectedAnnotation?.tool : tool
+        let step: CGFloat = delta > 0 ? 1 : -1
+        if active == .eraser {
+            if tool == .select {
+                updateSelected { $0.lineWidth = min(256, max(2, $0.lineWidth + step * 2)) }
+            } else {
+                style.lineWidth = min(256, max(2, style.lineWidth + step * 2)); onChange?()
+            }
+            return
+        }
+        if active == .spotlight {
+            let edit: (inout ImageAnnotation) -> Void = { annotation in
+                if event.modifierFlags.contains(.control) {
+                    annotation.lineWidth = min(64, max(1, annotation.lineWidth + step))
+                } else if event.modifierFlags.contains(.shift), annotation.points.count > 1 {
+                    let box = annotation.localBounds, factor = step > 0 ? CGFloat(1.05) : CGFloat(1 / 1.05)
+                    annotation.points = annotation.points.map { CGPoint(x: box.midX + ($0.x - box.midX) * factor,
+                                                                        y: box.midY + ($0.y - box.midY) * factor) }
+                } else { annotation.spotlightDim = min(1, max(0, annotation.spotlightDim + step * 0.05)) }
+            }
+            if selectedAnnotation?.tool == .spotlight { updateSelected(edit) }
+            else { edit(&style); onChange?() }
+            return
+        }
+        if active == .magnifier {
+            let point = imagePoint(event, clamped: false)
+            if let selected = selectedAnnotation, selected.tool == .magnifier {
+                updateSelected {
+                    if selected.hitTest(point, tolerance: 0) { $0.magnifierScale = min(8, max(1, $0.magnifierScale + step * 0.1)) }
+                    else { $0.lineWidth = min(64, max(1, $0.lineWidth + step)) }
+                }
+            } else { style.magnifierScale = min(8, max(1, style.magnifierScale + step * 0.1)); onChange?() }
+            return
+        }
+        super.scrollWheel(with: event)
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
@@ -508,7 +693,12 @@ final class ImageEditorCanvas: NSView {
             let step: CGFloat = event.modifierFlags.contains(.shift) ? 10 : 1
             let delta = CGSize(width: event.keyCode == 123 ? -step : (event.keyCode == 124 ? step : 0),
                                height: event.keyCode == 125 ? -step : (event.keyCode == 126 ? step : 0))
-            updateSelected { $0 = $0.translated(by: delta) }
+            updateSelected {
+                if $0.tool == .magnifier {
+                    if event.modifierFlags.contains(.option) { $0.magnifierSource = $0.magnifierSourceRect.offsetBy(dx: delta.width, dy: delta.height) }
+                    else { $0 = $0.translatedLens(by: delta) }
+                } else { $0 = $0.translated(by: delta) }
+            }
         default: super.keyDown(with: event)
         }
     }
@@ -578,8 +768,8 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     init(image: CGImage, presentation: FrozenCapturePresentation? = nil,
          onSave: @escaping (CGImage) -> Void, onPin: @escaping (CGImage) -> Void,
          onOCR: @escaping (CGImage) -> Void, onTranslate: ((CGImage) -> Void)? = nil,
-         onApply: ((CGImage) -> Bool)? = nil) {
-        canvas = ImageEditorCanvas(image: image)
+         onApply: ((CGImage) -> Bool)? = nil, captureDate: Date? = nil) {
+        canvas = ImageEditorCanvas(image: image, captureDate: presentation?.capturedAt ?? captureDate)
         self.presentation = presentation
         self.onSave = onSave; self.onPin = onPin; self.onOCR = onOCR
         self.onTranslate = onTranslate; self.onApply = onApply
@@ -606,6 +796,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         canvas.onExport = { [weak self] in self?.exportResult() }
         canvas.onCancel = { [weak self] in self?.cancelEditor() }
         canvas.onBeforeInteraction = { [weak self] in self?.finishInlineText(commit: true) }
+        inspector.onClearAnnotations = { [weak self] in self?.canvas.clearAnnotations() }
         inspector.onEdit = { [weak self] edit in
             guard let self else { return }
             edit(&self.canvas.style)
@@ -614,7 +805,8 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
                 box.applyStyle(annotation, zoom: self.canvas.zoom)
                 self.updateStatus(); return
             }
-            if self.canvas.tool == .select { self.canvas.updateSelected(edit) }
+            if self.canvas.tool == .select || ([ImageEditorTool.watermark, .magnifier, .spotlight].contains(self.canvas.tool)
+                && self.canvas.selectedAnnotation?.tool == self.canvas.tool) { self.canvas.updateSelected(edit) }
             self.updateStatus()
         }
         workspace.onLayout = { [weak self] in self?.layoutInterface() }
@@ -706,7 +898,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         styleFloatingSurface(toolbar)
         let tools: [(ImageEditorTool, String)] = [(.rectangle, "rectangle"), (.ellipse, "circle"), (.freehand, "pencil"),
             (.arrow, "arrow.up.right"), (.text, "textformat"), (.number, "1.circle"), (.pixelate, "square.grid.2x2.fill"),
-            (.redact, "rectangle.fill"), (.line, "line.diagonal"), (.highlighter, "highlighter"), (.select, "cursorarrow"), (.crop, "crop")]
+            (.redact, "rectangle.fill"), (.eraser, "eraser"), (.spotlight, "light.beacon.max"), (.line, "line.diagonal"), (.highlighter, "highlighter"), (.select, "cursorarrow"), (.crop, "crop")]
         for (tool, symbol) in tools {
             let control = iconButton(symbol, title: tool.title, id: "editor.tool.\(tool.rawValue)", action: #selector(selectTool(_:)))
             control.tag = ImageEditorTool.allCases.firstIndex(of: tool) ?? 0
@@ -732,7 +924,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         overflow.image = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "更多操作")
         overflow.imagePosition = .imageOnly; overflow.setAccessibilityLabel("更多操作")
         overflow.identifier = NSUserInterfaceItemIdentifier("editor.more")
-        for tool in [ImageEditorTool.select, .ellipse, .line, .highlighter, .crop] {
+        for tool in [ImageEditorTool.select, .ellipse, .line, .highlighter, .crop, .eraser, .spotlight, .watermark, .magnifier] {
             let item = NSMenuItem(title: tool.title, action: #selector(selectMenuTool(_:)), keyEquivalent: "")
             item.target = self; item.tag = ImageEditorTool.allCases.firstIndex(of: tool) ?? 0; overflow.menu?.addItem(item)
         }
@@ -799,7 +991,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         let availableBounds = pinPresentation.flatMap { pin in NSScreen.screens.first { $0.frame.intersects(pin.viewportFrame) }?.frame } ?? workspace.bounds
         for button in toolButtons.values { button.isHidden = false }
         var preferredWidth = max(40, toolbar.fittingSize.width)
-        for tool in [ImageEditorTool.ellipse, .line, .highlighter, .select, .crop] where preferredWidth > availableBounds.width - 20 {
+        for tool in [ImageEditorTool.ellipse, .line, .highlighter, .select, .crop, .spotlight, .eraser] where preferredWidth > availableBounds.width - 20 {
             if let button = toolButtons[tool] { button.isHidden = true; preferredWidth -= 34 }
         }
         toolbar.setFrameSize(CGSize(width: preferredWidth, height: 40))
@@ -848,7 +1040,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     private func restore(_ state: Snapshot) {
         if pinPresentation != nil { pinPresentation = state.pinPresentation }
         if let old = presentation, let frame = state.selectionFrame {
-            presentation = FrozenCapturePresentation(frozenImage: old.frozenImage, displayID: old.displayID, displayFrame: old.displayFrame, selectionFrame: frame)
+            presentation = FrozenCapturePresentation(frozenImage: old.frozenImage, displayID: old.displayID, displayFrame: old.displayFrame, selectionFrame: frame, capturedAt: old.capturedAt)
         }
         canvas.setContent(image: state.image, annotations: state.annotations); updateStatus(); layoutInterface()
     }
@@ -862,7 +1054,9 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
             button.contentTintColor = canvas.tool == tool ? .systemBlue : EditorFloatingSurface.ink
             button.layer?.backgroundColor = canvas.tool == tool ? NSColor.systemBlue.withAlphaComponent(0.12).cgColor : NSColor.clear.cgColor
         }
-        let selected = canvas.tool == .select ? canvas.selectedAnnotation : nil
+        let usesCurrentMark = canvas.tool == .select || ([ImageEditorTool.watermark, .magnifier, .spotlight].contains(canvas.tool)
+            && canvas.selectedAnnotation?.tool == canvas.tool)
+        let selected = usesCurrentMark ? canvas.selectedAnnotation : nil
         var inspected = selected ?? canvas.style; inspected.tool = selected?.tool ?? canvas.tool
         let enabled = canvas.tool != .crop && (canvas.tool != .select || selected != nil)
         inspector.isHidden = !enabled
@@ -899,7 +1093,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
             let scaleX = old.selectionFrame.width / CGFloat(canvas.image.width), scaleY = old.selectionFrame.height / CGFloat(canvas.image.height)
             let clipped = rect.standardized.integral.intersection(CGRect(x: 0, y: 0, width: canvas.image.width, height: canvas.image.height))
             presentation = FrozenCapturePresentation(frozenImage: old.frozenImage, displayID: old.displayID, displayFrame: old.displayFrame,
-                selectionFrame: CGRect(x: old.selectionFrame.minX + clipped.minX * scaleX, y: old.selectionFrame.minY + clipped.minY * scaleY, width: clipped.width * scaleX, height: clipped.height * scaleY))
+                selectionFrame: CGRect(x: old.selectionFrame.minX + clipped.minX * scaleX, y: old.selectionFrame.minY + clipped.minY * scaleY, width: clipped.width * scaleX, height: clipped.height * scaleY), capturedAt: old.capturedAt)
         }
         if let pin = pinPresentation {
             let clipped = rect.standardized.integral.intersection(CGRect(x: 0, y: 0, width: canvas.image.width, height: canvas.image.height))
@@ -1009,7 +1203,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         canvas.onWillChange = nil; canvas.onChange = nil; canvas.onRequestText = nil
         canvas.onUndo = nil; canvas.onRedo = nil; canvas.onApplyCrop = nil
         canvas.onCopy = nil; canvas.onExport = nil; canvas.onCancel = nil; canvas.onBeforeInteraction = nil
-        inspector.onEdit = nil; inspector.deactivateColorWells()
+        inspector.onEdit = nil; inspector.onClearAnnotations = nil; inspector.deactivateColorWells()
         workspace.onLayout = nil; workspace.onDismiss = nil; workspace.onOutsideClick = nil
         workspace.onBoundaryBegin = nil; workspace.onBoundaryChange = nil; workspace.onBoundaryEnd = nil
         workspace.boundaryPreviewImage = nil; workspace.selectionContent = nil

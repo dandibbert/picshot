@@ -3,6 +3,8 @@ import AVFoundation
 import Combine
 import CoreMedia
 import ScreenCaptureKit
+import PicShotCore
+import Darwin
 
 struct RecordingOptions: Equatable, Sendable {
     var frameRate: Int = 30
@@ -26,10 +28,13 @@ struct RecordingOptions: Equatable, Sendable {
 enum RecordingError: LocalizedError {
     case busy, notRecording, noFrames, invalidOptions, microphoneUnavailable, microphonePermission
     case invalidRegion, failed(String), sizeLimit, invalidDelay
+    case pendingTake, preservationFailed(String)
 
     var errorDescription: String? {
         switch self {
         case .busy: return "A recording is already starting, running, or being saved."
+        case .pendingTake: return "A stopped recording still needs to be protected. Retry protecting it before starting another recording or quitting."
+        case .preservationFailed(let message): return "Capture has stopped, but the recording’s recovery copy could not be secured. Keep PicShot open and retry protecting the take. \(message)"
         case .notRecording: return "There is no recording to save."
         case .noFrames: return "No video frames were received. Check screen recording permission and try again."
         case .invalidOptions: return "Use 1–60 FPS, an active duration of 1 second to 1 hour, a total time limit between the active limit and 2 hours, and a file limit of 16 MB to 4 GB."
@@ -44,7 +49,7 @@ enum RecordingError: LocalizedError {
 }
 
 /// No frame arrays: ScreenCaptureKit has a three-frame queue and the encoder drops
-/// frames under backpressure. The writer retains at most two video surfaces.
+/// frames under backpressure. Overlay surfaces use a separate bounded pool.
 @MainActor
 final class RecordingService: ObservableObject {
     @Published private(set) var isRecording = false
@@ -59,6 +64,15 @@ final class RecordingService: ObservableObject {
     /// Once finalized, a recording belongs to the user and cancel() never removes it.
     @Published private(set) var outputURL: URL?
 
+    /// One stopped encoder may remain alive until its recovery copy is durable.
+    /// New recording is blocked instead of accumulating quarantined writers.
+    @Published private(set) var hasPendingTake = false
+    var onPendingTakePreserved: (() -> Void)?
+
+    let composition: RecordingCompositionState
+    let camera: RecordingCameraController
+    let overlay: RecordingOverlayController
+
     private var startingTask: Task<Void, Error>?
     private var startingID: UUID?
     private var restartingTask: Task<URL?, Error>?
@@ -69,6 +83,8 @@ final class RecordingService: ObservableObject {
     private var timerTask: Task<Void, Never>?
     private var stream: SCStream?
     private var sink: RecordingWriter?
+    private var pendingTake: RecordingWriter?
+    private var pendingPreservationTask: Task<Void, Error>?
     private var sessionID: UUID?
     private var options = RecordingOptions()
     private var wallStartedAt: ContinuousClock.Instant?
@@ -77,6 +93,10 @@ final class RecordingService: ObservableObject {
 
     init(screenPermissionCheck: (@MainActor () throws -> Void)? = nil) {
         self.screenPermissionCheck = screenPermissionCheck ?? { try CaptureService.requireScreenPermission() }
+        let composition = RecordingCompositionState()
+        self.composition = composition
+        camera = RecordingCameraController(composition: composition)
+        overlay = RecordingOverlayController(state: composition)
     }
 
     static var supportsMicrophone: Bool {
@@ -101,12 +121,14 @@ final class RecordingService: ObservableObject {
     /// allocates no capture stream or recording file until its countdown ends.
     func start(displayID: CGDirectDisplayID, region: CGRect? = nil, options: RecordingOptions = .init(),
                delay: TimeInterval = 0) async throws {
+        guard !hasPendingTake else { throw RecordingError.pendingTake }
         guard restartingTask == nil else { throw RecordingError.busy }
         try await startSession(displayID: displayID, region: region, options: options, delay: delay)
     }
 
     private func startSession(displayID: CGDirectDisplayID, region: CGRect?, options: RecordingOptions,
                               delay: TimeInterval) async throws {
+        guard !hasPendingTake else { throw RecordingError.pendingTake }
         guard sessionID == nil, startingTask == nil, stoppingTask == nil else { throw RecordingError.busy }
         try options.validate()
         try Self.validateDelay(delay)
@@ -153,6 +175,10 @@ final class RecordingService: ObservableObject {
             try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
         } catch {
             if !(error is CancellationError), startingID == id { self.error = error.localizedDescription }
+            if sessionID == nil {
+                overlay.hide()
+                if isRestarting { await camera.suspend() } else { await camera.disable() }
+            }
             throw error
         }
     }
@@ -181,6 +207,7 @@ final class RecordingService: ObservableObject {
     /// The returned URL is the previous saved take, if one was saved.
     func restart(discardUnfinished: Bool = false, delay: TimeInterval = 0) async throws -> URL? {
         try Self.validateDelay(delay)
+        guard !hasPendingTake else { throw RecordingError.pendingTake }
         guard restartingTask == nil, !isStopping else { throw RecordingError.busy }
         guard sessionID != nil, let request = lastRequest else { throw RecordingError.notRecording }
         let token = UUID()
@@ -189,7 +216,7 @@ final class RecordingService: ObservableObject {
         let task = Task<URL?, Error> {
             let previous: URL?
             if discardUnfinished || (self.isStarting && self.countdown != nil) {
-                await self.cancelSession()
+                try await self.cancelSession()
                 previous = nil
             } else {
                 previous = try await self.stopSession()
@@ -214,9 +241,12 @@ final class RecordingService: ObservableObject {
     }
 
     private func stopSession() async throws -> URL {
+        guard !hasPendingTake else { throw RecordingError.pendingTake }
         if countdown != nil, let startingTask {
             startingTask.cancel()
             _ = await startingTask.result
+            overlay.hide()
+            await camera.disable()
             throw CancellationError()
         }
         if let startingTask {
@@ -244,24 +274,36 @@ final class RecordingService: ObservableObject {
     func cancel() async {
         let restart = restartingTask
         restart?.cancel()
-        await cancelSession()
+        do { try await cancelSession() }
+        catch {
+            // Keep the actionable disk error on an already blocked take.
+            if !hasPendingTake || self.error == nil { self.error = error.localizedDescription }
+        }
         _ = await restart?.result
     }
 
-    private func cancelSession() async {
+    private func cancelSession() async throws {
+        guard !hasPendingTake else { throw RecordingError.pendingTake }
         let targetID = sessionID
         cancelRequested = true
         if let startingTask {
             startingTask.cancel()
-            _ = await startingTask.result
+            let result = await startingTask.result
+            if case .failure(let failure) = result, hasPendingTake { throw failure }
             // The start() caller's defer may resume later than this cancellation.
             // Clear only the same generation before a restart can begin.
             if sessionID == nil, startingID == targetID { self.startingTask = nil; startingID = nil; isStarting = false; countdown = nil }
         }
+        if sessionID == nil {
+            overlay.hide()
+            if isRestarting { await camera.suspend() } else { await camera.disable() }
+            return
+        }
         guard sessionID == targetID else { return }
         if let stoppingTask {
             stoppingTask.cancel()
-            _ = await stoppingTask.result
+            let result = await stoppingTask.result
+            if case .failure(let failure) = result, !(failure is CancellationError) { throw failure }
         } else if let stream, let sink, let id = sessionID {
             isRecording = false
             isPaused = false
@@ -270,7 +312,8 @@ final class RecordingService: ObservableObject {
             timerTask = nil
             let task = Task { try await self.finish(stream: stream, sink: sink, id: id) }
             stoppingTask = task
-            _ = await task.result
+            let result = await task.result
+            if case .failure(let failure) = result, !(failure is CancellationError) { throw failure }
         }
         // A published output belongs to the user. Never remove saved movies.
     }
@@ -293,7 +336,14 @@ final class RecordingService: ObservableObject {
             try Task.checkCancellation()
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
             guard let display = content.displays.first(where: { $0.displayID == displayID }) else { throw CaptureError.noDisplay }
-            let filter = SCContentFilter(display: display, excludingWindows: [])
+            // Application exclusion also covers controls/overlays created after
+            // this filter, unlike a one-time list of visible window IDs. Preview
+            // pixels are composed exactly once by RecordingWriter, never captured.
+            let ownApplications = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier }
+            guard !ownApplications.isEmpty else {
+                throw RecordingError.failed("PicShot’s recording controls could not be excluded from screen capture.")
+            }
+            let filter = SCContentFilter(display: display, excludingApplications: ownApplications, exceptingWindows: [])
             let bounds = CGRect(origin: .zero, size: filter.contentRect.size)
             let source = try Self.validatedRegion(region, bounds: bounds)
             let size = Self.encodedSize(for: source.size, scale: CGFloat(filter.pointPixelScale))
@@ -313,7 +363,9 @@ final class RecordingService: ObservableObject {
             if #available(macOS 15.0, *) { configuration.captureMicrophone = options.capturesMicrophone }
             #endif
             try Task.checkCancellation()
-            let writer = try RecordingWriter(size: size, options: options) { [weak self] message in
+            composition.setCanvasSize(size)
+            let compositor = try RecordingFrameCompositor(size: size, state: composition)
+            let writer = try RecordingWriter(size: size, options: options, compositor: compositor) { [weak self] message in
                 Task { @MainActor [weak self] in
                     guard let self, self.sessionID == id else { return }
                     if let message { self.error = message }
@@ -332,6 +384,14 @@ final class RecordingService: ObservableObject {
             #endif
             self.stream = capture
             self.sink = writer
+            if let screen = NSScreen.screens.first(where: {
+                ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == displayID
+            }) {
+                overlay.show(frame: CGRect(x: screen.frame.minX + source.minX, y: screen.frame.maxY - source.maxY,
+                    width: source.width, height: source.height), canvasSize: size)
+            }
+            if camera.requested, camera.status == .off { await camera.enable() }
+            try Task.checkCancellation()
             try await capture.startCapture()
             try Task.checkCancellation()
             guard !cancelRequested else { throw CancellationError() }
@@ -356,18 +416,25 @@ final class RecordingService: ObservableObject {
                 }
             }
         } catch {
-            // startCapture can fail after allocating outputs; tear down every path.
+            let originalError = error
+            // Freeze and detach capture before any fallible disk protection.
+            if let createdSink { _ = await createdSink.stopAccepting() }
+            overlay.hide()
+            await camera.disable()
             if let createdStream { try? await createdStream.stopCapture(); Self.detach(createdStream, sink: createdSink) }
-            if let createdSink { await createdSink.discard() }
-            if sessionID == id {
-                stream = nil
-                sink = nil
-                sessionID = nil
-                isRecording = false
-                isStopping = false
-                isPaused = false
+            defer {
+                if sessionID == id {
+                    stream = nil
+                    sink = nil
+                    sessionID = nil
+                    isRecording = false
+                    isStopping = false
+                    isPaused = false
+                    wallStartedAt = nil
+                }
             }
-            throw error
+            if let createdSink { try await preserveStoppedTake(createdSink) }
+            throw originalError
         }
     }
 
@@ -386,6 +453,10 @@ final class RecordingService: ObservableObject {
         }
         do {
             let snapshot = await sink.stopAccepting()
+            overlay.hide()
+            // The writer froze the final composition at its stop barrier. Release
+            // camera hardware before potentially slow stream/encoder cleanup.
+            if isRestarting { await camera.suspend() } else { await camera.disable() }
             if sessionID == id { elapsed = max(elapsed, snapshot.elapsed) }
             // A stream may already be stopped by macOS (display disconnect, TCC,
             // sleep). Still finalize any frames already received instead of losing them.
@@ -393,7 +464,7 @@ final class RecordingService: ObservableObject {
             catch { if !cancelRequested { self.error = error.localizedDescription } }
             Self.detach(stream, sink: sink)
             if cancelRequested || Task.isCancelled {
-                await sink.discard()
+                try await sink.discard()
                 throw CancellationError()
             }
             var url = try await sink.finish()
@@ -409,27 +480,78 @@ final class RecordingService: ObservableObject {
                 }
             }
             if cancelRequested || Task.isCancelled {
-                await sink.discard()
+                try await sink.discard()
                 throw CancellationError()
             }
             let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
             guard size <= options.maximumFileSize else { throw RecordingError.sizeLimit }
             do {
-                let savedURL = try RecordingFileStorage.publish(from: url)
+                let savedURL = try await sink.publishFinished(mediaURL: url)
                 outputURL = savedURL
                 return savedURL
             } catch {
                 // Staging also lives in Movies/PicShot, so a rename failure must
                 // never delete the completed recording. Keep a recoverable file.
-                self.error = "Recording finished but could not be renamed. Your recording is safe at \(url.path). \(error.localizedDescription)"
-                outputURL = url
-                return url
+                guard let retainedURL = await sink.recoverableURLAndClose() else { throw error }
+                self.error = "Recording finished but its save transaction needs recovery. Your recording is safe at \(retainedURL.path). \(error.localizedDescription)"
+                outputURL = retainedURL
+                return retainedURL
             }
         } catch {
-            await sink.discard()
-            if !(error is CancellationError) { self.error = error.localizedDescription }
+            if isRestarting { await camera.suspend() } else { await camera.disable() }
+            let originalError = error
+            // A failed protection must remain visible and retryable; never
+            // immediately retry and accidentally hide the failed save attempt.
+            if let failure = originalError as? RecordingError, case .preservationFailed = failure {
+                retainPendingTake(sink, error: originalError)
+            } else {
+                try await preserveStoppedTake(sink)
+                if !(originalError is CancellationError) { self.error = originalError.localizedDescription }
+            }
+            throw originalError
+        }
+    }
+
+    /// The caller has already stopped/detached capture hardware. This is also a
+    /// hardware-free integration seam for exercising preservation failures.
+    func preserveStoppedTake(_ take: RecordingWriter) async throws {
+        guard pendingTake == nil || pendingTake === take else { throw RecordingError.pendingTake }
+        do {
+            try await take.abandonPreservingRecovery()
+        } catch {
+            retainPendingTake(take, error: error)
             throw error
         }
+    }
+
+    private func retainPendingTake(_ take: RecordingWriter, error: Error) {
+        // start/restart cannot create another writer while this slot is occupied.
+        precondition(pendingTake == nil || pendingTake === take)
+        pendingTake = take
+        hasPendingTake = true
+        self.error = error.localizedDescription
+    }
+
+    /// Secure the stopped take, then release its encoder into explicit recovery.
+    /// Multiple clicks share one bounded operation and never create a new take.
+    func retryPendingTakePreservation(presentRecovery: Bool = true) async throws {
+        if let pendingPreservationTask { return try await pendingPreservationTask.value }
+        guard let take = pendingTake else { return }
+        let task = Task {
+            do {
+                try await take.abandonPreservingRecovery()
+                self.pendingTake = nil
+                self.hasPendingTake = false
+                self.error = nil
+                if presentRecovery { self.onPendingTakePreserved?() }
+            } catch {
+                self.error = error.localizedDescription
+                throw error
+            }
+        }
+        pendingPreservationTask = task
+        defer { pendingPreservationTask = nil }
+        try await task.value
     }
 
     private static func detach(_ stream: SCStream, sink: RecordingWriter?) {
@@ -482,7 +604,8 @@ final class RecordingService: ObservableObject {
                 throw RecordingError.failed(exporter.error?.localizedDescription ?? "Audio mixing failed.")
             }
         } onCancel: { exporter.cancelExport() }
-        try FileManager.default.removeItem(at: source)
+        // Keep the finalized original until the recovery journal has durably
+        // transferred identity to the mixed copy. It remains available in staging.
         return destination
     }
 }
@@ -515,6 +638,9 @@ enum RecordingFileStorage {
               staging.deletingLastPathComponent().standardizedFileURL.path == root.standardizedFileURL.path else {
             throw RecordingError.failed("The recording is outside its owned staging directory.")
         }
+        guard !FileManager.default.fileExists(atPath: staging.appendingPathComponent(RecordingRecoveryJournal.filename).path) else {
+            throw RecordingError.failed("This recording has a recovery journal and must be published through its writer transaction.")
+        }
         let date = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
         let name = "PicShot-\(date)-\(UUID().uuidString.prefix(8)).mp4"
         let destination = root.appendingPathComponent(name)
@@ -538,7 +664,7 @@ struct RecordingWriterSnapshot: Sendable {
 /// drops audio immediately, retaining the last encoded frame and at most one
 /// current screen snapshot so Resume also works when the desktop becomes static.
 final class RecordingWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
-    let queue = DispatchQueue(label: "PicShot.Recording.Encoder", qos: .userInitiated)
+    let queue = DispatchQueue(label: "PicShot.Recording.Encoder", qos: .userInitiated, autoreleaseFrequency: .workItem)
     private let writer: AVAssetWriter
     private let video: AVAssetWriterInput
     private let systemAudio: AVAssetWriterInput?
@@ -546,14 +672,22 @@ final class RecordingWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchec
     private let directory: URL
     private let url: URL
     private let options: RecordingOptions
+    private var recoveryLease: RecordingRecoveryLease?
+    private let protectBeforeCancellation: @Sendable (RecordingRecoveryLease) throws -> Void
     private let requestStop: @Sendable (String?) -> Void
     private let clock: @Sendable () -> CMTime
     private let wallStart: CMTime
+    private let compositor: RecordingFrameCompositor?
+    private var overlayTimer: DispatchSourceTimer?
+    private var latestScreen: CMSampleBuffer?
+    private var screenRevision: UInt64 = 0
+    private var encodedScreenRevision: UInt64 = 0
     private var sourceClock: CMClock?
     private var fallbackSourceOffset: CMTime?
     private var accepting = true
     private var finishing = false
     private var discarded = false
+    private var protectionNeedsRetry = false
     private var finishedResult: Result<URL, Error>?
     private var finishContinuation: CheckedContinuation<URL, Error>?
     private var finishTimeout: DispatchWorkItem?
@@ -569,16 +703,21 @@ final class RecordingWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchec
     private var lastDiskCheck = CMTime.invalid
 
     init(size: CGSize, options: RecordingOptions, outputDirectory: URL? = nil,
+         compositor: RecordingFrameCompositor? = nil, automaticallyRefreshOverlays: Bool = true,
          clock: @escaping @Sendable () -> CMTime = { CMClockGetTime(CMClockGetHostTimeClock()) },
+         protectBeforeCancellation: @escaping @Sendable (RecordingRecoveryLease) throws -> Void = { try $0.protectBeforeCancellingWriter() },
          requestStop: @escaping @Sendable (String?) -> Void) throws {
         try options.validate()
         self.options = options
+        self.compositor = compositor
         self.requestStop = requestStop
+        self.protectBeforeCancellation = protectBeforeCancellation
         self.clock = clock
         wallStart = clock()
         let recordingDirectory = try RecordingFileStorage.makeStagingDirectory(in: outputDirectory)
         directory = recordingDirectory
         url = recordingDirectory.appendingPathComponent("recording.mp4")
+        var initializedLease: RecordingRecoveryLease?
         do {
             writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
             let bitRate = min(16_000_000, max(1_000_000, Int(size.width * size.height * CGFloat(options.frameRate) * 0.08)))
@@ -603,10 +742,22 @@ final class RecordingWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchec
                 guard writer.canAdd(input) else { throw RecordingError.failed("The H.264/AAC encoder is unavailable.") }
                 writer.add(input)
             }
-            writer.movieFragmentInterval = CMTime(seconds: 1, preferredTimescale: 600)
+            RecordingRecoveryWriterSupport.configure(writer)
             guard writer.startWriting() else { throw RecordingError.failed(writer.error?.localizedDescription ?? "The MP4 could not be opened.") }
+            let store = try RecordingRecoveryStore(root: recordingDirectory.deletingLastPathComponent())
+            initializedLease = try store.begin(stagingDirectory: recordingDirectory, byteLimit: options.maximumFileSize, durationLimit: options.maximumDuration)
+            recoveryLease = initializedLease
+            if compositor != nil, automaticallyRefreshOverlays {
+                let timer = DispatchSource.makeTimerSource(queue: queue)
+                timer.schedule(deadline: .now(), repeating: 1 / Double(options.frameRate), leeway: .milliseconds(2))
+                timer.setEventHandler { [weak self] in self?.refreshOverlay() }
+                overlayTimer = timer; timer.resume()
+            }
         } catch {
-            try? FileManager.default.removeItem(at: recordingDirectory)
+            initializedLease?.closeLease()
+            // Never recursively erase a journal or media after a failed start.
+            // No frames are accepted before init returns; an empty folder is safe to remove.
+            _ = rmdir(recordingDirectory.path)
             throw error
         }
     }
@@ -635,7 +786,7 @@ final class RecordingWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchec
     /// Queue-confined entry shared by live capture and synthetic media tests.
     /// The return value reports encoder acceptance, not merely a valid input.
     @discardableResult
-    func consume(_ sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) -> Bool {
+    func consume(_ sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType, updatingScreenSnapshot: Bool = true) -> Bool {
         dispatchPrecondition(condition: .onQueue(queue))
         guard accepting, sampleBuffer.isValid, CMSampleBufferDataIsReady(sampleBuffer) else { return false }
         if writer.status == .failed {
@@ -645,6 +796,11 @@ final class RecordingWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchec
         checkLimits()
         let sourceTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         guard !stopRequested, sourceTime.isNumeric else { return false }
+        if updatingScreenSnapshot, compositor != nil, type == .screen, Self.isCompleteScreenFrame(sampleBuffer),
+           latestScreen.map({ CMTimeCompare(sourceTime, CMSampleBufferGetPresentationTimeStamp($0)) >= 0 }) ?? true {
+            latestScreen = sampleBuffer
+            screenRevision &+= 1
+        }
         if timeline.isPaused {
             if type == .screen, Self.isCompleteScreenFrame(sampleBuffer),
                pausedVideo.map({ CMTimeCompare(sourceTime, CMSampleBufferGetPresentationTimeStamp($0)) >= 0 }) ?? true {
@@ -681,6 +837,8 @@ final class RecordingWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchec
         var duration = CMSampleBufferGetDuration(sampleBuffer)
         if type == .screen {
             guard !lastVideoTime.isValid || CMTimeCompare(timestamp, lastVideoTime) > 0 else { return false }
+            if compositor != nil, lastVideoTime.isNumeric,
+               CMTimeSubtract(timestamp, lastVideoTime).seconds + 0.000_001 < 1 / Double(options.frameRate) { return false }
             if !duration.isNumeric || CMTimeCompare(duration, .zero) <= 0 {
                 duration = CMTime(value: 1, timescale: CMTimeScale(options.frameRate))
             }
@@ -691,7 +849,12 @@ final class RecordingWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchec
         }
         do {
             let offset = CMTimeSubtract(sourceTime, timestamp)
-            let sample = try RecordingSampleTiming.copy(sampleBuffer, subtracting: offset)
+            let sourceSample: CMSampleBuffer
+            if type == .screen, let compositor {
+                guard let composed = try compositor.composite(sampleBuffer) else { return false }
+                sourceSample = composed
+            } else { sourceSample = sampleBuffer }
+            let sample = try RecordingSampleTiming.copy(sourceSample, subtracting: offset)
             guard input.append(sample) else {
                 notifyStop(writer.error?.localizedDescription ?? "A recording sample could not be encoded.")
                 return false
@@ -700,10 +863,39 @@ final class RecordingWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchec
             if type == .screen {
                 lastVideo = sample
                 lastVideoTime = timestamp
+                encodedScreenRevision = screenRevision
             } else if type == .audio { lastSystemAudioEnd = CMTimeAdd(timestamp, duration) }
             else { lastMicrophoneEnd = CMTimeAdd(timestamp, duration) }
             return true
         } catch { notifyStop(error.localizedDescription); return false }
+    }
+
+    /// ScreenCaptureKit may stop emitting complete frames on a static desktop.
+    /// Sample only the newest camera/vector state at the shared screen clock;
+    /// no camera callback queue is ever forwarded into the encoder.
+    var needsOverlayRefresh: Bool {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard let compositor else { return false }
+        return compositor.needsRefresh || screenRevision != encodedScreenRevision
+    }
+
+    func refreshOverlay() {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard accepting, !stopRequested, !timeline.isPaused,
+              let source = latestScreen, needsOverlayRefresh else { return }
+        let now = sourceNow
+        if let previous = timeline.presentationTime(for: now), lastVideoTime.isNumeric,
+           CMTimeSubtract(previous, lastVideoTime).seconds < 1 / Double(options.frameRate) { return }
+        var timing = CMSampleTimingInfo(duration: CMTime(value: 1, timescale: CMTimeScale(options.frameRate)),
+            presentationTimeStamp: now, decodeTimeStamp: .invalid)
+        var refreshed: CMSampleBuffer?
+        guard CMSampleBufferCreateCopyWithNewTiming(allocator: kCFAllocatorDefault, sampleBuffer: source,
+            sampleTimingEntryCount: 1, sampleTimingArray: &timing, sampleBufferOut: &refreshed) == noErr,
+              let refreshed else { return }
+        // A refreshed PTS is not a new ScreenCaptureKit frame. Keeping it out of
+        // the raw cache prevents newer-clock heartbeats from rejecting slightly
+        // delayed real screen callbacks and freezing the desktop under Camera.
+        _ = consume(refreshed, of: .screen, updatingScreenSnapshot: false)
     }
 
     private static func isCompleteScreenFrame(_ sample: CMSampleBuffer) -> Bool {
@@ -731,8 +923,15 @@ final class RecordingWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchec
         guard video.isReadyForMoreMediaData else { return false }
         let duration = CMTime(value: 1, timescale: CMTimeScale(options.frameRate))
         var timing = CMSampleTimingInfo(duration: duration, presentationTimeStamp: timestamp, decodeTimeStamp: .invalid)
+        let sourceSample: CMSampleBuffer
+        do {
+            if let compositor {
+                guard let composed = try compositor.composite(sample) else { return false }
+                sourceSample = composed
+            } else { sourceSample = sample }
+        } catch { notifyStop(error.localizedDescription); return false }
         var copy: CMSampleBuffer?
-        guard CMSampleBufferCreateCopyWithNewTiming(allocator: kCFAllocatorDefault, sampleBuffer: sample,
+        guard CMSampleBufferCreateCopyWithNewTiming(allocator: kCFAllocatorDefault, sampleBuffer: sourceSample,
             sampleTimingEntryCount: 1, sampleTimingArray: &timing, sampleBufferOut: &copy) == noErr,
               let copy, video.append(copy) else {
             notifyStop(writer.error?.localizedDescription ?? "The resumed screen frame could not be encoded.")
@@ -762,7 +961,7 @@ final class RecordingWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchec
                     self.timeline.pause(at: self.sourceNow)
                 } else if !paused, self.timeline.isPaused {
                     self.timeline.resume(at: self.sourceNow)
-                    self.pendingResumeVideo = self.pausedVideo
+                    self.pendingResumeVideo = self.pausedVideo ?? (self.compositor == nil ? nil : self.latestScreen)
                     self.pendingResumeSourceTime = self.pendingResumeVideo == nil ? nil : self.timeline.minimumSourceTime
                     self.pausedVideo = nil
                     if self.timeline.sourceStart == nil, let sourceTime = self.pendingResumeSourceTime {
@@ -784,7 +983,8 @@ final class RecordingWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchec
     private func currentSnapshot() -> RecordingWriterSnapshot {
         RecordingWriterSnapshot(elapsed: min(options.maximumDuration, timeline.activeDuration(at: sourceNow).seconds),
             wallElapsed: max(0, CMTimeSubtract(clock(), wallStart).seconds), isPaused: timeline.isPaused,
-            retainedVideoFrames: (lastVideo == nil ? 0 : 1) + (pausedVideo == nil ? 0 : 1) + (pendingResumeVideo == nil ? 0 : 1))
+            retainedVideoFrames: (lastVideo == nil ? 0 : 1) + (pausedVideo == nil ? 0 : 1) +
+                (pendingResumeVideo == nil ? 0 : 1) + (latestScreen == nil ? 0 : 1))
     }
 
     /// Freeze before awaiting SCStream.stopCapture, whose teardown latency must
@@ -799,6 +999,9 @@ final class RecordingWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchec
     }
 
     private func freeze() {
+        compositor?.freeze()
+        overlayTimer?.cancel(); overlayTimer = nil
+        latestScreen = nil
         accepting = false
         pausedVideo = nil
         timeline.stop(at: sourceNow)
@@ -843,14 +1046,18 @@ final class RecordingWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchec
                 self.freeze()
                 guard self.writer.status == .writing, self.timeline.sourceStart != nil, self.lastVideo != nil || self.pendingResumeVideo != nil else {
                     let error = self.writer.error.map { RecordingError.failed($0.localizedDescription) } ?? .noFrames
-                    if self.writer.status == .writing || self.writer.status == .unknown { self.writer.cancelWriting() }
-                    self.complete(.failure(error))
+                    do {
+                        try self.protectAndCancelWriter()
+                        self.complete(.failure(error))
+                    } catch { self.complete(.failure(error), cacheResult: false) }
                     return
                 }
                 let timeout = DispatchWorkItem { [weak self] in
                     guard let self, self.finishContinuation != nil else { return }
-                    if self.writer.status == .writing { self.writer.cancelWriting() }
-                    self.complete(.failure(RecordingError.failed("The encoder did not finish within 30 seconds.")))
+                    do {
+                        try self.protectAndCancelWriter()
+                        self.complete(.failure(RecordingError.failed("The encoder did not finish within 30 seconds.")))
+                    } catch { self.complete(.failure(error), cacheResult: false) }
                 }
                 self.finishTimeout = timeout
                 self.queue.asyncAfter(deadline: .now() + 30, execute: timeout)
@@ -914,29 +1121,118 @@ final class RecordingWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchec
         }
     }
 
-    private func complete(_ result: Result<URL, Error>) {
+    private func complete(_ result: Result<URL, Error>, cacheResult: Bool = true) {
+        var finalResult = result
+        if case .success = result {
+            do { try recoveryLease?.markFinalized() }
+            catch { finalResult = .failure(error) }
+        }
         finishTimeout?.cancel()
         finishTimeout = nil
         lastVideo = nil
         pausedVideo = nil
         pendingResumeVideo = nil
         pendingResumeSourceTime = nil
-        finishedResult = result
+        compositor?.releaseFrozenSnapshot()
+        finishedResult = cacheResult ? finalResult : nil
+        finishing = false
         let continuation = finishContinuation
         finishContinuation = nil
-        continuation?.resume(with: result)
+        continuation?.resume(with: finalResult)
     }
 
-    func discard() async {
+    /// Publication is serialized with encoder completion and journal ownership.
+    func publishFinished(mediaURL: URL? = nil) async throws -> URL {
+        try await withCheckedThrowingContinuation { continuation in
+            queue.async {
+                guard !self.discarded, case .success? = self.finishedResult, let lease = self.recoveryLease else {
+                    continuation.resume(throwing: RecordingError.notRecording); return
+                }
+                do {
+                    let result = try lease.publishFinalized(mediaURL: mediaURL)
+                    lease.closeLease(); self.recoveryLease = nil
+                    continuation.resume(returning: result)
+                } catch { continuation.resume(throwing: error) }
+            }
+        }
+    }
+
+    /// A rename may succeed before the final journal fsync fails. Resolve the
+    /// validated current path before releasing the lease, never return a stale path.
+    func recoverableURLAndClose() async -> URL? {
         await withCheckedContinuation { continuation in
             queue.async {
+                guard self.writer.status != .writing, self.writer.status != .unknown,
+                      !self.protectionNeedsRetry else { continuation.resume(returning: nil); return }
+                let source = try? self.recoveryLease?.validatedSourceURL()
+                self.recoveryLease?.closeLease(); self.recoveryLease = nil
+                continuation.resume(returning: source)
+            }
+        }
+    }
+
+    /// The only cancellation site. AVAssetWriter deletes outputURL on cancel,
+    /// so durable alias + journal protection must succeed first. This function
+    /// does not cache failures: the same retained writer can retry disk errors.
+    private func protectAndCancelWriter() throws {
+        dispatchPrecondition(condition: .onQueue(queue))
+        let needsCancellation = writer.status == .writing || writer.status == .unknown
+        guard needsCancellation || protectionNeedsRetry else { return }
+        guard let lease = recoveryLease else {
+            protectionNeedsRetry = true
+            throw RecordingError.preservationFailed("The recovery journal is unavailable.")
+        }
+        do { try protectBeforeCancellation(lease) }
+        catch {
+            protectionNeedsRetry = true
+            throw RecordingError.preservationFailed(error.localizedDescription)
+        }
+        protectionNeedsRetry = false
+        // finishWriting can complete while the user repairs a disk failure.
+        // Retry the durability barrier even then, but never cancel a completed file.
+        if writer.status == .writing || writer.status == .unknown { writer.cancelWriting() }
+    }
+
+    /// Failure is not user discard. Preserve any fragments for explicit recovery.
+    /// A thrown error means the caller MUST keep this writer alive and retry.
+    func abandonPreservingRecovery() async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            queue.async {
                 self.freeze()
-                self.discarded = true
-                self.lastVideo = nil
-                if self.writer.status == .writing || self.writer.status == .unknown { self.writer.cancelWriting() }
-                self.complete(.failure(CancellationError()))
-                try? FileManager.default.removeItem(at: self.directory)
-                continuation.resume()
+                do {
+                    try self.protectAndCancelWriter()
+                    self.discarded = true
+                    self.complete(.failure(CancellationError()))
+                    self.recoveryLease?.closeLease(); self.recoveryLease = nil
+                    continuation.resume()
+                } catch {
+                    // Frozen capture has no pending frames or camera surfaces;
+                    // retaining one encoder + lease is bounded and visible.
+                    self.complete(.failure(error), cacheResult: false)
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    func discard() async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            queue.async {
+                self.freeze()
+                do {
+                    try self.protectAndCancelWriter()
+                    // Archive only after cancellation is safe. If journal I/O
+                    // fails, retain the lease and leave the reminder retryable.
+                    try self.recoveryLease?.discard()
+                    self.discarded = true
+                    self.complete(.failure(CancellationError()))
+                    self.recoveryLease?.closeLease(); self.recoveryLease = nil
+                    continuation.resume()
+                } catch {
+                    let failure = (error as? RecordingError) ?? RecordingError.preservationFailed(error.localizedDescription)
+                    self.complete(.failure(failure), cacheResult: false)
+                    continuation.resume(throwing: failure)
+                }
             }
         }
     }
