@@ -7,7 +7,7 @@ import PicShotCore
 
 /// All annotation coordinates are image pixels, with the origin at the bottom left.
 enum ImageEditorTool: String, CaseIterable {
-    case select, rectangle, ellipse, arrow, line, freehand, text, number, highlighter, redact, blur, pixelate, crop, eraser, spotlight, watermark, magnifier
+    case select, rectangle, ellipse, arrow, line, freehand, text, number, highlighter, redact, blur, pixelate, crop, eraser, spotlight, watermark, magnifier, arc, sector, polyline
 
     var title: String {
         switch self {
@@ -16,6 +16,9 @@ enum ImageEditorTool: String, CaseIterable {
         case .ellipse: return "椭圆"
         case .arrow: return "箭头"
         case .line: return "直线"
+        case .arc: return "圆弧"
+        case .sector: return "扇形"
+        case .polyline: return "折线"
         case .freehand: return "画笔"
         case .text: return "文字"
         case .number: return "序号"
@@ -71,9 +74,12 @@ struct ImageAnnotation {
     var magnifierSmooth = false
     var magnifierShowsAnnotations = true
     var magnifierShadow = true
+    var arcStartAngle: CGFloat = 0
+    var arcSweepAngle: CGFloat = .pi * 1.5
 
     var localBounds: CGRect {
-        guard let first = points.first else { return .zero }
+        let geometryPoints = boundedPathPoints
+        guard let first = geometryPoints.first else { return .zero }
         if tool == .text {
             return CGRect(origin: first, size: AnnotationTextLayout.size(for: self))
         }
@@ -81,7 +87,7 @@ struct ImageAnnotation {
             let radius = max(14, lineWidth * 4)
             return CGRect(x: first.x - radius, y: first.y - radius, width: radius * 2, height: radius * 2)
         }
-        let xs = points.map(\.x), ys = points.map(\.y)
+        let xs = geometryPoints.map(\.x), ys = geometryPoints.map(\.y)
         let x = xs.min() ?? first.x, y = ys.min() ?? first.y
         return CGRect(x: x, y: y, width: (xs.max() ?? x) - x, height: (ys.max() ?? y) - y)
     }
@@ -207,8 +213,8 @@ enum ImageEditorRenderer {
             switch annotation.tool {
             case .select, .crop, .blur, .pixelate, .eraser, .spotlight, .magnifier: break
             case .watermark: AnnotationWatermarkLayout.draw(annotation, in: context)
-            case .rectangle, .ellipse:
-                if annotation.fillEnabled {
+            case .rectangle, .ellipse, .arc, .sector:
+                if annotation.hasShapeFill && annotation.fillEnabled {
                     context.setFillColor(annotation.fillColor); context.addPath(annotation.outline); context.fillPath()
                 }
                 context.addPath(annotation.outline); context.strokePath()
@@ -217,7 +223,7 @@ enum ImageEditorRenderer {
                 context.setShouldAntialias(false); context.fill(rect.integral)
             case .highlighter:
                 context.setFillColor(annotation.color.copy(alpha: 0.32) ?? annotation.color); context.fill(rect)
-            case .line, .arrow, .freehand:
+            case .line, .arrow, .freehand, .polyline:
                 context.addPath(annotation.strokePath); context.strokePath()
             case .text:
                 if annotation.fillEnabled {
@@ -328,6 +334,10 @@ final class ImageEditorCanvas: NSView {
     var editingAnnotationID: UUID? { didSet { cachedImage = nil; needsDisplay = true } }
     private var selection: UUID?
     private var draft: ImageAnnotation?
+    private var polylinePreviewPoint: CGPoint?
+    private var pointerTrackingArea: NSTrackingArea?
+    var pendingPolylinePointCount: Int { draft?.tool == .polyline ? draft!.points.count : 0 }
+    var pendingPolyline: ImageAnnotation? { draft?.tool == .polyline ? draft : nil }
     private var dragOrigin: CGPoint?
     private var movingOriginal: ImageAnnotation?
     private var activeHandle: AnnotationHandle?
@@ -354,7 +364,7 @@ final class ImageEditorCanvas: NSView {
 
     func setContent(image: CGImage, annotations: [ImageAnnotation]) {
         self.image = image; self.annotations = annotations
-        selection = nil; draft = nil; cropRect = nil; cachedImage = nil
+        selection = nil; draft = nil; polylinePreviewPoint = nil; cropRect = nil; cachedImage = nil
         movingOriginal = nil; dragOrigin = nil; activeHandle = nil; didBeginMoving = false
         resizeCanvas(); onChange?()
     }
@@ -376,12 +386,12 @@ final class ImageEditorCanvas: NSView {
         if tool == .eraser { result.lineWidth = max(4, result.lineWidth) }
         if tool == .spotlight || tool == .magnifier { result.opacity = 1 }
         if tool == .redact { result.color = CGColor(gray: 0, alpha: 1); result.opacity = 1 }
-        return result
+        return result.sanitizedPathGeometry
     }
 
     func add(_ annotation: ImageAnnotation) {
         onWillChange?()
-        annotations.append(annotation); selection = annotation.id
+        annotations.append(annotation.sanitizedPathGeometry); selection = annotation.id
         changed()
     }
 
@@ -394,7 +404,9 @@ final class ImageEditorCanvas: NSView {
         let imageBounds = CGRect(x: 0, y: 0, width: CGFloat(image.width), height: CGFloat(image.height))
         if cachedImage == nil { cachedImage = ImageEditorRenderer.render(image: image, annotations: annotations.filter { $0.id != editingAnnotationID }) }
         let displayed: CGImage
-        if let draft {
+        if var draft {
+            if draft.tool == .polyline, let preview = polylinePreviewPoint, draft.points.last != preview,
+               draft.points.count < ImageAnnotation.maximumPolylinePoints { draft.points.append(preview) }
             // An eraser needs the original vector stack; a flattened preview would erase
             // the captured pixels. No draft is retained in undo until mouse-up.
             if draft.tool == .eraser || draft.tool == .magnifier {
@@ -406,6 +418,13 @@ final class ImageEditorCanvas: NSView {
         if let draft, draft.tool == .eraser {
             context.saveGState(); context.setStrokeColor(NSColor.controlAccentColor.cgColor); context.setLineWidth(1 / zoom)
             context.addPath(draft.mergedEraserPath); context.strokePath(); context.restoreGState()
+        }
+        if let draft, draft.tool == .polyline {
+            for point in draft.points {
+                let rect = CGRect(x: point.x - 3 / zoom, y: point.y - 3 / zoom, width: 6 / zoom, height: 6 / zoom)
+                context.setFillColor(NSColor.white.cgColor); context.fill(rect)
+                context.setStrokeColor(NSColor.controlAccentColor.cgColor); context.setLineWidth(1 / zoom); context.stroke(rect)
+            }
         }
         if let cropRect { drawSelectionBox(CGPath(rect: cropRect, transform: nil), context: context) }
         context.restoreGState()
@@ -452,8 +471,18 @@ final class ImageEditorCanvas: NSView {
 
     override func mouseDown(with event: NSEvent) {
         onBeforeInteraction?()
-        cancelInteraction()
         window?.makeFirstResponder(self)
+        if tool == .polyline {
+            // The first click of a double-click already fixed the final vertex.
+            // Finish before using the second location, which may contain hand jitter.
+            if event.clickCount >= 2, pendingPolylinePointCount > 0 { finishPolyline(); return }
+            let point = imagePoint(event)
+            appendPolylinePoint(point, shift: event.modifierFlags.contains(.shift))
+            dragOrigin = point
+            if event.clickCount >= 2 { finishPolyline() }
+            return
+        }
+        cancelInteraction()
         let point = imagePoint(event, clamped: tool != .select)
         dragOrigin = point
         if tool == .select {
@@ -493,6 +522,7 @@ final class ImageEditorCanvas: NSView {
 
     override func mouseDragged(with event: NSEvent) {
         let point = imagePoint(event, clamped: tool != .select)
+        if tool == .polyline { updatePolylinePreview(point, shift: event.modifierFlags.contains(.shift)); return }
         guard let origin = dragOrigin else { return }
         if tool == .select, let original = movingOriginal, let index = annotations.firstIndex(where: { $0.id == original.id }) {
             guard didBeginMoving || hypot(point.x - origin.x, point.y - origin.y) > 1 / zoom else { return }
@@ -519,7 +549,7 @@ final class ImageEditorCanvas: NSView {
             needsDisplay = true
         } else if draft != nil {
             var end = point
-            if event.modifierFlags.contains(.shift), [.rectangle, .ellipse, .crop, .spotlight, .magnifier].contains(tool) {
+            if event.modifierFlags.contains(.shift), [.rectangle, .ellipse, .arc, .sector, .crop, .spotlight, .magnifier].contains(tool) {
                 let length = min(abs(point.x - origin.x), abs(point.y - origin.y))
                 end = CGPoint(x: origin.x + (point.x >= origin.x ? length : -length), y: origin.y + (point.y >= origin.y ? length : -length))
             } else if event.modifierFlags.contains(.shift), tool == .line || tool == .arrow {
@@ -534,6 +564,15 @@ final class ImageEditorCanvas: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        if tool == .polyline {
+            if pendingPolylinePointCount > 0, let origin = dragOrigin {
+                let point = imagePoint(event)
+                if hypot(point.x - origin.x, point.y - origin.y) > 2 / zoom {
+                    appendPolylinePoint(point, shift: event.modifierFlags.contains(.shift))
+                }
+            }
+            dragOrigin = nil; return
+        }
         defer { draft = nil; dragOrigin = nil; movingOriginal = nil; activeHandle = nil; didBeginMoving = false; needsDisplay = true }
         if didBeginMoving, let original = movingOriginal, let index = annotations.firstIndex(where: { $0.id == original.id }) {
             let edited = annotations[index]
@@ -561,6 +600,7 @@ final class ImageEditorCanvas: NSView {
             draft.points = [CGPoint(x: x, y: y), CGPoint(x: x + size.width, y: y + size.height)]
         }
         if tool == .crop { cropRect = draft.localBounds; onChange?(); return }
+        if draft.isArc && (draft.localBounds.width <= 1 || draft.localBounds.height <= 1) { return }
         guard draft.bounds.width > 1 || draft.bounds.height > 1 else { return }
         add(draft)
     }
@@ -569,7 +609,82 @@ final class ImageEditorCanvas: NSView {
         if didBeginMoving, let original = movingOriginal, let index = annotations.firstIndex(where: { $0.id == original.id }) {
             annotations[index] = original; changed()
         }
-        draft = nil; dragOrigin = nil; movingOriginal = nil; activeHandle = nil; didBeginMoving = false
+        draft = nil; polylinePreviewPoint = nil; dragOrigin = nil; movingOriginal = nil; activeHandle = nil; didBeginMoving = false
+        needsDisplay = true
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let pointerTrackingArea { removeTrackingArea(pointerTrackingArea) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self, userInfo: nil)
+        addTrackingArea(area); pointerTrackingArea = area
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow(); window?.acceptsMouseMovedEvents = true
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        if tool == .polyline { updatePolylinePreview(imagePoint(event), shift: event.modifierFlags.contains(.shift)) }
+        else { super.mouseMoved(with: event) }
+    }
+
+    private func constrainedPolylinePoint(_ point: CGPoint, shift: Bool) -> CGPoint {
+        guard shift, let anchor = draft?.points.last else { return point }
+        let distance = hypot(point.x - anchor.x, point.y - anchor.y)
+        let angle = (atan2(point.y - anchor.y, point.x - anchor.x) / (.pi / 4)).rounded() * (.pi / 4)
+        // Shorten at the image boundary instead of clipping x/y independently and losing the angle.
+        let vector = CGPoint(x: distance * cos(angle), y: distance * sin(angle))
+        var fraction: CGFloat = 1
+        if vector.x > 0 { fraction = min(fraction, (CGFloat(image.width) - anchor.x) / vector.x) }
+        if vector.x < 0 { fraction = min(fraction, -anchor.x / vector.x) }
+        if vector.y > 0 { fraction = min(fraction, (CGFloat(image.height) - anchor.y) / vector.y) }
+        if vector.y < 0 { fraction = min(fraction, -anchor.y / vector.y) }
+        return CGPoint(x: anchor.x + vector.x * max(0, fraction), y: anchor.y + vector.y * max(0, fraction))
+    }
+
+    private func updatePolylinePreview(_ point: CGPoint, shift: Bool) {
+        guard pendingPolylinePointCount > 0 else { return }
+        polylinePreviewPoint = constrainedPolylinePoint(point, shift: shift); needsDisplay = true
+    }
+
+    private func appendPolylinePoint(_ point: CGPoint, shift: Bool) {
+        guard point.x.isFinite, point.y.isFinite else { return }
+        if draft?.tool != .polyline {
+            cancelInteraction(); selection = nil
+            draft = makeAnnotation(tool: .polyline, points: [point])
+        } else {
+            let next = constrainedPolylinePoint(point, shift: shift)
+            guard let last = draft?.points.last, hypot(next.x - last.x, next.y - last.y) > 0.5 / zoom else { return }
+            guard pendingPolylinePointCount < ImageAnnotation.maximumPolylinePoints else { finishPolyline(); return }
+            draft?.points.append(next)
+        }
+        polylinePreviewPoint = nil; needsDisplay = true; onChange?()
+        if pendingPolylinePointCount == ImageAnnotation.maximumPolylinePoints { finishPolyline() }
+    }
+
+    func removeLastPolylineVertex() {
+        guard pendingPolylinePointCount > 0 else { return }
+        draft?.points.removeLast(); polylinePreviewPoint = nil
+        if draft?.points.isEmpty == true { cancelInteraction() }
+        needsDisplay = true; onChange?()
+    }
+
+    func finishPolyline() {
+        guard let path = pendingPolyline else { return }
+        cancelInteraction()
+        if path.points.count >= 2 { add(path) }
+        else { onChange?() }
+    }
+
+    func cancelPolyline() {
+        guard pendingPolylinePointCount > 0 else { return }
+        cancelInteraction(); onChange?()
+    }
+
+    func updatePendingPolyline(_ edit: (inout ImageAnnotation) -> Void) {
+        guard var path = pendingPolyline else { return }
+        edit(&path); draft = path.sanitizedPathGeometry; needsDisplay = true
     }
 
     func updateSelected(_ edit: (inout ImageAnnotation) -> Void) {
@@ -577,6 +692,7 @@ final class ImageEditorCanvas: NSView {
         onWillChange?()
         let previousScale = annotations[index].magnifierScale
         edit(&annotations[index])
+        annotations[index] = annotations[index].sanitizedPathGeometry
         if annotations[index].tool == .magnifier, annotations[index].magnifierScale != previousScale {
             annotations[index] = annotations[index].resizedMagnifierLens(scale: annotations[index].effectiveMagnifierScale)
         }
@@ -592,7 +708,7 @@ final class ImageEditorCanvas: NSView {
 
     func replaceAnnotation(id: UUID, with annotation: ImageAnnotation) {
         guard let index = annotations.firstIndex(where: { $0.id == id }) else { return }
-        onWillChange?(); annotations[index] = annotation; selection = id; changed()
+        onWillChange?(); annotations[index] = annotation.sanitizedPathGeometry; selection = id; changed()
     }
 
     func updateText(id: UUID, text: String) {
@@ -665,10 +781,14 @@ final class ImageEditorCanvas: NSView {
         }
         switch key {
         case "z":
+            if pendingPolylinePointCount > 0 {
+                if !event.modifierFlags.contains(.shift) { removeLastPolylineVertex() }; return true
+            }
             cancelInteraction()
             if event.modifierFlags.contains(.shift) { onRedo?() } else { onUndo?() }
             return true
-        case "d": duplicateSelection(); return true
+        case "d":
+            if pendingPolylinePointCount == 0 { duplicateSelection() }; return true
         case "c": onCopy?(); return true
         case "s": onExport?(); return true
         default: return super.performKeyEquivalent(with: event)
@@ -677,9 +797,11 @@ final class ImageEditorCanvas: NSView {
 
     override func keyDown(with event: NSEvent) {
         switch event.keyCode {
-        case 51, 117: deleteSelection()
+        case 51, 117:
+            if pendingPolylinePointCount > 0 { removeLastPolylineVertex() } else { deleteSelection() }
         case 36, 76:
-            if cropRect != nil { onApplyCrop?() }
+            if pendingPolylinePointCount > 0 { finishPolyline() }
+            else if cropRect != nil { onApplyCrop?() }
             else if let selected = selectedAnnotation, selected.tool == .text {
                 onRequestText?(selected.points.first ?? .zero, selected.id)
             } else { super.keyDown(with: event) }
@@ -688,6 +810,7 @@ final class ImageEditorCanvas: NSView {
             cancelInteraction(); selection = nil; cropRect = nil; needsDisplay = true; onChange?()
             if !wasEditing { onCancel?() }
         case 123, 124, 125, 126:
+            guard pendingPolylinePointCount == 0 else { return }
             cancelInteraction()
             guard tool == .select, selectedAnnotation != nil else { super.keyDown(with: event); return }
             let step: CGFloat = event.modifierFlags.contains(.shift) ? 10 : 1
@@ -724,6 +847,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     private var undoStates: [Snapshot] = []
     private var redoStates: [Snapshot] = []
     private var toolButtons: [ImageEditorTool: NSButton] = [:]
+    private var subtoolMenus: [ImageEditorTool: NSPopUpButton] = [:]
     private var undoButton: NSButton!
     private var redoButton: NSButton!
     private var cropButton: NSButton!
@@ -797,6 +921,12 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         canvas.onCancel = { [weak self] in self?.cancelEditor() }
         canvas.onBeforeInteraction = { [weak self] in self?.finishInlineText(commit: true) }
         inspector.onClearAnnotations = { [weak self] in self?.canvas.clearAnnotations() }
+        inspector.onFinishPolyline = { [weak self] in
+            self?.canvas.finishPolyline(); self?.window?.makeFirstResponder(self?.canvas)
+        }
+        inspector.onCancelPolyline = { [weak self] in
+            self?.canvas.cancelPolyline(); self?.window?.makeFirstResponder(self?.canvas)
+        }
         inspector.onEdit = { [weak self] edit in
             guard let self else { return }
             edit(&self.canvas.style)
@@ -805,7 +935,10 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
                 box.applyStyle(annotation, zoom: self.canvas.zoom)
                 self.updateStatus(); return
             }
-            if self.canvas.tool == .select || ([ImageEditorTool.watermark, .magnifier, .spotlight].contains(self.canvas.tool)
+            if self.canvas.pendingPolylinePointCount > 0 {
+                self.canvas.updatePendingPolyline(edit); self.updateStatus(); return
+            }
+            if self.canvas.tool == .select || ([ImageEditorTool.watermark, .magnifier, .spotlight, .arc, .sector, .polyline].contains(self.canvas.tool)
                 && self.canvas.selectedAnnotation?.tool == self.canvas.tool) { self.canvas.updateSelected(edit) }
             self.updateStatus()
         }
@@ -880,6 +1013,40 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         control.wantsLayer = true; control.layer?.cornerRadius = 4
         return control
     }
+    private func addSubtoolMenu(for family: ImageEditorTool, tools: [ImageEditorTool], identifier: String) {
+        let menu = NSPopUpButton(); menu.pullsDown = true; menu.isBordered = false
+        menu.addItem(withTitle: "")
+        menu.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: "选择\(family.title)子工具")?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold))
+        (menu.cell as? NSPopUpButtonCell)?.arrowPosition = .noArrow
+        menu.imagePosition = .imageOnly; menu.contentTintColor = EditorFloatingSurface.ink
+        menu.identifier = NSUserInterfaceItemIdentifier(identifier)
+        menu.setAccessibilityLabel("选择\(family.title)子工具"); menu.toolTip = tools.map(\.title).joined(separator: " / ")
+        for tool in tools {
+            let item = NSMenuItem(title: tool.title, action: #selector(selectMenuTool(_:)), keyEquivalent: "")
+            item.target = self; item.tag = ImageEditorTool.allCases.firstIndex(of: tool) ?? 0
+            item.identifier = NSUserInterfaceItemIdentifier("editor.subtool.\(tool.rawValue)")
+            item.image = AnnotationPathIcons.image(for: tool)
+            menu.menu?.addItem(item)
+        }
+        menu.translatesAutoresizingMaskIntoConstraints = false
+        menu.widthAnchor.constraint(equalToConstant: 14).isActive = true
+        menu.heightAnchor.constraint(equalToConstant: 32).isActive = true
+        subtoolMenus[family] = menu; toolbar.addArrangedSubview(menu)
+    }
+
+    private func refreshSubtoolButton(for tool: ImageEditorTool) {
+        let family: ImageEditorTool
+        let symbol: String
+        if [.ellipse, .arc, .sector].contains(tool) { family = .ellipse; symbol = "circle" }
+        else if [.line, .polyline].contains(tool) { family = .line; symbol = "line.diagonal" }
+        else { return }
+        guard let button = toolButtons[family] else { return }
+        button.tag = ImageEditorTool.allCases.firstIndex(of: tool) ?? 0
+        let fallback = NSImage(systemSymbolName: symbol, accessibilityDescription: tool.title)?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: EditorFloatingSurface.symbolPointSize, weight: .medium))
+        button.image = AnnotationPathIcons.image(for: tool) ?? fallback
+        button.toolTip = tool.title; button.setAccessibilityLabel(tool.title)
+    }
+
     private func divider() {
         let view = NSBox(); view.boxType = .separator
         view.translatesAutoresizingMaskIntoConstraints = false
@@ -904,6 +1071,8 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
             control.tag = ImageEditorTool.allCases.firstIndex(of: tool) ?? 0
             control.setButtonType(.toggle)
             toolButtons[tool] = control; toolbar.addArrangedSubview(control)
+            if tool == .ellipse { addSubtoolMenu(for: tool, tools: [.ellipse, .arc, .sector], identifier: "editor.shapeSubtools") }
+            if tool == .line { addSubtoolMenu(for: tool, tools: [.line, .polyline], identifier: "editor.lineSubtools") }
         }
         divider()
         undoButton = iconButton("arrow.uturn.backward", title: "撤销 · ⌘Z", id: "editor.undo", action: #selector(undoEdit))
@@ -924,7 +1093,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         overflow.image = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "更多操作")
         overflow.imagePosition = .imageOnly; overflow.setAccessibilityLabel("更多操作")
         overflow.identifier = NSUserInterfaceItemIdentifier("editor.more")
-        for tool in [ImageEditorTool.select, .ellipse, .line, .highlighter, .crop, .eraser, .spotlight, .watermark, .magnifier] {
+        for tool in [ImageEditorTool.select, .ellipse, .arc, .sector, .line, .polyline, .highlighter, .crop, .eraser, .spotlight, .watermark, .magnifier] {
             let item = NSMenuItem(title: tool.title, action: #selector(selectMenuTool(_:)), keyEquivalent: "")
             item.target = self; item.tag = ImageEditorTool.allCases.firstIndex(of: tool) ?? 0; overflow.menu?.addItem(item)
         }
@@ -990,13 +1159,18 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         inspector.isHidden = canvas.tool == .crop || (canvas.tool == .select && canvas.selectedAnnotation == nil)
         let availableBounds = pinPresentation.flatMap { pin in NSScreen.screens.first { $0.frame.intersects(pin.viewportFrame) }?.frame } ?? workspace.bounds
         for button in toolButtons.values { button.isHidden = false }
+        for menu in subtoolMenus.values { menu.isHidden = false }
         var preferredWidth = max(40, toolbar.fittingSize.width)
         for tool in [ImageEditorTool.ellipse, .line, .highlighter, .select, .crop, .spotlight, .eraser] where preferredWidth > availableBounds.width - 20 {
-            if let button = toolButtons[tool] { button.isHidden = true; preferredWidth -= 34 }
+            if let button = toolButtons[tool] {
+                button.isHidden = true; preferredWidth -= 34
+                if let menu = subtoolMenus[tool] { menu.isHidden = true; preferredWidth -= 16 }
+            }
         }
         toolbar.setFrameSize(CGSize(width: preferredWidth, height: 40))
         toolbar.layoutSubtreeIfNeeded(); inspector.layoutSubtreeIfNeeded()
-        let active = toolButtons[canvas.tool].map { toolbar.convert($0.bounds, from: $0).midX } ?? 18
+        let activeFamily: ImageEditorTool = canvas.tool.isArcTool ? .ellipse : (canvas.tool == .polyline ? .line : canvas.tool)
+        let active = toolButtons[activeFamily].map { toolbar.convert($0.bounds, from: $0).midX } ?? 18
         let frames = EditorFloatingLayout.frames(selection: selection, available: availableBounds,
             toolbarSize: CGSize(width: preferredWidth, height: 40),
             paletteSize: inspector.isHidden ? .zero : CGSize(width: inspector.fittingSize.width, height: max(38, inspector.fittingSize.height)), activeToolOffset: active)
@@ -1046,25 +1220,27 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     }
     private func updateStatus() {
         status.stringValue = "\(canvas.image.width) × \(canvas.image.height) px · \(canvas.annotations.count) 个标注"
-        undoButton?.isEnabled = !undoStates.isEmpty; redoButton?.isEnabled = !redoStates.isEmpty
+        undoButton?.isEnabled = !undoStates.isEmpty || canvas.pendingPolylinePointCount > 0; redoButton?.isEnabled = !redoStates.isEmpty && canvas.pendingPolylinePointCount == 0
         cropButton?.isHidden = canvas.tool != .crop
         cropButton?.isEnabled = (canvas.cropRect?.width ?? 0) >= 1 && (canvas.cropRect?.height ?? 0) >= 1
         for (tool, button) in toolButtons {
-            button.state = canvas.tool == tool ? .on : .off
-            button.contentTintColor = canvas.tool == tool ? .systemBlue : EditorFloatingSurface.ink
-            button.layer?.backgroundColor = canvas.tool == tool ? NSColor.systemBlue.withAlphaComponent(0.12).cgColor : NSColor.clear.cgColor
+            let active = canvas.tool == tool || (tool == .ellipse && canvas.tool.isArcTool) || (tool == .line && canvas.tool == .polyline)
+            button.state = active ? .on : .off
+            button.contentTintColor = active ? .systemBlue : EditorFloatingSurface.ink
+            button.layer?.backgroundColor = active ? NSColor.systemBlue.withAlphaComponent(0.12).cgColor : NSColor.clear.cgColor
         }
-        let usesCurrentMark = canvas.tool == .select || ([ImageEditorTool.watermark, .magnifier, .spotlight].contains(canvas.tool)
+        let usesCurrentMark = canvas.tool == .select || ([ImageEditorTool.watermark, .magnifier, .spotlight, .arc, .sector, .polyline].contains(canvas.tool)
             && canvas.selectedAnnotation?.tool == canvas.tool)
-        let selected = usesCurrentMark ? canvas.selectedAnnotation : nil
-        var inspected = selected ?? canvas.style; inspected.tool = selected?.tool ?? canvas.tool
+        let selected = usesCurrentMark && canvas.pendingPolylinePointCount == 0 ? canvas.selectedAnnotation : nil
+        var inspected = canvas.pendingPolyline ?? selected ?? canvas.style; inspected.tool = selected?.tool ?? canvas.tool
         let enabled = canvas.tool != .crop && (canvas.tool != .select || selected != nil)
         inspector.isHidden = !enabled
+        inspector.polylinePointCount = canvas.pendingPolylinePointCount
         inspector.display(annotation: inspected, selected: selected != nil, enabled: enabled)
         layoutInterface()
     }
     func chooseTool(_ tool: ImageEditorTool) {
-        finishInlineText(commit: true); canvas.tool = tool; updateStatus(); window?.makeFirstResponder(canvas)
+        finishInlineText(commit: true); canvas.tool = tool; refreshSubtoolButton(for: tool); updateStatus(); window?.makeFirstResponder(canvas)
     }
     @objc private func selectTool(_ sender: NSButton) {
         guard ImageEditorTool.allCases.indices.contains(sender.tag) else { return }; chooseTool(ImageEditorTool.allCases[sender.tag])
@@ -1076,11 +1252,13 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     @objc private func duplicateAnnotation() { finishInlineText(commit: true); canvas.duplicateSelection() }
     @objc private func deleteAnnotation() { finishInlineText(commit: false); canvas.deleteSelection() }
     @objc private func undoEdit() {
+        if canvas.pendingPolylinePointCount > 0 { canvas.removeLastPolylineVertex(); return }
         finishInlineText(commit: true)
         guard let state = undoStates.popLast() else { return }
         redoStates.append(snapshot); trimHistory(preferUndo: false); restore(state)
     }
     @objc private func redoEdit() {
+        guard canvas.pendingPolylinePointCount == 0 else { return }
         finishInlineText(commit: false)
         guard let state = redoStates.popLast() else { return }
         undoStates.append(snapshot); trimHistory(preferUndo: true); restore(state)
@@ -1107,7 +1285,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     @objc private func fitImage() { finishInlineText(commit: true); fitToWindow = true; needsFit = true; layoutInterface() }
     @objc private func actualSize() { guard presentation == nil else { return }; finishInlineText(commit: true); fitToWindow = false; canvas.zoom = 1; layoutInterface() }
     private func result(close: Bool = false, _ action: (CGImage) -> Void) {
-        finishInlineText(commit: true)
+        finishInlineText(commit: true); canvas.finishPolyline()
         guard let image = canvas.flattened() else { showError(PicShotError.message("无法合成图片，可能内存不足")); return }
         if close { window?.close() }; action(image)
     }
@@ -1123,7 +1301,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     @objc private func cancelEditor() { finishInlineText(commit: false); window?.close() }
 
     private func beginBoundaryResize() {
-        finishInlineText(commit: true)
+        finishInlineText(commit: true); canvas.finishPolyline()
         guard let presentation, let preview = canvas.rasterForBoundaryPreview() else {
             workspace.cancelBoundaryResize(); return
         }
@@ -1203,7 +1381,8 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         canvas.onWillChange = nil; canvas.onChange = nil; canvas.onRequestText = nil
         canvas.onUndo = nil; canvas.onRedo = nil; canvas.onApplyCrop = nil
         canvas.onCopy = nil; canvas.onExport = nil; canvas.onCancel = nil; canvas.onBeforeInteraction = nil
-        inspector.onEdit = nil; inspector.onClearAnnotations = nil; inspector.deactivateColorWells()
+        inspector.onEdit = nil; inspector.onClearAnnotations = nil; inspector.onFinishPolyline = nil; inspector.onCancelPolyline = nil
+        canvas.cancelPolyline(); canvas.releasePresentationCache(); inspector.deactivateColorWells()
         workspace.onLayout = nil; workspace.onDismiss = nil; workspace.onOutsideClick = nil
         workspace.onBoundaryBegin = nil; workspace.onBoundaryChange = nil; workspace.onBoundaryEnd = nil
         workspace.boundaryPreviewImage = nil; workspace.selectionContent = nil
@@ -1214,7 +1393,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     func windowDidResize(_ notification: Notification) { guard !layingOut else { return }; finishInlineText(commit: true); layoutInterface() }
 
     @objc private func exportResult() {
-        finishInlineText(commit: true)
+        finishInlineText(commit: true); canvas.finishPolyline()
         guard let window, let image = canvas.flattened() else { return }
         let panel = NSSavePanel(); panel.title = "保存图片"; panel.nameFieldStringValue = "PicShot.png"
         panel.allowedContentTypes = [.png]; panel.canCreateDirectories = true

@@ -42,7 +42,7 @@ jobs:
           mkdir -p dist
           set -o pipefail
           swift build --product PicShot
-          swift test --filter 'GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' 2>&1 | tee dist/critical-tests.log
+          swift test --filter 'AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' 2>&1 | tee dist/critical-tests.log
       - name: Recover actual abruptly terminated synthetic recording from installed app
         timeout-minutes: 4
         run: |
@@ -157,3 +157,4 @@ jobs:
           path: dist/gif-timing.log
           if-no-files-found: ignore
           retention-days: 14
+

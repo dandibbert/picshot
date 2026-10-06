@@ -178,4 +178,312 @@ final class ScrollStitcherTests: XCTestCase {
         let next = try ScrollFrame(width: 96, height: 140, grayscale: pixels)
         XCTAssertThrowsError(try ScrollStitcher.match(previous: original, next: next, axis: .vertical))
     }
+    private func axisFrame(_ axis: ScrollAxis, origin: Int = 0, seed: UInt64 = 7,
+                           noise: Int = 0) throws -> ScrollFrame {
+        try frame(width: axis == .vertical ? 96 : 140, height: axis == .vertical ? 140 : 96,
+                  x: axis == .horizontal ? origin : 0, y: axis == .vertical ? origin : 0,
+                  seed: seed, noise: noise)
+    }
+
+    private func replacing(_ source: ScrollFrame, axis: ScrollAxis,
+                           along: Range<Int>, across: Range<Int>,
+                           value: (Int, Int, UInt8) -> UInt8) throws -> ScrollFrame {
+        var pixels = source.pixels
+        for row in along {
+            for column in across {
+                let index = axis == .vertical ? row * source.width + column : column * source.width + row
+                pixels[index] = value(row, column, pixels[index])
+            }
+        }
+        return try ScrollFrame(width: source.width, height: source.height, grayscale: pixels)
+    }
+
+    func testBidirectionalSignedPlacementAndEvidenceOnBothAxes() throws {
+        for axis in ScrollAxis.allCases {
+            for advance in [-55, -1, 1, 55] {
+                let result = try ScrollStitcher.matchBidirectional(previous: axisFrame(axis, origin: 80),
+                                                                 next: axisFrame(axis, origin: 80 + advance), axis: axis)
+                XCTAssertEqual(result.advance, advance)
+                XCTAssertEqual(result.x, axis == .horizontal ? advance : 0)
+                XCTAssertEqual(result.y, axis == .vertical ? advance : 0)
+                XCTAssertEqual(result.overlap, 140 - abs(advance))
+                XCTAssertEqual(result.confidence, 1)
+                let evidence = try XCTUnwrap(result.evidence)
+                XCTAssertEqual(evidence.meanError, 0)
+                XCTAssertEqual(evidence.badFraction, 0)
+                XCTAssertEqual(evidence.worstBandError, 0)
+                XCTAssertGreaterThan(evidence.texture, 9)
+                XCTAssertGreaterThanOrEqual(try XCTUnwrap(evidence.uniquenessMargin), 3)
+            }
+        }
+    }
+
+    func testBidirectionalSmallBoundedNoiseKeepsExactSignedOffset() throws {
+        for axis in ScrollAxis.allCases {
+            for advance in [-39, 39] {
+                let result = try ScrollStitcher.matchBidirectional(previous: axisFrame(axis, origin: 70),
+                                                                 next: axisFrame(axis, origin: 70 + advance, noise: 3), axis: axis)
+                XCTAssertEqual(result.advance, advance)
+                XCTAssertGreaterThan(result.confidence, 0.5)
+                let evidence = try XCTUnwrap(result.evidence)
+                XCTAssertGreaterThan(evidence.meanError, 0)
+                XCTAssertLessThanOrEqual(evidence.meanError, 3)
+                XCTAssertEqual(evidence.badFraction, 0)
+                XCTAssertLessThanOrEqual(evidence.worstBandError, 3)
+                XCTAssertGreaterThan(evidence.texture, 9)
+                XCTAssertGreaterThanOrEqual(try XCTUnwrap(evidence.uniquenessMargin), 3)
+            }
+        }
+    }
+
+    func testBidirectionalOppositeDirectionsCompeteForPeriodicPattern() throws {
+        for axis in ScrollAxis.allCases {
+            let tile = try axisFrame(axis)
+            func periodic(origin: Int) throws -> ScrollFrame {
+                try replacing(tile, axis: axis, along: 0..<140, across: 0..<96) { along, across, _ in
+                    let periodicAlong = (along + origin) % 101
+                    let index = axis == .vertical ? periodicAlong * tile.width + across
+                                                  : across * tile.width + periodicAlong
+                    return tile.pixels[index]
+                }
+            }
+            // Within the permitted +/-105 search range, both +40 and -61 match exactly.
+            // Each single-direction search could choose a plausible but different answer.
+            let previous = try periodic(origin: 0), next = try periodic(origin: 40)
+            XCTAssertEqual(try ScrollStitcher.match(previous: previous, next: next, axis: axis).advance, 40)
+            XCTAssertEqual(try ScrollStitcher.match(previous: next, next: previous, axis: axis).advance, 61)
+            XCTAssertThrowsError(try ScrollStitcher.matchBidirectional(previous: previous, next: next, axis: axis)) {
+                XCTAssertEqual($0 as? ScrollStitchError, .ambiguousOverlap)
+            }
+            XCTAssertThrowsError(try ScrollStitcher.matchBidirectional(previous: next, next: previous, axis: axis)) {
+                XCTAssertEqual($0 as? ScrollStitchError, .ambiguousOverlap)
+            }
+        }
+    }
+
+    func testBidirectionalRepeatedPatternCandidateBudgetRejectsSafely() throws {
+        for axis in ScrollAxis.allCases {
+            let base = try axisFrame(axis)
+            func repeated(_ offset: Int) throws -> ScrollFrame {
+                try replacing(base, axis: axis, along: 0..<140, across: 0..<96) { along, across, _ in
+                    UInt8((((along + offset) % 4) * 53 + across * 29) % 256)
+                }
+            }
+            XCTAssertThrowsError(try ScrollStitcher.matchBidirectional(previous: repeated(0), next: repeated(1), axis: axis)) {
+                XCTAssertEqual($0 as? ScrollStitchError, .ambiguousOverlap)
+            }
+        }
+    }
+
+    func testBidirectionalRejectsLargeFixedHeadersAndSidebarsInBothDirections() throws {
+        for axis in ScrollAxis.allCases {
+            for advance in [-45, 45] {
+                let previous = try axisFrame(axis, origin: 70)
+                let scrolled = try axisFrame(axis, origin: 70 + advance)
+                let fixedHeader = try replacing(scrolled, axis: axis, along: 0..<65, across: 0..<96) { along, across, _ in
+                    let index = axis == .vertical ? along * previous.width + across : across * previous.width + along
+                    return previous.pixels[index]
+                }
+                let fixedSidebar = try replacing(scrolled, axis: axis, along: 0..<140, across: 0..<70) { along, across, _ in
+                    let index = axis == .vertical ? along * previous.width + across : across * previous.width + along
+                    return previous.pixels[index]
+                }
+                for next in [fixedHeader, fixedSidebar] {
+                    XCTAssertThrowsError(try ScrollStitcher.matchBidirectional(previous: previous, next: next, axis: axis)) {
+                        XCTAssertEqual($0 as? ScrollStitchError, .noOverlap)
+                    }
+                }
+            }
+        }
+    }
+
+    func testBidirectionalRejectsSmallDynamicRegionOutsideSearchSamples() throws {
+        for axis in ScrollAxis.allCases {
+            for advance in [-55, 55] {
+                let previous = try axisFrame(axis, origin: 75)
+                let scrolled = try axisFrame(axis, origin: 75 + advance)
+                // The sample grid includes overlap row zero, then row three; this pixel
+                // at row/column one is only visited by the independent full verification.
+                let changedAlong = max(0, -advance) + 1
+                let changed = try replacing(scrolled, axis: axis, along: changedAlong..<(changedAlong + 1),
+                                            across: 1..<2) { _, _, value in value < 128 ? 255 : 0 }
+                XCTAssertThrowsError(try ScrollStitcher.matchBidirectional(previous: previous, next: changed, axis: axis)) {
+                    XCTAssertEqual($0 as? ScrollStitchError, .noOverlap)
+                }
+            }
+        }
+    }
+
+    func testBidirectionalTinyStationaryChangeIsNotMisclassifiedAsDuplicate() throws {
+        for axis in ScrollAxis.allCases {
+            let previous = try axisFrame(axis)
+            let changed = try replacing(previous, axis: axis, along: 1..<2, across: 1..<2) { _, _, value in
+                value < 128 ? 255 : 0
+            }
+            // Global mean is below the duplicate threshold, but a material changed pixel
+            // disqualifies zero alignment and must not let retained source be discarded.
+            XCTAssertThrowsError(try ScrollStitcher.matchBidirectional(previous: previous, next: changed, axis: axis)) {
+                XCTAssertEqual($0 as? ScrollStitchError, .noOverlap)
+            }
+        }
+    }
+
+    func testBidirectionalRejectsUnrelatedAndTooDistantFramesInBothDirections() throws {
+        for axis in ScrollAxis.allCases {
+            let previous = try axisFrame(axis, origin: 250)
+            for next in [try axisFrame(axis, origin: 250, seed: 91),
+                         try axisFrame(axis, origin: 0), try axisFrame(axis, origin: 500),
+                         try axisFrame(axis, origin: 130), try axisFrame(axis, origin: 370)] {
+                XCTAssertThrowsError(try ScrollStitcher.matchBidirectional(previous: previous, next: next, axis: axis)) {
+                    XCTAssertEqual($0 as? ScrollStitchError, .noOverlap)
+                }
+            }
+        }
+    }
+
+    func testBidirectionalRejectsFlatAndDuplicateFramesOnBothAxes() throws {
+        let flat = try ScrollFrame(width: 96, height: 140, grayscale: .init(repeating: 100, count: 96 * 140))
+        let changedFlat = try ScrollFrame(width: 96, height: 140, grayscale: .init(repeating: 103, count: 96 * 140))
+        for axis in ScrollAxis.allCases {
+            XCTAssertThrowsError(try ScrollStitcher.matchBidirectional(previous: flat, next: changedFlat, axis: axis)) {
+                XCTAssertEqual($0 as? ScrollStitchError, .insufficientTexture)
+            }
+            let textured = try axisFrame(axis)
+            XCTAssertThrowsError(try ScrollStitcher.matchBidirectional(previous: textured, next: textured, axis: axis)) {
+                XCTAssertEqual($0 as? ScrollStitchError, .duplicate)
+            }
+            XCTAssertThrowsError(try ScrollStitcher.matchBidirectional(previous: textured, next: axisFrame(axis, noise: 3), axis: axis)) {
+                XCTAssertEqual($0 as? ScrollStitchError, .duplicate)
+            }
+        }
+    }
+
+    func testBidirectionalAndAlignedComparisonRejectDimensionAndConfigurationErrors() throws {
+        let previous = try frame(), wrongSize = try frame(width: 95)
+        for axis in ScrollAxis.allCases {
+            XCTAssertThrowsError(try ScrollStitcher.matchBidirectional(previous: previous, next: wrongSize, axis: axis)) {
+                XCTAssertEqual($0 as? ScrollStitchError, .differentDimensions)
+            }
+            XCTAssertThrowsError(try ScrollStitcher.validateAlignedOverlap(previous: previous, previousStart: 0,
+                                                                         next: wrongSize, nextStart: 0, length: 1, axis: axis)) {
+                XCTAssertEqual($0 as? ScrollStitchError, .differentDimensions)
+            }
+            var config = ScrollStitcher.Configuration()
+            config.minimumUniquenessMargin = .infinity
+            XCTAssertThrowsError(try ScrollStitcher.matchBidirectional(previous: previous, next: previous, axis: axis, configuration: config)) {
+                XCTAssertEqual($0 as? ScrollStitchError, .invalidPixels)
+            }
+            XCTAssertThrowsError(try ScrollStitcher.validateAlignedOverlap(previous: previous, previousStart: 0,
+                                                                         next: previous, nextStart: 0, length: 1, axis: axis,
+                                                                         configuration: config)) {
+                XCTAssertEqual($0 as? ScrollStitchError, .invalidPixels)
+            }
+        }
+    }
+
+    func testAlignedIntervalsVerifyBothDirectionsWithoutCopyingOrUniqueness() throws {
+        for axis in ScrollAxis.allCases {
+            for advance in [-55, 55] {
+                let previous = try axisFrame(axis, origin: 75)
+                let next = try axisFrame(axis, origin: 75 + advance, noise: 3)
+                let evidence = try ScrollStitcher.validateAlignedOverlap(previous: previous, previousStart: max(0, advance),
+                                                                         next: next, nextStart: max(0, -advance),
+                                                                         length: 140 - abs(advance), axis: axis)
+                XCTAssertGreaterThan(evidence.meanError, 0)
+                XCTAssertLessThanOrEqual(evidence.meanError, 3)
+                XCTAssertEqual(evidence.badFraction, 0)
+                XCTAssertLessThanOrEqual(evidence.worstBandError, 3)
+                XCTAssertNil(evidence.uniquenessMargin)
+            }
+        }
+    }
+
+    func testAlignedOnePixelStripsInspectEveryCrossAxisPixel() throws {
+        for axis in ScrollAxis.allCases {
+            let previous = try axisFrame(axis, origin: 50), next = try axisFrame(axis, origin: 20)
+            let evidence = try ScrollStitcher.validateAlignedOverlap(previous: previous, previousStart: 7,
+                                                                     next: next, nextStart: 37, length: 1, axis: axis)
+            XCTAssertEqual(evidence.meanError, 0)
+            XCTAssertEqual(evidence.worstBandError, 0)
+            XCTAssertNil(evidence.uniquenessMargin)
+            for cross in [0, 1, 47, 95] {
+                let changed = try replacing(next, axis: axis, along: 37..<38, across: cross..<(cross + 1)) { _, _, value in
+                    value < 128 ? 255 : 0
+                }
+                XCTAssertThrowsError(try ScrollStitcher.validateAlignedOverlap(previous: previous, previousStart: 7,
+                                                                             next: changed, nextStart: 37, length: 1, axis: axis)) {
+                    XCTAssertEqual($0 as? ScrollStitchError, .noOverlap)
+                }
+            }
+        }
+    }
+
+    func testAlignedFlatOnePixelIntervalNeedsNoTexture() throws {
+        let flat = try ScrollFrame(width: 1, height: 1, grayscale: [100])
+        let noisy = try ScrollFrame(width: 1, height: 1, grayscale: [103])
+        for axis in ScrollAxis.allCases {
+            let evidence = try ScrollStitcher.validateAlignedOverlap(previous: flat, previousStart: 0,
+                                                                     next: noisy, nextStart: 0, length: 1, axis: axis)
+            XCTAssertEqual(evidence.meanError, 3)
+            XCTAssertEqual(evidence.worstBandError, 3)
+            XCTAssertEqual(evidence.texture, 0)
+            XCTAssertNil(evidence.uniquenessMargin)
+        }
+    }
+
+    func testAlignedComparisonRejectsLocalizedChangesHiddenByMean() throws {
+        for axis in ScrollAxis.allCases {
+            let original = try axisFrame(axis)
+            // Every difference is below the outlier threshold and global mean is under
+            // one, but one complete local tile changed too much to discard its source.
+            let changed = try replacing(original, axis: axis, along: 0..<18, across: 0..<12) { _, _, value in value + 16 }
+            XCTAssertThrowsError(try ScrollStitcher.validateAlignedOverlap(previous: original, previousStart: 0,
+                                                                         next: changed, nextStart: 0, length: 140, axis: axis)) {
+                XCTAssertEqual($0 as? ScrollStitchError, .noOverlap)
+            }
+        }
+    }
+
+    func testAlignedSliceBoundsRejectOverflowAndEmptyIntervals() throws {
+        let image = try frame()
+        for axis in ScrollAxis.allCases {
+            let extent = axis == .vertical ? image.height : image.width
+            let invalid = [(Int.min, 0, 1), (0, Int.min, 1), (Int.max, 0, 1), (0, Int.max, 1),
+                           (0, 0, Int.max), (0, 0, 0), (0, 0, -1), (extent, 0, 1),
+                           (0, extent, 1), (extent - 1, 0, 2), (0, extent - 1, 2)]
+            for (previousStart, nextStart, length) in invalid {
+                XCTAssertThrowsError(try ScrollStitcher.validateAlignedOverlap(previous: image, previousStart: previousStart,
+                                                                             next: image, nextStart: nextStart, length: length, axis: axis)) {
+                    XCTAssertEqual($0 as? ScrollStitchError, .invalidPixels)
+                }
+            }
+        }
+    }
+
+
+    func testBidirectionalAndAlignedVerificationPropagateCancellation() async throws {
+        let previous = try frame(), next = try frame(y: 40)
+        let matching = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try ScrollStitcher.matchBidirectional(previous: previous, next: next, axis: .vertical)
+        }
+        do {
+            _ = try await matching.value
+            XCTFail("Canceled matching must not finish or become a noOverlap error")
+        } catch {
+            XCTAssertTrue(error is CancellationError)
+        }
+        let aligned = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try ScrollStitcher.validateAlignedOverlap(previous: previous, previousStart: 40,
+                                                             next: next, nextStart: 0, length: 100, axis: .vertical)
+        }
+        do {
+            _ = try await aligned.value
+            XCTFail("Canceled retained-source verification must propagate cancellation")
+        } catch {
+            XCTAssertTrue(error is CancellationError)
+        }
+    }
+
 }

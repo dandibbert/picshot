@@ -1,19 +1,27 @@
 import AppKit
 import Vision
+import ImageIO
+import NaturalLanguage
 import UniformTypeIdentifiers
 
 struct RecognitionResult: Sendable {
     let text: String
     let barcodes: [String]
+    var document: RecognizedTextDocument? = nil
+    var omittedBarcodeCount = 0
     var displayText: String {
-        guard !barcodes.isEmpty else { return text }
-        return [text, "识别码：\n" + barcodes.joined(separator: "\n")].filter { !$0.isEmpty }.joined(separator: "\n\n")
+        var parts = [text]
+        if !barcodes.isEmpty { parts.append("识别码：\n" + barcodes.joined(separator: "\n")) }
+        if document?.isTruncated == true { parts.append("[识别已达本机结果上限，仅显示部分文字；请裁剪图片后再识别。]") }
+        if omittedBarcodeCount > 0 { parts.append("[有 \(omittedBarcodeCount) 个识别码超过数量或长度上限，已省略；未截短任何识别码内容。]") }
+        return parts.filter { !$0.isEmpty }.joined(separator: "\n\n")
     }
 }
 
 struct RecognitionOptions: Sendable, Equatable {
     /// nil selects automatic detection. Explicit identifiers must be supported by this OS.
     var language: String? = nil
+    var orientation: CGImagePropertyOrientation = .up
 }
 
 enum RecognitionService {
@@ -26,34 +34,196 @@ enum RecognitionService {
         ["zh-Hans", "zh-Hant", "en-US"].filter { supported.contains($0) }
     }
 
+    private static let admission = RecognitionAdmission()
+    static func resourceSnapshot() async -> RecognitionResourceSnapshot { await admission.snapshot() }
+
     static func recognize(_ image: CGImage, options: RecognitionOptions = RecognitionOptions()) async throws -> RecognitionResult {
-        let task = Task.detached(priority: .userInitiated) {
-            try Task.checkCancellation()
-            let textRequest = VNRecognizeTextRequest()
-            textRequest.recognitionLevel = .accurate
-            textRequest.usesLanguageCorrection = true
-            let supported = try textRequest.supportedRecognitionLanguages()
-            if let language = options.language {
-                guard supported.contains(language) else { throw PicShotError.message("当前 macOS 不支持所选识别语言，请选择其他语言。") }
-                textRequest.automaticallyDetectsLanguage = false
-                textRequest.recognitionLanguages = [language]
-            } else {
-                textRequest.automaticallyDetectsLanguage = true
-                let preferred = preferredLanguages(from: supported)
-                if !preferred.isEmpty { textRequest.recognitionLanguages = preferred }
-            }
-            let barcodes = VNDetectBarcodesRequest()
-            try VNImageRequestHandler(cgImage: image, options: [:]).perform([textRequest, barcodes])
-            try Task.checkCancellation()
-            let observations = (textRequest.results ?? []).sorted { a, b in
-                if abs(a.boundingBox.midY - b.boundingBox.midY) > 0.015 { return a.boundingBox.midY > b.boundingBox.midY }
-                return a.boundingBox.minX < b.boundingBox.minX
-            }
-            return RecognitionResult(text: observations.compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n"),
-                                     barcodes: (barcodes.results ?? []).compactMap(\.payloadStringValue))
+        guard PinImageRenderer.allowsRasterSize(width: image.width, height: image.height) else {
+            throw PicShotError.message("本地识别最多支持 3200 万像素。请先裁剪图片。")
         }
-        return try await withTaskCancellationHandler(operation: { try await task.value }, onCancel: { task.cancel() })
+        let id = UUID()
+        try await withTaskCancellationHandler(operation: { try await admission.acquire(id) }, onCancel: {
+            Task { await admission.cancelWaiting(id) }
+        })
+        do {
+            try Task.checkCancellation()
+            let cancellation = RecognitionCancellation()
+            let task = Task.detached(priority: .userInitiated) {
+                try Task.checkCancellation()
+                let textRequest = VNRecognizeTextRequest()
+                textRequest.recognitionLevel = .accurate
+                textRequest.usesLanguageCorrection = true
+                let supported = try textRequest.supportedRecognitionLanguages()
+                if let language = options.language {
+                    guard supported.contains(language) else { throw PicShotError.message("当前 macOS 不支持所选识别语言，请选择其他语言。") }
+                    textRequest.automaticallyDetectsLanguage = false
+                    textRequest.recognitionLanguages = [language]
+                } else {
+                    textRequest.automaticallyDetectsLanguage = true
+                    let preferred = preferredLanguages(from: supported)
+                    if !preferred.isEmpty { textRequest.recognitionLanguages = preferred }
+                }
+                let barcodes = VNDetectBarcodesRequest()
+                try cancellation.install([textRequest, barcodes])
+                defer { cancellation.clear() }
+                try VNImageRequestHandler(cgImage: image, orientation: options.orientation, options: [:]).perform([textRequest, barcodes])
+                try Task.checkCancellation()
+                let document = try makeDocument(textRequest.results ?? [])
+                let payloads = (barcodes.results ?? []).compactMap(\.payloadStringValue)
+                let included = Array(payloads.filter { $0.utf16.count <= 4096 }.prefix(128))
+                return RecognitionResult(text: document.text, barcodes: included, document: document,
+                                         omittedBarcodeCount: payloads.count - included.count)
+            }
+            let result = try await withTaskCancellationHandler(operation: { try await task.value }, onCancel: {
+                cancellation.cancel(); task.cancel()
+            })
+            try Task.checkCancellation()
+            await admission.release(id)
+            return result
+        } catch {
+            await admission.release(id)
+            throw error
+        }
     }
+
+    /// Stable reading rows, then left-to-right observations. Within an observation Vision's
+    /// logical string (including RTL runs) is preserved; geometric sorting never rewrites it.
+    private static func readingOrder(_ observations: [VNRecognizedTextObservation]) -> [VNRecognizedTextObservation] {
+        let sorted = observations.sorted { $0.boundingBox.midY > $1.boundingBox.midY }
+        var rows: [[VNRecognizedTextObservation]] = []
+        for observation in sorted {
+            if let last = rows.last, let first = last.first,
+               abs(first.boundingBox.midY - observation.boundingBox.midY) <= min(first.boundingBox.height, observation.boundingBox.height) * 0.45 {
+                rows[rows.count - 1].append(observation)
+            } else { rows.append([observation]) }
+        }
+        return rows.flatMap { $0.sorted { $0.boundingBox.minX < $1.boundingBox.minX } }
+    }
+
+    private static func quad(_ rectangle: VNRectangleObservation) -> RecognizedTextQuad? {
+        RecognizedTextQuad(topLeft: rectangle.topLeft, topRight: rectangle.topRight,
+                           bottomRight: rectangle.bottomRight, bottomLeft: rectangle.bottomLeft)
+    }
+
+    private static func makeDocument(_ observations: [VNRecognizedTextObservation]) throws -> RecognizedTextDocument {
+        var text = "", lines: [RecognizedTextLine] = [], units: [RecognizedTextUnit] = []
+        var truncated = observations.count > RecognizedTextDocument.maximumLines
+        for observation in readingOrder(Array(observations.prefix(RecognizedTextDocument.maximumLines))) {
+            try Task.checkCancellation()
+            guard let candidate = observation.topCandidates(1).first, !candidate.string.isEmpty else { continue }
+            let original = candidate.string
+            let separator = text.isEmpty ? "" : "\n"
+            var lineText = "", remaining = RecognizedTextDocument.maximumUTF16Count - text.utf16.count - separator.utf16.count
+            for character in original {
+                let part = String(character), count = part.utf16.count
+                guard count <= remaining else { truncated = true; break }
+                lineText += part; remaining -= count
+            }
+            guard !lineText.isEmpty else { truncated = true; break }
+            if lineText != original { truncated = true }
+            let sourceEnd = original.index(original.startIndex, offsetBy: lineText.count)
+            let sourceRange = original.startIndex..<sourceEnd
+            let base = text.utf16.count + separator.utf16.count, lineIndex = lines.count
+            text += separator + lineText
+            // Text stays usable in the separate result panel even if Vision cannot supply a valid box.
+            guard let lineQuad = quad(observation) else { continue }
+            lines.append(RecognizedTextLine(range: NSRange(location: base, length: lineText.utf16.count), quad: lineQuad))
+
+            // NaturalLanguage supplies real String.Index ranges for scripts without spaces.
+            // Include punctuation/emoji omitted by word tokenization as whole composed characters.
+            let tokenizer = NLTokenizer(unit: .word); tokenizer.string = original
+            var words: [Range<String.Index>] = []
+            tokenizer.enumerateTokens(in: sourceRange) { range, _ in
+                words.append(range); return words.count < RecognizedTextDocument.maximumUnits
+            }
+            var ranges: [Range<String.Index>] = [], cursor = original.startIndex
+            for word in words {
+                guard ranges.count < RecognizedTextDocument.maximumUnits else { truncated = true; break }
+                while cursor < word.lowerBound, ranges.count < RecognizedTextDocument.maximumUnits {
+                    let end = original.index(after: cursor)
+                    if !original[cursor..<end].allSatisfy({ $0.isWhitespace }) { ranges.append(cursor..<end) }
+                    cursor = end
+                }
+                guard ranges.count < RecognizedTextDocument.maximumUnits else { truncated = true; break }
+                ranges.append(word); cursor = word.upperBound
+            }
+            while cursor < sourceEnd, ranges.count < RecognizedTextDocument.maximumUnits {
+                let end = original.index(after: cursor)
+                if !original[cursor..<end].allSatisfy({ $0.isWhitespace }) { ranges.append(cursor..<end) }
+                cursor = end
+            }
+            if cursor < sourceEnd { truncated = true }
+            let before = units.count
+            for range in ranges {
+                try Task.checkCancellation()
+                guard units.count < RecognizedTextDocument.maximumUnits else { truncated = true; break }
+                guard let rectangle = try? candidate.boundingBox(for: range), let bounds = quad(rectangle) else { continue }
+                let local = NSRange(range, in: original)
+                let global = NSRange(location: base + local.location, length: local.length)
+                // .accurate may give the same word box for multiple tokenizer ranges.
+                // Merge those ranges, preserving exact intervening text, instead of guessing widths.
+                if let last = units.last, last.lineIndex == lineIndex, last.quad.approximatelyEquals(bounds) {
+                    units[units.count - 1].range.length = NSMaxRange(global) - last.range.location
+                } else { units.append(RecognizedTextUnit(range: global, quad: bounds, lineIndex: lineIndex)) }
+            }
+            if units.count == before, units.count < RecognizedTextDocument.maximumUnits {
+                units.append(RecognizedTextUnit(range: lines[lineIndex].range, quad: lineQuad, lineIndex: lineIndex))
+            }
+            if units.count >= RecognizedTextDocument.maximumUnits { truncated = true; break }
+        }
+        return RecognizedTextDocument(text: text, lines: lines, units: units, isTruncated: truncated)
+    }
+}
+
+/// At most two Vision requests execute and four wait. Queued cancellation drops its continuation;
+/// an executing job keeps its permit until Vision returns, even when the UI has closed.
+struct RecognitionResourceSnapshot: Sendable {
+    let activeJobs: Int
+    let waitingJobs: Int
+}
+
+private actor RecognitionAdmission {
+    private var active = Set<UUID>()
+    private var order: [UUID] = []
+    private var waiting: [UUID: CheckedContinuation<Void, Error>] = [:]
+    func snapshot() -> RecognitionResourceSnapshot { RecognitionResourceSnapshot(activeJobs: active.count, waitingJobs: waiting.count) }
+    func acquire(_ id: UUID) async throws {
+        try Task.checkCancellation()
+        if active.count < 2 { active.insert(id); return }
+        guard waiting.count < 4 else { throw PicShotError.message("本地识别正在忙碌，请稍后重试。") }
+        try await withCheckedThrowingContinuation { continuation in
+            waiting[id] = continuation; order.append(id)
+        }
+    }
+    func cancelWaiting(_ id: UUID) {
+        guard let continuation = waiting.removeValue(forKey: id) else { return }
+        order.removeAll { $0 == id }; continuation.resume(throwing: CancellationError())
+    }
+    func release(_ id: UUID) {
+        guard active.remove(id) != nil else { return }
+        while !order.isEmpty {
+            let next = order.removeFirst()
+            guard let continuation = waiting.removeValue(forKey: next) else { continue }
+            active.insert(next); continuation.resume(); break
+        }
+    }
+}
+
+private final class RecognitionCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+    private var requests: [VNRequest] = []
+    func install(_ values: [VNRequest]) throws {
+        lock.lock(); defer { lock.unlock() }
+        guard !cancelled else { throw CancellationError() }
+        requests = values
+    }
+    func cancel() {
+        lock.lock(); cancelled = true; let values = requests; lock.unlock()
+        values.forEach { $0.cancel() }
+    }
+    func clear() { lock.lock(); requests.removeAll(); lock.unlock() }
+
 }
 
 @MainActor final class TextResultController: NSWindowController, NSWindowDelegate {

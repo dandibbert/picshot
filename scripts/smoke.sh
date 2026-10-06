@@ -6,7 +6,7 @@ export PICSHOT_SMOKE_FORMULA_MODEL_DIR="$PWD/.build/model-fixtures/formula"
 export PICSHOT_SMOKE_FORMULA_INPUT="$PWD/Tests/PicShotMLHelperTests/Fixtures/energy.png"
 export PICSHOT_SMOKE_TABLE_MODEL_DIR="$PWD/.build/model-fixtures/table"
 export PICSHOT_SMOKE_TABLE_INPUT="$PWD/Tests/PicShotTableEngineTests/Fixtures/merged-table.png"
-base="PicShot-0.5.0-macos-$(uname -m)"
+base="PicShot-0.6.0-macos-$(uname -m)"
 work=$(mktemp -d)
 mounted=false
 trap 'if [[ "$mounted" == true ]];then hdiutil detach "$work/mount" || true;fi;rm -rf "$work"' EXIT
@@ -48,6 +48,11 @@ for job in jobs['lastJobs']:
     assert job['outcome']=='succeeded' and job['childLaunched'] and job['childExitConfirmed'],job
     assert job['temporaryDirectoryCleanup']=='confirmed',job
     assert job.get('sampledPeakResidentBytes',0)>0 and job['residentSampleCount']>0,job
+parity=r['interactionParityEvidence']
+assert parity['status']=='passed' and parity['sourceCommit']==sys.argv[3],parity
+assert not parity['screenCaptureStarted'] and not parity['permissionRequested'],parity
+for key in ['annotationPaths','scrollSequence','pinTextSelection']:
+    assert parity[key]['status']=='passed',parity[key]
 composition=r['recordingCompositionEvidence']
 assert composition['status']=='passed' and composition['temporaryDirectoryRemoved'],composition
 assert composition['controllerCreationCount']==4 and composition['controllerReleaseCount']==4,composition

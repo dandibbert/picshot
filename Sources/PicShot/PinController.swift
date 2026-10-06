@@ -120,13 +120,23 @@ struct PinImageState {
     private(set) var recognitionWindow: TextResultController?
     private var recognitionTask: Task<Void, Never>?
     private var recognitionGeneration = UUID()
+    private let recognizeForSelection: @Sendable (CGImage) async throws -> RecognitionResult
+    let textSelectionOverlay = PinTextSelectionOverlay()
+    private var textSelectionTask: Task<Void, Never>?
+    private var textSelectionGeneration = UUID()
+    private var textSelectionControl: NSButton?
+    private(set) var textSelectionEnabled = false
+    private(set) var textSelectionIsRecognizing = false
+    private(set) var textSelectionStatus = ""
     var actionMenu: NSMenu? { canvas.menu }
 
     convenience init(image: CGImage) {
         self.init(originalImage: image, currentImage: image, isModified: false)
     }
 
-    init(originalImage: CGImage, currentImage: CGImage, isModified: Bool) {
+    init(originalImage: CGImage, currentImage: CGImage, isModified: Bool,
+         recognizeForSelection: @escaping @Sendable (CGImage) async throws -> RecognitionResult = { try await RecognitionService.recognize($0) }) {
+        self.recognizeForSelection = recognizeForSelection
         image = originalImage
         state = PinImageState(original: originalImage, current: currentImage, isModified: isModified)
         let scale = min(1, 680 / CGFloat(max(currentImage.width, currentImage.height)))
@@ -152,8 +162,13 @@ struct PinImageState {
         canvas.onAnnotate = { [weak self] in self?.showAnnotations() }
         canvas.onClose = { [weak self] in self?.close() }
         canvas.onCopy = { [weak self] in self?.copyPin() }
+        canvas.onToggleTextSelection = { [weak self] in self?.toggleTextSelection() }
+        textSelectionOverlay.onExit = { [weak self] in self?.setTextSelectionEnabled(false) }
+        textSelectionOverlay.onAnnotate = { [weak self] in self?.showAnnotations() }
+        canvas.textSelectionOverlay = textSelectionOverlay
         canvas.menu = makeActionMenu()
-        canvas.setAccessibilityLabel("图片贴图，空格标注，右键显示操作")
+        textSelectionOverlay.menu = canvas.menu
+        canvas.setAccessibilityLabel("图片贴图，空格标注，Command Shift T 选择文字，右键显示操作")
         let root = NSView(); root.addSubview(scrollView); panel.contentView = root
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
@@ -169,6 +184,9 @@ struct PinImageState {
     private func makeActionMenu() -> NSMenu {
         let menu = NSMenu(); menu.delegate = self
         let recognition = NSMenu(title: "识别")
+        let selection = addItem("选择图片文字", action: #selector(toggleTextSelection), key: "t", to: recognition)
+        selection.keyEquivalentModifierMask = [.command, .shift]
+        recognition.addItem(.separator())
         addItem("识别文字…", action: #selector(recognizeText), to: recognition)
         addItem("直接复制识别文本", action: #selector(copyRecognizedText), to: recognition)
         recognition.delegate = self
@@ -217,6 +235,10 @@ struct PinImageState {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         for item in menu.items {
+            if item.action == #selector(toggleTextSelection) {
+                item.state = textSelectionEnabled ? .on : .off
+                item.title = textSelectionIsRecognizing ? "正在识别文字（取消）" : "选择图片文字"
+            }
             if item.action == #selector(toggleDirectCopy) { item.state = TextResultController.copyDirectlyNextTime ? .on : .off }
             if item.action == #selector(toggleLock) { item.state = locked ? .on : .off }
             if item.action == #selector(toggleCrop) { item.state = canvas.isCropping ? .on : .off }
@@ -244,6 +266,7 @@ struct PinImageState {
         guard !closed, !temporarilyHidden, exportPanel == nil else { return }
         if let annotationEditor { annotationEditor.showWindow(nil); annotationEditor.window?.makeKeyAndOrderFront(nil); return }
         guard let anchor = annotationPresentation else { return }
+        setTextSelectionEnabled(false)
         setCropping(false)
         let generation = UUID(); annotationGeneration = generation
         var editingRevision = pixelRevision
@@ -299,6 +322,7 @@ struct PinImageState {
     func hideTemporarily() {
         guard !closed else { return }
         temporarilyHidden = true
+        setTextSelectionEnabled(false)
         dismissAnnotations(restoringPin: false)
         recognitionGeneration = UUID(); recognitionTask?.cancel(); recognitionTask = nil
         recognitionWindow?.close(); recognitionWindow = nil
@@ -318,6 +342,66 @@ struct PinImageState {
         guard !closed, exportPanel == nil else { return }
         guard PinImageRenderer.allowsRasterSize(width: image.width, height: image.height) else { throw renderFailure }
         try acceptImageState(PinImageState(original: state.original, current: image, isModified: true))
+    }
+
+    @objc private func toggleTextSelection() { setTextSelectionEnabled(!textSelectionEnabled) }
+
+    /// Explicit per-pin mode; never enabled by restoration, group changes or merely opening a pin.
+    func setTextSelectionEnabled(_ enabled: Bool) {
+        if enabled {
+            guard !closed, !temporarilyHidden, annotationEditor == nil, exportPanel == nil,
+                  window?.ignoresMouseEvents != true, !textSelectionEnabled else { return }
+        }
+        textSelectionGeneration = UUID(); textSelectionTask?.cancel(); textSelectionTask = nil
+        textSelectionIsRecognizing = false; textSelectionEnabled = enabled
+        textSelectionOverlay.document = nil
+        textSelectionOverlay.isHidden = !enabled
+        textSelectionControl?.removeFromSuperview(); textSelectionControl = nil
+        if !enabled {
+            textSelectionStatus = ""; textSelectionOverlay.removeFromSuperview()
+            if window?.firstResponder === textSelectionOverlay { window?.makeFirstResponder(canvas) }
+            return
+        }
+        setCropping(false)
+        textSelectionOverlay.frame = canvas.bounds; textSelectionOverlay.autoresizingMask = [.width, .height]
+        textSelectionOverlay.imageRect = canvas.imageRect
+        canvas.addSubview(textSelectionOverlay)
+        window?.makeFirstResponder(canvas)
+        let control = NSButton(title: "识别中 · Esc 取消", target: self, action: #selector(toggleTextSelection))
+        control.controlSize = .small; control.bezelStyle = .rounded
+        control.setAccessibilityLabel("退出图片文字选择")
+        control.toolTip = "文字识别完全在本机运行；按 Esc 退出，空格标注"
+        if let root = window?.contentView {
+            root.addSubview(control); control.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([control.topAnchor.constraint(equalTo: root.topAnchor, constant: 5),
+                                         control.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -5)])
+        }
+        textSelectionControl = control; textSelectionIsRecognizing = true; textSelectionStatus = "识别中"
+        let generation = textSelectionGeneration, revision = pixelRevision, source = state.current
+        let provider = recognizeForSelection
+        textSelectionTask = Task { [weak self] in
+            do {
+                let result = try await provider(source)
+                guard !Task.isCancelled, let self, !self.closed, !self.temporarilyHidden,
+                      self.textSelectionEnabled, self.textSelectionGeneration == generation, self.pixelRevision == revision else { return }
+                self.textSelectionTask = nil; self.textSelectionIsRecognizing = false
+                self.textSelectionOverlay.document = result.document
+                let hasText = result.document?.units.isEmpty == false
+                self.textSelectionStatus = hasText ? (result.document?.isTruncated == true ? "部分文字 · 已达上限" : "拖选文字 · 选中后可拖出") : "未找到可选文字"
+                self.textSelectionControl?.title = hasText ? (result.document?.isTruncated == true ? "部分文字 · 退出" : "选字 · 退出") : "未找到文字 · 退出"
+                self.textSelectionControl?.toolTip = self.textSelectionStatus + "；⌘C 复制，拖动已选文字到其他应用；Esc 退出"
+                self.window?.makeFirstResponder(self.textSelectionOverlay)
+            } catch is CancellationError {
+                guard let self, self.textSelectionGeneration == generation else { return }
+                self.setTextSelectionEnabled(false)
+            } catch {
+                guard !Task.isCancelled, let self, !self.closed, self.textSelectionGeneration == generation else { return }
+                self.textSelectionTask = nil; self.textSelectionIsRecognizing = false
+                self.textSelectionStatus = "识别失败"
+                self.textSelectionControl?.title = "识别失败 · 退出"
+                self.textSelectionControl?.toolTip = error.localizedDescription
+            }
+        }
     }
 
     @objc private func toggleDirectCopy() { UserDefaults.standard.set(!TextResultController.copyDirectlyNextTime, forKey: TextResultController.directCopyPreferenceKey) }
@@ -378,6 +462,9 @@ struct PinImageState {
         try onPixelChange?(next.current, !next.isModified)
         let previousSize = CGSize(width: state.current.width, height: state.current.height)
         state = next; pixelRevision &+= 1
+        setTextSelectionEnabled(false)
+        recognitionGeneration = UUID(); recognitionTask?.cancel(); recognitionTask = nil
+        recognitionWindow?.close(); recognitionWindow = nil
         setCropping(false); canvas.image = state.current
         if fixedZoom == nil, !locked, previousSize != CGSize(width: state.current.width, height: state.current.height), let window {
             let screen = window.screen?.visibleFrame ?? window.frame
@@ -400,6 +487,7 @@ struct PinImageState {
         else { setCropping(!canvas.isCropping) }
     }
     private func setCropping(_ value: Bool) {
+        if value { setTextSelectionEnabled(false) }
         canvas.isCropping = value; canvas.selection = nil
         canvas.toolTip = value ? "拖动选择，按 Return 裁剪，Esc 取消" : nil
         if value { window?.makeFirstResponder(canvas) }
@@ -439,7 +527,7 @@ struct PinImageState {
         if locked { window?.styleMask.remove(.resizable) } else { window?.styleMask.insert(.resizable) }
         updateTitle(); presentationDidChange()
     }
-    @objc private func clickThrough() { setCropping(false); annotationEditor?.close(); window?.ignoresMouseEvents = true; presentationDidChange() }
+    @objc private func clickThrough() { setTextSelectionEnabled(false); setCropping(false); annotationEditor?.close(); window?.ignoresMouseEvents = true; presentationDidChange() }
     @objc private func closePin() { close() }
 
     var presentation: PinPresentation {
@@ -461,6 +549,7 @@ struct PinImageState {
         fixedZoom = value.zoom.map { CGFloat($0) }
         locked = value.locked; window?.isMovable = !locked
         if locked { window?.styleMask.remove(.resizable) } else { window?.styleMask.insert(.resizable) }
+        if value.clickThrough { setTextSelectionEnabled(false) }
         window?.ignoresMouseEvents = value.clickThrough
         updateLayout(); updateTitle()
     }
@@ -484,11 +573,13 @@ struct PinImageState {
     func windowWillClose(_ notification: Notification) {
         guard !closed else { return }; closed = true
         exportPanel?.cancel(nil); exportPanel = nil
+        setTextSelectionEnabled(false); textSelectionOverlay.releaseResources()
         recognitionGeneration = UUID(); recognitionTask?.cancel(); recognitionTask = nil
         dismissAnnotations(restoringPin: false)
         recognitionWindow?.onClose = nil; recognitionWindow?.close(); recognitionWindow = nil
         canvas.onCrop = nil; canvas.onCancelCrop = nil
-        canvas.onAnnotate = nil; canvas.onClose = nil; canvas.onCopy = nil
+        canvas.onAnnotate = nil; canvas.onClose = nil; canvas.onCopy = nil; canvas.onToggleTextSelection = nil
+        canvas.textSelectionOverlay = nil
         let completion = onClose
         onClose = nil; onPixelChange = nil; onPresentationChange = nil
         completion?()
@@ -516,6 +607,7 @@ struct PinImageState {
         canvas.zoom = max(CGFloat.leastNonzeroMagnitude, zoom)
         canvas.setFrameSize(NSSize(width: max(viewport.width, CGFloat(state.current.width) * canvas.zoom),
                                    height: max(viewport.height, CGFloat(state.current.height) * canvas.zoom)))
+        textSelectionOverlay.frame = canvas.bounds; textSelectionOverlay.imageRect = canvas.imageRect
         canvas.needsDisplay = true
     }
 }
@@ -537,6 +629,8 @@ struct PinImageState {
     var onAnnotate: (() -> Void)?
     var onClose: (() -> Void)?
     var onCopy: (() -> Void)?
+    var onToggleTextSelection: (() -> Void)?
+    weak var textSelectionOverlay: PinTextSelectionOverlay?
     private var anchor: CGPoint?
     override var acceptsFirstResponder: Bool { true }
 
@@ -585,7 +679,18 @@ struct PinImageState {
         autoscroll(with: event)
     }
     override func mouseUp(with event: NSEvent) { anchor = nil }
+    @objc func copy(_ sender: Any?) {
+        if let textSelectionOverlay, textSelectionOverlay.superview != nil { textSelectionOverlay.copy(sender) }
+        else { onCopy?() }
+    }
+    @objc func selectAll(_ sender: Any?) {
+        if let textSelectionOverlay, textSelectionOverlay.superview != nil { textSelectionOverlay.selectAll(sender) }
+    }
     override func keyDown(with event: NSEvent) {
+        if !isCropping, let textSelectionOverlay, textSelectionOverlay.superview != nil,
+           textSelectionOverlay.handleKeyDown(event) { return }
+        if !isCropping, event.modifierFlags.intersection([.command, .shift, .control, .option]) == [.command, .shift],
+           event.charactersIgnoringModifiers?.lowercased() == "t" { onToggleTextSelection?(); return }
         if isCropping && event.keyCode == 53 { anchor = nil; onCancelCrop?(); return }
         if isCropping && (event.keyCode == 36 || event.keyCode == 76) {
             if let selection { onCrop?(selection) } else { NSSound.beep() }

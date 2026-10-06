@@ -223,6 +223,7 @@ import ImageIO
         guard #available(macOS 15.0,*) else{translate("");return}
         Task{do{
             let result=try await RecognitionService.recognize(image)
+            guard result.document?.isTruncated != true else{throw PicShotError.message("图片文字超过本机识别上限，暂未翻译。请先裁剪图片再试，以免遗漏内容。") }
             guard !result.text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else{throw PicShotError.message("未识别到可翻译的文字，请尝试更清晰的图片。")}
             translate(result.text)
         }catch{showError(error)}}
@@ -314,7 +315,7 @@ import ImageIO
             guard let self else{return}
             do {
                 let result=try await RecognitionService.recognize(image)
-                if let id=recordID{try self.history.updateText(result.text,id:id)}
+                if let id=recordID{try self.history.updateText(result.document?.isTruncated == true ? result.displayText : result.text,id:id)}
                 let text=result.displayText
                 if TextResultController.copyDirectlyNextTime && !text.isEmpty {
                     TextResultController.copyToPasteboard(text);return

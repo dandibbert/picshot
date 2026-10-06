@@ -6,6 +6,9 @@ import AppKit
 final class AnnotationInspector: EditorFloatingSurface {
     var onEdit: (((inout ImageAnnotation) -> Void) -> Void)?
     var onClearAnnotations: (() -> Void)?
+    var onFinishPolyline: (() -> Void)?
+    var onCancelPolyline: (() -> Void)?
+    var polylinePointCount = 0
     private var primaryRow = NSStackView()
     private let detailButton = NSButton(title: "…", target: nil, action: nil)
     private var detailsGroup = NSStackView()
@@ -53,6 +56,13 @@ final class AnnotationInspector: EditorFloatingSurface {
     private let magnifierShadowToggle = NSButton(checkboxWithTitle: "阴影", target: nil, action: nil)
     private let magnifierAnnotationsToggle = NSButton(checkboxWithTitle: "包含标注", target: nil, action: nil)
     private var magnifierGroup = NSStackView(), magnifierOptionsGroup = NSStackView()
+    private let arcStartField = NSTextField(string: "0")
+    private let arcSweepField = NSTextField(string: "270")
+    private var arcAnglesGroup = NSStackView()
+    private let pathFinishButton = NSButton(title: "完成", target: nil, action: nil)
+    private let pathCancelButton = NSButton(title: "取消", target: nil, action: nil)
+    private let pathHint = NSTextField(labelWithString: "单击加点 · 双击/↩完成 · ⌫退点")
+    private var pathActionsGroup = NSStackView()
     private let fontNames = ["Helvetica", "TimesNewRomanPSMT", "Menlo-Regular"]
 
     override init(frame frameRect: NSRect) {
@@ -156,6 +166,20 @@ final class AnnotationInspector: EditorFloatingSurface {
     }
 
     private func configureToolControls() {
+        configureField(arcStartField, id: "annotation.arcStart", label: "圆弧起始角度（度）", action: #selector(changeArcStart))
+        configureField(arcSweepField, id: "annotation.arcSweep", label: "圆弧扫过角度（±1–360 度，负数顺时针）", action: #selector(changeArcSweep))
+        arcAnglesGroup = group([label("起点 °"), arcStartField, label("扫角 °"), arcSweepField])
+        for (button, id, text, action) in [
+            (pathFinishButton, "annotation.finishPolyline", "完成折线 · Return / 双击", #selector(finishPolyline)),
+            (pathCancelButton, "annotation.cancelPolyline", "取消折线 · Escape", #selector(cancelPolyline))] {
+            button.bezelStyle = .rounded
+            configureToggle(button, id: id, label: text, action: action)
+        }
+        pathHint.font = .systemFont(ofSize: 10); pathHint.textColor = .secondaryLabelColor
+        pathHint.identifier = NSUserInterfaceItemIdentifier("annotation.polylineHint")
+        pathHint.toolTip = "逐点单击；Shift 吸附 45°；双击或 Return 完成；Backspace / ⌘Z 撤回一点；Escape 取消；最多 256 个顶点"
+        pathActionsGroup = group([pathFinishButton, pathCancelButton, pathHint])
+
         configurePicker(eraserModePicker, titles: AnnotationEraserMode.allCases.map(\.title),
                         id: "annotation.eraserMode", label: "橡皮擦模式", action: #selector(changeEraserMode))
         eraserGroup = group([eraserModePicker])
@@ -213,6 +237,12 @@ final class AnnotationInspector: EditorFloatingSurface {
         widthPicker.removeAllItems()
         widthPicker.addItems(withTitles: tool == .eraser ? ["4", "8", "16", "24", "32", "48", "64", "96"] : ["1", "3", "4", "6", "10", "16", "24"])
         switch tool {
+        case .arc, .sector:
+            primary = [widthGroup, dashGroup, fillGroup, colorGroup]
+            secondary = [arcAnglesGroup, opacityGroup, rotationGroup]
+        case .polyline:
+            primary = [widthGroup, dashGroup, colorGroup]
+            secondary = [pathActionsGroup, opacityGroup, rotationGroup]
         case .eraser:
             primary = [eraserGroup, widthGroup, clearAnnotationsButton]; secondary = []
         case .spotlight:
@@ -232,8 +262,8 @@ final class AnnotationInspector: EditorFloatingSurface {
     func display(annotation: ImageAnnotation, selected: Bool, enabled: Bool) {
         if previousTool != annotation.tool { showsDetails = false; configureRows(for: annotation.tool) }
         previousTool = annotation.tool; displayedAnnotation = annotation; displayedSelected = selected; displayedEnabled = enabled
-        let dedicatedRows: [ImageEditorTool] = [.eraser, .spotlight, .watermark, .magnifier]
-        let alwaysShowsDetails = annotation.tool == .watermark || annotation.tool == .magnifier
+        let dedicatedRows: [ImageEditorTool] = [.eraser, .spotlight, .watermark, .magnifier, .arc, .sector, .polyline]
+        let alwaysShowsDetails = [.watermark, .magnifier, .arc, .sector, .polyline].contains(annotation.tool)
         primaryRow.isHidden = !enabled
         detailsGroup.isHidden = !enabled || detailsGroup.arrangedSubviews.isEmpty || (!alwaysShowsDetails && !showsDetails)
         detailButton.isHidden = !enabled || dedicatedRows.contains(annotation.tool)
@@ -256,7 +286,7 @@ final class AnnotationInspector: EditorFloatingSurface {
             button.layer?.borderColor = (selected ? NSColor.systemBlue : NSColor.gray).cgColor
         }
         fillGroup.isHidden = !enabled || !annotation.hasShapeFill
-        dashGroup.isHidden = !enabled || ![ImageEditorTool.rectangle, .ellipse, .line, .arrow, .freehand].contains(annotation.tool)
+        dashGroup.isHidden = !enabled || ![ImageEditorTool.rectangle, .ellipse, .line, .arrow, .freehand, .arc, .sector, .polyline].contains(annotation.tool)
         radiusGroup.isHidden = !enabled || ![ImageEditorTool.rectangle, .text].contains(annotation.tool)
         textGroup.isHidden = !enabled || ![.text, .watermark].contains(annotation.tool)
         textTraitsGroup.isHidden = annotation.tool == .watermark
@@ -264,6 +294,13 @@ final class AnnotationInspector: EditorFloatingSurface {
         rotationGroup.isHidden = !enabled || !selected
         hint.isHidden = enabled && annotation.tool == .text
         hint.stringValue = annotation.tool == .redact ? "遮盖始终不透明；旋转 / 缩放后请确认覆盖范围" : "拖动控制点 · ⇧ 约束 · ⌥点击穿透 · ⌘D 副本"
+        arcStartField.stringValue = String(format: "%g", Double(annotation.effectiveArcStart * 180 / .pi))
+        arcSweepField.stringValue = String(format: "%g", Double(annotation.effectiveArcSweep * 180 / .pi))
+        pathFinishButton.isEnabled = polylinePointCount >= 2
+        pathCancelButton.isEnabled = polylinePointCount > 0
+        pathFinishButton.isHidden = selected && polylinePointCount == 0
+        pathCancelButton.isHidden = selected && polylinePointCount == 0
+        pathHint.stringValue = selected && polylinePointCount == 0 ? "拖动顶点 · ⇧ 吸附角度" : "单击加点 · 双击/↩完成 · ⌫退点"
         fillToggle.title = annotation.tool == .text ? "背景" : "填充"
         fillToggle.state = annotation.fillEnabled ? .on : .off
         fillWell.color = NSColor(cgColor: annotation.fillColor) ?? .yellow; fillWell.isEnabled = annotation.fillEnabled; fillWell.isHidden = !annotation.fillEnabled
@@ -336,6 +373,21 @@ final class AnnotationInspector: EditorFloatingSurface {
         let bold = boldButton.state == .on, italic = italicButton.state == .on, underline = underlineButton.state == .on
         onEdit? { $0.bold = bold; $0.italic = italic; $0.underline = underline }
     }
+
+    @objc private func changeArcStart() {
+        let degrees = arcStartField.doubleValue
+        guard degrees.isFinite else { return }
+        let value = AnnotationArcGeometry.normalizedAngle(CGFloat(degrees.truncatingRemainder(dividingBy: 360)) * .pi / 180)
+        onEdit? { $0.arcStartAngle = value }
+    }
+    @objc private func changeArcSweep() {
+        let degrees = arcSweepField.doubleValue
+        guard degrees.isFinite else { return }
+        let value = AnnotationArcGeometry.boundedSweep(CGFloat(min(360, max(-360, degrees))) * .pi / 180)
+        onEdit? { $0.arcSweepAngle = value }
+    }
+    @objc private func finishPolyline() { onFinishPolyline?() }
+    @objc private func cancelPolyline() { onCancelPolyline?() }
 
     @objc private func changeEraserMode() {
         let index = eraserModePicker.indexOfSelectedItem

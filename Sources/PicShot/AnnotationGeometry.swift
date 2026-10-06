@@ -17,17 +17,18 @@ enum AnnotationStrokeStyle: String, CaseIterable {
 }
 
 enum AnnotationHandle: Equatable {
-    case corner(Int), edge(Int), rotation, start, end, source, sourceCorner(Int)
+    case corner(Int), edge(Int), rotation, start, end, source, sourceCorner(Int), arcStart, arcEnd, vertex(Int)
 }
 
 extension ImageAnnotation {
     var effectiveFontSize: CGFloat { min(300, max(8, fontSize ?? max(16, lineWidth * 5))) }
     var isLinear: Bool { tool == .line || tool == .arrow }
-    var hasShapeFill: Bool { tool == .rectangle || tool == .ellipse || tool == .text }
+    var hasShapeFill: Bool { tool == .rectangle || tool == .ellipse || tool == .sector || tool == .text }
     var supportsRotation: Bool { tool != .select && tool != .crop && tool != .magnifier }
 
     var outline: CGPath {
         let rect = localBounds.standardized
+        if isArc { return AnnotationArcGeometry.path(in: rect, start: effectiveArcStart, sweep: effectiveArcSweep, sector: tool == .sector) }
         if tool == .spotlight { return spotlightShape.path(in: rect) }
         if tool == .magnifier { return magnifierShape.path(in: rect) }
         if tool == .ellipse || tool == .number { return CGPath(ellipseIn: rect, transform: nil) }
@@ -40,9 +41,10 @@ extension ImageAnnotation {
 
     var strokePath: CGPath {
         let path = CGMutablePath()
-        guard let first = points.first else { return path }
+        let geometryPoints = boundedPathPoints
+        guard let first = geometryPoints.first else { return path }
         path.move(to: first)
-        for point in points.dropFirst() { path.addLine(to: point) }
+        for point in geometryPoints.dropFirst() { path.addLine(to: point) }
         if tool == .arrow, let last = points.last {
             let angle = atan2(last.y - first.y, last.x - first.x)
             let length = max(12, lineWidth * 4)
@@ -62,7 +64,11 @@ extension ImageAnnotation {
             guard localBounds.contains(point) else { return false }
             return AnnotationWatermarkLayout.tileRects(for: self).contains { $0.insetBy(dx: -tolerance, dy: -tolerance).contains(point) }
         }
-        if isLinear || tool == .freehand {
+        if tool == .arc {
+            return outline.copy(strokingWithWidth: max(1, lineWidth) + tolerance * 2,
+                                lineCap: .round, lineJoin: .round, miterLimit: 10).contains(point)
+        }
+        if isLinear || tool == .freehand || tool == .polyline {
             return strokePath.copy(strokingWithWidth: max(1, lineWidth) + tolerance * 2,
                                    lineCap: .round, lineJoin: .round, miterLimit: 10).contains(point)
         }
@@ -73,16 +79,22 @@ extension ImageAnnotation {
     }
 
     func handles(zoom: CGFloat) -> [(AnnotationHandle, CGPoint)] {
-        let box = localBounds, scale = max(0.05, zoom)
+        let box = localBounds, scale = max(0.05, zoom), worldTransform = transform
         if isLinear, let start = points.first, let end = points.last {
-            return [(.start, start.applying(transform)), (.end, end.applying(transform))]
+            return [(.start, start.applying(worldTransform)), (.end, end.applying(worldTransform))]
         }
         let corners = [CGPoint(x: box.minX, y: box.minY), CGPoint(x: box.maxX, y: box.minY),
                        CGPoint(x: box.maxX, y: box.maxY), CGPoint(x: box.minX, y: box.maxY)]
         let edges = [CGPoint(x: box.midX, y: box.minY), CGPoint(x: box.maxX, y: box.midY),
                      CGPoint(x: box.midX, y: box.maxY), CGPoint(x: box.minX, y: box.midY)]
-        var result: [(AnnotationHandle, CGPoint)] = corners.enumerated().map { (.corner($0.offset), $0.element.applying(transform)) }
-        result += edges.enumerated().map { (.edge($0.offset), $0.element.applying(transform)) }
+        // Vertex/angle handles win over coincident bounding-box handles.
+        var result: [(AnnotationHandle, CGPoint)] = []
+        if tool == .polyline { result += boundedPathPoints.enumerated().map { (.vertex($0.offset), $0.element.applying(worldTransform)) } }
+        if isArc { result += [(.arcEnd, arcEndPoint.applying(worldTransform)), (.arcStart, arcStartPoint.applying(worldTransform))] }
+        if tool != .polyline || (box.width > 1 && box.height > 1) {
+            result += corners.enumerated().map { (.corner($0.offset), $0.element.applying(worldTransform)) }
+            result += edges.enumerated().map { (.edge($0.offset), $0.element.applying(worldTransform)) }
+        }
         if tool == .magnifier {
             let source = magnifierSourceRect
             result += [(.source, CGPoint(x: source.midX, y: source.midY)),
@@ -92,7 +104,7 @@ extension ImageAnnotation {
                 (.sourceCorner(3), CGPoint(x: source.minX, y: source.maxY))]
         }
         if supportsRotation {
-            result.append((.rotation, CGPoint(x: box.midX, y: box.maxY + 24 / scale).applying(transform)))
+            result.append((.rotation, CGPoint(x: box.midX, y: box.maxY + 24 / scale).applying(worldTransform)))
         }
         return result
     }
@@ -125,6 +137,34 @@ extension ImageAnnotation {
             if shift { angle = (angle / (.pi / 12)).rounded() * (.pi / 12) }
             result.rotation = atan2(sin(angle), cos(angle))
             return result
+        }
+        if isArc, handle == .arcStart || handle == .arcEnd {
+            let local = point.applying(transform.inverted())
+            guard hypot(local.x - center.x, local.y - center.y) > 0.001 else { return self }
+            var angle = AnnotationArcGeometry.angle(at: local, in: box)
+            if shift { angle = (angle / (.pi / 12)).rounded() * (.pi / 12) }
+            if handle == .arcStart {
+                result.arcStartAngle = AnnotationArcGeometry.normalizedAngle(angle)
+                result.arcSweepAngle = AnnotationArcGeometry.sweep(from: angle, to: effectiveArcStart + effectiveArcSweep, direction: effectiveArcSweep)
+            } else {
+                result.arcSweepAngle = AnnotationArcGeometry.sweep(from: effectiveArcStart, to: angle, direction: effectiveArcSweep)
+            }
+            return result
+        }
+        if tool == .polyline, case .vertex(let index) = handle {
+            let geometryPoints = boundedPathPoints
+            guard geometryPoints.indices.contains(index) else { return self }
+            // Bake rotation to keep every other vertex fixed when the bounds' center changes.
+            let worldTransform = transform
+            result.points = geometryPoints.map { $0.applying(worldTransform) }; result.rotation = 0
+            var target = point
+            if shift, result.points.count > 1 {
+                let anchor = result.points[index == 0 ? 1 : index - 1]
+                let distance = hypot(point.x - anchor.x, point.y - anchor.y)
+                let angle = (atan2(point.y - anchor.y, point.x - anchor.x) / (.pi / 4)).rounded() * (.pi / 4)
+                target = CGPoint(x: anchor.x + distance * cos(angle), y: anchor.y + distance * sin(angle))
+            }
+            result.points[index] = target; return result
         }
         if handle == .start || handle == .end {
             guard points.count >= 2 else { return self }
@@ -185,7 +225,7 @@ extension ImageAnnotation {
         } else if tool == .number {
             result.points = [transformedCenter]; result.lineWidth = newBox.width / 8
         } else {
-            result.points = points.map { value in
+            result.points = boundedPathPoints.map { value in
                 let x = box.width > 0 ? (value.x - box.minX) / box.width : 0.5
                 let y = box.height > 0 ? (value.y - box.minY) / box.height : 0.5
                 return CGPoint(x: newBox.minX + x * newBox.width + delta.width, y: newBox.minY + y * newBox.height + delta.height)
