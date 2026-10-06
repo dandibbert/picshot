@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
-    if: ${{ (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') }}
+    if: ${{ (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') }}
     strategy:
       fail-fast: false
       matrix:
@@ -179,6 +179,57 @@ jobs:
             dist/PicShot-*.build-info.json.sha256
           compression-level: 0
           if-no-files-found: error
+          retention-days: 14
+
+  codec-dependencies:
+    if: ${{ contains(github.event.head_commit.message || '', '[codec-build]') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Test pinned dependency policy and bounded process runner
+        run: python3 -m unittest discover -s scripts/tests -v
+      - name: Build exact official native codecs and run genuine C encode/decode tests
+        timeout-minutes: 30
+        run: |
+          mkdir -p dist
+          set -o pipefail
+          python3 scripts/build-native-codecs.py --arch ${{ matrix.arch }} --jobs 4 2>&1 | tee dist/native-codecs.log
+      - name: Preserve codec diagnostics and complete notices even on failure
+        if: always()
+        run: |
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          import shutil
+          base = Path('.build/native-codecs')
+          target = Path('dist/codec-evidence'); target.mkdir(parents=True, exist_ok=True)
+          for name in ('logs', 'evidence'):
+              if (base / name).is_dir(): shutil.copytree(base / name, target / name, dirs_exist_ok=True)
+          for path in base.glob('build-attempt-*.json'): shutil.copy2(path, target / path.name)
+          for prefix in [base / 'install', *base.glob('install-*.staging')]:
+              if not prefix.is_dir(): continue
+              dest = target / prefix.name; dest.mkdir(exist_ok=True)
+              for name in ('native-build.json', 'native-selftest-dependencies.txt'):
+                  if (prefix / name).is_file(): shutil.copy2(prefix / name, dest / name)
+              if (prefix / 'licenses').is_dir(): shutil.copytree(prefix / 'licenses', dest / 'licenses', dirs_exist_ok=True)
+          PYTHON
+      - name: Upload native dependency evidence without installers
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Codec-Dependencies-${{ matrix.arch }}-${{ github.sha }}
+          path: |
+            dist/native-codecs.log
+            dist/codec-evidence/
+          if-no-files-found: warn
           retention-days: 14
 
   gif-attribution:
