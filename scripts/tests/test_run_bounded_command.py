@@ -57,6 +57,8 @@ class BoundedCommandTests(unittest.TestCase):
         stdout, stderr = process.communicate(timeout=8)
         report = json.loads(self.report.read_text())
         self.assertEqual(process.returncode, report["exit_code"], stderr.decode(errors="replace"))
+        self.assertNotEqual(report["status"], "wrapper_error",
+                            json.dumps(report, sort_keys=True) + "\n" + stderr.decode(errors="replace"))
         self.assertLessEqual(self.log.stat().st_size, report["max_log_bytes"])
         self.assertEqual(self.log.stat().st_size, report["log_bytes"])
         self.assertIn(b"[bounded-command]", stderr)

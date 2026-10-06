@@ -158,12 +158,12 @@ private final class OwnedExportDirectory: @unchecked Sendable {
         // NOTE_RENAME is a separate event. Directory link counts are not a
         // portable deletion signal on APFS, and path lookup failure is not one.
         let deletionQueue = Darwin.kqueue()
-        var change = kevent()
+        var change = kevent64_s()
         var registrationTimeout = timespec(tv_sec: 0, tv_nsec: 0)
-        change.ident = UInt(descriptor); change.filter = Int16(EVFILT_VNODE)
+        change.ident = UInt64(descriptor); change.filter = Int16(EVFILT_VNODE)
         change.flags = UInt16(EV_ADD | EV_CLEAR); change.fflags = UInt32(NOTE_DELETE)
         guard deletionQueue >= 0, fcntl(deletionQueue, F_SETFD, FD_CLOEXEC) == 0,
-              Darwin.kevent(deletionQueue, &change, 1, nil, 0, &registrationTimeout) == 0 else {
+              Darwin.kevent64(deletionQueue, &change, 1, nil, 0, 0, &registrationTimeout) == 0 else {
             if deletionQueue >= 0 { Darwin.close(deletionQueue) }
             Darwin.close(descriptor); Darwin.close(parentFD)
             throw VideoTrimError.destinationChanged
@@ -282,10 +282,10 @@ private final class OwnedExportDirectory: @unchecked Sendable {
     /// us lose proof when a later recovery retries the absent-name check.
     private func observedOriginalDeletion() -> Bool {
         if deletionObserved { return true }
-        var event = kevent()
+        var event = kevent64_s()
         var timeout = timespec(tv_sec: 0, tv_nsec: 0)
-        guard Darwin.kevent(deletionQueue, nil, 0, &event, 1, &timeout) == 1,
-              event.ident == UInt(descriptor), event.filter == Int16(EVFILT_VNODE),
+        guard Darwin.kevent64(deletionQueue, nil, 0, &event, 1, 0, &timeout) == 1,
+              event.ident == UInt64(descriptor), event.filter == Int16(EVFILT_VNODE),
               event.flags & UInt16(EV_ERROR) == 0, event.fflags & UInt32(NOTE_DELETE) != 0 else { return false }
         deletionObserved = true
         return true
