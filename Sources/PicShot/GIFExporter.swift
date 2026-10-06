@@ -2,7 +2,7 @@ import AVFoundation
 import CoreGraphics
 import Foundation
 
-struct GIFExportOptions: Equatable, Sendable {
+struct GIFExportOptions: Codable, Equatable, Sendable {
     var frameRate: Double = 12
     var maximumDimension: Int = 1_280
     var maximumDuration: TimeInterval = 30
@@ -34,9 +34,34 @@ enum GIFExportError: LocalizedError {
 /// Internal diagnostic strategy. Keep the shipped async baseline as the
 /// default until native comparison establishes the scoped candidate's behavior.
 /// The streaming encoder, requested times, dimensions and tolerances are shared.
-enum GIFFrameExtraction: String, CaseIterable, Sendable {
+enum GIFFrameExtraction: String, Codable, CaseIterable, Sendable {
     case asynchronous = "async-baseline"
     case scopedSynchronous = "scoped-sync-candidate"
+}
+
+/// Production entry point: an on-demand signed child owns all native video/GIF
+/// framework work. The app owns admission, source snapshot, publication and
+/// confirmed child-exit/staging-cleanup accounting.
+enum GIFExporter {
+    static let maximumOutputBytes = 64 * 1_024 * 1_024
+    @TaskLocal private static var processServiceForTests: GIFExportProcessService?
+
+    static func export(sourceURL: URL, destinationURL: URL? = nil, options: GIFExportOptions = .init(),
+                       frameExtraction: GIFFrameExtraction = .asynchronous,
+                       progress: (@Sendable (Double) -> Void)? = nil) async throws -> URL {
+        let service = processServiceForTests ?? .shared
+        return try await service.export(sourceURL: sourceURL, destinationURL: destinationURL, options: options,
+                                        frameExtraction: frameExtraction, progress: progress)
+    }
+    static func processResourceSnapshot() async -> GIFExportProcessSnapshot {
+        await (processServiceForTests ?? .shared).snapshot()
+    }
+    /// Explicit test injection still uses a real process service; this never
+    /// substitutes an in-process engine when production helper validation fails.
+    static func withProcessServiceForTesting<Result>(_ service: GIFExportProcessService,
+        operation: () async throws -> Result) async rethrows -> Result {
+        try await $processServiceForTests.withValue(service, operation: operation)
+    }
 }
 
 /// Sequential, cancellable extraction and file-backed animation assembly.
@@ -45,10 +70,10 @@ enum GIFFrameExtraction: String, CaseIterable, Sendable {
 /// Actual transparency is rejected explicitly; recorded screen MP4s are opaque.
 /// Long sources are trimmed to `maximumDuration`; a frame cap reduces sampling
 /// frequency while preserving the selected clip's playback duration.
-enum GIFExporter {
-    static let maximumOutputBytes = 64 * 1_024 * 1_024
-
-    static func export(
+enum GIFInProcessEngine {
+    /// Only the signed helper and explicitly named semantic/diagnostic callers
+    /// may use this engine. There is no automatic production fallback to it.
+    static func exportDirect(
         sourceURL: URL,
         destinationURL: URL? = nil,
         options: GIFExportOptions = .init(),

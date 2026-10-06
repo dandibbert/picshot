@@ -13,7 +13,7 @@ app=pathlib.Path(sys.argv[1]).resolve(); destination=pathlib.Path(sys.argv[2]).r
 report=destination/'recovery.json'; log=destination/'fixture.log'
 env=os.environ.copy()
 for key in list(env):
-    if key.startswith('PICSHOT_SMOKE_') or key in ['PICSHOT_UI_PREVIEW_ONLY','PICSHOT_GIF_DIAGNOSTIC_MODE','PICSHOT_GIF_EXTRACTION']:
+    if key.startswith('PICSHOT_SMOKE_') or key in ['PICSHOT_UI_PREVIEW_ONLY','PICSHOT_GIF_DIAGNOSTIC_MODE','PICSHOT_GIF_EXTRACTION','PICSHOT_GIF_EXECUTION']:
         env.pop(key)
 env['PICSHOT_RECOVERY_FIXTURE_MODE']='verify'
 env['PICSHOT_RECOVERY_FIXTURE_REPORT']=str(report)

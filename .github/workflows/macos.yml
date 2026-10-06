@@ -45,7 +45,8 @@ jobs:
         run: |
           mkdir -p dist
           set -o pipefail
-          swift test --filter 'AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|GIFFrameExtractionTests|GIFStreamingWriterTests|GIFResourceSmokeTests|RecordingAndGIFTests|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' 2>&1 | tee dist/critical-tests.log
+          swift build --product PicShot
+          swift test --filter 'GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' 2>&1 | tee dist/critical-tests.log
       - name: Recover actual abruptly terminated synthetic recording from installed app
         timeout-minutes: 4
         run: |
@@ -112,7 +113,8 @@ jobs:
         run: |
           mkdir -p dist
           set -o pipefail
-          swift test --filter 'GIFFrameExtractionTests|GIFResourceAttributionTests' 2>&1 | tee dist/gif-attribution-tests.log
+          swift build --product PicShot
+          swift test --filter 'GIF' 2>&1 | tee dist/gif-attribution-tests.log
       - name: Package default-baseline exporter with an explicit diagnostic candidate
         run: |
           set -o pipefail

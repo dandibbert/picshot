@@ -82,8 +82,12 @@ final class VideoTrimTests: XCTestCase {
         let source = try await makeMovie(in: directory)
         let destination = try VideoExportDestination(url: directory.appendingPathComponent("selected.gif"), preserving: source)
         let range = try VideoTrimRange(start: 1, end: 1.75, sourceDuration: 2)
-        let result = try await VideoTrimExporter.exportGIF(sourceURL: source, destination: destination, range: range,
-                                                           options: GIFExportOptions(maximumDimension: 64))
+        let helper = try GIFProcessTestApplication.make()
+        defer { helper.cleanup() }
+        let result = try await GIFExporter.withProcessServiceForTesting(helper.service()) {
+            try await VideoTrimExporter.exportGIF(sourceURL: source, destination: destination, range: range,
+                                                  options: GIFExportOptions(maximumDimension: 64))
+        }
         let gif = try XCTUnwrap(CGImageSourceCreateWithURL(result as CFURL, nil))
         XCTAssertEqual(CGImageSourceGetCount(gif), 9)
         var duration = 0.0
@@ -96,6 +100,61 @@ final class VideoTrimTests: XCTestCase {
             duration += try XCTUnwrap(gifProperties[kCGImagePropertyGIFUnclampedDelayTime] as? Double)
         }
         XCTAssertEqual(duration, 0.75, accuracy: 0.01)
+        try assertNoStaging(in: directory)
+    }
+
+    func testGIFFaultInjectedUnconfirmedExitPreservesOnlyItsOwnTrimStaging() async throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = try await makeMovie(in: directory)
+        let original = try Data(contentsOf: source)
+        let range = try VideoTrimRange(start: 0, end: 0.5, sourceDuration: 2)
+        let target = directory.appendingPathComponent("unconfirmed.gif")
+        let destination = try VideoExportDestination(url: target, preserving: source)
+        // Test the caller's ownership decision; this injected error creates no
+        // child and is not evidence of a genuinely unkillable macOS process.
+        let service = GIFExportProcessService(configuration: .init(executable: { throw GIFExportProcessError.exitUnconfirmed }))
+        do {
+            _ = try await GIFExporter.withProcessServiceForTesting(service) {
+                try await VideoTrimExporter.exportGIF(sourceURL: source, destination: destination, range: range)
+            }
+            XCTFail("Unconfirmed helper exit must preserve staged media")
+        } catch GIFExportProcessError.exitUnconfirmed { }
+        let remaining = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        let stages = remaining.filter { $0.lastPathComponent.hasPrefix(".picshot-") }
+        XCTAssertEqual(stages.count, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(stages.first).appendingPathComponent("selected.mp4").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: target.path))
+        XCTAssertEqual(try Data(contentsOf: source), original)
+    }
+
+    func testCancellationAfterHelperPublicationDoesNotPublishTrimDestination() async throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let helper = try GIFProcessTestApplication.make()
+        defer { helper.cleanup() }
+        let service = helper.service()
+        let source = try await makeMovie(in: directory)
+        let target = directory.appendingPathComponent("cancel-at-publication.gif")
+        let destination = try VideoExportDestination(url: target, preserving: source)
+        let range = try VideoTrimRange(start: 0, end: 0.5, sourceDuration: 2)
+        let cancellation = GIFProcessTestCancellation()
+        let operation = InferenceTestOperation {
+            try await GIFExporter.withProcessServiceForTesting(service) {
+                try await VideoTrimExporter.exportGIF(sourceURL: source, destination: destination, range: range) { value in
+                    if value >= 0.99, value < 1 { cancellation.request() }
+                }
+            }
+        }
+        cancellation.install { operation.cancel() }
+        defer { cancellation.clear(); operation.cancel() }
+        do { _ = try await operation.value(timeout: 35, phase: "trim GIF cancellation after helper exit"); XCTFail("Must cancel before final destination publication") }
+        catch is CancellationError { }
+        XCTAssertTrue(cancellation.wasRequested)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: target.path))
+        let snapshot = await service.snapshot()
+        XCTAssertFalse(snapshot.active)
+        XCTAssertEqual(snapshot.lastJob?.childExitConfirmed, true)
         try assertNoStaging(in: directory)
     }
 

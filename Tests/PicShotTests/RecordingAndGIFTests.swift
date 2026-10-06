@@ -173,7 +173,7 @@ final class RecordingAndGIFTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         let source = try await makeMovie(in: directory)
         let destination = directory.appendingPathComponent("result.gif")
-        let result = try await GIFExporter.export(sourceURL: source, destinationURL: destination,
+        let result = try await GIFInProcessEngine.exportDirect(sourceURL: source, destinationURL: destination,
             options: GIFExportOptions(frameRate: 12, maximumDimension: 24, maximumFrames: 3))
         XCTAssertEqual(result, destination)
         let gif = try XCTUnwrap(CGImageSourceCreateWithURL(result as CFURL, nil))
@@ -201,7 +201,7 @@ final class RecordingAndGIFTests: XCTestCase {
         let original = Data("original file".utf8)
         try original.write(to: destination)
         do {
-            _ = try await GIFExporter.export(sourceURL: source, destinationURL: destination)
+            _ = try await GIFInProcessEngine.exportDirect(sourceURL: source, destinationURL: destination)
             XCTFail("Existing destination must not be overwritten")
         } catch GIFExportError.destinationExists { } catch { XCTFail("Unexpected error: \(error)") }
         XCTAssertEqual(try Data(contentsOf: destination), original)
@@ -213,7 +213,7 @@ final class RecordingAndGIFTests: XCTestCase {
         let source = try await makeMovie(in: directory)
         let destination = directory.appendingPathComponent("cancelled.gif")
         let task = Task {
-            try await GIFExporter.export(sourceURL: source, destinationURL: destination)
+            try await GIFInProcessEngine.exportDirect(sourceURL: source, destinationURL: destination)
         }
         task.cancel()
         do { _ = try await task.value; XCTFail("Cancelled export should fail") }

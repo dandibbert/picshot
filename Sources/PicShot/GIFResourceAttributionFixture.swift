@@ -6,6 +6,10 @@ import Foundation
 /// gates, a leak diagnosis, or a claim that memory reaches a steady state.
 enum GIFResourceAttributionFixture {
     enum Mode: String, CaseIterable, Sendable { case exportOnly = "export-only", decodeOnly = "decode-only" }
+    enum Execution: String, CaseIterable, Sendable {
+        case inProcessBaseline = "in-process-baseline"
+        case isolatedHelper = "isolated-helper"
+    }
     static let measuredCycles = 8
 
     /// Intended caller: the installed app's explicit diagnostic smoke branch.
@@ -13,7 +17,8 @@ enum GIFResourceAttributionFixture {
     /// A mode-specific JSON file is also written, including partial failure data.
     static func verify(evidenceDirectory: URL, mode: Mode,
                        profile: GIFResourceSmokeFixture.Profile = .installedSmoke,
-                       frameExtraction: GIFFrameExtraction = .asynchronous) async throws -> [String: Any] {
+                       frameExtraction: GIFFrameExtraction = .asynchronous,
+                       execution: Execution = .inProcessBaseline) async throws -> [String: Any] {
         guard evidenceDirectory.isFileURL, profile == .installedSmoke || profile == .quickTest else {
             throw failure("Unsupported diagnostic directory/profile")
         }
@@ -23,12 +28,13 @@ enum GIFResourceAttributionFixture {
         let directory = files.temporaryDirectory.appendingPathComponent("PicShot-GIF-Attribution-" + UUID().uuidString,
                                                                          isDirectory: true)
         try files.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-        defer { try? files.removeItem(at: directory) }
+        var mayRemoveFixture = true
+        defer { if mayRemoveFixture { try? files.removeItem(at: directory) } }
         let started = ProcessInfo.processInfo.systemUptime
         let invocations = GIFAttributionInvocations()
         var report: [String: Any] = [
             "status": "running", "diagnosticOnly": true, "mode": mode.rawValue, "profile": profile.name,
-            "frameExtraction": frameExtraction.rawValue,
+            "frameExtraction": frameExtraction.rawValue, "execution": execution.rawValue,
             "frameExtractionScope": "explicit diagnostic strategy; app default remains async-baseline; codec, timing, size limits and resource envelopes unchanged",
             "sourceCommit": Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String ?? "unknown",
             "bundlePath": Bundle.main.bundlePath, "operatingSystem": ProcessInfo.processInfo.operatingSystemVersionString,
@@ -37,10 +43,10 @@ enum GIFResourceAttributionFixture {
             "sourceWidth": profile.width, "sourceHeight": profile.height, "sourceFrames": profile.frameCount,
             "sourceDurationSeconds": profile.duration, "outputMaximumDimension": profile.outputDimension,
             "sampleIntervalSeconds": GIFResourceMemorySampler.interval,
-            "invocationScope": "counts track the fixture's full GIF validation and shared GIFExporter calls; AVFoundation video-frame decoding remains part of export",
-            "memoryScope": "main-process RSS and physical footprint; framework services/GPU allocations excluded; sampled maxima are not kernel lifetime peaks",
+            "invocationScope": "counts track full GIF validations and explicitly selected direct-engine or process exports; AVFoundation video-frame decoding remains part of export",
+            "memoryScope": "main-process RSS/footprint; isolated-helper mode additionally records child RSS/footprint and confirmed exit for every export; framework services/GPU/other helpers excluded; sampled maxima are not kernel peaks",
             "interpretation": "raw growth/interval observations only; no automatic leak or no-leak conclusion; normal GIF acceptance workload and limits are unchanged",
-            "diskScope": "one authored MP4 plus at most one GIF; output deleted between export-only cycles except the final validation input; only JSON retained after confirmed cleanup; abrupt process termination can leave temporary media",
+            "diskScope": "one authored MP4 plus at most one GIF; isolated-helper mode additionally uses one bounded private source copy and child staging until confirmed exit/cleanup; only JSON retained after confirmed fixture cleanup; abrupt termination or unconfirmed child exit can leave temporary media",
             "runtimeScope": "fixed operation counts and 90-second cooperative source-writer deadline; the diagnostic launcher must enforce its outer deadline and confirm process exit for synchronous framework stalls",
             "bookkeepingScope": "whole-process observations include eight small scalar report dictionaries and incremental JSON writes; no frame or encoded-GIF arrays are stored in reports",
             "temporaryDirectoryRemoved": false
@@ -56,7 +62,7 @@ enum GIFResourceAttributionFixture {
             // Export-only warm-up intentionally does NOT call ImageIO's decoder.
             // Decode-only also needs one preparatory strategy-selected export to obtain
             // an original input; it is excluded from decoder-cycle measurements.
-            let preparation = try await export(source: source, output: output, profile: profile, frameExtraction: frameExtraction, invocations: invocations)
+            let preparation = try await export(source: source, output: output, profile: profile, frameExtraction: frameExtraction, execution: execution, invocations: invocations)
             report[mode == .exportOnly ? "exportWarmup" : "inputPreparationExport"] = preparation
             try require(try byteCount(output) <= GIFExporter.maximumOutputBytes, "GIF exceeded output budget")
             if mode == .exportOnly {
@@ -72,7 +78,7 @@ enum GIFResourceAttributionFixture {
                 var settled: [GIFResourceMemoryReading] = []
                 var peaks: [GIFResourceMemoryReading] = []
                 for index in 0..<measuredCycles {
-                    var run = try await export(source: source, output: output, profile: profile, frameExtraction: frameExtraction, invocations: invocations)
+                    var run = try await export(source: source, output: output, profile: profile, frameExtraction: frameExtraction, execution: execution, invocations: invocations)
                     run["cycle"] = index + 1
                     let outputBytes = try byteCount(output)
                     try require(outputBytes > 0 && outputBytes <= GIFExporter.maximumOutputBytes, "Invalid output byte count")
@@ -159,7 +165,12 @@ enum GIFResourceAttributionFixture {
             try write(report, to: reportURL)
             return report
         } catch {
-            try? files.removeItem(at: directory)
+            if execution == .isolatedHelper {
+                let snapshot = await GIFExporter.processResourceSnapshot()
+                mayRemoveFixture = !snapshot.active
+                report["latestGIFProcess"] = try? object(snapshot)
+            }
+            if mayRemoveFixture { try? files.removeItem(at: directory) }
             report["temporaryDirectoryRemoved"] = removalConfirmed(directory)
             report["status"] = "failed"; report["error"] = error.localizedDescription
             report["elapsedSeconds"] = ProcessInfo.processInfo.systemUptime - started
@@ -172,27 +183,42 @@ enum GIFResourceAttributionFixture {
     /// post-cleanup samples. Returned diagnostics contain only numbers/strings.
     private static func export(source: URL, output: URL,
                                profile: GIFResourceSmokeFixture.Profile, frameExtraction: GIFFrameExtraction,
-                               invocations: GIFAttributionInvocations) async throws -> [String: Any] {
+                               execution: Execution, invocations: GIFAttributionInvocations) async throws -> [String: Any] {
         invocations.recordExport()
         let before = try observedMemory()
         let sampler = GIFResourceMemorySampler()
         defer { sampler.stop() }
         let started = ProcessInfo.processInfo.systemUptime
         let progress = GIFAttributionProgress()
+        let callback: @Sendable (Double) -> Void = { value in progress.record(value); sampler.sample() }
         let worker = Task {
-            try await GIFExporter.export(sourceURL: source, destinationURL: output, options: profile.options,
-                                     frameExtraction: frameExtraction) { value in
-                progress.record(value); sampler.sample()
+            switch execution {
+            case .inProcessBaseline:
+                return try await GIFInProcessEngine.exportDirect(sourceURL: source, destinationURL: output,
+                    options: profile.options, frameExtraction: frameExtraction, progress: callback)
+            case .isolatedHelper:
+                return try await GIFExporter.export(sourceURL: source, destinationURL: output,
+                    options: profile.options, frameExtraction: frameExtraction, progress: callback)
             }
         }
-        let result = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
-        try require(result == output && progress.completed, "Selected export strategy/progress did not complete")
+        let exportedURL = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
+        try require(exportedURL == output && progress.completed, "Selected export strategy/progress did not complete")
         sampler.stop()
         let statistics = sampler.snapshot()
         try require(statistics.residentSampleCount > 0, "No valid export RSS samples")
-        return ["before": try object(before), "immediatelyAfter": try object(try observedMemory()),
+        var result: [String: Any] = ["before": try object(before), "immediatelyAfter": try object(try observedMemory()),
             "memory": try object(statistics), "progressCallbacks": progress.callbackCount,
             "elapsedSeconds": ProcessInfo.processInfo.systemUptime - started]
+        if execution == .isolatedHelper {
+            let snapshot = await GIFExporter.processResourceSnapshot()
+            guard let job = snapshot.lastJob else { throw failure("Missing isolated GIF helper metrics") }
+            try require(!snapshot.active && job.childLaunched && job.childExitConfirmed && job.temporaryDirectoryRemoved,
+                        "Isolated GIF helper exit/admission/cleanup not confirmed")
+            try require(job.childResidentSampleCount > 0 && job.childSampledPeakResidentBytes != nil,
+                        "Isolated GIF helper RSS was not sampled")
+            result["helperProcess"] = try object(job)
+        }
+        return result
     }
 
     private static func decode(output: URL, profile: GIFResourceSmokeFixture.Profile,

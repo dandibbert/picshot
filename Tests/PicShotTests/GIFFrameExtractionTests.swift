@@ -26,9 +26,9 @@ final class GIFFrameExtractionTests: XCTestCase {
             let candidateURL = root.appendingPathComponent(name + "-candidate.gif")
             let baselineProgress = GIFExtractionProbe()
             let candidateProgress = GIFExtractionProbe()
-            _ = try await GIFExporter.export(sourceURL: source, destinationURL: baselineURL, options: options,
+            _ = try await GIFInProcessEngine.exportDirect(sourceURL: source, destinationURL: baselineURL, options: options,
                                               frameExtraction: .asynchronous) { baselineProgress.record($0) }
-            _ = try await GIFExporter.export(sourceURL: source, destinationURL: candidateURL, options: options,
+            _ = try await GIFInProcessEngine.exportDirect(sourceURL: source, destinationURL: candidateURL, options: options,
                                               frameExtraction: .scopedSynchronous) { candidateProgress.record($0) }
             let baseline = try decoded(baselineURL)
             let candidate = try decoded(candidateURL)
@@ -53,12 +53,12 @@ final class GIFFrameExtractionTests: XCTestCase {
         var outputs: [GIFExtractedFrames] = []
         for strategy in GIFFrameExtraction.allCases {
             let url = root.appendingPathComponent(strategy.rawValue + ".gif")
-            _ = try await GIFExporter.export(sourceURL: source, destinationURL: url, options: options, frameExtraction: strategy)
+            _ = try await GIFInProcessEngine.exportDirect(sourceURL: source, destinationURL: url, options: options, frameExtraction: strategy)
             outputs.append(try decoded(url))
         }
         let defaultURL = root.appendingPathComponent("default.gif")
-        _ = try await GIFExporter.export(sourceURL: source, destinationURL: defaultURL, options: options)
-        XCTAssertEqual(try decoded(defaultURL), outputs[0], "The unmeasured candidate must not silently replace the app default")
+        _ = try await GIFInProcessEngine.exportDirect(sourceURL: source, destinationURL: defaultURL, options: options)
+        XCTAssertEqual(try decoded(defaultURL), outputs[0], "The unmeasured candidate must not silently replace the helper engine default")
         XCTAssertEqual(outputs[0], outputs[1])
         XCTAssertEqual(outputs[1].frames.count, 3)
         XCTAssertEqual(outputs[1].delays, (0..<3).map { expectedPlan.delay(for: $0) })
@@ -77,7 +77,7 @@ final class GIFFrameExtractionTests: XCTestCase {
                 let output = root.appendingPathComponent("cancel-\(strategy.rawValue)-\(frame).gif")
                 let progress = GIFExtractionProbe()
                 let task = Task {
-                    try await GIFExporter.export(sourceURL: source, destinationURL: output, options: options,
+                    try await GIFInProcessEngine.exportDirect(sourceURL: source, destinationURL: output, options: options,
                                                   frameExtraction: strategy) { value in
                         progress.record(value)
                         if value >= Double(frame) / 25, value < 1 { withUnsafeCurrentTask { $0?.cancel() } }
@@ -102,7 +102,7 @@ final class GIFFrameExtractionTests: XCTestCase {
         let options = GIFExportOptions(frameRate: 12, maximumDimension: 32, maximumDuration: 2, maximumFrames: 24)
         let cancelled = root.appendingPathComponent("cancel-before-frame.gif")
         let task = Task {
-            try await GIFExporter.export(sourceURL: source, destinationURL: cancelled, options: options,
+            try await GIFInProcessEngine.exportDirect(sourceURL: source, destinationURL: cancelled, options: options,
                                           frameExtraction: .scopedSynchronous) { value in
                 if value == 0 { withUnsafeCurrentTask { $0?.cancel() } }
             }
@@ -116,7 +116,7 @@ final class GIFFrameExtractionTests: XCTestCase {
         let original = Data("independent destination must survive".utf8)
         let probe = GIFExtractionCollision()
         do {
-            _ = try await GIFExporter.export(sourceURL: source, destinationURL: collision, options: options,
+            _ = try await GIFInProcessEngine.exportDirect(sourceURL: source, destinationURL: collision, options: options,
                                               frameExtraction: .scopedSynchronous) { value in
                 if value > 0, value < 1, probe.claim() {
                     do { try original.write(to: collision, options: .atomic) }
@@ -141,7 +141,7 @@ final class GIFFrameExtractionTests: XCTestCase {
         let source = try await makeMovie(in: root)
         let output = root.appendingPathComponent("off-main.gif")
         let progress = GIFExtractionProbe()
-        _ = try await GIFExporter.export(sourceURL: source, destinationURL: output,
+        _ = try await GIFInProcessEngine.exportDirect(sourceURL: source, destinationURL: output,
             options: .init(frameRate: 12, maximumDimension: 32, maximumDuration: 2, maximumFrames: 24),
             frameExtraction: .scopedSynchronous) { progress.record($0) }
         XCTAssertEqual(progress.frameCallbackCount, 24)

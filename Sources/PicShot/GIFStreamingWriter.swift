@@ -6,7 +6,9 @@ import UniformTypeIdentifiers
 
 /// ImageIO receives ONE still image at a time, never the animation. Its native
 /// palette and LZW bytes are copied into a file-backed GIF89a stream and released
-/// before the next frame. Memory depends on one frame, not animation duration.
+/// before the next frame. This bounds writer-owned buffers to one frame;
+/// native AVFoundation/ImageIO process retention is measured separately and is
+/// contained by the production helper process, not disproved by this writer.
 final class GIFStreamingWriter {
     static let maximumEncodedFrameBytes = 8 * 1_024 * 1_024
     private var handle: FileHandle?

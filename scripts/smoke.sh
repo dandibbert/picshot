@@ -62,7 +62,17 @@ gif=r['gifResourceEvidence']
 if sys.argv[4]=='zip':
     assert gif['status']=='passed' and gif['profile']=='installed-30-second',gif
     assert gif['measuredExportCount']==4 and gif['expectedOutputFrames']==360,gif
-    assert gif['highResolution']['status']=='passed',gif
+    assert gif['highResolution']['status']=='passed' and gif['helperBoundaryRequired'],gif
+    successful=gif['warmupExports']+gif['exports']+[gif['highResolution']['export']]
+    for export in successful+[gif['cancellation']]:
+        child=export['helperProcess']
+        assert child['childLaunched'] and child['childExitConfirmed'] and child['temporaryDirectoryRemoved'],child
+        assert child['childResidentSampleCount']>0 and child['childSampledPeakResidentBytes']>0,child
+        assert child['childReportedResidentSampleCount']>0 and child['childReportedPeakResidentBytes']>0,child
+        assert child['parentResidentSampleCount']>0 and child['parentSampledPeakResidentBytes']>0,child
+    for export in successful:
+        assert export['helperProcess']['outcome']=='succeeded' and export['helperProcess']['terminationStatus']==0,export
+    assert gif['cancellation']['cancellationObserved'] and gif['cancellation']['helperProcess']['outcome']=='cancelled',gif
 else:
     assert gif['status']=='not-run',gif
 print(json.dumps(r,indent=2))

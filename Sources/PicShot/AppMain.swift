@@ -6,7 +6,7 @@ import Darwin
 import ImageIO
 
 @main struct PicShotMain {
-    @MainActor static func main(){if RecordingRecoveryFixture.runIfRequested(){return};let app=NSApplication.shared;let delegate=AppDelegate();app.delegate=delegate;app.setActivationPolicy(AppLaunchPresentation.usesMenuBarOnly(isSmoke:delegate.smoke != nil) ? .accessory:.regular);app.run();withExtendedLifetime(delegate){}}
+    @MainActor static func main(){if GIFHelperMain.runIfRequested(){return};if RecordingRecoveryFixture.runIfRequested(){return};let app=NSApplication.shared;let delegate=AppDelegate();app.delegate=delegate;app.setActivationPolicy(AppLaunchPresentation.usesMenuBarOnly(isSmoke:delegate.smoke != nil) ? .accessory:.regular);app.run();withExtendedLifetime(delegate){}}
 }
 
 @MainActor final class AppDelegate:NSObject,NSApplicationDelegate {

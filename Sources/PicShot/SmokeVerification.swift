@@ -13,7 +13,9 @@ import PicShotFormulaRenderCore
                 guard let mode=GIFResourceAttributionFixture.Mode(rawValue:value) else {throw PicShotError.message("Unknown GIF diagnostic mode")}
                 let extractionValue=ProcessInfo.processInfo.environment["PICSHOT_GIF_EXTRACTION"] ?? GIFFrameExtraction.asynchronous.rawValue
                 guard let extraction=GIFFrameExtraction(rawValue:extractionValue) else {throw PicShotError.message("Unknown GIF diagnostic frame extraction")}
-                let payload=try await GIFResourceAttributionFixture.verify(evidenceDirectory:directory,mode:mode,frameExtraction:extraction)
+                let executionValue=ProcessInfo.processInfo.environment["PICSHOT_GIF_EXECUTION"] ?? GIFResourceAttributionFixture.Execution.inProcessBaseline.rawValue
+                guard let execution=GIFResourceAttributionFixture.Execution(rawValue:executionValue) else {throw PicShotError.message("Unknown GIF diagnostic execution boundary")}
+                let payload=try await GIFResourceAttributionFixture.verify(evidenceDirectory:directory,mode:mode,frameExtraction:extraction,execution:execution)
                 try JSONSerialization.data(withJSONObject:payload,options:[.prettyPrinted,.sortedKeys]).write(to:url,options:.atomic)
                 try? FileManager.default.removeItem(at:history.directory)
                 NSApp.terminate(nil);return

@@ -169,7 +169,7 @@ final class GIFResourceSmokeTests: XCTestCase {
         let cancellation = try XCTUnwrap(report["cancellation"] as? [String: Any])
         XCTAssertEqual(cancellation["cancellationRequested"] as? Bool, true)
         XCTAssertEqual(cancellation["cancellationObserved"] as? Bool, true)
-        XCTAssertEqual(cancellation["framesSubmittedBeforeReturn"] as? Int, 4)
+        XCTAssertEqual(cancellation["parentObservedFrameProgressCount"] as? Int, 4)
         XCTAssertEqual(cancellation["destinationAbsent"] as? Bool, true)
         XCTAssertEqual(cancellation["partialFilesRemaining"] as? Int, 0)
         let data = try Data(contentsOf: root.appendingPathComponent("gif-resource.json"))

@@ -191,14 +191,24 @@ enum VideoTrimExporter {
         guard range.duration <= options.maximumDuration else { throw VideoTrimError.gifDurationLimit(options.maximumDuration) }
         try Task.checkCancellation()
         let directory = try destination.makeStagingDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
+        var mayRemoveStaging = true
+        defer { if mayRemoveStaging { try? FileManager.default.removeItem(at: directory) } }
         let clipURL = directory.appendingPathComponent("selected.mp4")
         _ = try await export(sourceURL: sourceURL, destinationURL: clipURL, range: range,
                              progress: { progress?($0 * 0.4) })
         try Task.checkCancellation()
         let gifURL = directory.appendingPathComponent("selected.gif")
-        _ = try await GIFExporter.export(sourceURL: clipURL, destinationURL: gifURL, options: options,
-                                         progress: { progress?(0.4 + $0 * 0.59) })
+        do {
+            _ = try await GIFExporter.export(sourceURL: clipURL, destinationURL: gifURL, options: options,
+                                             progress: { progress?(0.4 + $0 * 0.59) })
+        } catch GIFExportProcessError.exitUnconfirmed {
+            // This call's child job is nested in our trim staging directory.
+            // Preserve it while a live child may still hold/use these files.
+            // A .busy rejection belongs to another call and does not take this branch.
+            mayRemoveStaging = false
+            throw GIFExportProcessError.exitUnconfirmed
+        }
+        try Task.checkCancellation()
         try destination.publish(stagedURL: gifURL)
         progress?(1)
         return destination.url

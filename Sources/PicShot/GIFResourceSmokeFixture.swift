@@ -46,7 +46,8 @@ enum GIFResourceSmokeFixture {
         let directory = files.temporaryDirectory.appendingPathComponent("PicShot-GIF-Resource-" + UUID().uuidString,
                                                                          isDirectory: true)
         try files.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-        defer { try? files.removeItem(at: directory) }
+        var mayRemoveFixture = true
+        defer { if mayRemoveFixture { try? files.removeItem(at: directory) } }
         let started = ProcessInfo.processInfo.systemUptime
         var report: [String: Any] = [
             "status": "running", "profile": profile.name, "captureStarted": false, "audioStarted": false,
@@ -57,13 +58,14 @@ enum GIFResourceSmokeFixture {
             "sourceWidth": profile.width, "sourceHeight": profile.height, "sourceFrameRate": profile.frameRate,
             "sourceDurationSeconds": profile.duration, "exportMaximumDimension": profile.outputDimension,
             "sampleIntervalSeconds": GIFResourceMemorySampler.interval,
-            "memoryScope": "main process only; AVFoundation service/GPU memory is not included",
-            "peakScope": "export-only maximum successful RSS/physical-footprint samples, not kernel lifetime peaks; 50 ms timer plus frame-progress boundaries, including each synchronous single-frame ImageIO finalization",
-            "resourceScope": "authored changing video, warm-up then serial GIF exports; ImageIO encodes one still frame at a time into a streaming animation; sampled export/validation peaks and settled growth are observational regression evidence, not a zero-leak claim or a maximum-size/sustained-recording test",
+            "helperBoundaryRequired": profile != .quickTest,
+            "memoryScope": "main process sampled by this fixture; each installed export also reports its own child RSS/footprint and confirmed exit; framework services/GPU and other helpers are excluded",
+            "peakScope": "main-process timer/progress samples; helper RSS is polled by parent and helper self-reports RSS/footprint on timers and terminal event; sampled maxima can miss transient native peaks and are not kernel lifetime peaks",
+            "resourceScope": "authored changing video, warm-up then serial GIF exports through the actual signed helper in installed smoke; short unit profile explicitly uses the semantic engine only; parent/child sampled peaks and parent growth are observational, not a zero-leak or maximum-size/sustained-recording claim",
             "singleFrameEncodedByteLimit": GIFStreamingWriter.maximumEncodedFrameBytes,
             "sourceProvenance": "original deterministic tiled RGB animation generated in this fixture",
             "maximumSourceBytes": 16 * 1_024 * 1_024, "maximumOutputBytes": GIFExporter.maximumOutputBytes,
-            "diskScope": "one source plus one output/partial at a time; source size is checked after synthesis, output has the production 64 MiB write limit; only JSON is retained",
+            "diskScope": "one authored source plus one output/partial; installed exports also create one bounded private source copy in the helper job; source size is checked after synthesis and output has the production 64 MiB limit; only JSON remains after confirmed cleanup",
             "runtimeScope": "fixed work count and 90-second cooperative source-writer deadline; installed smoke launcher owns the outer process timeout, including synchronous ImageIO stalls",
             "temporaryDirectoryRemoved": false
         ]
@@ -132,7 +134,12 @@ enum GIFResourceSmokeFixture {
             try require(passed, "GIF memory observations exceeded the bounded smoke envelope; see gif-resource.json")
             return report
         } catch {
-            try? files.removeItem(at: directory)
+            if profile != .quickTest {
+                let snapshot = await GIFExporter.processResourceSnapshot()
+                mayRemoveFixture = !snapshot.active
+                report["latestGIFProcess"] = try? object(snapshot)
+            }
+            if mayRemoveFixture { try? files.removeItem(at: directory) }
             report["temporaryDirectoryRemoved"] = removalConfirmed(directory)
             report["status"] = "failed"
             report["error"] = error.localizedDescription
@@ -152,17 +159,25 @@ enum GIFResourceSmokeFixture {
         var cancellationObserved = false
         // Isolate deliberate cancellation from the smoke caller's task. Canceling
         // the caller here would also cancel its settling delay and later phases.
-        let worker = Task {
-            try await GIFExporter.export(sourceURL: source, destinationURL: output, options: profile.options) { value in
-                sampler.sample()
-                if progress.record(value) {
-                    // Cancel after complete frame blocks have reached staging,
-                    // rather than canceling before the first await.
-                    withUnsafeCurrentTask { task in
-                        if let task { progress.didRequestCancellation(); task.cancel() }
-                    }
+        let callback: @Sendable (Double) -> Void = { value in
+            sampler.sample()
+            if progress.record(value) {
+                // Process progress is parent-observed and can be queued. This
+                // proves cancellation/publication cleanup, not exact child work
+                // completed or interruption of native extraction at this index.
+                withUnsafeCurrentTask { task in
+                    if let task { progress.didRequestCancellation(); task.cancel() }
                 }
             }
+        }
+        let worker = Task {
+            if profile == .quickTest {
+                // Explicit semantic-only unit fixture; never a production fallback.
+                return try await GIFInProcessEngine.exportDirect(sourceURL: source, destinationURL: output,
+                    options: profile.options, progress: callback)
+            }
+            return try await GIFExporter.export(sourceURL: source, destinationURL: output,
+                options: profile.options, progress: callback)
         }
         do {
             _ = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
@@ -178,15 +193,29 @@ enum GIFResourceSmokeFixture {
             "immediatelyAfterExport": try object(GIFResourceMemoryReading.current()),
             "exportElapsedSeconds": ProcessInfo.processInfo.systemUptime - started,
             "progressCallbackCount": progress.callbackCount, "lastProgress": progress.lastValue,
-            "framesSubmittedBeforeReturn": progress.framesSubmitted,
+            "parentObservedFrameProgressCount": progress.framesSubmitted,
+            "progressScope": profile == .quickTest ? "direct semantic fixture callbacks" : "queued helper progress observed by parent; does not establish exact child frames completed at cancellation",
             "cancellationRequested": progress.cancellationRequested, "cancellationObserved": cancellationObserved]
+        if profile != .quickTest {
+            let snapshot = await GIFExporter.processResourceSnapshot()
+            guard let job = snapshot.lastJob else { throw failure("Installed GIF export did not record helper metrics") }
+            try require(!snapshot.active && job.childLaunched && job.childExitConfirmed && job.temporaryDirectoryRemoved,
+                        "Installed GIF helper exit/admission/cleanup was not confirmed")
+            try require(job.childResidentSampleCount > 0 && job.childSampledPeakResidentBytes != nil,
+                        "Installed GIF helper RSS was not measured")
+            try require(job.childReportedResidentSampleCount > 0 && job.parentResidentSampleCount > 0,
+                        "Installed GIF helper/parent observations are incomplete")
+            result["helperProcess"] = try object(job)
+        } else {
+            result["helperProcess"] = ["status": "not-run", "scope": "explicit short semantic unit-test profile"]
+        }
         // This observation precedes any decoder validation, so export unwind
         // can be distinguished from ImageIO reader/compositing allocations.
         try await Task.sleep(nanoseconds: 600_000_000)
         result["settledBeforeValidation"] = try object(GIFResourceMemoryReading.current())
         if let cancelAfterFrames {
             try require(cancellationObserved && progress.framesSubmitted >= cancelAfterFrames &&
-                        progress.framesSubmitted < plan.frameCount, "Cancellation did not interrupt an active export")
+                        progress.framesSubmitted < plan.frameCount, "Cancellation did not follow partial parent-observed progress")
             try require(removalConfirmed(output), "Cancelled export published a destination")
             result["cancelAfterFrames"] = cancelAfterFrames
             result["destinationAbsent"] = true
@@ -217,7 +246,7 @@ enum GIFResourceSmokeFixture {
         let profile = Profile.highResolution
         let directory = parent.appendingPathComponent("maximum-dimension", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
-        defer { try? FileManager.default.removeItem(at: directory) }
+        // Outer verify owns cleanup and retains this tree if a child exit cannot be confirmed.
         let source = try await makeMovie(in: directory, profile: profile)
         let bytes = try fileBytes(source)
         try require(bytes > 0 && bytes <= 16 * 1_024 * 1_024, "High-resolution source exceeded its disk budget")
@@ -228,6 +257,8 @@ enum GIFResourceSmokeFixture {
         let metrics = run["memory"] as? [String: Any] ?? [:]
         let peakRSS = (metrics["peakResidentBytes"] as? NSNumber)?.uint64Value
         let peakFootprint = (metrics["peakPhysicalFootprintBytes"] as? NSNumber)?.uint64Value
+        try FileManager.default.removeItem(at: directory)
+        try require(removalConfirmed(directory), "High-resolution helper fixture cleanup not confirmed")
         let rss = GIFResourceSingleExportAssessment(baseline: baseline.residentBytes, peak: peakRSS, settled: final.residentBytes)
         let footprint = GIFResourceSingleExportAssessment(baseline: baseline.physicalFootprintBytes,
             peak: peakFootprint, settled: final.physicalFootprintBytes)
