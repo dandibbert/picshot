@@ -2,7 +2,9 @@ import AppKit
 import Carbon
 import PicShotCore
 
-@MainActor final class SettingsController: NSWindowController {
+@MainActor final class SettingsController: NSWindowController, NSWindowDelegate {
+    private weak var callingWindow: NSWindow?
+    private var callingObserver: NSObjectProtocol?
     private let change: () -> Void
     private let onManageCapturePresets: (() -> Void)?
     private let defaults: UserDefaults
@@ -17,6 +19,7 @@ import PicShotCore
     private let appearance = NSPopUpButton(frame: .zero, pullsDown: false)
     private let screenshotDelay = NSPopUpButton(frame: .zero, pullsDown: false)
     private let screenshotCursor = NSButton(checkboxWithTitle: "屏幕截图包含鼠标指针", target: nil, action: nil)
+    let saveWorkflowView: SaveWorkflowSettingsView
     private let restorePins = NSButton(checkboxWithTitle: "启动时恢复上次显示的贴图组", target: nil, action: nil)
     private(set) var selectedCategory: SettingsCategory = .appearance
 
@@ -24,8 +27,9 @@ import PicShotCore
         let safeMode = isSmoke ?? (ProcessInfo.processInfo.environment["PICSHOT_SMOKE_REPORT"] != nil)
         change = onChange; self.onManageCapturePresets = onManageCapturePresets; self.defaults = defaults; savesPreferences = !safeMode; self.unavailableShortcuts = unavailableShortcuts
         shortcuts = safeMode ? .defaults : HotKeyConfiguration.read(from: defaults)
+        saveWorkflowView = SaveWorkflowSettingsView(settings: safeMode ? .init() : .read(from: defaults))
         let window = SettingsWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 570), styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        super.init(window: window)
+        super.init(window: window); window.delegate = self
         window.title = "PicShot 设置"; window.isReleasedWhenClosed = false; window.center()
         window.identifier = NSUserInterfaceItemIdentifier("picshot.settings")
         configureValues(safeMode: safeMode)
@@ -116,6 +120,9 @@ import PicShotCore
             }
             addNote("鼠标指针选项用于单屏和全部屏幕截图。区域截图使用冻结画面选区；窗口和跨屏区域截图使用系统选择器。")
             addGroup("多屏合成", rows: [note("全部屏幕按最高像素密度合成，低密度屏幕会放大，屏幕间隙透明。最多 6400 万像素；屏幕依次采集，并非同一瞬间。")])
+        case .save:
+            addGroup("快速保存与自动副本", rows: [saveWorkflowView])
+            addNote("快速保存使用 PNG；导出窗口中的快速保存使用当前实际编码格式。已有文件只允许保留两者、更改名称或取消，不提供覆盖替换。")
         case .pins:
             addGroup("启动与会话", rows: [restorePins, note("默认关闭。贴图自动保存在本机；关闭贴图会将它归档，隐藏和切换贴图组保留会话状态。")])
             addGroup("贴图历史", rows: [note("恢复上次关闭的贴图会按实际关闭顺序重新打开。已有的旧版归档项仍可在“贴图组与历史”中选择打开。")])
@@ -164,6 +171,7 @@ import PicShotCore
             if index > 0 { let line = NSBox(); line.boxType = .separator; stack.addArrangedSubview(line); line.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
             stack.addArrangedSubview(row)
             if let label = row as? NSTextField, label.cell?.wraps == true { label.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
+            if row === saveWorkflowView { row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
         }
         group.addSubview(stack)
         NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo: group.leadingAnchor, constant: 16), stack.trailingAnchor.constraint(equalTo: group.trailingAnchor, constant: -16), stack.topAnchor.constraint(equalTo: group.topAnchor, constant: 14), stack.bottomAnchor.constraint(equalTo: group.bottomAnchor, constant: -14)])
@@ -173,7 +181,24 @@ import PicShotCore
         guard let action = HotKeyAction(rawValue: sender.tag) else { return }
         shortcuts[action] = nil; shortcutButtons[action]?.setBinding(nil)
     }
+    func showAbove(_ parent: NSWindow?) {
+        detachCallingWindow()
+        guard let parent, let window else { showWindow(nil); return }
+        callingWindow = parent; parent.addChildWindow(window, ordered: .above)
+        window.level = NSWindow.Level(rawValue: parent.level.rawValue + 1)
+        callingObserver = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: parent, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.detachCallingWindow() }
+        }
+        showWindow(nil); window.makeKeyAndOrderFront(nil)
+    }
+    private func detachCallingWindow() {
+        if let callingObserver { NotificationCenter.default.removeObserver(callingObserver) }; callingObserver = nil
+        if let window { callingWindow?.removeChildWindow(window); window.level = .normal }; callingWindow = nil
+    }
+    override func close() { saveWorkflowView.cancelPendingPanel(); detachCallingWindow(); super.close() }
+    func windowWillClose(_ notification: Notification) { saveWorkflowView.cancelPendingPanel(); detachCallingWindow() }
     @objc private func cancelSettings() { close() }
+    func validateSaveWorkflowDraft() throws -> SaveWorkflowSettings { try saveWorkflowView.validatedSettings() }
     @objc private func saveSettings() {
         window?.makeFirstResponder(nil)
         let values = retentionFields.compactMap { Int($0.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) }
@@ -181,9 +206,12 @@ import PicShotCore
         let retention = HistoryRetentionPreferences(days: values[0], count: values[1], megabytes: values[2])
         guard retention.isValid else { selectCategory(.history); showError(PicShotError.message("请填写有效的正数（最多 3650 天、10000 张、102400 MB）。")); return }
         if let error = shortcuts.validationMessage { selectCategory(.shortcuts); showError(PicShotError.message(error)); return }
+        let saveWorkflow: SaveWorkflowSettings
+        do { saveWorkflow = try validateSaveWorkflowDraft() }
+        catch { selectCategory(.save); saveWorkflowView.errorLabel.stringValue = error.localizedDescription; return }
         // Rendering/test modes can inspect every panel without changing the user's preferences.
         guard savesPreferences else { close(); return }
-        do { try shortcuts.save(to: defaults) } catch { showError(error); return }
+        do { try shortcuts.save(to: defaults); try saveWorkflow.save(to: defaults) } catch { showError(error); return }
         _ = retention.save(to: defaults)
         ScreenshotPreferences.save(ScreenshotCaptureOptions(delay: ScreenshotDelay(rawValue: screenshotDelay.selectedTag()) ?? .none, showsCursor: screenshotCursor.state == .on), to: defaults)
         defaults.set(restorePins.state == .on, forKey: PinSessionStore.restorePreferenceKey)

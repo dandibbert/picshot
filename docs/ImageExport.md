@@ -33,7 +33,8 @@ A private mode-0600 staging file is written in the destination directory, synchr
 - Preview: 1024 maximum dimension and 4 MiB decoded bytes/page
 - Cache: first page plus at most one additional PDF page, 8 MiB retained decoded preview budget
 - Sessions: at most two production sheets, at most one per parent window
-- Encoding: one shared serial worker; format/quality changes debounce and cancel obsolete operations. Queued work owns a lock-protected input holder, cleared immediately on cancellation, so cancelled queue entries do not retain closed-session snapshots or artifacts
+- In-process encoding uses one serial ImageIO/PDF queue; an isolated GIF/WebP/AVIF child has a separate shared lease and may overlap that queue. PNG source staging also happens in the parent. This is not one global encoder or a total-RSS bound
+- Format changes cancel stale work and clear queued inputs. Bundled admission waits cancellably for at most 300 seconds for the previous child cleanup or another sheet/GIF job, with visible waiting text and Retry after failure. Closed/stale results cannot re-enable Save
 - Closing or cancelling a sheet or its parent cancels pending work and suppresses stale completion
 
 Native codecs may retain their own internal scratch buffers. These bounds do not establish a process RSS ceiling, absence of leaks or preemptible cancellation inside a native codec call. Cancellation is checked before/after native calls and at consumer writes, so a native call already executing may finish before releasing its resources. No partial file can be published by that cancelled job.
@@ -95,3 +96,5 @@ These versions were originally researched read-only and are now the explicitly a
 | AV1 encoder+decoder backend | [libaom v3.14.1](https://aomedia.googlesource.com/aom/+/refs/tags/v3.14.1), `03087864cf4bea6abb0d28f95cf7843511413d8f` | BSD-2-Clause / AOM Patent License 1.0 according to upstream current [LICENSE](https://aomedia.googlesource.com/aom/+/refs/heads/main/LICENSE) and [PATENTS](https://aomedia.googlesource.com/aom/+/refs/heads/main/PATENTS). The read-only web tool could not retrieve release-commit copies; verify those exact copies before vendoring |
 
 libavif requires an AV1 backend. Its [v1.4.2 README](https://raw.githubusercontent.com/AOMediaCodec/libavif/v1.4.2/README.md) identifies libaom as encoding+decoding; dav1d/libgav1 are decoding-only and cannot establish AVIF export. Its [v1.4.2 LocalAom.cmake](https://raw.githubusercontent.com/AOMediaCodec/libavif/v1.4.2/cmake/Modules/LocalAom.cmake) selects libaom v3.14.1. These license observations are not a security certification or a completed distribution-license audit.
+
+Deterministic Retry tests use the production retry loop with explicitly labeled delayed-cleanup doubles; genuine signed-helper UI evidence separately changes format/quality from real progress, under a bounded fixture dispatch barrier. No new native pass is inferred from these source changes.

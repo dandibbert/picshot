@@ -82,19 +82,33 @@ enum ImageExportService {
     /// writer availability never enables or substitutes either of these formats.
     static func encodeBundled(snapshot: ImageExportSnapshot, options: ImageExportOptions,
                               service: CodecExportProcessService = .shared) async throws -> ImageExportArtifact {
+        try await encodeBundled(snapshot: snapshot, options: options,
+            prepare: { try await service.prepare(snapshot: $0, options: $1) })
+    }
+
+    /// The production wrapper and deterministic scheduling fixtures share this
+    /// exact cancellable retry loop. Injection tests admission/lifecycle only;
+    /// it is not a substitute for the real signed-helper codec fixtures.
+    static func encodeBundled(snapshot: ImageExportSnapshot, options: ImageExportOptions,
+        prepare: @Sendable (ImageExportSnapshot, CodecExportRequest) async throws -> CodecPreparedArtifact,
+        admissionWaitSeconds: TimeInterval = CodecExportLimits.wallSeconds) async throws -> ImageExportArtifact {
+        guard admissionWaitSeconds.isFinite, admissionWaitSeconds > 0,
+              admissionWaitSeconds <= CodecExportLimits.wallSeconds else { throw ImageExportError.invalidOptions }
         try options.validate(); try Task.checkCancellation()
         guard options.format.usesBundledCodec else { throw ImageExportError.invalidOptions }
         try CodecExportLimits.validateStillDimensions(width: snapshot.image.width, height: snapshot.image.height)
         let request = CodecExportRequest(format: options.format == .webp ? .webp : .avif,
             quality: Int((options.quality * 100).rounded()), lossless: options.lossless,
             preserveAlpha: options.preserveAlpha, alphaQuality: Int((options.alphaQuality * 100).rounded()))
-        // Rapid UI changes cancel the old child but cannot release its lease
-        // before exit. Wait cooperatively for cleanup instead of starting a
-        // second child or replacing the latest preview with a spurious failure.
-        let deadline = ProcessInfo.processInfo.systemUptime + CodecExportLimits.wallSeconds
+        // The shared lease may belong to a cancelling old request, another
+        // export sheet or GIF. The running child must exit and clean up before
+        // any waiter is admitted. Waiting has a finite deadline and cancellation
+        // interrupts its sleep; a format change clears the obsolete UI input.
+        let deadline = ProcessInfo.processInfo.systemUptime + admissionWaitSeconds
         while true {
             do {
-                let result = try await service.prepare(snapshot: snapshot, options: request)
+                try Task.checkCancellation()
+                let result = try await prepare(snapshot, request)
                 try Task.checkCancellation()
                 return ImageExportArtifact(data: result.data, options: options, width: result.width, height: result.height,
                                            pageCount: 1, firstPreview: result.preview, sourceURL: snapshot.sourceURL)

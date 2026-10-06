@@ -28,6 +28,24 @@ jobs:
           mkdir -p dist
           set -o pipefail
           bash scripts/package.sh 2>&1 | tee dist/package.log
+      - name: Measure codec and image backing in fresh installed processes
+        timeout-minutes: 8
+        run: |
+          set -o pipefail
+          bash scripts/codec-attribution.sh 2>&1 | tee dist/codec-attribution.log
+          bash scripts/image-backing-attribution.sh 2>&1 | tee dist/image-backing-attribution.log
+      - name: Upload early backing observations before remaining installer gates
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Backing-${{ matrix.arch }}-${{ github.sha }}
+          path: |
+            dist/codec-attribution.log
+            dist/image-backing-attribution.log
+            dist/evidence/codec-attribution/
+            dist/evidence/image-backing/
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Render native UI from installed ZIP before slow verification
         run: |
           set -o pipefail
@@ -81,7 +99,7 @@ jobs:
         run: >-
           python3 scripts/run-bounded-command.py --timeout-seconds 420
           --log dist/critical-tests.log --report dist/critical-tests-report.json
-          -- swift test --skip-build --filter 'Codec|NativeExport|AnimatedWebP|WebPContainer|RecordingWebP|CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests'
+          -- swift test --skip-build --filter 'SaveWorkflow|OwnedVideoExportStage|ImageBacking|Codec|NativeExport|AnimatedWebP|WebPContainer|RecordingWebP|CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests'
       - name: Upload focused native test evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

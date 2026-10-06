@@ -30,17 +30,41 @@ enum CodecExportUIPreviewFixture {
                 let appearance: NSAppearance.Name = format == .webp ? .aqua : .darkAqua
                 let mode = format == .webp ? "light" : "dark"
                 NSApp.appearance = NSAppearance(named: appearance)
-                let controller = try ImageExportController(image: source, suggestedName: "synthetic-codec")
+                let change = CodecUIInFlightChange()
+                let target = CodecUIWeakExportTarget()
+                let controller = try ImageExportController(image: source, suggestedName: "synthetic-codec",
+                    bundledEncoder: { snapshot, options in
+                        try await ImageExportService.encodeBundled(snapshot: snapshot, options: options,
+                            prepare: { frozen, request in
+                                try await CodecExportProcessService.shared.prepare(snapshot: frozen, options: request) { fraction in
+                                    guard fraction < 1, change.claim() else { return }
+                                    let dispatched = DispatchSemaphore(value: 0)
+                                    Task { @MainActor in
+                                        defer { dispatched.signal() }
+                                        do {
+                                            guard let current = target.controller, !current.isClosed else { throw failure("Export closed before in-flight change") }
+                                            current.accessory.picker.selectItem(at: format.rawValue); try send(current.accessory.picker)
+                                            for value in [23.0, 37] { current.accessory.quality.doubleValue = value; try send(current.accessory.quality) }
+                                            change.recordSuccess()
+                                        } catch { change.recordFailure(error.localizedDescription) }
+                                    }
+                                    if dispatched.wait(timeout: .now() + 2) != .success { change.recordFailure("Native control dispatch exceeded its fixture deadline") }
+                                }
+                            })
+                    })
+                target.controller = controller
                 defer { controller.cancelExport() }
                 controller.window?.appearance = NSAppearance(named: appearance)
                 controller.showWindow(nil); controller.window?.center(); controller.window?.makeKeyAndOrderFront(nil)
                 let controls = controller.accessory
-                controls.picker.selectItem(at: format.rawValue); try send(controls.picker)
+                let initialFormat: ImageExportFormat = format == .webp ? .avif : .webp
+                controls.picker.selectItem(at: initialFormat.rawValue); try send(controls.picker)
                 for value in [18.0, 89, 37] { controls.quality.doubleValue = value; try send(controls.quality) }
                 controls.lossless.state = .off; try send(controls.lossless)
                 controls.alphaQuality.doubleValue = 61; try send(controls.alphaQuality)
                 controls.preserveAlpha.state = .off; try send(controls.preserveAlpha)
                 let lossy = try await ready(controller)
+                try require(change.succeeded && change.failure == nil, change.failure ?? "Real helper never triggered the in-flight format/quality change")
                 try require(lossy.options.format == format && lossy.options.quality == 0.37 &&
                             !lossy.options.lossless && !lossy.options.preserveAlpha && lossy.options.alphaQuality == 0.61,
                             "Native controls did not reach the actual lossy encoder")
@@ -91,6 +115,8 @@ enum CodecExportUIPreviewFixture {
                     "sha256": digest(saved), "sourceSHA256": sourceDigest, "sourceUnchanged": true,
                     "lossyQuality": lossy.options.quality, "lossyAlphaQuality": lossy.options.alphaQuality,
                     "lossyBytes": lossy.byteCount, "losslessControlsVerified": true, "alphaOffOpaque": true,
+                    "inFlightFormatQualityChange": true, "initialFormat": initialFormat.title,
+                    "replacementTrigger": "actual signed helper progress; bounded parent dispatch barrier, child may already have exited",
                     "realPixelsAndAlphaVerified": true, "sameByteSave": true,
                     "regularLayout": regular, "smallLayout": small, "screenshot": screenshot,
                     "result": resultName, "childExitConfirmed": metrics.childExitConfirmed,
@@ -144,4 +170,20 @@ enum CodecExportUIPreviewFixture {
     }
     private static func require(_ condition: Bool, _ text: String) throws { if !condition { throw failure(text) } }
     private static func failure(_ text: String) -> Error { PicShotError.message("Native codec UI: " + text) }
+}
+
+@MainActor
+private final class CodecUIWeakExportTarget { weak var controller: ImageExportController? }
+
+/// One-shot fixture scheduling instrument. All bytes still come from the
+/// signed helper; this never substitutes a mock codec or source-only preview.
+private final class CodecUIInFlightChange: @unchecked Sendable {
+    private let lock = NSLock()
+    private var claimed = false, completed = false
+    private var error: String?
+    func claim() -> Bool { lock.lock(); defer { lock.unlock() }; guard !claimed else { return false }; claimed = true; return true }
+    func recordSuccess() { lock.lock(); completed = true; lock.unlock() }
+    func recordFailure(_ text: String) { lock.lock(); error = text; lock.unlock() }
+    var succeeded: Bool { lock.lock(); defer { lock.unlock() }; return completed }
+    var failure: String? { lock.lock(); defer { lock.unlock() }; return error }
 }

@@ -1,7 +1,8 @@
 import AppKit
 
 /// Compact, shared export sheet for editor, pin, original and history images.
-/// At most two immutable sessions and one global encoder can be alive at once.
+/// At most two immutable sessions are admitted. The serial ImageIO/PDF queue
+/// and the shared GIF/WebP/AVIF child lease are separate and may overlap.
 @MainActor
 final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenSavePanelDelegate {
     private static var active: [ObjectIdentifier: ImageExportController] = [:]
@@ -13,6 +14,10 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
     let statusLabel = NSTextField(wrappingLabelWithString: "正在编码…")
     let pageLabel = NSTextField(labelWithString: "")
     let saveButton = NSButton(title: "保存…", target: nil, action: nil)
+    let retryButton = NSButton(title: "重试", target: nil, action: nil)
+    let quickSaveButton = NSButton(title: "快速保存", target: nil, action: nil)
+    let saveCopyButton = NSButton(title: "保存并复制", target: nil, action: nil)
+    private let saveWorkflow: SaveWorkflowPresenter?
     private let previousButton = NSButton(title: "‹", target: nil, action: nil)
     private let nextButton = NSButton(title: "›", target: nil, action: nil)
     private let spinner = NSProgressIndicator()
@@ -45,7 +50,8 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
 
     @discardableResult
     static func present(image: CGImage, from parent: NSWindow, suggestedName: String = "PicShot",
-                        sourceURL: URL? = nil, onSaved: ((URL) -> Void)? = nil) -> ImageExportController? {
+                        sourceURL: URL? = nil, saveWorkflow: SaveWorkflowPresenter? = nil,
+                        onSaved: ((URL) -> Void)? = nil) -> ImageExportController? {
         if let existing = active.values.first(where: { $0.parentWindow === parent }) {
             existing.window?.makeKeyAndOrderFront(nil); return existing
         }
@@ -53,7 +59,7 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
             showError(PicShotError.message("请先完成或关闭当前导出窗口。")); return nil
         }
         do {
-            let controller = try ImageExportController(image: image, suggestedName: suggestedName, sourceURL: sourceURL, onSaved: onSaved)
+            let controller = try ImageExportController(image: image, suggestedName: suggestedName, sourceURL: sourceURL, onSaved: onSaved, saveWorkflow: saveWorkflow)
             active[ObjectIdentifier(controller)] = controller
             controller.parentWindow = parent
             controller.parentObserver = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification,
@@ -73,12 +79,12 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
     /// Internal construction supports native control/close fixtures without a
     /// filesystem picker. Production callers use present to enforce admission.
     init(image: CGImage, suggestedName: String = "PicShot", sourceURL: URL? = nil, onSaved: ((URL) -> Void)? = nil,
-         encoder: @escaping ImageExportEncoder = { snapshot, options, token in
+         saveWorkflow: SaveWorkflowPresenter? = nil, encoder: @escaping ImageExportEncoder = { snapshot, options, token in
              try ImageExportService.encode(snapshot: snapshot, options: options, cancellation: token)
          }, bundledEncoder: @escaping ImageExportBundledEncoder = { snapshot, options in
              try await ImageExportService.encodeBundled(snapshot: snapshot, options: options)
          }) throws {
-        self.encoder = encoder; self.bundledEncoder = bundledEncoder
+        self.encoder = encoder; self.bundledEncoder = bundledEncoder; self.saveWorkflow = saveWorkflow ?? SaveWorkflowPresenter.application
         snapshot = try ImageExportSnapshot(image: image, sourceURL: sourceURL)
         self.suggestedName = (suggestedName as NSString).deletingPathExtension
         self.onSaved = onSaved
@@ -115,8 +121,15 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
         cancel.identifier = NSUserInterfaceItemIdentifier("export.cancel")
         saveButton.target = self; saveButton.action = #selector(chooseDestination); saveButton.keyEquivalent = "\r"
         saveButton.identifier = NSUserInterfaceItemIdentifier("export.save"); saveButton.isEnabled = false
+        retryButton.target = self; retryButton.action = #selector(retryPreview)
+        retryButton.identifier = NSUserInterfaceItemIdentifier("export.retry"); retryButton.isHidden = true
+        quickSaveButton.target = self; quickSaveButton.action = #selector(quickSavePrepared)
+        saveCopyButton.target = self; saveCopyButton.action = #selector(saveAndCopyPrepared)
+        quickSaveButton.identifier = .init("export.quickSave"); saveCopyButton.identifier = .init("export.saveCopy")
+        quickSaveButton.isHidden = saveWorkflow == nil; saveCopyButton.isHidden = saveWorkflow == nil
+        saveCopyButton.toolTip = "复制实际保存的编码数据；WebP / AVIF / PDF 是否可粘贴为图片取决于目标应用。"
         let spacer = NSView(); spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let actions = NSStackView(views: [spinner, spacer, cancel, saveButton]); actions.spacing = 10
+        let actions = NSStackView(views: [spinner, spacer, retryButton, quickSaveButton, saveCopyButton, cancel, saveButton]); actions.spacing = 8
         stack.addArrangedSubview(actions)
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 18),
@@ -167,8 +180,11 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
         previewInput?.clear(); pageInput?.clear(); previewInput = nil; pageInput = nil
         previewCancellation = ImageExportCancellation()
         latestArtifact = nil; cachedPage = nil; previewPage = 0; previewView.image = nil
-        saveButton.isEnabled = false; statusLabel.textColor = .secondaryLabelColor
-        statusLabel.stringValue = "正在编码完整图片…"; spinner.startAnimation(nil); refreshPageControls()
+        saveButton.isEnabled = false; retryButton.isHidden = true; statusLabel.textColor = .secondaryLabelColor
+        statusLabel.stringValue = accessory.options.format.usesBundledCodec
+            ? "正在准备独立编码…若其他导出正在运行，将等待最多 5 分钟，可随时取消"
+            : "正在编码完整图片…"
+        spinner.startAnimation(nil); refreshPageControls()
         let options = accessory.options, token = previewCancellation, current = generation, encoder = encoder, bundledEncoder = bundledEncoder
         let input = ImageExportJobInput(snapshot); previewInput = input
         let job = Task { @MainActor [weak self] in
@@ -189,6 +205,7 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
                         self.saveButton.isEnabled = true; self.showSize(artifact); self.refreshPageControls()
                     case .failure(let error):
                         self.statusLabel.textColor = .systemRed; self.statusLabel.stringValue = error.localizedDescription
+                        self.retryButton.isHidden = false
                     }
                 }
                 return
@@ -224,6 +241,8 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
         statusLabel.stringValue = "实际编码 \(size)（\(artifact.byteCount) 字节） · \(artifact.width) × \(artifact.height)\(alpha)\n预览来自待保存文件；保存不再重新编码"
     }
     private func refreshPageControls() {
+        quickSaveButton.isEnabled = latestArtifact != nil && !isSaving && !isClosed
+        saveCopyButton.isEnabled = quickSaveButton.isEnabled
         let count = latestArtifact?.pageCount ?? 0
         pageLabel.stringValue = count > 0 ? "第 \(previewPage + 1) / \(count) 页" : ""
         previousButton.isEnabled = previewPage > 0 && !isSaving
@@ -315,6 +334,27 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
         }
     }
 
+    @objc private func quickSavePrepared() { savePreparedUsingWorkflow(copy: false) }
+    @objc private func saveAndCopyPrepared() { savePreparedUsingWorkflow(copy: true) }
+    private func savePreparedUsingWorkflow(copy: Bool) {
+        guard !isClosed, !isSaving, let artifact = latestArtifact, let saveWorkflow else { return }
+        isSaving = true; accessory.setControlsEnabled(false); saveButton.isEnabled = false; refreshPageControls()
+        guard let job = saveWorkflow.save(artifact: artifact, copy: copy, from: window, onSaved: { [weak self] saved in
+            guard let self, !self.isClosed else { return }
+            if saved.clipboardOutcome == .failed || saved.clipboardOutcome == .cancelledAfterSave {
+                self.statusLabel.stringValue = "文件已保存，复制未完成；原文件和导出内容仍保留。"; return
+            }
+            let callback = self.onSaved; self.onSaved = nil; self.finish(); callback?(saved.savedURL)
+        }) else { isSaving = false; accessory.setControlsEnabled(true); saveButton.isEnabled = true; refreshPageControls(); return }
+        let existingClose = job.onClose
+        job.onClose = { [weak self] in
+            existingClose?()
+            guard let self, !self.isClosed else { return }
+            self.isSaving = false; self.accessory.setControlsEnabled(true); self.saveButton.isEnabled = self.latestArtifact != nil
+            self.refreshPageControls()
+        }
+    }
+    @objc private func retryPreview() { requestPreview() }
     @objc func cancelExport() { cancellation.cancel(); finish() }
     func windowWillClose(_ notification: Notification) { cancellation.cancel(); finish() }
     private func finish() {
@@ -326,6 +366,7 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
         if let parentObserver { NotificationCenter.default.removeObserver(parentObserver) }; parentObserver = nil
         if let savePanel { savePanel.cancel(nil) }; savePanel = nil
         accessory.onChange = nil; latestArtifact = nil; cachedPage = nil; previewView.image = nil; saveButton.isEnabled = false
+        retryButton.isHidden = true; retryButton.isEnabled = false
         if let window {
             if let parent = window.sheetParent { parent.endSheet(window, returnCode: .cancel) }
             window.orderOut(nil); window.delegate = nil; window.close()

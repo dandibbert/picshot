@@ -207,7 +207,29 @@ final class CodecExportAttributionTests: XCTestCase {
         let reportData = try Data(contentsOf: reportURL)
         let report = try XCTUnwrap(JSONSerialization.jsonObject(with: reportData) as? [String: Any])
         XCTAssertEqual(process.terminationStatus, 0, String(data: reportData, encoding: .utf8) ?? "Failed attribution process")
-        XCTAssertLessThan(reportData.count, 256 * 1_024)
+        // Full self-Mach backing observations expand the diagnostic metadata.
+        // The scalar-width stress test covers 68 full readings plus 64 KiB of
+        // other metadata. Check those structural limits on the actual report.
+        try assertBoundedMetadata(report)
+        XCTAssertLessThan(reportData.count, 512 * 1_024)
         return report
+    }
+
+    private func assertBoundedMetadata(_ report: [String: Any]) throws {
+        var backingReadings = 0
+        func replacingBacking(_ value: Any) -> Any {
+            if let object = value as? [String: Any] {
+                if object["standard"] is [String: Any], object["purgeable"] is [String: Any] {
+                    backingReadings += 1
+                    return "backing-reading"
+                }
+                return object.mapValues { replacingBacking($0) }
+            }
+            if let array = value as? [Any] { return array.map { replacingBacking($0) } }
+            return value
+        }
+        let scalarMetadata = replacingBacking(report)
+        XCTAssertLessThanOrEqual(backingReadings, 68)
+        XCTAssertLessThan(try JSONSerialization.data(withJSONObject: scalarMetadata, options: [.prettyPrinted, .sortedKeys]).count, 64 * 1_024)
     }
 }

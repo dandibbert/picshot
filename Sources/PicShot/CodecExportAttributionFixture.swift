@@ -27,6 +27,12 @@ enum CodecExportAttributionFixture {
     /// The launcher must use a new process for preparation and every matrix cell.
     static func runIfRequested(evidenceDirectory: URL,
                               environment: [String: String] = ProcessInfo.processInfo.environment) async throws -> [String: Any]? {
+        if environment["PICSHOT_IMAGE_BACKING_MODE"] != nil {
+            guard environment["PICSHOT_CODEC_ATTRIBUTION_MODE"] == nil else {
+                throw failure("Image backing and codec attribution require separate fresh processes")
+            }
+            return try await ImageBackingAttributionFixture.runIfRequested(evidenceDirectory: evidenceDirectory, environment: environment)
+        }
         guard let rawMode = environment["PICSHOT_CODEC_ATTRIBUTION_MODE"] else { return nil }
         guard let profile = Profile(rawValue: environment["PICSHOT_CODEC_ATTRIBUTION_PROFILE"] ?? Profile.installed.rawValue) else {
             throw failure("Unknown attribution profile")
@@ -97,9 +103,10 @@ enum CodecExportAttributionFixture {
             "scope": "Production encodeBundled, signed codec helper, helper-derived preview, and exclusive same-byte publication; decode-only uses independently materialized ImageIO pixels from a separately prepared immutable input",
             "exportOnlyScope": "No independent WebP/AVIF ImageIO validation; production PNG source staging, its PNG preview, and helper-preview PNG decoding remain part of export",
             "memoryScope": "Parent Mach RSS and physical footprint sampled continuously at 50 ms plus named boundaries; excludes other processes, GPU, and WindowServer; sampled peaks can miss instantaneous peaks",
+            "backingMemoryScope": ImageBackingTaskVMReading.scope,
             "controllerScope": "Service-level attribution matching CodecExportResourceFixture; zero export controllers created. Active controller counts detect contamination, not UI lifetime or all native allocations",
             "taskScope": "Fixture-created encoding tasks are awaited and leave scope before settling; production helper inactivity and shared OperationQueue emptiness checked separately, not a count of all runtime tasks",
-            "bookkeepingScope": "Bounded scalar cycle records retained; no encoded bytes, images, or raster arrays in reports. JSON serialization/writes occur only after final memory observations",
+            "bookkeepingScope": "Bounded scalar cycle records retained; no encoded bytes, images, or raster arrays in reports. Baseline reading objects serialize before cycles; successful-run cycle serialization and disk writes occur after final memory observations",
             "autoreleaseScope": "Synchronous source/snapshot, decode/materialization, publication and readback calls have explicit pools; async encoding runs through its unchanged production path and is awaited before main-queue drains",
             "interpretation": "Raw signed increments and boundary observations only; no automatic leak, plateau, no-leak, or maximum-size verdict",
             "outerDeadlineRequired": true, "temporaryDirectoryRemoved": false
@@ -121,12 +128,14 @@ enum CodecExportAttributionFixture {
             }
             let beforeWarmup = try observedMemory()
             report["beforeWarmup"] = try object(beforeWarmup)
+            report["backingBeforeWarmup"] = try object(ImageBackingMemoryReading.current())
             for index in 1...profile.warmupCycles {
                 cycles.append(try await cycle(index: index, isWarmup: true, mode: mode, format: format,
                     profile: profile, input: input, directory: directory, deadline: deadline, counters: counters))
             }
             let baseline = try observedMemory()
             report["baselineAfterWarmup"] = try object(baseline)
+            report["backingBaselineAfterWarmup"] = try object(ImageBackingMemoryReading.current())
             for index in 1...profile.measuredCycles {
                 cycles.append(try await cycle(index: index, isWarmup: false, mode: mode, format: format,
                     profile: profile, input: input, directory: directory, deadline: deadline, counters: counters))
@@ -135,6 +144,7 @@ enum CodecExportAttributionFixture {
             try await Task.sleep(nanoseconds: 500_000_000)
             try await drain(deadline: deadline)
             let delayedEnd = try observedMemory()
+            report["backingHalfSecondAfterFinalCycle"] = try object(ImageBackingMemoryReading.current())
             wholeSampler.stop()
             let measured = cycles.filter { !$0.isWarmup }
             let ends = measured.map(\.settled)
@@ -230,7 +240,9 @@ enum CodecExportAttributionFixture {
         boundaries.reserveCapacity(8)
         boundaries.append(try boundary("beforeSource", sampler: sampler))
         let source = try autoreleasepool { try CodecExportResourceFixture.fixture(width: profile.width, height: profile.height) }
+        boundaries.append(try boundary("afterSyntheticSourceCreation", sampler: sampler))
         let sourceSHA256 = try autoreleasepool { digest(try CodecExportResourceFixture.raster(source)) }
+        boundaries.append(try boundary("afterSourceRasterDigest", sampler: sampler))
         let payload = CodecAttributionPayload(source: source)
         let weak = CodecAttributionWeakPayload(payload)
         if mode != .decodeOnly { payload.snapshot = try autoreleasepool { try ImageExportSnapshot(image: source) } }
@@ -267,7 +279,8 @@ enum CodecExportAttributionFixture {
             }
         }
         if let decode {
-            boundaries.append(CodecAttributionBoundary(name: "independentDecodedPixelsLive", memory: decode.whilePixelsLive))
+            boundaries.append(CodecAttributionBoundary(name: "independentDecodedPixelsLive", memory: decode.whilePixelsLive,
+                                                        backing: decode.backingWhilePixelsLive))
             boundaries.append(try boundary("afterIndependentDecodeAutoreleasePool", sampler: sampler))
         }
         if let artifact = payload.artifact {
@@ -305,9 +318,10 @@ enum CodecExportAttributionFixture {
                         "Lossless independently decoded pixels/alpha differ from original synthetic reference")
             sampler.sample()
             let memory = try observedMemory()
+            let backing = ImageBackingMemoryReading.current()
             withExtendedLifetime((image, pixels, expected)) { }
             return CodecAttributionDecode(width: image.width, height: image.height, materializedBytes: pixels.count,
-                                          allPixelsAndAlphaCompared: true, whilePixelsLive: memory)
+                                          allPixelsAndAlphaCompared: true, whilePixelsLive: memory, backingWhilePixelsLive: backing)
         }
     }
 
@@ -401,10 +415,18 @@ enum CodecExportAttributionFixture {
 }
 
 private struct CodecAttributionInput { let url: URL; let bytes: Int; let sha256: String; let sourceSHA256: String; let producerPID: Int }
-private struct CodecAttributionBoundary: Encodable { let name: String; let memory: GIFResourceMemoryReading }
+private struct CodecAttributionBoundary: Encodable {
+    let name: String
+    let memory: GIFResourceMemoryReading
+    let backing: ImageBackingMemoryReading
+    init(name: String, memory: GIFResourceMemoryReading, backing: ImageBackingMemoryReading = .current()) {
+        self.name = name; self.memory = memory; self.backing = backing
+    }
+}
 private struct CodecAttributionDecode: Encodable {
     let width: Int; let height: Int; let materializedBytes: Int; let allPixelsAndAlphaCompared: Bool
     let whilePixelsLive: GIFResourceMemoryReading
+    let backingWhilePixelsLive: ImageBackingMemoryReading
 }
 private struct CodecAttributionCycle: Encodable {
     let index: Int; let isWarmup: Bool; let boundaries: [CodecAttributionBoundary]

@@ -4,7 +4,7 @@ cd "$(dirname "$0")/.."
 python3 scripts/build-native-codecs.py --arch "$(uname -m)"
 swift build -c release
 bin=$(swift build -c release --show-bin-path)
-version=0.8.0
+version=0.9.0
 arch=$(uname -m)
 sha=$(git rev-parse HEAD)
 app=dist/PicShot.app
@@ -71,6 +71,8 @@ cat > "$staging/安装说明.txt" <<'TEXT'
 新安装快捷键：⌃1 区域截图；⌃2 剪贴板贴图；⌃3 恢复最后关闭的贴图；⌃⌘H 历史记录。旧版已保存的自定义快捷键保留，可在设置修改。
 录屏：最长 10 分钟，最多 1 GB；可选择最多 30 秒的录制片段导出 GIF。
 MP4 修剪单独导出新副本，不覆盖原录制。
+动画 WebP 最多 60 秒且不超过 600 帧，无声音；静态 WebP/AVIF 在导出预览中设置。
+保存图标旁的小箭头提供快速 PNG 保存、保存并复制及命名设置；自动副本默认关闭。
 TEXT
 hdiutil create -volname PicShot -srcfolder "$staging" -format UDZO -ov "dist/$base.dmg"
 hdiutil verify "dist/$base.dmg"

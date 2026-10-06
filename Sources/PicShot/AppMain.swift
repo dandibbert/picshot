@@ -22,6 +22,11 @@ import ImageIO
     var status:NSStatusItem?
     var controllers:[NSWindowController]=[]
     // Transient fallback only: smoke runs and unavailable/corrupt session storage.
+    private lazy var saveWorkflows: SaveWorkflowPresenter = {
+        let workflow = SaveWorkflowPresenter(isSmoke: smoke != nil)
+        workflow.onSettings = { [weak self] parent in self?.settings(); self?.settingsController?.selectCategory(.save); self?.settingsController?.showAbove(parent) }
+        return workflow
+    }()
     var pins:[PinController]=[]
     var pinSession:PinSessionCoordinator?
     var pinSessionLoadError:Error?
@@ -54,6 +59,7 @@ import ImageIO
         setupMenu();setupWindow()
         NotificationCenter.default.addObserver(self,selector:#selector(windowClosed(_:)),name:NSWindow.willCloseNotification,object:nil)
         if smoke == nil {
+            SaveWorkflowPresenter.application = saveWorkflows
             setupStatus();hotKeys=HotKeyService()
             hotKeys?.onAction={ [weak self] action in
                 switch action {
@@ -77,6 +83,7 @@ import ImageIO
     func applicationShouldTerminateAfterLastWindowClosed(_ sender:NSApplication)->Bool {false}
     func applicationWillTerminate(_ notification:Notification){
         isTerminating=true
+        if smoke == nil { saveWorkflows.cancelAll(); SaveWorkflowPresenter.application = nil }
         // Saving/cancelling is awaited by applicationShouldTerminate. Starting
         // an async cancel here would race process exit and could discard a take.
         if recorder.controlState.hasSessionActivity {
@@ -296,7 +303,7 @@ import ImageIO
     func exportRecord(_ record: CaptureRecord) {
         guard let image = history.image(for: record), let window = mainWindow else { return }
         ImageExportController.present(image: image, from: window, suggestedName: "PicShot-history",
-                                      sourceURL: history.url(for: record))
+                                      sourceURL: history.url(for: record), saveWorkflow: smoke == nil ? saveWorkflows : nil)
     }
     func smartErase(_ image:CGImage){
         let c=SmartEraseController(image:image){[weak self] result in
@@ -318,7 +325,7 @@ import ImageIO
             if editorAdmissionNotices.recordRefusal(){showEditorAdmissionNotice()};return
         }
         let knownCaptureDate=presentation?.capturedAt ?? captureDate
-        let c=ImageEditorController(image:image,presentation:presentation,onSave:{[weak self] img in do{try self?.history.add(img,title:"编辑",capturedAt:knownCaptureDate)}catch{showError(error)}},onPin:{[weak self] img in self?.pin(img)},onOCR:{[weak self] img in self?.recognize(img)},onTranslate:{[weak self] img in self?.translateImage(img)},captureDate:knownCaptureDate)
+        let c=ImageEditorController(image:image,presentation:presentation,onSave:{[weak self] img in do{try self?.history.add(img,title:"编辑",capturedAt:knownCaptureDate)}catch{showError(error)}},onPin:{[weak self] img in self?.pin(img)},onOCR:{[weak self] img in self?.recognize(img)},onTranslate:{[weak self] img in self?.translateImage(img)},captureDate:knownCaptureDate,saveWorkflow:smoke == nil ? saveWorkflows : nil)
         c.onClose={ [weak self,weak c] in
             guard let self,let c else{return}
             self.frozenEditorAdmission.editorDidClose(c)

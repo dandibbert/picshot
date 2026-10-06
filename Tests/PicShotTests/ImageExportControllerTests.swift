@@ -1,5 +1,6 @@
 import XCTest
 import AppKit
+import PicShotCodecCore
 @testable import PicShot
 
 @MainActor
@@ -63,6 +64,80 @@ final class ImageExportControllerTests: XCTestCase {
         controller.accessory.picker.selectItem(at: ImageExportFormat.avif.rawValue); try send(controller.accessory.picker)
         controller.cancelExport(); try await Task.sleep(nanoseconds: 250_000_000)
         XCTAssertNil(controller.latestArtifact); XCTAssertFalse(controller.saveButton.isEnabled)
+    }
+
+    func testBundledRetryWaitsForDelayedCleanupAndOnlyLatestChurnRequestWins() async throws {
+        let probe = ImageExportDelayedAdmissionDouble()
+        let controller = try ImageExportController(image: fixture(), bundledEncoder: { snapshot, options in
+            try await ImageExportService.encodeBundled(snapshot: snapshot, options: options,
+                prepare: { try await probe.prepare($0, $1) })
+        })
+        defer { probe.releaseFirst(); controller.cancelExport() }
+        controller.accessory.picker.selectItem(at: ImageExportFormat.webp.rawValue); try send(controller.accessory.picker)
+        try await until({ probe.state.accepted.count == 1 }, "First codec request did not start")
+        controller.accessory.picker.selectItem(at: ImageExportFormat.avif.rawValue); try send(controller.accessory.picker)
+        try await until({ probe.state.busyAttempts > 0 }, "Latest codec did not wait for cleanup")
+        XCTAssertTrue(probe.state.firstCancellationObserved)
+        XCTAssertNil(controller.latestArtifact); XCTAssertFalse(controller.saveButton.isEnabled)
+        let priorBusy = probe.state.busyAttempts
+        for value in 1...100 {
+            controller.accessory.picker.selectItem(at: value % 2 == 0 ? ImageExportFormat.webp.rawValue : ImageExportFormat.avif.rawValue)
+            try send(controller.accessory.picker)
+            controller.accessory.quality.doubleValue = Double(value); try send(controller.accessory.quality)
+        }
+        controller.accessory.picker.selectItem(at: ImageExportFormat.avif.rawValue); try send(controller.accessory.picker)
+        controller.accessory.quality.doubleValue = 27; try send(controller.accessory.quality)
+        try await until({ probe.state.busyAttempts > priorBusy }, "Final debounced request did not wait")
+        XCTAssertEqual(probe.state.accepted.count, 1, "No new encoder may enter before old cleanup finishes")
+        XCTAssertEqual(probe.state.peakOwners, 1)
+        probe.releaseFirst()
+        let artifact = try await ready(controller)
+        XCTAssertEqual(artifact.options.format, .avif); XCTAssertEqual(artifact.options.quality, 0.27)
+        XCTAssertEqual(probe.state.accepted.map(\.format), [.webp, .avif])
+        XCTAssertEqual(probe.state.accepted.last?.quality, 27)
+        XCTAssertEqual(probe.state.peakOwners, 1); XCTAssertTrue(controller.saveButton.isEnabled)
+        XCTAssertTrue(controller.retryButton.isHidden)
+    }
+    func testCloseCancelsLatestAdmissionWaiterAndReleasesControllerDuringOldCleanup() async throws {
+        let probe = ImageExportDelayedAdmissionDouble()
+        var controller: ImageExportController? = try ImageExportController(image: fixture(), bundledEncoder: { snapshot, options in
+            try await ImageExportService.encodeBundled(snapshot: snapshot, options: options,
+                prepare: { try await probe.prepare($0, $1) })
+        })
+        weak var weakController = controller
+        defer { probe.releaseFirst(); controller?.cancelExport() }
+        controller?.accessory.picker.selectItem(at: ImageExportFormat.webp.rawValue)
+        try send(try XCTUnwrap(controller?.accessory.picker))
+        try await until({ probe.state.accepted.count == 1 }, "First request did not enter")
+        controller?.accessory.picker.selectItem(at: ImageExportFormat.avif.rawValue)
+        try send(try XCTUnwrap(controller?.accessory.picker))
+        try await until({ probe.state.busyAttempts > 0 }, "Replacement never waited")
+        controller?.cancelExport()
+        XCTAssertTrue(controller?.isClosed == true); XCTAssertNil(controller?.latestArtifact)
+        XCTAssertFalse(controller?.saveButton.isEnabled ?? true)
+        controller = nil
+        try await until({ weakController == nil }, "Closed controller was retained by a waiting task")
+        XCTAssertTrue(probe.state.firstCancellationObserved); XCTAssertEqual(probe.state.accepted.count, 1)
+        probe.releaseFirst(); try await until({ probe.state.owners == 0 }, "Old cleanup did not drain")
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(probe.state.accepted.count, 1, "Closed latest waiter must never be admitted later")
+    }
+    func testOtherOwnerBusyHasBoundedWaitAndVisibleWorkingRetry() async throws {
+        let probe = ImageExportDelayedAdmissionDouble(blockFirst: false, externalOwner: true)
+        let controller = try ImageExportController(image: fixture(), bundledEncoder: { snapshot, options in
+            try await ImageExportService.encodeBundled(snapshot: snapshot, options: options,
+                prepare: { try await probe.prepare($0, $1) }, admissionWaitSeconds: 0.15)
+        })
+        defer { probe.releaseExternal(); controller.cancelExport() }
+        controller.accessory.picker.selectItem(at: ImageExportFormat.webp.rawValue); try send(controller.accessory.picker)
+        XCTAssertTrue(controller.statusLabel.stringValue.contains("5 分钟"))
+        try await until({ !controller.retryButton.isHidden }, "Bounded admission wait never offered Retry")
+        XCTAssertNil(controller.latestArtifact); XCTAssertFalse(controller.saveButton.isEnabled)
+        XCTAssertEqual(probe.state.accepted.count, 0)
+        probe.releaseExternal(); try send(controller.retryButton)
+        let artifact = try await ready(controller)
+        XCTAssertEqual(artifact.options.format, .webp); XCTAssertTrue(controller.retryButton.isHidden)
+        XCTAssertEqual(probe.state.accepted.count, 1)
     }
 
     func testBundledCodecControlsKeepCompactWindowOnSmallDesktop() async throws {
@@ -258,6 +333,12 @@ final class ImageExportControllerTests: XCTestCase {
         XCTAssertLessThanOrEqual(try XCTUnwrap(controller.window?.contentView).bounds.height, 550)
     }
 
+    private func until(_ condition: () -> Bool, _ message: String) async throws {
+        let deadline = Date().addingTimeInterval(10)
+        while !condition() && Date() < deadline { try await Task.sleep(nanoseconds: 10_000_000) }
+        guard condition() else { XCTFail(message); throw PicShotError.message(message) }
+    }
+
     private func started(_ barrier: ImageExportTestBarrier) async throws {
         let deadline = Date().addingTimeInterval(10)
         while !barrier.started && Date() < deadline { try await Task.sleep(nanoseconds: 10_000_000) }
@@ -291,4 +372,55 @@ private final class ImageExportTestBarrier: @unchecked Sendable {
         guard semaphore.wait(timeout: .now() + 10) == .success else { throw PicShotError.message("Export test barrier timed out") }
     }
     func release() { semaphore.signal() }
+}
+
+/// Explicit sequencing double, not codec-output acceptance. The production
+/// retry loop waits while the first operation holds admission through delayed
+/// cancellation cleanup. Returned PNG is synthetic UI sequencing input only.
+private final class ImageExportDelayedAdmissionDouble: @unchecked Sendable {
+    struct State {
+        let accepted: [CodecExportRequest]
+        let busyAttempts: Int
+        let owners: Int
+        let peakOwners: Int
+        let firstCancellationObserved: Bool
+    }
+    private let lock = NSLock()
+    private let blockFirst: Bool
+    private var held: Bool
+    private var accepted: [CodecExportRequest] = []
+    private var busyAttempts = 0, owners = 0, peakOwners = 0
+    private var cancelled = false, released = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    init(blockFirst: Bool = true, externalOwner: Bool = false) { self.blockFirst = blockFirst; held = externalOwner }
+    var state: State {
+        lock.lock(); defer { lock.unlock() }
+        return State(accepted: accepted, busyAttempts: busyAttempts, owners: owners, peakOwners: peakOwners, firstCancellationObserved: cancelled)
+    }
+    func prepare(_ snapshot: ImageExportSnapshot, _ request: CodecExportRequest) async throws -> CodecPreparedArtifact {
+        try Task.checkCancellation(); let first = try claim(request); defer { finish() }
+        if first && blockFirst {
+            await withTaskCancellationHandler {
+                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                    lock.lock()
+                    if released { lock.unlock(); continuation.resume() }
+                    else { self.continuation = continuation; lock.unlock() }
+                }
+            } onCancel: { self.recordCancellation() }
+        }
+        let png = try ImageExportService.encode(snapshot: snapshot, options: ImageExportOptions())
+        return CodecPreparedArtifact(data: png.data, preview: png.firstPreview, width: png.width,
+                                     height: png.height, frameCount: 1, duration: 0, destination: nil)
+    }
+    private func claim(_ request: CodecExportRequest) throws -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard !held else { busyAttempts += 1; throw CodecExportProcessError.busy }
+        held = true; owners += 1; peakOwners = max(peakOwners, owners); accepted.append(request); return accepted.count == 1
+    }
+    private func finish() { lock.lock(); held = false; owners -= 1; lock.unlock() }
+    private func recordCancellation() { lock.lock(); cancelled = true; lock.unlock() }
+    func releaseFirst() {
+        lock.lock(); released = true; let continuation = continuation; self.continuation = nil; lock.unlock(); continuation?.resume()
+    }
+    func releaseExternal() { lock.lock(); held = false; lock.unlock() }
 }

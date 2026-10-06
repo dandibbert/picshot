@@ -840,6 +840,9 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     private let onOCR: (CGImage) -> Void
     private let onTranslate: ((CGImage) -> Void)?
     private let onApply: ((CGImage) -> Bool)?
+    private let saveWorkflow: SaveWorkflowPresenter?
+    private let copyAction: (CGImage) -> Void
+    let saveActions = NSPopUpButton()
     private var presentation: FrozenCapturePresentation?
     private var pinPresentation: PinEditorPresentation?
     private let pinClipView = NSView()
@@ -892,11 +895,12 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     init(image: CGImage, presentation: FrozenCapturePresentation? = nil,
          onSave: @escaping (CGImage) -> Void, onPin: @escaping (CGImage) -> Void,
          onOCR: @escaping (CGImage) -> Void, onTranslate: ((CGImage) -> Void)? = nil,
-         onApply: ((CGImage) -> Bool)? = nil, captureDate: Date? = nil) {
+         onApply: ((CGImage) -> Bool)? = nil, captureDate: Date? = nil, saveWorkflow: SaveWorkflowPresenter? = nil, copyAction: ((CGImage) -> Void)? = nil) {
         canvas = ImageEditorCanvas(image: image, captureDate: presentation?.capturedAt ?? captureDate)
         self.presentation = presentation
         self.onSave = onSave; self.onPin = onPin; self.onOCR = onOCR
-        self.onTranslate = onTranslate; self.onApply = onApply
+        self.onTranslate = onTranslate; self.onApply = onApply; self.saveWorkflow = saveWorkflow ?? SaveWorkflowPresenter.application
+        self.copyAction = copyAction ?? { copyImage($0) }
         let window: NSWindow
         if let presentation {
             window = EditorOverlayWindow(contentRect: presentation.displayFrame, styleMask: [.borderless], backing: .buffered, defer: false)
@@ -1087,6 +1091,18 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
             toolbar.addArrangedSubview(iconButton("checkmark.circle", title: "应用到贴图", id: "editor.applyToPin", action: #selector(applyResult)))
         } else { toolbar.addArrangedSubview(iconButton("pin", title: "贴图", id: "editor.pin", action: #selector(pinResult))) }
         toolbar.addArrangedSubview(iconButton("arrow.down.to.line", title: "保存图片… · ⌘S", id: "editor.save", action: #selector(exportResult)))
+        saveActions.pullsDown = true; saveActions.isBordered = false; saveActions.addItem(withTitle: "")
+        saveActions.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: "保存选项")
+        saveActions.imagePosition = .imageOnly; saveActions.identifier = .init("editor.saveActions"); saveActions.setAccessibilityLabel("保存选项")
+        for (title, action) in [("快速保存 PNG", #selector(quickSaveResult)), ("保存 PNG 并复制", #selector(saveCopyResult)), ("保存与命名设置…", #selector(openSaveSettings))] {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: ""); item.target = self
+            item.isEnabled = saveWorkflow != nil; saveActions.menu?.addItem(item)
+        }
+        saveActions.menu?.autoenablesItems = false; saveActions.translatesAutoresizingMaskIntoConstraints = false
+        saveActions.widthAnchor.constraint(equalToConstant: 16).isActive = true
+        saveActions.heightAnchor.constraint(equalToConstant: 32).isActive = true; toolbar.addArrangedSubview(saveActions)
+        if saveWorkflow != nil { canvas.menu = saveActions.menu?.copy() as? NSMenu }
+
         toolbar.addArrangedSubview(iconButton("xmark", title: "取消 · Escape", id: "editor.cancel", action: #selector(cancelEditor)))
         toolbar.addArrangedSubview(iconButton("square.on.square", title: "复制图片 · ⌘C", id: "editor.copy", action: #selector(copyResult)))
         overflow.pullsDown = true; overflow.isBordered = false; overflow.addItem(withTitle: "")
@@ -1101,6 +1117,10 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         addMenu("模糊", action: #selector(selectBlur)); addMenu("创建标注副本 · ⌘D", action: #selector(duplicateAnnotation))
         addMenu("删除标注 · Delete", action: #selector(deleteAnnotation)); overflow.menu?.addItem(.separator())
         addMenu(onApply == nil ? "保存到历史" : "保存编辑", action: #selector(saveResult))
+        if saveWorkflow != nil {
+            addMenu("快速保存 PNG", action: #selector(quickSaveResult)); addMenu("保存 PNG 并复制", action: #selector(saveCopyResult))
+            addMenu("保存与命名设置…", action: #selector(openSaveSettings))
+        }
         addMenu("适合窗口", action: #selector(fitImage)); addMenu("100% 像素", action: #selector(actualSize))
         overflow.translatesAutoresizingMaskIntoConstraints = false; overflow.widthAnchor.constraint(equalToConstant: 32).isActive = true
         overflow.heightAnchor.constraint(equalToConstant: 32).isActive = true; toolbar.addArrangedSubview(overflow)
@@ -1289,9 +1309,33 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         guard let image = canvas.flattened() else { showError(PicShotError.message("无法合成图片，可能内存不足")); return }
         if close { window?.close() }; action(image)
     }
-    @objc private func copyResult() { result(close: presentation != nil) { copyImage($0) } }
-    @objc private func saveResult() { result(onSave) }
-    @objc private func pinResult() { result(close: presentation != nil, onPin) }
+    @objc private func copyResult() {
+        let workflow = saveWorkflow, copy = copyAction
+        result(close: presentation != nil) { image in
+            copy(image) // Immediate copy never waits for automatic save admission.
+            workflow?.save(image: image, automatic: true)
+        }
+    }
+    @objc private func saveResult() {
+        let workflow = saveWorkflow, action = onSave
+        result { image in action(image); workflow?.save(image: image, automatic: true) }
+    }
+    @objc private func pinResult() {
+        let workflow = saveWorkflow, action = onPin
+        result(close: presentation != nil) { image in action(image); workflow?.save(image: image, automatic: true) }
+    }
+    @objc private func quickSaveResult() { saveUsingWorkflow(copy: false) }
+    @objc private func saveCopyResult() { saveUsingWorkflow(copy: true) }
+    @objc private func openSaveSettings() { saveWorkflow?.onSettings?(window) }
+    private func saveUsingWorkflow(copy: Bool) {
+        guard let saveWorkflow else { return }
+        result { [weak self] image in
+            saveWorkflow.save(image: image, copy: copy, from: self?.window) { [weak self] saved in
+                guard saved.clipboardOutcome != .failed, saved.clipboardOutcome != .cancelledAfterSave else { return }
+                if self?.presentation != nil { self?.window?.close() }
+            }
+        }
+    }
     @objc private func recognizeResult() { result(close: presentation != nil, onOCR) }
     @objc private func translateResult() { if let onTranslate { result(close: presentation != nil, onTranslate) } }
     @objc private func applyResult() {
@@ -1395,7 +1439,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     @objc private func exportResult() {
         finishInlineText(commit: true); canvas.finishPolyline()
         guard let window, let image = canvas.flattened() else { return }
-        ImageExportController.present(image: image, from: window) { [weak self] _ in
+        ImageExportController.present(image: image, from: window, saveWorkflow: saveWorkflow) { [weak self] _ in
             if self?.presentation != nil { self?.window?.close() }
         }
     }

@@ -6,7 +6,7 @@ export PICSHOT_SMOKE_FORMULA_MODEL_DIR="$PWD/.build/model-fixtures/formula"
 export PICSHOT_SMOKE_FORMULA_INPUT="$PWD/Tests/PicShotMLHelperTests/Fixtures/energy.png"
 export PICSHOT_SMOKE_TABLE_MODEL_DIR="$PWD/.build/model-fixtures/table"
 export PICSHOT_SMOKE_TABLE_INPUT="$PWD/Tests/PicShotTableEngineTests/Fixtures/merged-table.png"
-base="PicShot-0.8.0-macos-$(uname -m)"
+base="PicShot-0.9.0-macos-$(uname -m)"
 work=$(mktemp -d)
 mounted=false
 trap 'if [[ "$mounted" == true ]];then hdiutil detach "$work/mount" || true;fi;rm -rf "$work"' EXIT
@@ -91,6 +91,14 @@ if sys.argv[4]=='zip':
     assert gif['cancellation']['cancellationObserved'] and gif['cancellation']['helperProcess']['outcome']=='cancelled',gif
 else:
     assert gif['status']=='not-run',gif
+save=r['saveWorkflowEvidence']
+assert save['status']=='passed' and save['quietAutomaticFinalizedAction'],save
+assert not save['userPreferencesRead'] and not save['generalPasteboardReadOrWritten'],save
+assert not save['liveScreenCaptured'] and not save['networkAttempted'],save
+assert save['maximumSaveJobs']==2 and save['estimatedRetainedInputBudgetBytes']==256*1024*1024,save
+assert len(save['resourceCycles'])==10 and sum(not x['warmup'] for x in save['resourceCycles'])==8,save
+for c in save['resourceCycles']:
+    assert c['activeJobs']==0 and c['retainedInputBytes']==0 and c['controllerReleased'] and c['temporaryJobRemoved'],c
 print(json.dumps(r,indent=2))
 PY
 done
