@@ -9,6 +9,11 @@ import PicShotFormulaRenderCore
         let url=URL(fileURLWithPath:report);let directory=url.deletingLastPathComponent()
         do{
             try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
+            if let payload = try await CodecExportAttributionFixture.runIfRequested(evidenceDirectory: directory) {
+                try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]).write(to: url, options: .atomic)
+                try? FileManager.default.removeItem(at: history.directory)
+                NSApp.terminate(nil); return
+            }
             if let value=ProcessInfo.processInfo.environment["PICSHOT_GIF_DIAGNOSTIC_MODE"] {
                 guard let mode=GIFResourceAttributionFixture.Mode(rawValue:value) else {throw PicShotError.message("Unknown GIF diagnostic mode")}
                 let extractionValue=ProcessInfo.processInfo.environment["PICSHOT_GIF_EXTRACTION"] ?? GIFFrameExtraction.asynchronous.rawValue

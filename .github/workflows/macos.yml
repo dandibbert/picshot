@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
-    if: ${{ (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') }}
+    if: ${{ (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') && !contains(github.event.head_commit.message || '', '[codec-attribution]') }}
     strategy:
       fail-fast: false
       matrix:
@@ -304,4 +304,59 @@ jobs:
           name: PicShot-GIF-Timing-${{ matrix.arch }}-${{ github.sha }}
           path: dist/gif-timing.log
           if-no-files-found: ignore
+          retention-days: 14
+
+  codec-attribution:
+    if: ${{ contains(github.event.head_commit.message || '', '[codec-attribution]') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Package signed app for isolated codec observations
+        run: |
+          mkdir -p dist
+          set -o pipefail
+          bash scripts/package.sh 2>&1 | tee dist/package.log
+      - name: Compile native attribution structure tests
+        timeout-minutes: 10
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 540
+          --log dist/attribution-test-build.log --report dist/attribution-test-build-report.json
+          -- swift build --build-tests
+      - name: Build real debug executables for attribution subprocesses
+        run: |
+          swift build --product PicShot
+          swift build --product PicShotCodecHelper
+      - name: Verify attribution structure without inferring memory stability
+        timeout-minutes: 8
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 420
+          --log dist/attribution-tests.log --report dist/attribution-tests-report.json
+          -- swift test --skip-build --filter 'CodecExportAttribution'
+      - name: Run six fresh installed processes after separate input preparation
+        run: |
+          set -o pipefail
+          bash scripts/codec-attribution.sh 2>&1 | tee dist/codec-attribution.log
+      - name: Upload observations without publishing another installer
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Codec-Attribution-${{ matrix.arch }}-${{ github.sha }}
+          path: |
+            dist/package.log
+            dist/attribution-test-build.log
+            dist/attribution-test-build-report.json
+            dist/attribution-tests.log
+            dist/attribution-tests-report.json
+            dist/codec-attribution.log
+            dist/evidence/codec-attribution/
+          if-no-files-found: warn
           retention-days: 14
