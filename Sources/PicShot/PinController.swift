@@ -112,7 +112,8 @@ struct PinImageState {
     private var closed = false
     private var updatingLayout = false
     private var applyingPresentation = false
-    private var exportPanel: NSSavePanel?
+    private(set) weak var imageExportController: ImageExportController?
+    private var exportInProgress: Bool { imageExportController?.isClosed == false }
     private(set) var annotationEditor: ImageEditorController?
     private var annotationGeneration = UUID()
     private var restorePinAfterAnnotations = false
@@ -128,6 +129,15 @@ struct PinImageState {
     private(set) var textSelectionEnabled = false
     private(set) var textSelectionIsRecognizing = false
     private(set) var textSelectionStatus = ""
+    private let recognizeCodes: @Sendable (CGImage) async throws -> RecognizedBarcodeDocument
+    let barcodeSelectionOverlay = BarcodeSelectionOverlay()
+    private(set) var barcodeWindow: BarcodeResultController?
+    private var barcodeTask: Task<Void, Never>?
+    private var barcodeGeneration = UUID()
+    private var barcodeControl: NSButton?
+    private(set) var barcodeSelectionEnabled = false
+    private(set) var barcodeIsRecognizing = false
+    private(set) var barcodeStatus = ""
     var actionMenu: NSMenu? { canvas.menu }
 
     convenience init(image: CGImage) {
@@ -135,8 +145,9 @@ struct PinImageState {
     }
 
     init(originalImage: CGImage, currentImage: CGImage, isModified: Bool,
-         recognizeForSelection: @escaping @Sendable (CGImage) async throws -> RecognitionResult = { try await RecognitionService.recognize($0) }) {
-        self.recognizeForSelection = recognizeForSelection
+         recognizeForSelection: @escaping @Sendable (CGImage) async throws -> RecognitionResult = { try await RecognitionService.recognize($0) },
+         recognizeCodes: @escaping @Sendable (CGImage) async throws -> RecognizedBarcodeDocument = { try await RecognitionService.recognizeBarcodes($0) }) {
+        self.recognizeForSelection = recognizeForSelection; self.recognizeCodes = recognizeCodes
         image = originalImage
         state = PinImageState(original: originalImage, current: currentImage, isModified: isModified)
         let scale = min(1, 680 / CGFloat(max(currentImage.width, currentImage.height)))
@@ -166,6 +177,11 @@ struct PinImageState {
         textSelectionOverlay.onExit = { [weak self] in self?.setTextSelectionEnabled(false) }
         textSelectionOverlay.onAnnotate = { [weak self] in self?.showAnnotations() }
         canvas.textSelectionOverlay = textSelectionOverlay
+        barcodeSelectionOverlay.onExit = { [weak self] in self?.setBarcodeSelectionEnabled(false) }
+        barcodeSelectionOverlay.onAnnotate = { [weak self] in self?.showAnnotations() }
+        barcodeSelectionOverlay.onSelect = { [weak self] in self?.barcodeWindow?.selectResult(at: $0, notify: false) }
+        barcodeSelectionOverlay.onCopy = { [weak self] in self?.barcodeWindow?.copySelected(to: .general) }
+        canvas.barcodeSelectionOverlay = barcodeSelectionOverlay
         canvas.menu = makeActionMenu()
         textSelectionOverlay.menu = canvas.menu
         canvas.setAccessibilityLabel("图片贴图，空格标注，Command Shift T 选择文字，右键显示操作")
@@ -186,6 +202,7 @@ struct PinImageState {
         let recognition = NSMenu(title: "识别")
         let selection = addItem("选择图片文字", action: #selector(toggleTextSelection), key: "t", to: recognition)
         selection.keyEquivalentModifierMask = [.command, .shift]
+        addItem("识别二维码 / 条码…", action: #selector(toggleBarcodeSelection), to: recognition)
         recognition.addItem(.separator())
         addItem("识别文字…", action: #selector(recognizeText), to: recognition)
         addItem("直接复制识别文本", action: #selector(copyRecognizedText), to: recognition)
@@ -221,7 +238,7 @@ struct PinImageState {
         menu.addItem(.separator())
         let original = NSMenu(title: "原始图片")
         addItem("复制原始图片", action: #selector(copyOriginal), to: original)
-        addItem("保存原始图片为 PNG…", action: #selector(saveOriginal), to: original)
+        addItem("原始图片另存为…", action: #selector(saveOriginal), to: original)
         menu.addItem(withTitle: "原始图片", action: nil, keyEquivalent: "").submenu = original
         addItem("锁定", action: #selector(toggleLock), to: menu)
         addItem("关闭", action: #selector(closePin), key: "\u{1b}", to: menu)
@@ -238,6 +255,10 @@ struct PinImageState {
             if item.action == #selector(toggleTextSelection) {
                 item.state = textSelectionEnabled ? .on : .off
                 item.title = textSelectionIsRecognizing ? "正在识别文字（取消）" : "选择图片文字"
+            }
+            if item.action == #selector(toggleBarcodeSelection) {
+                item.state = barcodeSelectionEnabled ? .on : .off
+                item.title = barcodeIsRecognizing ? "正在识别码（取消）" : "识别二维码 / 条码…"
             }
             if item.action == #selector(toggleDirectCopy) { item.state = TextResultController.copyDirectlyNextTime ? .on : .off }
             if item.action == #selector(toggleLock) { item.state = locked ? .on : .off }
@@ -263,16 +284,16 @@ struct PinImageState {
     }
 
     @objc func showAnnotations() {
-        guard !closed, !temporarilyHidden, exportPanel == nil else { return }
+        guard !closed, !temporarilyHidden, !exportInProgress else { return }
         if let annotationEditor { annotationEditor.showWindow(nil); annotationEditor.window?.makeKeyAndOrderFront(nil); return }
         guard let anchor = annotationPresentation else { return }
-        setTextSelectionEnabled(false)
+        setTextSelectionEnabled(false); setBarcodeSelectionEnabled(false)
         setCropping(false)
         let generation = UUID(); annotationGeneration = generation
         var editingRevision = pixelRevision
         let apply: (CGImage) -> Bool = { [weak self] image in
             guard let self, !self.closed, !self.temporarilyHidden, self.annotationGeneration == generation,
-                  self.annotationEditor != nil, self.exportPanel == nil else { return false }
+                  self.annotationEditor != nil, !self.exportInProgress else { return false }
             guard self.pixelRevision == editingRevision else {
                 showError(PicShotError.message("贴图已在其他操作中更改。当前标注仍可复制或导出；请重新打开标注后再应用到贴图。")); return false
             }
@@ -322,7 +343,8 @@ struct PinImageState {
     func hideTemporarily() {
         guard !closed else { return }
         temporarilyHidden = true
-        setTextSelectionEnabled(false)
+        imageExportController?.cancelExport(); imageExportController = nil
+        setTextSelectionEnabled(false); setBarcodeSelectionEnabled(false)
         dismissAnnotations(restoringPin: false)
         recognitionGeneration = UUID(); recognitionTask?.cancel(); recognitionTask = nil
         recognitionWindow?.close(); recognitionWindow = nil
@@ -339,7 +361,7 @@ struct PinImageState {
 
     /// Keep persistence transactional when flattening the shared annotation editor.
     func applyAnnotatedImage(_ image: CGImage) throws {
-        guard !closed, exportPanel == nil else { return }
+        guard !closed, !exportInProgress else { return }
         guard PinImageRenderer.allowsRasterSize(width: image.width, height: image.height) else { throw renderFailure }
         try acceptImageState(PinImageState(original: state.original, current: image, isModified: true))
     }
@@ -349,9 +371,10 @@ struct PinImageState {
     /// Explicit per-pin mode; never enabled by restoration, group changes or merely opening a pin.
     func setTextSelectionEnabled(_ enabled: Bool) {
         if enabled {
-            guard !closed, !temporarilyHidden, annotationEditor == nil, exportPanel == nil,
+            guard !closed, !temporarilyHidden, annotationEditor == nil, !exportInProgress,
                   window?.ignoresMouseEvents != true, !textSelectionEnabled else { return }
         }
+        if enabled { setBarcodeSelectionEnabled(false) }
         textSelectionGeneration = UUID(); textSelectionTask?.cancel(); textSelectionTask = nil
         textSelectionIsRecognizing = false; textSelectionEnabled = enabled
         textSelectionOverlay.document = nil
@@ -404,6 +427,85 @@ struct PinImageState {
         }
     }
 
+    @objc private func toggleBarcodeSelection() { setBarcodeSelectionEnabled(!barcodeSelectionEnabled) }
+
+    /// Opt-in, transient mode. It is intentionally absent from persisted pin presentation.
+    func setBarcodeSelectionEnabled(_ enabled: Bool) {
+        if enabled {
+            guard !closed, !temporarilyHidden, annotationEditor == nil, !exportInProgress,
+                  window?.ignoresMouseEvents != true, !barcodeSelectionEnabled else { return }
+            setTextSelectionEnabled(false)
+        }
+        barcodeGeneration = UUID(); barcodeTask?.cancel(); barcodeTask = nil
+        barcodeIsRecognizing = false; barcodeSelectionEnabled = enabled
+        barcodeSelectionOverlay.document = nil; barcodeSelectionOverlay.isHidden = !enabled
+        barcodeControl?.removeFromSuperview(); barcodeControl = nil
+        barcodeWindow?.onClose = nil; barcodeWindow?.close(); barcodeWindow = nil
+        if !enabled {
+            barcodeStatus = ""; barcodeSelectionOverlay.removeFromSuperview()
+            if window?.firstResponder === barcodeSelectionOverlay { window?.makeFirstResponder(canvas) }
+            return
+        }
+        setCropping(false)
+        barcodeSelectionOverlay.frame = canvas.bounds; barcodeSelectionOverlay.autoresizingMask = [.width, .height]
+        barcodeSelectionOverlay.imageRect = canvas.imageRect; canvas.addSubview(barcodeSelectionOverlay)
+        window?.makeFirstResponder(canvas)
+        let control = NSButton(title: "识别码中 · Esc 取消", target: self, action: #selector(toggleBarcodeSelection))
+        control.controlSize = .small; control.bezelStyle = .rounded; control.setAccessibilityLabel("退出识别码选择")
+        if let root = window?.contentView {
+            root.addSubview(control); control.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([control.topAnchor.constraint(equalTo: root.topAnchor, constant: 5),
+                                         control.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -5)])
+        }
+        barcodeControl = control; barcodeIsRecognizing = true; barcodeStatus = "识别中"
+        let generation = barcodeGeneration, revision = pixelRevision, source = state.current, provider = recognizeCodes
+        barcodeTask = Task { [weak self] in
+            do {
+                let document = try await provider(source)
+                guard !Task.isCancelled, let self, !self.closed, !self.temporarilyHidden, self.barcodeSelectionEnabled,
+                      self.barcodeGeneration == generation, self.pixelRevision == revision else { return }
+                self.barcodeTask = nil; self.barcodeIsRecognizing = false
+                self.barcodeSelectionOverlay.document = document
+                self.barcodeStatus = document.statusText
+                self.barcodeControl?.title = document.results.isEmpty ? "未找到码 · 退出" : "\(document.results.count) 个码 · 退出"
+                self.barcodeControl?.toolTip = document.statusText
+                let browser = BarcodeResultController(image: source, document: document, showsSourceImage: false)
+                browser.onSelect = { [weak self] index in
+                    guard let self, self.barcodeGeneration == generation else { return }
+                    self.barcodeSelectionOverlay.selectResult(at: index, notify: false)
+                    if let box = document.results[index].quad?.bounds {
+                        let imageRect = self.canvas.imageRect
+                        let region = CGRect(x: imageRect.minX + box.minX * imageRect.width, y: imageRect.minY + box.minY * imageRect.height,
+                                            width: box.width * imageRect.width, height: box.height * imageRect.height)
+                        self.barcodeSelectionOverlay.scrollToVisible(region.insetBy(dx: -16, dy: -16))
+                    }
+                }
+                browser.onClose = { [weak self] in
+                    guard let self, self.barcodeGeneration == generation else { return }
+                    self.barcodeWindow = nil
+                    self.setBarcodeSelectionEnabled(false)
+                }
+                self.barcodeWindow = browser
+                self.barcodeSelectionOverlay.selectResult(at: document.results.isEmpty ? nil : 0, notify: false)
+                if let pinWindow = self.window, let resultWindow = browser.window {
+                    let screen = pinWindow.screen?.visibleFrame ?? pinWindow.frame
+                    let width = resultWindow.frame.width, height = resultWindow.frame.height
+                    let preferredX = pinWindow.frame.maxX + 12 + width <= screen.maxX ? pinWindow.frame.maxX + 12 : pinWindow.frame.minX - width - 12
+                    resultWindow.setFrameOrigin(CGPoint(x: min(max(preferredX, screen.minX), max(screen.minX, screen.maxX - width)),
+                                                       y: min(max(pinWindow.frame.maxY - height, screen.minY), max(screen.minY, screen.maxY - height))))
+                }
+                browser.showWindow(nil); browser.window?.makeKeyAndOrderFront(nil)
+            } catch is CancellationError {
+                guard let self, self.barcodeGeneration == generation else { return }
+                self.setBarcodeSelectionEnabled(false)
+            } catch {
+                guard !Task.isCancelled, let self, !self.closed, self.barcodeGeneration == generation else { return }
+                self.barcodeTask = nil; self.barcodeIsRecognizing = false; self.barcodeStatus = "识别失败"
+                self.barcodeControl?.title = "识别失败 · 退出"; self.barcodeControl?.toolTip = error.localizedDescription
+            }
+        }
+    }
+
     @objc private func toggleDirectCopy() { UserDefaults.standard.set(!TextResultController.copyDirectlyNextTime, forKey: TextResultController.directCopyPreferenceKey) }
     @objc private func recognizeText() { recognize(state.current, copyDirectly: false) }
     @objc private func copyRecognizedText() { recognize(state.current, copyDirectly: true) }
@@ -436,7 +538,7 @@ struct PinImageState {
         do { try applyTransform(PinTransform.allCases[sender.tag]) } catch { showError(error) }
     }
     func applyTransform(_ transform: PinTransform) throws {
-        guard !closed, exportPanel == nil else { return }
+        guard !closed, !exportInProgress else { return }
         var next = state
         guard next.apply(transform) else { throw renderFailure }
         try acceptImageState(next)
@@ -445,7 +547,7 @@ struct PinImageState {
         do { try cropImage(to: rectangle) } catch { showError(error) }
     }
     func cropImage(to rectangle: CGRect) throws {
-        guard !closed, exportPanel == nil else { return }
+        guard !closed, !exportInProgress else { return }
         var next = state
         guard next.crop(to: rectangle) else { throw renderFailure }
         try acceptImageState(next)
@@ -454,7 +556,7 @@ struct PinImageState {
         do { try restoreOriginalImage() } catch { showError(error) }
     }
     func restoreOriginalImage() throws {
-        guard !closed, exportPanel == nil, state.isModified else { return }
+        guard !closed, !exportInProgress, state.isModified else { return }
         var next = state; next.reset()
         try acceptImageState(next)
     }
@@ -462,7 +564,7 @@ struct PinImageState {
         try onPixelChange?(next.current, !next.isModified)
         let previousSize = CGSize(width: state.current.width, height: state.current.height)
         state = next; pixelRevision &+= 1
-        setTextSelectionEnabled(false)
+        setTextSelectionEnabled(false); setBarcodeSelectionEnabled(false)
         recognitionGeneration = UUID(); recognitionTask?.cancel(); recognitionTask = nil
         recognitionWindow?.close(); recognitionWindow = nil
         setCropping(false); canvas.image = state.current
@@ -482,12 +584,12 @@ struct PinImageState {
     }
 
     @objc private func toggleCrop() {
-        guard exportPanel == nil else { return }
+        guard !exportInProgress else { return }
         if canvas.isCropping, let rectangle = canvas.selection, rectangle.width >= 1, rectangle.height >= 1 { applyCrop(rectangle) }
         else { setCropping(!canvas.isCropping) }
     }
     private func setCropping(_ value: Bool) {
-        if value { setTextSelectionEnabled(false) }
+        if value { setTextSelectionEnabled(false); setBarcodeSelectionEnabled(false) }
         canvas.isCropping = value; canvas.selection = nil
         canvas.toolTip = value ? "拖动选择，按 Return 裁剪，Esc 取消" : nil
         if value { window?.makeFirstResponder(canvas) }
@@ -498,18 +600,11 @@ struct PinImageState {
     @objc private func savePin() { save(original: false) }
     @objc private func saveOriginal() { save(original: true) }
     private func save(original: Bool) {
-        guard let window, exportPanel == nil else { return }
-        let panel = NSSavePanel(); panel.allowedContentTypes = [.png]; panel.canCreateDirectories = true
-        panel.title = original ? "保存原始图片" : "保存当前图片"
-        panel.nameFieldStringValue = original ? "PicShot-original.png" : "PicShot-pin.png"
-        exportPanel = panel
-        panel.beginSheetModal(for: window) { [weak self, weak panel] response in
-            guard let self else { return }
-            self.exportPanel = nil
-            guard !self.closed, response == .OK, let url = panel?.url else { return }
-            do { try (original ? self.image : self.state.current).writePNG(to: url) }
-            catch { showError(error) }
-        }
+        guard !closed, !temporarilyHidden, let window else { return }
+        if exportInProgress { imageExportController?.window?.makeKeyAndOrderFront(nil); return }
+        setTextSelectionEnabled(false); setBarcodeSelectionEnabled(false); setCropping(false)
+        imageExportController = ImageExportController.present(image: original ? image : state.current, from: window,
+                                                              suggestedName: original ? "PicShot-original" : "PicShot-pin")
     }
 
     @objc private func selectOpacity(_ sender: NSMenuItem) {
@@ -527,7 +622,7 @@ struct PinImageState {
         if locked { window?.styleMask.remove(.resizable) } else { window?.styleMask.insert(.resizable) }
         updateTitle(); presentationDidChange()
     }
-    @objc private func clickThrough() { setTextSelectionEnabled(false); setCropping(false); annotationEditor?.close(); window?.ignoresMouseEvents = true; presentationDidChange() }
+    @objc private func clickThrough() { setTextSelectionEnabled(false); setBarcodeSelectionEnabled(false); setCropping(false); annotationEditor?.close(); window?.ignoresMouseEvents = true; presentationDidChange() }
     @objc private func closePin() { close() }
 
     var presentation: PinPresentation {
@@ -549,7 +644,7 @@ struct PinImageState {
         fixedZoom = value.zoom.map { CGFloat($0) }
         locked = value.locked; window?.isMovable = !locked
         if locked { window?.styleMask.remove(.resizable) } else { window?.styleMask.insert(.resizable) }
-        if value.clickThrough { setTextSelectionEnabled(false) }
+        if value.clickThrough { setTextSelectionEnabled(false); setBarcodeSelectionEnabled(false) }
         window?.ignoresMouseEvents = value.clickThrough
         updateLayout(); updateTitle()
     }
@@ -572,14 +667,15 @@ struct PinImageState {
     func windowDidResize(_ notification: Notification) { updateLayout(); updateTitle(); presentationDidChange() }
     func windowWillClose(_ notification: Notification) {
         guard !closed else { return }; closed = true
-        exportPanel?.cancel(nil); exportPanel = nil
+        imageExportController?.cancelExport(); imageExportController = nil
         setTextSelectionEnabled(false); textSelectionOverlay.releaseResources()
+        setBarcodeSelectionEnabled(false); barcodeSelectionOverlay.releaseResources()
         recognitionGeneration = UUID(); recognitionTask?.cancel(); recognitionTask = nil
         dismissAnnotations(restoringPin: false)
         recognitionWindow?.onClose = nil; recognitionWindow?.close(); recognitionWindow = nil
         canvas.onCrop = nil; canvas.onCancelCrop = nil
         canvas.onAnnotate = nil; canvas.onClose = nil; canvas.onCopy = nil; canvas.onToggleTextSelection = nil
-        canvas.textSelectionOverlay = nil
+        canvas.textSelectionOverlay = nil; canvas.barcodeSelectionOverlay = nil
         let completion = onClose
         onClose = nil; onPixelChange = nil; onPresentationChange = nil
         completion?()
@@ -608,6 +704,7 @@ struct PinImageState {
         canvas.setFrameSize(NSSize(width: max(viewport.width, CGFloat(state.current.width) * canvas.zoom),
                                    height: max(viewport.height, CGFloat(state.current.height) * canvas.zoom)))
         textSelectionOverlay.frame = canvas.bounds; textSelectionOverlay.imageRect = canvas.imageRect
+        barcodeSelectionOverlay.frame = canvas.bounds; barcodeSelectionOverlay.imageRect = canvas.imageRect
         canvas.needsDisplay = true
     }
 }
@@ -631,6 +728,7 @@ struct PinImageState {
     var onCopy: (() -> Void)?
     var onToggleTextSelection: (() -> Void)?
     weak var textSelectionOverlay: PinTextSelectionOverlay?
+    weak var barcodeSelectionOverlay: BarcodeSelectionOverlay?
     private var anchor: CGPoint?
     override var acceptsFirstResponder: Bool { true }
 
@@ -681,12 +779,15 @@ struct PinImageState {
     override func mouseUp(with event: NSEvent) { anchor = nil }
     @objc func copy(_ sender: Any?) {
         if let textSelectionOverlay, textSelectionOverlay.superview != nil { textSelectionOverlay.copy(sender) }
+        else if let barcodeSelectionOverlay, barcodeSelectionOverlay.superview != nil { barcodeSelectionOverlay.copy(sender) }
         else { onCopy?() }
     }
     override func selectAll(_ sender: Any?) {
         if let textSelectionOverlay, textSelectionOverlay.superview != nil { textSelectionOverlay.selectAll(sender) }
     }
     override func keyDown(with event: NSEvent) {
+        if !isCropping, let barcodeSelectionOverlay, barcodeSelectionOverlay.superview != nil,
+           barcodeSelectionOverlay.handleKeyDown(event) { return }
         if !isCropping, let textSelectionOverlay, textSelectionOverlay.superview != nil,
            textSelectionOverlay.handleKeyDown(event) { return }
         if !isCropping, event.modifierFlags.intersection([.command, .shift, .control, .option]) == [.command, .shift],

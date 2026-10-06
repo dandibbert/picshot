@@ -48,6 +48,7 @@ enum StatusMenuLayout {
 @MainActor extension AppDelegate: NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         if menu === status?.menu { rebuildStatusMenu(menu) }
+        else if menu.title == "截图预设" { populateCapturePresetsMenu(menu) }
     }
     func rebuildStatusMenu(_ menu: NSMenu) {
         menu.removeAllItems(); menu.autoenablesItems = false
@@ -91,7 +92,8 @@ enum StatusMenuLayout {
     }
     func additionalCaptureMenu() -> NSMenu {
         let menu = NSMenu(title: "更多截图")
-        for (title, action) in [("跨屏区域截图（系统选区）", #selector(systemRegion)), ("窗口截图", #selector(windowCapture)), ("当前屏幕", #selector(full)), ("所有屏幕合成", #selector(allScreens))] { menu.addItem(withTitle: title, action: action, keyEquivalent: "").target = self }
+        menu.addItem(withTitle: "截图预设", action: nil, keyEquivalent: "").submenu = capturePresetsMenu()
+        for (title, action) in [("界面元素截图…", #selector(elementCapture)), ("跨屏区域截图（系统选区）", #selector(systemRegion)), ("窗口截图", #selector(windowCapture)), ("当前屏幕", #selector(full)), ("所有屏幕合成", #selector(allScreens))] { menu.addItem(withTitle: title, action: action, keyEquivalent: "").target = self }
         menu.addItem(.separator())
         for (title, action) in [("多选区域（可减选）", #selector(multiRegionCapture)), ("多边形选区", #selector(polygonCapture)), ("自由形状选区", #selector(freehandCapture))] { menu.addItem(withTitle: title, action: action, keyEquivalent: "").target = self }
         return menu

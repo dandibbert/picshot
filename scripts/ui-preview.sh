@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-ditto -x -k "dist/PicShot-0.6.0-macos-$(uname -m).zip" "$work"
+ditto -x -k "dist/PicShot-0.7.0-macos-$(uname -m).zip" "$work"
 app="$work/PicShot.app"
 codesign --verify --deep --strict "$app"
 mkdir -p dist/evidence/ui
@@ -20,5 +20,10 @@ parity=r['interactionParity']
 assert parity['status']=='passed' and not parity['screenCaptureStarted'] and not parity['permissionRequested'],parity
 for key in ['annotationPaths','scrollSequence','pinTextSelection']:
     assert parity[key]['status']=='passed',parity[key]
+batch=r['captureExportRecognition']
+assert batch['status']=='passed' and batch['settingsPresetRouteVerified'],batch
+assert not batch['screenCaptureStarted'] and not batch['permissionRequested'] and not batch['externalURLVisited'],batch
+for key in ['capturePresetsElements','imageExport','barcodes']:
+    assert batch[key]['status']=='passed',batch[key]
 print(json.dumps(r,indent=2))
 PY

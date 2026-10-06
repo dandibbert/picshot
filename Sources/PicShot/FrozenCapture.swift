@@ -15,6 +15,25 @@ struct CapturedImage {
         let geometry = try FrozenCaptureGeometry(pointSize: displayFrame.size,
                                                   pixelWidth: image.width, pixelHeight: image.height)
         let aligned = try geometry.alignedSelection(selection)
+        return try frozenAlignedRegion(image: image, displayID: displayID, displayFrame: displayFrame,
+                                       aligned: aligned, capturedAt: capturedAt)
+    }
+
+    /// Saved regions own integral pixel coordinates. Do not convert those pixels
+    /// to points and floor them again: fractional densities can add an edge pixel.
+    static func frozenPixelRegion(image: CGImage, displayID: CGDirectDisplayID,
+                                  displayFrame: CGRect, pixelFrame: CGRect, capturedAt: Date = Date()) throws -> CapturedImage {
+        guard displayFrame.minX.isFinite, displayFrame.minY.isFinite,
+              displayFrame.maxX.isFinite, displayFrame.maxY.isFinite else { throw CaptureError.invalidRegion }
+        let geometry = try FrozenCaptureGeometry(pointSize: displayFrame.size, pixelWidth: image.width, pixelHeight: image.height)
+        let aligned = try geometry.selectionForPixels(pixelFrame)
+        return try frozenAlignedRegion(image: image, displayID: displayID, displayFrame: displayFrame,
+                                       aligned: aligned, capturedAt: capturedAt)
+    }
+
+    private static func frozenAlignedRegion(image: CGImage, displayID: CGDirectDisplayID,
+                                            displayFrame: CGRect, aligned: FrozenCaptureGeometry.Selection,
+                                            capturedAt: Date) throws -> CapturedImage {
         guard let crop = image.cropping(to: aligned.pixelFrame),
               crop.width == Int(aligned.pixelFrame.width), crop.height == Int(aligned.pixelFrame.height) else {
             throw CaptureError.failed("Could not prepare the selected pixels.")
@@ -79,6 +98,20 @@ struct FrozenCaptureGeometry {
         self.pointSize = pointSize
         self.pixelWidth = pixelWidth
         self.pixelHeight = pixelHeight
+    }
+
+    func selectionForPixels(_ pixels: CGRect) throws -> Selection {
+        guard pixels.minX.isFinite, pixels.minY.isFinite, pixels.width.isFinite, pixels.height.isFinite,
+              pixels.maxX.isFinite, pixels.maxY.isFinite,
+              [pixels.minX, pixels.minY, pixels.width, pixels.height].allSatisfy({ $0.rounded() == $0 }),
+              pixels.minX >= 0, pixels.minY >= 0, pixels.width > 0, pixels.height > 0,
+              pixels.maxX <= CGFloat(pixelWidth), pixels.maxY <= CGFloat(pixelHeight) else { throw CaptureError.invalidRegion }
+        let scaleX = CGFloat(pixelWidth) / pointSize.width, scaleY = CGFloat(pixelHeight) / pointSize.height
+        let local = CGRect(x: pixels.minX / scaleX, y: pixels.minY / scaleY, width: pixels.width / scaleX, height: pixels.height / scaleY)
+        guard local.width >= 2, local.height >= 2 else { throw CaptureError.invalidRegion }
+        return Selection(pixelFrame: pixels, topLeftFrame: local,
+                         selectionFrame: CGRect(x: local.minX, y: pointSize.height - pixels.maxY / scaleY,
+                                                width: local.width, height: local.height))
     }
 
     func alignedSelection(_ rectangle: CGRect, minimumPointSize: CGFloat = 2) throws -> Selection {

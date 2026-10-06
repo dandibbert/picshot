@@ -1395,56 +1395,18 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     @objc private func exportResult() {
         finishInlineText(commit: true); canvas.finishPolyline()
         guard let window, let image = canvas.flattened() else { return }
-        let panel = NSSavePanel(); panel.title = "保存图片"; panel.nameFieldStringValue = "PicShot.png"
-        panel.allowedContentTypes = [.png]; panel.canCreateDirectories = true
-        let formats = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 180, height: 28)); formats.addItems(withTitles: ["PNG", "JPEG", "TIFF", "PDF"])
-        let accessory = ExportFormatAccessory(picker: formats, panel: panel); panel.accessoryView = accessory
-        panel.beginSheetModal(for: window) { [weak self, accessory] response in
-            guard response == .OK, let url = panel.url else {
-                self?.window?.makeFirstResponder(self?.canvas); return
-            }
-            do {
-                try Self.writeFlattened(image, to: url, format: accessory.picker.indexOfSelectedItem)
-                if self?.presentation != nil { self?.window?.close() }
-            } catch { showError(error) }
+        ImageExportController.present(image: image, from: window) { [weak self] _ in
+            if self?.presentation != nil { self?.window?.close() }
         }
     }
 
+    /// Compatibility API for existing callers/tests. The UI uses the bounded
+    /// asynchronous controller; this synchronous seam still verifies every
+    /// output and publishes exclusively without changing an existing file.
     static func writeFlattened(_ image: CGImage, to url: URL, format: Int) throws {
-        if format == 3 {
-            var media = CGRect(x: 0, y: 0, width: CGFloat(image.width), height: CGFloat(image.height))
-            guard let consumer = CGDataConsumer(url: url as CFURL), let context = CGContext(consumer: consumer, mediaBox: &media, nil) else {
-                throw PicShotError.message("无法创建 PDF")
-            }
-            context.beginPDFPage(nil); context.draw(image, in: media); context.endPDFPage(); context.closePDF()
-            return
-        }
-        let type: UTType = format == 1 ? .jpeg : (format == 2 ? .tiff : .png)
-        guard let destination = CGImageDestinationCreateWithURL(url as CFURL, type.identifier as CFString, 1, nil) else { throw PicShotError.message("无法创建导出文件") }
-        CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.94] as CFDictionary)
-        guard CGImageDestinationFinalize(destination) else { throw PicShotError.message("导出失败，请检查磁盘空间或文件权限") }
-    }
-}
-
-@MainActor
-private final class ExportFormatAccessory: NSView {
-    let picker: NSPopUpButton
-    private weak var panel: NSSavePanel?
-    init(picker: NSPopUpButton, panel: NSSavePanel) {
-        self.picker = picker; self.panel = panel
-        super.init(frame: NSRect(x: 0, y: 0, width: 260, height: 34))
-        let label = NSTextField(labelWithString: "格式："); label.frame = NSRect(x: 0, y: 5, width: 65, height: 22)
-        picker.frame.origin = NSPoint(x: 65, y: 2)
-        addSubview(label); addSubview(picker)
-        picker.target = self; picker.action = #selector(changeFormat)
-    }
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    @objc private func changeFormat() {
-        let types: [UTType] = [.png, .jpeg, .tiff, .pdf]
-        guard types.indices.contains(picker.indexOfSelectedItem), let panel else { return }
-        let type = types[picker.indexOfSelectedItem]
-        panel.allowedContentTypes = [type]
-        let name = (panel.nameFieldStringValue as NSString).deletingPathExtension
-        panel.nameFieldStringValue = name + "." + (type.preferredFilenameExtension ?? "png")
+        guard let format = ImageExportFormat(rawValue: format) else { throw ImageExportError.invalidOptions }
+        let snapshot = try ImageExportSnapshot(image: image)
+        let artifact = try ImageExportService.encode(snapshot: snapshot, options: ImageExportOptions(format: format))
+        try ImageExportService.publish(artifact, to: url)
     }
 }

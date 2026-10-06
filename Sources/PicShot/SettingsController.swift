@@ -4,6 +4,7 @@ import PicShotCore
 
 @MainActor final class SettingsController: NSWindowController {
     private let change: () -> Void
+    private let onManageCapturePresets: (() -> Void)?
     private let defaults: UserDefaults
     private let savesPreferences: Bool
     private var shortcuts: HotKeyConfiguration
@@ -19,9 +20,9 @@ import PicShotCore
     private let restorePins = NSButton(checkboxWithTitle: "启动时恢复上次显示的贴图组", target: nil, action: nil)
     private(set) var selectedCategory: SettingsCategory = .appearance
 
-    init(onChange: @escaping () -> Void, defaults: UserDefaults = .standard, isSmoke: Bool? = nil, unavailableShortcuts: [HotKeyAction] = []) {
+    init(onChange: @escaping () -> Void, defaults: UserDefaults = .standard, isSmoke: Bool? = nil, unavailableShortcuts: [HotKeyAction] = [], onManageCapturePresets: (() -> Void)? = nil) {
         let safeMode = isSmoke ?? (ProcessInfo.processInfo.environment["PICSHOT_SMOKE_REPORT"] != nil)
-        change = onChange; self.defaults = defaults; savesPreferences = !safeMode; self.unavailableShortcuts = unavailableShortcuts
+        change = onChange; self.onManageCapturePresets = onManageCapturePresets; self.defaults = defaults; savesPreferences = !safeMode; self.unavailableShortcuts = unavailableShortcuts
         shortcuts = safeMode ? .defaults : HotKeyConfiguration.read(from: defaults)
         let window = SettingsWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 570), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         super.init(window: window)
@@ -32,6 +33,7 @@ import PicShotCore
         selectCategory(.appearance)
     }
     required init?(coder: NSCoder) { fatalError() }
+    @objc private func manageCapturePresets() { onManageCapturePresets?() }
 
     private func configureValues(safeMode: Bool) {
         appearance.addItems(withTitles: AppAppearancePreference.allCases.map(\.title))
@@ -107,6 +109,11 @@ import PicShotCore
             addNote("跟随系统会自动匹配 macOS 的浅色或深色外观。主题应用于设置、历史记录及其他使用系统外观的窗口。")
         case .capture:
             addGroup("截图选项", rows: [row("开始截图前延时", control: screenshotDelay), screenshotCursor])
+            if onManageCapturePresets != nil {
+                let button = NSButton(title: "管理命名区域与延时预设…", target: self, action: #selector(manageCapturePresets))
+                button.identifier = NSUserInterfaceItemIdentifier("capture.managePresets")
+                addGroup("截图预设", rows: [button, note("预设只在本机保存区域和延时；显示器身份、尺寸或缩放改变时会拒绝截图，请重新框选。")])
+            }
             addNote("鼠标指针选项用于单屏和全部屏幕截图。区域截图使用冻结画面选区；窗口和跨屏区域截图使用系统选择器。")
             addGroup("多屏合成", rows: [note("全部屏幕按最高像素密度合成，低密度屏幕会放大，屏幕间隙透明。最多 6400 万像素；屏幕依次采集，并非同一瞬间。")])
         case .pins:

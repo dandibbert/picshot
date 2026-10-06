@@ -9,11 +9,12 @@ struct RecognitionResult: Sendable {
     let barcodes: [String]
     var document: RecognizedTextDocument? = nil
     var omittedBarcodeCount = 0
+    var barcodeDocument: RecognizedBarcodeDocument? = nil
     var displayText: String {
         var parts = [text]
         if !barcodes.isEmpty { parts.append("识别码：\n" + barcodes.joined(separator: "\n")) }
         if document?.isTruncated == true { parts.append("[识别已达本机结果上限，仅显示部分文字；请裁剪图片后再识别。]") }
-        if omittedBarcodeCount > 0 { parts.append("[有 \(omittedBarcodeCount) 个识别码超过数量或长度上限，已省略；未截短任何识别码内容。]") }
+        if omittedBarcodeCount > 0 { parts.append("[有 \(omittedBarcodeCount) 个识别码因结果上限或缺少可用文本而省略；未截短任何已列出的识别码内容。]") }
         return parts.filter { !$0.isEmpty }.joined(separator: "\n\n")
     }
 }
@@ -37,7 +38,21 @@ enum RecognitionService {
     private static let admission = RecognitionAdmission()
     static func resourceSnapshot() async -> RecognitionResourceSnapshot { await admission.snapshot() }
 
+    static func supportedBarcodeSymbologies() throws -> [BarcodeSymbology] {
+        try VNDetectBarcodesRequest().supportedSymbologies().map(BarcodeSymbology.init)
+    }
+
+    static func recognizeBarcodes(_ image: CGImage, options: RecognitionOptions = RecognitionOptions()) async throws -> RecognizedBarcodeDocument {
+        let result = try await performRecognition(image, options: options, includeText: false)
+        guard let document = result.barcodeDocument else { throw PicShotError.message("条码识别未返回结果。") }
+        return document
+    }
+
     static func recognize(_ image: CGImage, options: RecognitionOptions = RecognitionOptions()) async throws -> RecognitionResult {
+        try await performRecognition(image, options: options, includeText: true)
+    }
+
+    private static func performRecognition(_ image: CGImage, options: RecognitionOptions, includeText: Bool) async throws -> RecognitionResult {
         guard PinImageRenderer.allowsRasterSize(width: image.width, height: image.height) else {
             throw PicShotError.message("本地识别最多支持 3200 万像素。请先裁剪图片。")
         }
@@ -51,28 +66,32 @@ enum RecognitionService {
             let task = Task.detached(priority: .userInitiated) {
                 try Task.checkCancellation()
                 let textRequest = VNRecognizeTextRequest()
-                textRequest.recognitionLevel = .accurate
-                textRequest.usesLanguageCorrection = true
-                let supported = try textRequest.supportedRecognitionLanguages()
-                if let language = options.language {
-                    guard supported.contains(language) else { throw PicShotError.message("当前 macOS 不支持所选识别语言，请选择其他语言。") }
-                    textRequest.automaticallyDetectsLanguage = false
-                    textRequest.recognitionLanguages = [language]
-                } else {
-                    textRequest.automaticallyDetectsLanguage = true
-                    let preferred = preferredLanguages(from: supported)
-                    if !preferred.isEmpty { textRequest.recognitionLanguages = preferred }
+                if includeText {
+                    textRequest.recognitionLevel = .accurate
+                    textRequest.usesLanguageCorrection = true
+                    let supported = try textRequest.supportedRecognitionLanguages()
+                    if let language = options.language {
+                        guard supported.contains(language) else { throw PicShotError.message("当前 macOS 不支持所选识别语言，请选择其他语言。") }
+                        textRequest.automaticallyDetectsLanguage = false
+                        textRequest.recognitionLanguages = [language]
+                    } else {
+                        textRequest.automaticallyDetectsLanguage = true
+                        let preferred = preferredLanguages(from: supported)
+                        if !preferred.isEmpty { textRequest.recognitionLanguages = preferred }
+                    }
                 }
                 let barcodes = VNDetectBarcodesRequest()
-                try cancellation.install([textRequest, barcodes])
+                let supported = try barcodes.supportedSymbologies()
+                barcodes.symbologies = supported
+                let requests: [VNRequest] = includeText ? [textRequest, barcodes] : [barcodes]
+                try cancellation.install(requests)
                 defer { cancellation.clear() }
-                try VNImageRequestHandler(cgImage: image, orientation: options.orientation, options: [:]).perform([textRequest, barcodes])
+                try VNImageRequestHandler(cgImage: image, orientation: options.orientation, options: [:]).perform(requests)
                 try Task.checkCancellation()
-                let document = try makeDocument(textRequest.results ?? [])
-                let payloads = (barcodes.results ?? []).compactMap(\.payloadStringValue)
-                let included = Array(payloads.filter { $0.utf16.count <= 4096 }.prefix(128))
-                return RecognitionResult(text: document.text, barcodes: included, document: document,
-                                         omittedBarcodeCount: payloads.count - included.count)
+                let document = includeText ? try makeDocument(textRequest.results ?? []) : nil
+                let codes = makeBarcodeDocument(barcodes.results ?? [], supported: supported)
+                return RecognitionResult(text: document?.text ?? "", barcodes: codes.results.map(\.payload), document: document,
+                                         omittedBarcodeCount: codes.omittedCount, barcodeDocument: codes)
             }
             let result = try await withTaskCancellationHandler(operation: { try await task.value }, onCancel: {
                 cancellation.cancel(); task.cancel()
@@ -82,8 +101,26 @@ enum RecognitionService {
             return result
         } catch {
             await admission.release(id)
+            if Task.isCancelled { throw CancellationError() }
             throw error
         }
+    }
+
+    private static func makeBarcodeDocument(_ observations: [VNBarcodeObservation], supported: [VNBarcodeSymbology]) -> RecognizedBarcodeDocument {
+        var missingText = 0
+        let candidates = observations.sorted {
+            let leftY = $0.boundingBox.midY, rightY = $1.boundingBox.midY
+            let leftRow = leftY.isFinite ? Int((min(1, max(0, leftY)) * 50).rounded()) : 0
+            let rightRow = rightY.isFinite ? Int((min(1, max(0, rightY)) * 50).rounded()) : 0
+            if leftRow != rightRow { return leftRow > rightRow }
+            if $0.boundingBox.minX != $1.boundingBox.minX { return $0.boundingBox.minX < $1.boundingBox.minX }
+            return $0.uuid.uuidString < $1.uuid.uuidString
+        }.compactMap { observation -> RecognizedBarcode? in
+            guard let payload = observation.payloadStringValue, !payload.isEmpty else { missingText += 1; return nil }
+            return RecognizedBarcode(id: observation.uuid, symbology: BarcodeSymbology(observation.symbology), payload: payload,
+                                     quad: quad(observation))
+        }
+        return RecognizedBarcodeDocument(candidates: candidates, supportedSymbologies: supported.map(BarcodeSymbology.init), missingTextCount: missingText)
     }
 
     /// Stable reading rows, then left-to-right observations. Within an observation Vision's
@@ -241,6 +278,7 @@ private final class RecognitionCancellation: @unchecked Sendable {
     private let copyButton = NSButton(title: "复制", target: nil, action: nil)
     private let progress = NSProgressIndicator()
     private var onTranslate: ((String) -> Void)?
+    private var onBarcodes: (() -> Void)?
     private var sourceImage: CGImage?
     private let defaults: UserDefaults
     private var recognitionTask: Task<Void, Never>?
@@ -251,8 +289,8 @@ private final class RecognitionCancellation: @unchecked Sendable {
     var offersLanguageSelection: Bool { !languagePicker.isHidden }
 
     init(text: String, title: String = "识别文字", sourceImage: CGImage? = nil,
-         onTranslate: ((String) -> Void)? = nil, defaults: UserDefaults = .standard) {
-        self.onTranslate = onTranslate; self.sourceImage = sourceImage; self.defaults = defaults
+         onTranslate: ((String) -> Void)? = nil, onBarcodes: (() -> Void)? = nil, defaults: UserDefaults = .standard) {
+        self.onTranslate = onTranslate; self.onBarcodes = onBarcodes; self.sourceImage = sourceImage; self.defaults = defaults
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 470, height: 310),
                               styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         super.init(window: window)
@@ -291,6 +329,7 @@ private final class RecognitionCancellation: @unchecked Sendable {
         let more = NSPopUpButton(frame: .zero, pullsDown: true); more.controlSize = .small; more.bezelStyle = .inline
         more.addItem(withTitle: "更多")
         more.menu?.addItem(withTitle: "导出文本…", action: #selector(saveText), keyEquivalent: "").target = self
+        if onBarcodes != nil { more.menu?.addItem(withTitle: "二维码 / 条码结果…", action: #selector(showBarcodes), keyEquivalent: "").target = self }
         if onTranslate != nil { more.menu?.addItem(withTitle: "翻译…", action: #selector(translateText), keyEquivalent: "").target = self }
         copyButton.target = self; copyButton.action = #selector(copyAll); copyButton.bezelStyle = .rounded
         copyButton.keyEquivalent = "\r"; copyButton.setAccessibilityLabel("复制识别文本")
@@ -352,6 +391,7 @@ private final class RecognitionCancellation: @unchecked Sendable {
     static func joinedLines(_ text: String) -> String {
         text.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }.joined(separator: " ")
     }
+    @objc private func showBarcodes() { guard !closed else { return }; onBarcodes?() }
     @objc private func translateText() { onTranslate?(textView.string) }
     @objc private func copyAll() { Self.copyToPasteboard(textView.string); close() }
     @objc private func saveText() {
@@ -369,7 +409,7 @@ private final class RecognitionCancellation: @unchecked Sendable {
     private func finishClose() {
         guard !closed else { return }; closed = true
         generation = UUID(); recognitionTask?.cancel(); recognitionTask = nil
-        exportPanel?.cancel(nil); exportPanel = nil; sourceImage = nil; onTranslate = nil
+        exportPanel?.cancel(nil); exportPanel = nil; sourceImage = nil; onTranslate = nil; onBarcodes = nil
         let callback = onClose; onClose = nil; callback?()
         window?.makeFirstResponder(nil); textView.string = ""
         window?.contentView = nil; window?.delegate = nil

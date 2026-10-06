@@ -24,17 +24,18 @@ import PicShotFormulaRenderCore
                 let previews=try await CaptureUIPreviewFixture.verify(evidenceDirectory:directory)
                 let annotationEffects=try await AnnotationEffectsPreviewFixture.verify(evidenceDirectory:directory)
                 let interactionParity=try await InteractionParitySmokeFixture.verify(evidenceDirectory:directory)
+                let captureExportRecognition=try await CaptureExportRecognitionSmokeFixture.verify(evidenceDirectory:directory,includeResourceCycles:false)
                 let originalAppearance=NSApp.appearance
                 for dark in [false,true] {
                     NSApp.appearance=NSAppearance(named:dark ? .darkAqua : .aqua)
-                    let settings=SettingsController(onChange:{})
+                    let settings=SettingsController(onChange:{},isSmoke:true,onManageCapturePresets:{})
                     settings.selectCategory(dark ? .capture : .shortcuts);settings.showWindow(nil)
                     try await Task.sleep(nanoseconds:200_000_000)
                     if let window=settings.window {try snapshot(window,to:directory.appendingPathComponent(dark ? "ui-settings-dark.png" : "ui-settings-light.png"))}
                     settings.close()
                 }
                 NSApp.appearance=originalAppearance
-                let payload:[String:Any] = ["status":"passed","uiPreviewOnly":true,"captureStarted":false,"bundlePath":Bundle.main.bundlePath,"sourceCommit":Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String ?? "unknown","previews":previews,"annotationEffects":annotationEffects,"interactionParity":interactionParity,"scope":"Real native AppKit UI over an original synthetic frozen-desktop fixture; no screen-capture permission or live desktop capture"]
+                let payload:[String:Any] = ["status":"passed","uiPreviewOnly":true,"captureStarted":false,"bundlePath":Bundle.main.bundlePath,"sourceCommit":Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String ?? "unknown","previews":previews,"annotationEffects":annotationEffects,"interactionParity":interactionParity,"captureExportRecognition":captureExportRecognition,"scope":"Real native AppKit UI over an original synthetic frozen-desktop fixture; no screen-capture permission or live desktop capture"]
                 try JSONSerialization.data(withJSONObject:payload,options:[.prettyPrinted,.sortedKeys]).write(to:url,options:.atomic)
                 NSApp.terminate(nil);return
             }
@@ -72,6 +73,7 @@ import PicShotFormulaRenderCore
             try JSONSerialization.data(withJSONObject:pinSessionEvidence,options:[.prettyPrinted,.sortedKeys]).write(to:directory.appendingPathComponent("pin-session.json"),options:.atomic)
             let recordingCompositionEvidence=try await RecordingCompositionSmokeFixture.verify(evidenceDirectory:directory)
             let interactionParityEvidence=try await InteractionParitySmokeFixture.verify(evidenceDirectory:directory)
+            let captureExportRecognitionEvidence=try await CaptureExportRecognitionSmokeFixture.verify(evidenceDirectory:directory,includeResourceCycles:true)
             var gifResourceEvidence:[String:Any]=["status":"not-run","scope":"Full GIF resource fixture is run from the ZIP install only"]
             if env["PICSHOT_SMOKE_GIF_RESOURCES"] == "1" {gifResourceEvidence=try await GIFResourceSmokeFixture.verify(evidenceDirectory:directory)}
             let sample=ImageEditorRenderer.makeSampleImage()
@@ -86,7 +88,7 @@ import PicShotFormulaRenderCore
             try await Task.sleep(nanoseconds:200_000_000)
             guard let ew=editor.window else{throw PicShotError.message("Editor missing window")};ew.displayIfNeeded();try snapshot(ew,to:directory.appendingPathComponent("editor.png"));editor.close()
             let pin=PinController(image:annotated);pin.showWindow(nil);if let w=pin.window {try snapshot(w,to:directory.appendingPathComponent("pin.png"))};pin.close()
-            let settings=SettingsController(onChange:{});settings.showWindow(nil);if let w=settings.window{try snapshot(w,to:directory.appendingPathComponent("settings.png"))};settings.close()
+            let settings=SettingsController(onChange:{},isSmoke:true,onManageCapturePresets:{});settings.showWindow(nil);if let w=settings.window{try snapshot(w,to:directory.appendingPathComponent("settings.png"))};settings.close()
             var weakWindows:[SmokeWeakWindow]=[]
             for _ in 0..<10 {autoreleasepool{weakWindows += cycleFixture()};try await Task.sleep(nanoseconds:40_000_000)}
             try await Task.sleep(nanoseconds:300_000_000)
@@ -98,7 +100,7 @@ import PicShotFormulaRenderCore
             let final=residentBytes();let growth=Int64(final)-Int64(baseline);let lastIntervalGrowth=Int64(samples.last ?? final)-Int64(samples.dropLast().last ?? baseline);let windowsStable=windowCount()<=baselineWindows+3 && retainedOwned == 0
             let visible=mainWindow.isVisible && mainWindow.contentView != nil
             let source=(Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String) ?? "unknown"
-            let payload:[String:Any] = ["status":visible && growth<160*1024*1024 && lastIntervalGrowth<32*1024*1024 && windowsStable ? "passed":"failed","bundlePath":Bundle.main.bundlePath,"bundleIdentifier":Bundle.main.bundleIdentifier ?? "", "sourceCommit":source,"mainWindowVisible":visible,"arguments":CommandLine.arguments,"safeMode":true,"captureStarted":false,"packagedModelEvidence":modelEvidence,"pinSessionEvidence":pinSessionEvidence,"gifResourceEvidence":gifResourceEvidence,"recordingCompositionEvidence":recordingCompositionEvidence,"interactionParityEvidence":interactionParityEvidence,"windowTitle":mainWindow.title,"resourceCycleCount":40,"warmupCycleCount":10,"rssSamplesEveryTenCycles":samples,"windowCountsEveryTenCycles":windowCounts,"baselineWindowCount":baselineWindows,"finalWindowCount":windowCount(),"weakCycleWindowCounts":weakCounts,"finalRetainedCycleWindows":retained.count,"retainedCycleWindowDetails":retained,"finalRetainedAppControllersOrContent":retainedOwned,"lastTenCyclesGrowthBytes":lastIntervalGrowth,"baselineRSSBytes":baseline,"peakRSSBytes":peak,"finalRSSBytes":final,"growthRSSBytes":growth,"resourceScope":"10 warm-up plus 40 synthetic editor/pin create-render-close cycles; not a screen-capture or recording leak test"]
+            let payload:[String:Any] = ["status":visible && growth<160*1024*1024 && lastIntervalGrowth<32*1024*1024 && windowsStable ? "passed":"failed","bundlePath":Bundle.main.bundlePath,"bundleIdentifier":Bundle.main.bundleIdentifier ?? "", "sourceCommit":source,"mainWindowVisible":visible,"arguments":CommandLine.arguments,"safeMode":true,"captureStarted":false,"packagedModelEvidence":modelEvidence,"pinSessionEvidence":pinSessionEvidence,"gifResourceEvidence":gifResourceEvidence,"recordingCompositionEvidence":recordingCompositionEvidence,"interactionParityEvidence":interactionParityEvidence,"captureExportRecognitionEvidence":captureExportRecognitionEvidence,"windowTitle":mainWindow.title,"resourceCycleCount":40,"warmupCycleCount":10,"rssSamplesEveryTenCycles":samples,"windowCountsEveryTenCycles":windowCounts,"baselineWindowCount":baselineWindows,"finalWindowCount":windowCount(),"weakCycleWindowCounts":weakCounts,"finalRetainedCycleWindows":retained.count,"retainedCycleWindowDetails":retained,"finalRetainedAppControllersOrContent":retainedOwned,"lastTenCyclesGrowthBytes":lastIntervalGrowth,"baselineRSSBytes":baseline,"peakRSSBytes":peak,"finalRSSBytes":final,"growthRSSBytes":growth,"resourceScope":"10 warm-up plus 40 synthetic editor/pin create-render-close cycles; not a screen-capture or recording leak test"]
             try JSONSerialization.data(withJSONObject:payload,options:[.prettyPrinted,.sortedKeys]).write(to:url,options:.atomic)
             try? FileManager.default.removeItem(at:history.directory)
         }catch{try? JSONSerialization.data(withJSONObject:["status":"failed","error":error.localizedDescription]).write(to:url)}

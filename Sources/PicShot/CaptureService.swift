@@ -48,7 +48,7 @@ final class CaptureService {
 
     /// The default region flow owns both the immutable desktop and its crop.
     /// Other modes deliberately carry no guessed screen placement information.
-    func captureForEditing(mode: CaptureMode, options: ScreenshotCaptureOptions = .init()) async throws -> CapturedImage {
+    func captureForEditing(mode: CaptureMode, options: ScreenshotCaptureOptions = .init(), elementSelection: Bool = false) async throws -> CapturedImage {
         guard mode == .region else {
             return CapturedImage(image: try await capture(mode: mode, options: options), presentation: nil)
         }
@@ -80,7 +80,10 @@ final class CaptureService {
               currentScreen.frame == displayFrame, currentScreen.backingScaleFactor == displayScale else {
             throw DisplayCompositeError.layoutChanged
         }
-        let controller = RegionSelectionController(screen: currentScreen, frozenImage: frozen)
+        let elementContext = CaptureElementContext(displayBounds: CGDisplayBounds(displayID),
+                                                   windows: CaptureElementWindow.visible(), frozenAt: capturedAt,
+                                                   initiallyEnabled: elementSelection)
+        let controller = RegionSelectionController(screen: currentScreen, frozenImage: frozen, elementContext: elementContext)
         selection = controller
         defer { selection = nil }
         let rectangle = try await controller.select()
@@ -88,6 +91,86 @@ final class CaptureService {
         try watcher.validate(snapshot: snapshot)
         return try CapturedImage.frozenRegion(image: frozen, displayID: displayID,
                                               displayFrame: displayFrame, selection: rectangle, capturedAt: capturedAt)
+    }
+
+    /// Choose a rectangle immediately; the chosen delay belongs only to this
+    /// named preset and never changes ScreenshotPreferences or runs a countdown.
+    func createPreset(name: String, delay: ScreenshotDelay) async throws -> CapturePreset {
+        guard CapturePreset.validName(name.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            throw CapturePresetError.invalidName
+        }
+        let capture = try await captureForEditing(mode: .region)
+        try Task.checkCancellation()
+        guard let presentation = capture.presentation,
+              let screen = NSScreen.screens.first(where: { $0.displayID == presentation.displayID }),
+              screen.frame == presentation.displayFrame else { throw CapturePresetError.displayChanged }
+        let display = try Self.presetDisplay(screen: screen, pixelWidth: presentation.frozenImage.width,
+                                             pixelHeight: presentation.frozenImage.height)
+        let geometry = try FrozenCaptureGeometry(pointSize: presentation.displayFrame.size,
+                                                 pixelWidth: display.pixelWidth, pixelHeight: display.pixelHeight)
+        let frame = presentation.selectionFrame
+        // Presentation was already pixel aligned. Round back to its exact stored
+        // integral source pixels rather than floor/ceil the point representation.
+        let scaleX = CGFloat(display.pixelWidth) / display.frame.width
+        let scaleY = CGFloat(display.pixelHeight) / display.frame.height
+        let pixels = CGRect(x: (frame.minX * scaleX).rounded(),
+                            y: ((display.frame.height - frame.maxY) * scaleY).rounded(),
+                            width: (frame.width * scaleX).rounded(), height: (frame.height * scaleY).rounded())
+        let aligned = try geometry.selectionForPixels(pixels)
+        return try CapturePreset(name: name, delay: delay, display: display,
+                                 topLeftFrame: aligned.topLeftFrame, pixelFrame: aligned.pixelFrame)
+    }
+
+    /// Stable identity and unchanged geometry are checked before delay, before
+    /// screen access, before SCK acquisition and again before the pixel crop.
+    func capturePreset(_ preset: CapturePreset, showsCursor: Bool = false) async throws -> CapturedImage {
+        guard !isCapturing, selection == nil else { throw CaptureError.busy }
+        isCapturing = true
+        defer { isCapturing = false }
+        try Task.checkCancellation()
+        let watcher = try DisplayConfigurationWatcher(), snapshot = DisplaySystemSnapshot.current()
+        let screen = try Self.resolvePresetScreen(preset)
+        guard let displayID = screen.displayID else { throw CapturePresetError.missingDisplay }
+        try await preset.delay.wait()
+        try watcher.validate(snapshot: snapshot)
+        _ = try Self.resolvePresetScreen(preset)
+        try Self.requireScreenPermission()
+        try Task.checkCancellation()
+        try watcher.validate(snapshot: snapshot)
+        _ = try Self.resolvePresetScreen(preset)
+        let frozen = try await captureDisplayImmediately(displayID: displayID, showsCursor: showsCursor,
+            expectedPixels: CGSize(width: preset.display.pixelWidth, height: preset.display.pixelHeight), validateTarget: {
+                try watcher.validate(snapshot: snapshot)
+                guard try Self.resolvePresetScreen(preset).displayID == displayID else { throw CapturePresetError.displayChanged }
+            })
+        let capturedAt = Date()
+        try watcher.validate(snapshot: snapshot)
+        _ = try Self.resolvePresetScreen(preset)
+        return try CapturedImage.frozenPixelRegion(image: frozen, displayID: displayID, displayFrame: preset.display.frame,
+                                                   pixelFrame: preset.pixelFrame, capturedAt: capturedAt)
+    }
+
+    private static func resolvePresetScreen(_ preset: CapturePreset) throws -> NSScreen {
+        // Unknown UUIDs are never replaced with NSScreen.main or the pointer screen.
+        let screens = try NSScreen.screens.map { screen in (screen, try presetDisplay(screen: screen)) }
+        try preset.resolveDisplay(in: screens.map { $0.1 })
+        guard let screen = screens.first(where: { $0.1.uuid == preset.display.uuid })?.0 else { throw CapturePresetError.missingDisplay }
+        return screen
+    }
+
+    static func presetDisplay(screen: NSScreen, pixelWidth: Int? = nil, pixelHeight: Int? = nil) throws -> CapturePresetDisplay {
+        guard let displayID = screen.displayID, CGDisplayIsActive(displayID) != 0,
+              let unmanaged = CGDisplayCreateUUIDFromDisplayID(displayID) else { throw CapturePresetError.missingDisplay }
+        let string = CFUUIDCreateString(nil, unmanaged.takeRetainedValue()) as String
+        guard let uuid = UUID(uuidString: string) else { throw CapturePresetError.missingDisplay }
+        let width = (screen.frame.width * screen.backingScaleFactor).rounded()
+        let height = (screen.frame.height * screen.backingScaleFactor).rounded()
+        guard width.isFinite, height.isFinite, width >= 1, height >= 1,
+              width <= CGFloat(DisplayCompositeLayout.maximumDimension), height <= CGFloat(DisplayCompositeLayout.maximumDimension) else {
+            throw CapturePresetError.invalidGeometry
+        }
+        return try CapturePresetDisplay(uuid: uuid, frame: screen.frame, pixelWidth: pixelWidth ?? Int(width),
+                                         pixelHeight: pixelHeight ?? Int(height), rotationDegrees: CGDisplayRotation(displayID))
     }
 
     /// The caller owns this task and may cancel it during delay, selection, or SCK
@@ -129,7 +212,9 @@ final class CaptureService {
         return try await captureDisplayImmediately(displayID: displayID, showsCursor: options.showsCursor)
     }
 
-    private func captureDisplayImmediately(displayID: CGDirectDisplayID, showsCursor: Bool) async throws -> CGImage {
+    private func captureDisplayImmediately(displayID: CGDirectDisplayID, showsCursor: Bool, expectedPixels: CGSize? = nil,
+                                           validateTarget: (() throws -> Void)? = nil) async throws -> CGImage {
+        try validateTarget?()
         let watcher = try DisplayConfigurationWatcher()
         let systemLayout = DisplaySystemSnapshot.current()
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
@@ -138,8 +223,13 @@ final class CaptureService {
         guard let display = content.displays.first(where: { $0.displayID == displayID }) else { throw CaptureError.noDisplay }
         let filter = SCContentFilter(display: display, excludingWindows: [])
         let descriptor = try displayDescriptor(display, filter: filter)
+        if let expectedPixels {
+            guard expectedPixels == CGSize(width: descriptor.pixelWidth, height: descriptor.pixelHeight) else { throw CapturePresetError.displayChanged }
+        }
+        try validateTarget?()
         let image = try await captureFrame(filter: filter, display: descriptor, showsCursor: showsCursor)
         try watcher.validate(snapshot: systemLayout)
+        try validateTarget?()
         return image
     }
 
@@ -310,6 +400,7 @@ private final class ScreenshotCommand: @unchecked Sendable {
 final class RegionSelectionController: NSObject, NSWindowDelegate {
     private let screen: NSScreen
     private let frozenImage: CGImage?
+    private let elementContext: CaptureElementContext?
     private var panel: SelectionPanel?
     private var selectionView: RegionSelectionView?
     private var continuation: CheckedContinuation<CGRect, Error>?
@@ -317,9 +408,10 @@ final class RegionSelectionController: NSObject, NSWindowDelegate {
     private var screenObserver: NSObjectProtocol?
     var isSelecting: Bool { continuation != nil }
 
-    init(screen: NSScreen, frozenImage: CGImage? = nil) {
+    init(screen: NSScreen, frozenImage: CGImage? = nil, elementContext: CaptureElementContext? = nil) {
         self.screen = screen
         self.frozenImage = frozenImage
+        self.elementContext = elementContext
     }
 
     func select() async throws -> CGRect {
@@ -343,10 +435,11 @@ final class RegionSelectionController: NSObject, NSWindowDelegate {
                 panel.backgroundColor = frozenImage == nil ? .clear : .black
                 panel.isOpaque = frozenImage != nil
                 panel.hasShadow = false
+                panel.acceptsMouseMovedEvents = true
                 panel.hidesOnDeactivate = false
                 panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
                 let view = RegionSelectionView(frame: CGRect(origin: .zero, size: screen.frame.size),
-                                               frozenImage: frozenImage, geometry: geometry)
+                                               frozenImage: frozenImage, geometry: geometry, elementContext: elementContext)
                 view.finished = { [weak self] result in self?.finish(result, session: session) }
                 panel.contentView = view
                 self.panel = panel
@@ -413,111 +506,202 @@ private final class SelectionPanel: NSPanel {
     override var canBecomeMain: Bool { true }
 }
 
+@MainActor
 final class RegionSelectionView: NSView {
     var finished: ((Result<CGRect, Error>) -> Void)?
     private var frozenImage: NSImage?
     private let geometry: FrozenCaptureGeometry?
+    private let elementContext: CaptureElementContext?
+    private let elementSession: CaptureElementSession?
+    private var elementEnabled = false
+    private var elementMessage = ""
+    private var elementButtons: [NSButton] = []
+    private var tracking: NSTrackingArea?
+    private var lastHover: CGPoint?
+    private var elementClickFrame: CGRect?
     private var start: CGPoint?
     private var selected: CGRect = .zero
+    private(set) var elementPreviewFrame: CGRect?
+    var elementStatusMessage: String { elementMessage }
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
 
-    init(frame: CGRect, frozenImage: CGImage? = nil, geometry: FrozenCaptureGeometry? = nil) {
+    init(frame: CGRect, frozenImage: CGImage? = nil, geometry: FrozenCaptureGeometry? = nil,
+         elementContext: CaptureElementContext? = nil) {
         self.frozenImage = frozenImage.map { NSImage(cgImage: $0, size: frame.size) }
         self.geometry = geometry
+        self.elementContext = elementContext
+        elementSession = elementContext.map { CaptureElementSession(provider: $0.provider) }
         super.init(frame: frame)
+        if let elementContext {
+            elementEnabled = elementContext.initiallyEnabled
+            for (title, identifier, action) in [("元素选择 E", "capture.elements.toggle", #selector(toggleElements)),
+                    ("上一级 ↑", "capture.elements.parent", #selector(parentElement)),
+                    ("下一级 ↓", "capture.elements.child", #selector(childElement))] {
+                let button = NSButton(title: title, target: self, action: action)
+                button.identifier = NSUserInterfaceItemIdentifier(identifier)
+                button.bezelStyle = .rounded; button.controlSize = .small
+                button.setAccessibilityLabel(title); addSubview(button); elementButtons.append(button)
+            }
+            elementSession?.changed = { [weak self] result in
+                guard let self, self.elementEnabled, self.start == nil else { return }
+                switch result {
+                case .snapshot: self.elementMessage = "元素边界为稍后的辅助功能信息；截图像素保持冻结"
+                case .unavailable(let reason): self.elementMessage = reason.message
+                }
+                self.refreshElementPreview()
+            }
+            elementMessage = elementEnabled ? "移动指针选择元素；拖动仍可选择矩形" : ""
+            refreshElementControls()
+        }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func discard() {
-        finished = nil
-        frozenImage = nil
-        start = nil
-        selected = .zero
+    override func layout() {
+        super.layout()
+        let widths: [CGFloat] = [102, 94, 94], gap: CGFloat = 6
+        let total = widths.reduce(0, +) + gap * 2
+        var x = max(8, (bounds.width - total) / 2)
+        for (index, button) in elementButtons.enumerated() {
+            button.frame = CGRect(x: x, y: max(0, bounds.height - 42), width: widths[index], height: 28)
+            x += widths[index] + gap
+        }
     }
-
+    override func updateTrackingAreas() {
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .activeAlways, .inVisibleRect, .mouseEnteredAndExited], owner: self, userInfo: nil)
+        addTrackingArea(area); tracking = area
+        super.updateTrackingAreas()
+    }
+    func discard() {
+        elementSession?.stop(); elementPreviewFrame = nil; elementClickFrame = nil
+        finished = nil; frozenImage = nil; start = nil; selected = .zero
+    }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .crosshair) }
+    override func mouseMoved(with event: NSEvent) { hover(at: convert(event.locationInWindow, from: nil)) }
+    override func mouseExited(with event: NSEvent) {
+        elementSession?.invalidate(); elementPreviewFrame = nil; lastHover = nil; needsDisplay = true
+    }
+    func hover(at point: CGPoint) {
+        guard finished != nil, elementEnabled, start == nil, bounds.contains(point),
+              !elementButtons.contains(where: { $0.frame.contains(point) }), let elementContext else { return }
+        if let lastHover, abs(lastHover.x - point.x) < 0.5, abs(lastHover.y - point.y) < 0.5 { return }
+        lastHover = point; elementPreviewFrame = nil
+        elementMessage = "正在查询元素；可随时拖动选择矩形"
+        elementSession?.request(CaptureElementRequest(
+            point: point.applying(CGAffineTransform(translationX: elementContext.displayBounds.minX, y: elementContext.displayBounds.minY)),
+            displayBounds: elementContext.displayBounds, windows: elementContext.windows, frozenAt: elementContext.frozenAt))
+        refreshElementControls(); needsDisplay = true
+    }
+    @objc private func toggleElements() {
+        elementEnabled.toggle(); elementSession?.invalidate(); elementPreviewFrame = nil; lastHover = nil
+        elementMessage = elementEnabled ? "移动指针选择元素；需要在系统设置中手动开启辅助功能权限" : ""
+        refreshElementControls(); needsDisplay = true; window?.makeFirstResponder(self)
+    }
+    @objc private func parentElement() { traverseElement(parent: true) }
+    @objc private func childElement() { traverseElement(parent: false) }
+    private func traverseElement(parent: Bool) {
+        guard elementEnabled, start == nil, elementSession?.traverse(parent: parent) == true else { return }
+        refreshElementPreview(); window?.makeFirstResponder(self)
+    }
+    private func refreshElementPreview() {
+        if let node = elementSession?.selectedNode, let elementContext {
+            elementPreviewFrame = CaptureElementGeometry.localFrame(node.frame, displayBounds: elementContext.displayBounds)
+        } else { elementPreviewFrame = nil }
+        refreshElementControls(); needsDisplay = true
+    }
+    private func refreshElementControls() {
+        guard elementButtons.count == 3 else { return }
+        elementButtons[0].state = elementEnabled ? .on : .off
+        elementButtons[1].isEnabled = elementEnabled && elementSession?.selectedNode?.parent != nil
+        elementButtons[2].isEnabled = elementEnabled && !(elementSession?.selectedNode?.children.isEmpty ?? true)
+    }
     override func mouseDown(with event: NSEvent) {
         guard finished != nil else { return }
-        start = convert(event.locationInWindow, from: nil)
-        selected = .zero
+        let point = convert(event.locationInWindow, from: nil)
+        start = point
+        // A click accepts only a completed hover covering this exact pointer. A
+        // drag always overrides element picking, including unavailable controls.
+        elementClickFrame = elementPreviewFrame.flatMap { $0.contains(point) ? $0 : nil }
+        elementSession?.invalidate(); elementPreviewFrame = nil; selected = .zero
         needsDisplay = true
     }
     override func mouseDragged(with event: NSEvent) {
         guard let start else { return }
         let end = convert(event.locationInWindow, from: nil)
+        if hypot(end.x - start.x, end.y - start.y) >= 3 { elementClickFrame = nil }
         selected = CGRect(x: min(start.x, end.x), y: min(start.y, end.y), width: abs(end.x - start.x), height: abs(end.y - start.y)).intersection(bounds)
         needsDisplay = true
     }
     override func mouseUp(with event: NSEvent) {
+        guard start != nil else { return }
         mouseDragged(with: event)
-        guard selected.width >= 2, selected.height >= 2 else { return }
+        let rectangle = elementClickFrame ?? selected
+        start = nil; elementClickFrame = nil; lastHover = nil
+        guard rectangle.width >= 2, rectangle.height >= 2 else { return }
         if let geometry {
-            // Retain the unsnapped rectangle as input. Preview and final crop use
-            // the same single alignment, without a second floating-point rounding.
-            guard (try? geometry.alignedSelection(selected)) != nil else { return }
-            finished?(.success(selected))
-        } else {
-            // The recording API still returns display-local, top-left points.
-            finished?(.success(selected.integral.intersection(bounds)))
-        }
+            guard (try? geometry.alignedSelection(rectangle)) != nil else { return }
+            finished?(.success(rectangle))
+        } else { finished?(.success(rectangle.integral.intersection(bounds))) }
     }
     override func cancelOperation(_ sender: Any?) { finished?(.failure(CaptureError.cancelled)) }
     override func rightMouseDown(with event: NSEvent) { cancelOperation(nil) }
     override func keyDown(with event: NSEvent) {
-        if event.keyCode == 53 { cancelOperation(nil) } else { super.keyDown(with: event) }
+        if event.keyCode == 53 { cancelOperation(nil) }
+        else if event.keyCode == 126 { parentElement() }
+        else if event.keyCode == 125 { childElement() }
+        else if event.charactersIgnoringModifiers?.lowercased() == "e", !event.modifierFlags.contains(.command), elementContext != nil { toggleElements() }
+        else if event.charactersIgnoringModifiers?.lowercased() == "z", event.modifierFlags.contains(.command) {
+            if elementSession?.undoTraversal() == true { refreshElementPreview() }
+        } else if [UInt16(36), 76].contains(event.keyCode), let frame = elementPreviewFrame {
+            finished?(.success(frame))
+        } else { super.keyDown(with: event) }
     }
     override func draw(_ dirtyRect: NSRect) {
         if let frozenImage { drawFrozen(frozenImage) }
-        NSColor.black.withAlphaComponent(0.40).setFill()
-        bounds.fill()
-        let aligned = try? geometry?.alignedSelection(selected, minimumPointSize: 0)
-        let outlineFrame = aligned?.topLeftFrame ?? selected
+        NSColor.black.withAlphaComponent(0.40).setFill(); bounds.fill()
+        let preview = selected.isEmpty ? (elementPreviewFrame ?? selected) : selected
+        let aligned = try? geometry?.alignedSelection(preview, minimumPointSize: 0)
+        let outlineFrame = aligned?.topLeftFrame ?? preview
         if !outlineFrame.isEmpty, !outlineFrame.isNull {
             NSGraphicsContext.saveGraphicsState()
-            if let frozenImage {
-                NSBezierPath(rect: outlineFrame).addClip()
-                drawFrozen(frozenImage)
-            } else {
+            if let frozenImage { NSBezierPath(rect: outlineFrame).addClip(); drawFrozen(frozenImage) }
+            else {
                 NSGraphicsContext.current?.compositingOperation = .copy
-                NSColor.clear.setFill()
-                outlineFrame.fill()
+                NSColor.clear.setFill(); outlineFrame.fill()
             }
             NSGraphicsContext.restoreGraphicsState()
             NSColor.systemBlue.setStroke()
-            let outline = NSBezierPath(rect: outlineFrame)
-            outline.lineWidth = 1.5
-            outline.stroke()
+            let outline = NSBezierPath(rect: outlineFrame); outline.lineWidth = 1.5; outline.stroke()
             for point in [CGPoint(x: outlineFrame.minX, y: outlineFrame.minY), CGPoint(x: outlineFrame.maxX, y: outlineFrame.minY),
                           CGPoint(x: outlineFrame.minX, y: outlineFrame.maxY), CGPoint(x: outlineFrame.maxX, y: outlineFrame.maxY)] {
                 let handle = NSBezierPath(rect: CGRect(x: point.x - 2.5, y: point.y - 2.5, width: 5, height: 5))
-                NSColor.white.setFill(); handle.fill()
-                NSColor.systemBlue.setStroke(); handle.lineWidth = 1; handle.stroke()
+                NSColor.white.setFill(); handle.fill(); NSColor.systemBlue.setStroke(); handle.lineWidth = 1; handle.stroke()
             }
         }
         let text: String
-        if let aligned {
-            text = "\(Int(aligned.pixelFrame.width)) × \(Int(aligned.pixelFrame.height)) px"
-        } else if !selected.isEmpty {
-            text = "\(Int(selected.width)) × \(Int(selected.height)) pt"
-        } else {
-            text = "拖动选择截图区域 · Esc 或右键取消"
+        if let aligned { text = "\(Int(aligned.pixelFrame.width)) × \(Int(aligned.pixelFrame.height)) px" }
+        else if !selected.isEmpty { text = "\(Int(selected.width)) × \(Int(selected.height)) pt" }
+        else { text = "拖动选择截图区域 · Esc 或右键取消" }
+        drawLabel(text, at: CGPoint(x: outlineFrame.isEmpty ? bounds.midX : outlineFrame.minX,
+                                    y: outlineFrame.isEmpty ? 28 : (outlineFrame.minY >= 42 ? outlineFrame.minY - 34 : outlineFrame.maxY + 8)),
+                  centered: outlineFrame.isEmpty)
+        if elementEnabled, !elementMessage.isEmpty {
+            drawLabel(elementMessage, at: CGPoint(x: bounds.midX, y: max(4, bounds.height - 76)), centered: true)
         }
+    }
+    private func drawLabel(_ text: String, at point: CGPoint, centered: Bool) {
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium),
-            .foregroundColor: NSColor.white
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium), .foregroundColor: NSColor.white
         ]
         let size = (text as NSString).size(withAttributes: attributes)
-        let width = size.width + 18
-        let x = outlineFrame.isEmpty ? (bounds.width - width) / 2 : outlineFrame.minX
-        let y = outlineFrame.isEmpty ? 28 : (outlineFrame.minY >= 42 ? outlineFrame.minY - 34 : outlineFrame.maxY + 8)
-        let label = CGRect(x: max(8, min(bounds.width - width - 8, x)),
-                           y: max(8, min(bounds.height - 34, y)), width: width, height: 26)
-        NSColor(calibratedWhite: 0.10, alpha: 0.92).setFill()
+        let width = min(max(0, bounds.width - 16), size.width + 18)
+        let x = centered ? point.x - width / 2 : point.x
+        let label = CGRect(x: max(8, min(bounds.width - width - 8, x)), y: max(8, min(bounds.height - 34, point.y)), width: width, height: 26)
+        NSColor(calibratedWhite: 0.10, alpha: 0.94).setFill()
         NSBezierPath(roundedRect: label, xRadius: 5, yRadius: 5).fill()
-        (text as NSString).draw(at: CGPoint(x: label.minX + 9, y: label.minY + 5), withAttributes: attributes)
+        (text as NSString).draw(in: label.insetBy(dx: 9, dy: 5), withAttributes: attributes)
     }
-
     private func drawFrozen(_ image: NSImage) {
         image.draw(in: bounds, from: .zero, operation: .copy, fraction: 1, respectFlipped: true,
                    hints: [.interpolation: NSImageInterpolation.none.rawValue])

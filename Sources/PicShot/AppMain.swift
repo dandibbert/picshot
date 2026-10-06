@@ -30,6 +30,12 @@ import ImageIO
     var hotKeys:HotKeyService?
     var busy=false
     private var captureTask:Task<Void,Never>?
+    private var activePresetOperation: UUID?
+    private var capturePresetStore: CapturePresetStore?
+    weak var capturePresetController: CapturePresetController?
+    private var barcodeTask: Task<Void, Never>?
+    private var barcodeGeneration = UUID()
+    weak var barcodeResultController: BarcodeResultController?
     private let frozenEditorAdmission = FrozenEditorCaptureAdmission<ImageEditorController>()
     private let editorAdmission = EditorAdmissionPolicy()
     private var editorAdmissionNotices = EditorAdmissionNotices()
@@ -76,7 +82,7 @@ import ImageIO
         if recorder.controlState.hasSessionActivity {
             NSLog("PicShot exited before recording cleanup completed.")
         }
-        hotKeys?.invalidate();captureTask?.cancel()
+        hotKeys?.invalidate();captureTask?.cancel();barcodeTask?.cancel()
         do{try pinSession?.prepareForTermination()}catch{NSLog("Could not save pin presentation before exit: %@",error.localizedDescription)}
     }
     func applicationShouldTerminate(_ sender:NSApplication)->NSApplication.TerminateReply {
@@ -116,7 +122,8 @@ import ImageIO
         app.addItem(withTitle:"关于 PicShot",action:#selector(about),keyEquivalent:"").target=self
         app.addItem(withTitle:"设置…",action:#selector(settings),keyEquivalent:",").target=self;app.addItem(.separator());app.addItem(withTitle:"退出 PicShot",action:#selector(NSApplication.terminate(_:)),keyEquivalent:"q")
         let captureItem=NSMenuItem();menu.addItem(captureItem);let captureMenu=NSMenu(title:"截图");captureItem.submenu=captureMenu
-        for (title,action) in [("区域截图",#selector(region)),("跨屏区域截图（系统选区）",#selector(systemRegion)),("窗口截图",#selector(windowCapture)),("当前屏幕",#selector(full)),("所有屏幕合成",#selector(allScreens))] {captureMenu.addItem(withTitle:title,action:action,keyEquivalent:"").target=self}
+        for (title,action) in [("区域截图",#selector(region)),("界面元素截图…",#selector(elementCapture)),("跨屏区域截图（系统选区）",#selector(systemRegion)),("窗口截图",#selector(windowCapture)),("当前屏幕",#selector(full)),("所有屏幕合成",#selector(allScreens))] {captureMenu.addItem(withTitle:title,action:action,keyEquivalent:"").target=self}
+        captureMenu.addItem(withTitle:"截图预设",action:nil,keyEquivalent:"").submenu=capturePresetsMenu()
         captureMenu.addItem(.separator());captureMenu.addItem(withTitle:"取消当前截图",action:#selector(cancelCapture),keyEquivalent:".").target=self
         let editItem=NSMenuItem();menu.addItem(editItem);let edit=NSMenu(title:"编辑");editItem.submenu=edit
         edit.addItem(withTitle:"撤销",action:Selector(("undo:")),keyEquivalent:"z");let redo=edit.addItem(withTitle:"重做",action:Selector(("redo:")),keyEquivalent:"Z");redo.keyEquivalentModifierMask=[.command,.shift]
@@ -165,14 +172,14 @@ import ImageIO
     private func runCapture(title:String="截图",operation:@escaping @MainActor () async throws -> CGImage){
         runCaptureForEditing(title:title) { CapturedImage(image:try await operation(),presentation:nil) }
     }
-    private func runCaptureForEditing(title:String="截图",operation:@escaping @MainActor () async throws -> CapturedImage){
+    private func runCaptureForEditing(title:String="截图",presetOperation:UUID?=nil,operation:@escaping @MainActor () async throws -> CapturedImage){
         // This check must precede window hiding, delays, and every capture API.
         guard frozenEditorAdmission.shouldStart(isBusy:busy || captureTask != nil,
             isClosed:{$0.isClosed},focus:{self.focusEditor($0)}) else{return}
-        busy=true;mainWindow.orderOut(nil)
+        busy=true;activePresetOperation=presetOperation;mainWindow.orderOut(nil)
         captureTask=Task { [weak self] in
             guard let self else{return}
-            defer{self.busy=false;self.captureTask=nil}
+            defer{self.busy=false;self.captureTask=nil;self.activePresetOperation=nil}
             do{
                 try await Task.sleep(nanoseconds:180_000_000)
                 let result=try await operation()
@@ -180,6 +187,116 @@ import ImageIO
                 try self.history.add(result.image,title:title,capturedAt:result.presentation?.capturedAt);self.openEditor(result.image,presentation:result.presentation)
             }catch CaptureError.cancelled{}catch is CancellationError{}catch{self.showMain();showError(error)}
         }
+    }
+    @objc func elementCapture() {
+        let options = ScreenshotPreferences.options
+        runCaptureForEditing { [capture] in
+            try await capture.captureForEditing(mode: .region, options: options, elementSelection: true)
+        }
+    }
+    private func presetCatalog() throws -> CapturePresetStore {
+        if let capturePresetStore { return capturePresetStore }
+        let store = try CapturePresetStore(); capturePresetStore = store; return store
+    }
+    func capturePresetsMenu() -> NSMenu {
+        let menu = NSMenu(title: "截图预设"); menu.delegate = self
+        populateCapturePresetsMenu(menu); return menu
+    }
+    func populateCapturePresetsMenu(_ menu: NSMenu) {
+        menu.removeAllItems(); menu.autoenablesItems = false
+        menu.addItem(withTitle: "管理截图预设…", action: #selector(manageCapturePresets), keyEquivalent: "").target = self
+        guard smoke == nil else { return }
+        do {
+            let presets = try presetCatalog().presets
+            if !presets.isEmpty { menu.addItem(.separator()) }
+            for preset in presets {
+                let item = menu.addItem(withTitle: "\(preset.name) · \(preset.delay.rawValue) 秒",
+                    action: #selector(invokeCapturePresetItem(_:)), keyEquivalent: "")
+                item.target = self; item.representedObject = preset.id.uuidString; item.isEnabled = !busy
+            }
+        } catch {
+            let item = menu.addItem(withTitle: "预设暂不可用，请打开管理查看", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+        }
+    }
+    @objc func manageCapturePresets() {
+        if let capturePresetController {
+            capturePresetController.showWindow(nil); NSApp.activate(ignoringOtherApps: true); return
+        }
+        do {
+            let manager = CapturePresetController(store: try presetCatalog())
+            manager.onCreate = { [weak self, weak manager] name, delay in
+                self?.createCapturePreset(name: name, delay: delay, manager: manager)
+            }
+            manager.onInvoke = { [weak self] preset in self?.invokeCapturePreset(preset) }
+            manager.onCancel = { [weak self] in
+                guard self?.activePresetOperation != nil else { return }; self?.captureTask?.cancel()
+            }
+            capturePresetController = manager; retain(manager); manager.showWindow(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        } catch { showError(error) }
+    }
+    private func createCapturePreset(name: String, delay: ScreenshotDelay, manager: CapturePresetController?) {
+        guard frozenEditorAdmission.shouldStart(isBusy: busy || captureTask != nil,
+            isClosed: { $0.isClosed }, focus: { self.focusEditor($0) }) else {
+            manager?.showError(PicShotError.message("请先完成当前截图或编辑，再创建预设。")); return
+        }
+        busy = true; activePresetOperation = UUID(); mainWindow.orderOut(nil)
+        captureTask = Task { [weak self, weak manager] in
+            guard let self else { return }
+            defer { self.busy = false; self.captureTask = nil; self.activePresetOperation = nil }
+            do {
+                try await Task.sleep(nanoseconds: 180_000_000)
+                let preset = try await self.capture.createPreset(name: name, delay: delay)
+                try Task.checkCancellation(); try self.presetCatalog().add(preset)
+                manager?.reload(); manager?.showWindow(nil)
+            } catch CaptureError.cancelled { manager?.showWindow(nil) }
+            catch is CancellationError { }
+            catch { manager?.showError(error) }
+        }
+    }
+    private func invokeCapturePreset(_ preset: CapturePreset) {
+        let cursor = ScreenshotPreferences.options.showsCursor
+        runCaptureForEditing(title: "预设 · " + preset.name, presetOperation: UUID()) { [capture] in
+            try await capture.capturePreset(preset, showsCursor: cursor)
+        }
+    }
+    @objc func invokeCapturePresetItem(_ item: NSMenuItem) {
+        guard let value = item.representedObject as? String, let id = UUID(uuidString: value) else { return }
+        do { guard let preset = try presetCatalog().preset(id: id) else { return }; invokeCapturePreset(preset) }
+        catch { showError(error) }
+    }
+    func recognizeBarcodes(_ image: CGImage) {
+        barcodeTask?.cancel(); let generation = UUID(); barcodeGeneration = generation
+        barcodeTask = Task { [weak self] in
+            do {
+                let document = try await RecognitionService.recognizeBarcodes(image)
+                guard !Task.isCancelled, let self, !self.isTerminating, self.barcodeGeneration == generation else { return }
+                self.barcodeTask = nil; self.presentBarcodeResults(image, document: document)
+            } catch is CancellationError { }
+            catch {
+                guard let self, !self.isTerminating, self.barcodeGeneration == generation else { return }
+                self.barcodeTask = nil; showError(error)
+            }
+        }
+    }
+    func showBarcodeResults(_ image: CGImage, document: RecognizedBarcodeDocument) {
+        barcodeTask?.cancel(); barcodeTask = nil; barcodeGeneration = UUID()
+        presentBarcodeResults(image, document: document)
+    }
+    private func presentBarcodeResults(_ image: CGImage, document: RecognizedBarcodeDocument) {
+        barcodeResultController?.close()
+        let controller = BarcodeResultController(image: image, document: document)
+        barcodeResultController = controller
+        controller.onClose = { [weak self, weak controller] in
+            if self?.barcodeResultController === controller { self?.barcodeResultController = nil }
+        }
+        retain(controller); controller.showWindow(nil); NSApp.activate(ignoringOtherApps: true)
+    }
+    func exportRecord(_ record: CaptureRecord) {
+        guard let image = history.image(for: record), let window = mainWindow else { return }
+        ImageExportController.present(image: image, from: window, suggestedName: "PicShot-history",
+                                      sourceURL: history.url(for: record))
     }
     func smartErase(_ image:CGImage){
         let c=SmartEraseController(image:image){[weak self] result in
@@ -320,7 +437,10 @@ import ImageIO
                 if TextResultController.copyDirectlyNextTime && !text.isEmpty {
                     TextResultController.copyToPasteboard(text);return
                 }
-                let controller=TextResultController(text:text,sourceImage:image,onTranslate:{[weak self] text in self?.translate(text)})
+                let barcodeAction: (() -> Void)? = result.barcodeDocument.map { document in
+                    { [weak self] in self?.showBarcodeResults(image, document: document) }
+                }
+                let controller=TextResultController(text:text,sourceImage:image,onTranslate:{[weak self] text in self?.translate(text)},onBarcodes:barcodeAction)
                 self.retain(controller);controller.showWindow(nil);NSApp.activate(ignoringOtherApps:true)
             }catch{showError(error)}
         }
@@ -372,7 +492,7 @@ import ImageIO
         // Editing an existing global combination must not trigger capture behind Settings.
         let unavailable=hotKeys?.failures ?? []
         hotKeys?.register(HotKeyConfiguration(shortcuts:[]))
-        let controller=SettingsController(onChange:{[weak self] in do{try self?.history.prune()}catch{showError(error)}},unavailableShortcuts:unavailable)
+        let controller=SettingsController(onChange:{[weak self] in do{try self?.history.prune()}catch{showError(error)}},unavailableShortcuts:unavailable,onManageCapturePresets:{[weak self] in self?.manageCapturePresets()})
         settingsController=controller;retain(controller);controller.showWindow(nil);NSApp.activate(ignoringOtherApps:true)
     }
     func refreshHotkeys(){
@@ -410,7 +530,7 @@ struct LibraryView:View {
                         ZStack {RoundedRectangle(cornerRadius:8).fill(Color(nsColor:.controlBackgroundColor));if let thumb=store.thumbnail(for:record){Image(nsImage:thumb).resizable().scaledToFit().padding(6)}}.frame(height:116).onTapGesture(count:2){app.openRecord(record)}
                         HStack{Text(record.title).lineLimit(1).font(.system(size:12));Spacer();if record.starred{Image(systemName:"star.fill").foregroundStyle(.yellow)}}
                         Text("\(record.width) × \(record.height) · \(record.createdAt.formatted(date:.abbreviated,time:.shortened))").font(.system(size:10)).foregroundStyle(.secondary)
-                    }.contextMenu{Button("编辑"){app.openRecord(record)};Button("贴图"){if let i=store.image(for:record){app.pin(i)}};Button("复制"){if let i=store.image(for:record){copyImage(i)}};Button("识别文字与条码"){if let i=store.image(for:record){app.recognize(i,recordID:record.id)}};Button("智能消除（可选本机模型）"){if let i=store.image(for:record){app.smartErase(i)}};Button("识别公式（可选本机模型）"){if let i=store.image(for:record){app.recognizeFormula(i)}};Button("识别表格（可选本机模型）"){if let i=store.image(for:record){app.recognizeTable(i)}};Button(record.starred ? "取消收藏" : "收藏"){try? store.toggleStar(record)};Divider();Button("移到废纸篓"){do{try store.remove(record)}catch{showError(error)}}}
+                    }.contextMenu{Button("编辑"){app.openRecord(record)};Button("导出新副本…"){app.exportRecord(record)};Button("识别二维码 / 条码"){if let i=store.image(for:record){app.recognizeBarcodes(i)}};Button("贴图"){if let i=store.image(for:record){app.pin(i)}};Button("复制"){if let i=store.image(for:record){copyImage(i)}};Button("识别文字与条码"){if let i=store.image(for:record){app.recognize(i,recordID:record.id)}};Button("智能消除（可选本机模型）"){if let i=store.image(for:record){app.smartErase(i)}};Button("识别公式（可选本机模型）"){if let i=store.image(for:record){app.recognizeFormula(i)}};Button("识别表格（可选本机模型）"){if let i=store.image(for:record){app.recognizeTable(i)}};Button(record.starred ? "取消收藏" : "收藏"){try? store.toggleStar(record)};Divider();Button("移到废纸篓"){do{try store.remove(record)}catch{showError(error)}}}
                 }}.padding(.horizontal,18).padding(.bottom,18)}
             }
             Divider();HStack{Image(systemName:"lock.shield");Text("本机处理 · 历史上限 \(store.policy.maxDays) 天 / \(store.policy.maxItems) 张 / \(store.policy.maxBytes / 1_048_576) MB");Spacer();Text("双击编辑")}.font(.system(size:10)).foregroundStyle(.secondary).padding(.horizontal,16).padding(.vertical,8)

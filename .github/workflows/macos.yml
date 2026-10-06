@@ -1,4 +1,3 @@
-# Independent Intel 0.6 retry: application and all product/test gates are unchanged.
 name: Native macOS build and verification
 on:
   push:
@@ -21,6 +20,9 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Test bounded CI command runner
+        timeout-minutes: 2
+        run: python3 -m unittest discover -s scripts/tests -p test_run_bounded_command.py -v
       - name: Package signed native app for early pixel review
         run: |
           mkdir -p dist
@@ -38,13 +40,56 @@ jobs:
           path: dist/evidence/ui/
           if-no-files-found: ignore
           retention-days: 14
+      # Keep compilation outside the eight-minute execution gates. Inner
+      # deadlines leave time for process cleanup and report/log publication.
+      - name: Compile debug app
+        timeout-minutes: 8
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 420
+          --log dist/debug-build.log --report dist/debug-build-report.json
+          -- swift build --product PicShot
+      - name: Upload debug compilation evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Debug-Compile-${{ matrix.arch }}-${{ github.sha }}
+          path: |
+            dist/debug-build.log
+            dist/debug-build-report.json
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Compile native tests
+        timeout-minutes: 10
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 540
+          --log dist/test-build.log --report dist/test-build-report.json
+          -- swift build --build-tests
+      - name: Upload test compilation evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Test-Compile-${{ matrix.arch }}-${{ github.sha }}
+          path: |
+            dist/test-build.log
+            dist/test-build-report.json
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Check annotation, GIF, recording durability and inference boundaries
         timeout-minutes: 8
-        run: |
-          mkdir -p dist
-          set -o pipefail
-          swift build --product PicShot
-          swift test --filter 'AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' 2>&1 | tee dist/critical-tests.log
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 420
+          --log dist/critical-tests.log --report dist/critical-tests-report.json
+          -- swift test --skip-build --filter 'CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests'
+      - name: Upload focused native test evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Focused-Tests-${{ matrix.arch }}-${{ github.sha }}
+          path: |
+            dist/critical-tests.log
+            dist/critical-tests-report.json
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Recover actual abruptly terminated synthetic recording from installed app
         timeout-minutes: 4
         run: |
@@ -52,10 +97,20 @@ jobs:
           bash scripts/recording-recovery-smoke.sh 2>&1 | tee dist/recording-recovery.log
       - name: Test native modules
         timeout-minutes: 8
-        run: |
-          mkdir -p dist
-          set -o pipefail
-          swift test 2>&1 | tee dist/test.log
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 420
+          --log dist/test.log --report dist/test-report.json
+          -- swift test --skip-build
+      - name: Upload full native test evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Native-Tests-${{ matrix.arch }}-${{ github.sha }}
+          path: |
+            dist/test.log
+            dist/test-report.json
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Validate native inference with approved pinned original model fixtures
         run: |
           set -o pipefail
@@ -66,7 +121,7 @@ jobs:
           export PICSHOT_TEST_TABLE_MODEL_DIR="$PWD/.build/model-fixtures/table"
           export PICSHOT_TEST_ML_HELPER="$(swift build --show-bin-path)/PicShotMLHelper"
           swift build --product PicShotMLHelper
-          swift test --filter 'FormulaEngineTests|RecordedModelOutputTests|SmartEraseEngineTests' 2>&1 | tee dist/model-inference.log
+          swift test --skip-build --filter 'FormulaEngineTests|RecordedModelOutputTests|SmartEraseEngineTests' 2>&1 | tee dist/model-inference.log
       - name: Install and launch both formats, render native UI, measure repeated cycles
         run: |
           set -o pipefail
@@ -78,17 +133,51 @@ jobs:
           name: PicShot-QA-${{ matrix.arch }}-${{ github.sha }}
           path: |
             dist/*.log
+            dist/*-report.json
             dist/evidence/
           retention-days: 14
-      - name: Upload installer bundle
+      - name: Check split installer transfer budgets
+        run: |
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          # Four files per uncompressed artifact ZIP; reserve 64 KiB for its
+          # archive headers so each upload remains below the 32 MiB transfer cap.
+          budget = 32 * 1024 * 1024 - 64 * 1024
+          for extension in ("zip", "dmg"):
+              installers = list(Path("dist").glob(f"PicShot-*.{extension}"))
+              if len(installers) != 1:
+                  raise SystemExit(f"Expected one {extension} installer, found {len(installers)}")
+              installer = installers[0]
+              metadata = installer.with_suffix(".build-info.json")
+              files = (installer, Path(str(installer) + ".sha256"),
+                       metadata, Path(str(metadata) + ".sha256"))
+              total = sum(path.stat().st_size for path in files)
+              print(f"{extension.upper()} artifact input: {total} bytes; budget: {budget}")
+              if total >= budget:
+                  raise SystemExit(f"{extension.upper()} artifact exceeds transfer budget")
+          PYTHON
+      - name: Upload ZIP installer and provenance
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: PicShot-macos-${{ matrix.arch }}-${{ github.sha }}
+          name: PicShot-macos-${{ matrix.arch }}-ZIP-${{ github.sha }}
           path: |
             dist/PicShot-*.zip
+            dist/PicShot-*.zip.sha256
+            dist/PicShot-*.build-info.json
+            dist/PicShot-*.build-info.json.sha256
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload DMG installer and provenance
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-macos-${{ matrix.arch }}-DMG-${{ github.sha }}
+          path: |
             dist/PicShot-*.dmg
-            dist/PicShot-*.json
-            dist/PicShot-*.sha256
+            dist/PicShot-*.dmg.sha256
+            dist/PicShot-*.build-info.json
+            dist/PicShot-*.build-info.json.sha256
+          compression-level: 0
           if-no-files-found: error
           retention-days: 14
 
