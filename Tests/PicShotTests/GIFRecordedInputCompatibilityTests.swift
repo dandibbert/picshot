@@ -361,15 +361,18 @@ final class GIFRecordedInputCompatibilityTests: XCTestCase {
             return value
         }
         let production = generator(tolerance: tolerance)
+        let legacy = generator(tolerance: tolerance)
         let nearest = generator(tolerance: tolerance)
         let exact = generator(tolerance: .zero)
         let watchdog = Task {
             do { try await Task.sleep(nanoseconds: 20_000_000_000) } catch { return }
-            production.cancelAllCGImageGeneration(); nearest.cancelAllCGImageGeneration(); exact.cancelAllCGImageGeneration()
+            production.cancelAllCGImageGeneration(); legacy.cancelAllCGImageGeneration()
+            nearest.cancelAllCGImageGeneration(); exact.cancelAllCGImageGeneration()
         }
         defer {
             watchdog.cancel()
-            production.cancelAllCGImageGeneration(); nearest.cancelAllCGImageGeneration(); exact.cancelAllCGImageGeneration()
+            production.cancelAllCGImageGeneration(); legacy.cancelAllCGImageGeneration()
+            nearest.cancelAllCGImageGeneration(); exact.cancelAllCGImageGeneration()
         }
         let deadline = ProcessInfo.processInfo.systemUptime + 20
         func observe(_ generator: AVAssetImageGenerator, index: Int, request: CMTime, mode: String) async throws -> GeneratorTimingRow {
@@ -391,17 +394,19 @@ final class GIFRecordedInputCompatibilityTests: XCTestCase {
         }
         var generated: [GeneratorTimingRow] = []
         for index in 0..<plan.frameCount {
-            let request = CMTime(seconds: plan.time(for: index), preferredTimescale: 600)
+            let request = plan.samplingTime(for: index)
             generated.append(try await observe(production, index: index, request: request, mode: "production"))
         }
         let probeIndices = Set(transitions.flatMap { [$0 - 1, $0, $0 + 1] }).filter { (0..<plan.frameCount).contains($0) }.sorted()
         var probes: [GeneratorTimingRow] = []
         for index in probeIndices {
-            let request = CMTime(seconds: plan.time(for: index), preferredTimescale: 600)
+            let request = plan.samplingTime(for: index)
+            let legacyRequest = CMTime(seconds: plan.time(for: index), preferredTimescale: 600)
             let nearestTick = CMTime(value: Int64((plan.time(for: index) * 600).rounded()), timescale: 600)
             // Every authored compatibility source has a 10 fps timeline. This
             // rational grid is diagnostic only, never a substituted request.
             let authoredGrid = CMTime(value: Int64(index), timescale: 10)
+            probes.append(try await observe(legacy, index: index, request: legacyRequest, mode: "legacy-double-constructor-production-tolerance"))
             probes.append(try await observe(nearest, index: index, request: nearestTick, mode: "nearest-tick-production-tolerance"))
             probes.append(try await observe(exact, index: index, request: request, mode: "production-request-zero-tolerance"))
             probes.append(try await observe(exact, index: index, request: authoredGrid, mode: "authored-grid-zero-tolerance"))

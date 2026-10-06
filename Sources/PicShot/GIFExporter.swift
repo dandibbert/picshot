@@ -120,7 +120,7 @@ enum GIFInProcessEngine {
             try await withTaskCancellationHandler {
                 for index in 0..<plan.frameCount {
                     try Task.checkCancellation()
-                    let time = CMTime(seconds: plan.time(for: index), preferredTimescale: 600)
+                    let time = plan.samplingTime(for: index)
                     switch frameExtraction {
                     case .asynchronous:
                         // Unchanged production baseline for controlled comparison.
@@ -185,6 +185,14 @@ struct GIFFramePlan: Equatable {
     }
 
     func time(for index: Int) -> TimeInterval { Double(index) * duration / Double(frameCount) }
+    /// Select the nearest tick explicitly. CMTime's seconds initializer can
+    /// truncate a Double just below an intended boundary (for example 0.8 to
+    /// 479/600), selecting the preceding source frame. This changes neither
+    /// the sampling grid nor GIF delays, only its conversion to rational time.
+    func samplingTime(for index: Int) -> CMTime {
+        precondition((0..<frameCount).contains(index))
+        return CMTime(value: Int64((time(for: index) * 600).rounded()), timescale: 600)
+    }
     func delay(for index: Int) -> TimeInterval {
         let lower = index * centiseconds / frameCount
         let upper = (index + 1) * centiseconds / frameCount

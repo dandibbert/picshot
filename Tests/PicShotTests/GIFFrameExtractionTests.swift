@@ -11,6 +11,61 @@ final class GIFFrameExtractionTests: XCTestCase {
         XCTAssertNil(GIFFrameExtraction(rawValue: "sync"))
     }
 
+    func testSamplingTimeKeepsDecimalFrameBoundariesOnTheNearestExactTick() throws {
+        // Native regression: the legacy Double constructor converted nominal
+        // 0.1/0.2 seconds to 59/119 ticks, selecting the preceding video frame.
+        // Require exact request ticks independently of decoder tolerance.
+        let cases: [(duration: Double, frames: Int, indices: [Int])] = [
+            (2.4, 24, [1, 2, 8, 16]), (1.2, 12, [1, 2, 8])
+        ]
+        for test in cases {
+            let options = GIFExportOptions(frameRate: 10, maximumDimension: 40,
+                maximumDuration: test.duration, maximumFrames: test.frames)
+            let plan = try GIFFramePlan(duration: test.duration, options: options)
+            XCTAssertEqual(plan.frameCount, test.frames)
+            for index in test.indices {
+                let requested = plan.samplingTime(for: index)
+                XCTAssertEqual(requested.timescale, 600)
+                XCTAssertEqual(requested.value, Int64(index * 60), "Boundary frame \(index) in \(test.duration)-second plan")
+                XCTAssertEqual(CMTimeCompare(requested, CMTime(value: Int64(index), timescale: 10)), 0)
+                XCTAssertFalse(requested.flags.contains(.hasBeenRounded))
+            }
+            XCTAssertEqual((0..<plan.frameCount).map { plan.delay(for: $0) }, Array(repeating: 0.1, count: test.frames),
+                "Fixing request precision must not change GIF playback delays")
+        }
+    }
+
+    func testSamplingTimePreservesFractionalCappedAndTrimmedPlanBounds() throws {
+        let cases: [(duration: Double, options: GIFExportOptions, frames: Int)] = [
+            (1_001.0 / 300, .init(frameRate: 30_000.0 / 1_001, maximumDimension: 40, maximumDuration: 60, maximumFrames: 600), 100),
+            (7.3, .init(frameRate: 24, maximumDimension: 40, maximumDuration: 1.25, maximumFrames: 600), 30),
+            (90, .init(frameRate: 30, maximumDimension: 40, maximumDuration: 59.97, maximumFrames: 7), 7),
+            (0.101, .init(frameRate: 30, maximumDimension: 40, maximumDuration: 1, maximumFrames: 600), 4)
+        ]
+        for test in cases {
+            let plan = try GIFFramePlan(duration: test.duration, options: test.options)
+            XCTAssertEqual(plan.frameCount, test.frames)
+            XCTAssertEqual(plan.duration, min(test.duration, test.options.maximumDuration))
+            var previous: CMTime?
+            for index in 0..<plan.frameCount {
+                let requested = plan.samplingTime(for: index)
+                XCTAssertTrue(requested.isNumeric)
+                XCTAssertEqual(requested.timescale, 600)
+                XCTAssertGreaterThanOrEqual(requested.seconds, 0)
+                XCTAssertLessThan(requested.seconds, plan.duration, "The final request must stay within the source interval")
+                XCTAssertEqual(requested.seconds, plan.time(for: index), accuracy: 1.0 / 1_200 + 1e-12)
+                if let previous { XCTAssertGreaterThan(CMTimeCompare(requested, previous), 0) }
+                previous = requested
+            }
+            let playback = (0..<plan.frameCount).reduce(0.0) { $0 + plan.delay(for: $1) }
+            XCTAssertEqual(playback, (plan.duration * 100).rounded() / 100, accuracy: 1e-12)
+        }
+        let fractional = try GIFFramePlan(duration: 1_001.0 / 300, options: cases[0].options)
+        XCTAssertEqual(fractional.samplingTime(for: 1).value, 20)
+        XCTAssertEqual(fractional.samplingTime(for: 26).value, 521)
+        XCTAssertEqual(fractional.samplingTime(for: 50).value, 1_001)
+    }
+
     func testScopedExtractionPreservesFramePixelsTimingAndDownscaleForPreferredTransforms() async throws {
         let root = try directory()
         defer { try? FileManager.default.removeItem(at: root) }
