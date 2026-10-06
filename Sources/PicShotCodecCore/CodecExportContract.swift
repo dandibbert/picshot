@@ -138,8 +138,15 @@ public struct CodecExportResponse: Codable, Equatable, Sendable {
     }
     public func validate() throws {
         guard version == CodecExportLimits.version else { throw CodecExportFailure(.unsupportedVersion) }
-        for count in [residentSampleCount, physicalFootprintSampleCount].compactMap({ $0 }) {
-            guard (0...10_000).contains(count) else { throw CodecExportFailure(.protocolViolation) }
+        // A positive count is evidence only when its matching observed peak
+        // is present. Unsupported measurements omit both fields together.
+        for (peak, count) in [(sampledPeakResidentBytes, residentSampleCount),
+                              (sampledPeakPhysicalFootprintBytes, physicalFootprintSampleCount)] {
+            switch (peak, count) {
+            case (nil, nil): break
+            case let (peak?, count?) where peak > 0 && (1...10_000).contains(count): break
+            default: throw CodecExportFailure(.protocolViolation)
+            }
         }
         switch kind {
         case .progress:

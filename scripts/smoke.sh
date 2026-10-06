@@ -6,7 +6,7 @@ export PICSHOT_SMOKE_FORMULA_MODEL_DIR="$PWD/.build/model-fixtures/formula"
 export PICSHOT_SMOKE_FORMULA_INPUT="$PWD/Tests/PicShotMLHelperTests/Fixtures/energy.png"
 export PICSHOT_SMOKE_TABLE_MODEL_DIR="$PWD/.build/model-fixtures/table"
 export PICSHOT_SMOKE_TABLE_INPUT="$PWD/Tests/PicShotTableEngineTests/Fixtures/merged-table.png"
-base="PicShot-0.7.0-macos-$(uname -m)"
+base="PicShot-0.8.0-macos-$(uname -m)"
 work=$(mktemp -d)
 mounted=false
 trap 'if [[ "$mounted" == true ]];then hdiutil detach "$work/mount" || true;fi;rm -rf "$work"' EXIT
@@ -58,6 +58,12 @@ assert batch['status']=='passed' and batch['sourceCommit']==sys.argv[3],batch
 assert batch['settingsPresetRouteVerified'] and not batch['screenCaptureStarted'] and not batch['permissionRequested'] and not batch['externalURLVisited'],batch
 for key in ['capturePresetsElements','imageExport','barcodes']:
     assert batch[key]['status']=='passed',batch[key]
+for key in ['codecExportEvidence','recordingWebPEvidence']:
+    codec=r[key]
+    assert codec['status']=='passed' and codec['sourceCommit']==sys.argv[3],codec
+    assert not codec['captureStarted'] and codec['temporaryDirectoryRemoved'],codec
+assert not r['codecExportEvidence']['networkAttempted'],r['codecExportEvidence']
+assert not r['recordingWebPEvidence']['externalDownloads'],r['recordingWebPEvidence']
 composition=r['recordingCompositionEvidence']
 assert composition['status']=='passed' and composition['temporaryDirectoryRemoved'],composition
 assert composition['controllerCreationCount']==4 and composition['controllerReleaseCount']==4,composition

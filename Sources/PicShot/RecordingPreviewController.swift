@@ -3,6 +3,7 @@ import AVFoundation
 import AVKit
 import SwiftUI
 import UniformTypeIdentifiers
+import PicShotCodecCore
 
 @MainActor
 final class RecordingPreviewController: NSWindowController, NSWindowDelegate {
@@ -47,7 +48,7 @@ final class RecordingPreviewController: NSWindowController, NSWindowDelegate {
     }
 }
 
-enum RecordingPreviewExportKind: Equatable, Sendable { case mp4, gif }
+enum RecordingPreviewExportKind: Equatable, Sendable { case mp4, gif, webp }
 
 /// Holds no decoded frame collection. AVPlayer handles streaming decode and
 /// AVFoundation time observers are paired with removal, including deinit.
@@ -91,6 +92,15 @@ final class RecordingPreviewModel: ObservableObject {
     @Published private(set) var status = "Loading recording…"
     @Published private(set) var errorMessage: String?
     @Published private(set) var lastExportURL: URL?
+    @Published var webpFrameRate = 15
+    @Published var webpMaximumDimension = 1_280
+    @Published var webpQuality = 80
+    @Published var webpLossless = false
+    var webpOptions: CodecExportRequest {
+        CodecExportRequest(kind: .animation, format: .webp, quality: webpQuality,
+            lossless: webpLossless, preserveAlpha: true,
+            animation: CodecAnimationOptions(frameRate: webpFrameRate, maximumDimension: webpMaximumDimension))
+    }
     @Published var speed: Float = 1 { didSet { if playing { player.rate = speed } } }
     @Published var volume: Double = 1 { didSet { player.volume = Float(min(1, max(0, volume))) } }
     private(set) var closed = false
@@ -293,12 +303,20 @@ final class RecordingPreviewModel: ObservableObject {
             errorMessage = "GIF export supports at most 30 seconds. Shorten the selected range first."
             return
         }
+        if kind == .webp, range.duration > CodecExportLimits.animationDuration {
+            errorMessage = VideoTrimError.webpDurationLimit(CodecExportLimits.animationDuration).localizedDescription
+            return
+        }
         pause()
         let panel = NSSavePanel()
-        panel.allowedContentTypes = kind == .mp4 ? [.mpeg4Movie] : [.gif]
+        switch kind {
+        case .mp4: panel.allowedContentTypes = [.mpeg4Movie]
+        case .gif: panel.allowedContentTypes = [.gif]
+        case .webp: panel.allowedContentTypes = [ImageExportFormat.webp.contentType]
+        }
         panel.canCreateDirectories = true
         panel.isExtensionHidden = false
-        panel.nameFieldStringValue = url.deletingPathExtension().lastPathComponent + "-trimmed." + (kind == .mp4 ? "mp4" : "gif")
+        panel.nameFieldStringValue = url.deletingPathExtension().lastPathComponent + "-trimmed." + (kind == .mp4 ? "mp4" : kind == .gif ? "gif" : "webp")
         panel.directoryURL = url.deletingLastPathComponent()
         panel.message = "Save a separate clip. The original recording is kept."
         savePanel = panel
@@ -326,10 +344,15 @@ final class RecordingPreviewModel: ObservableObject {
         progress = 0
         errorMessage = nil
         lastExportURL = nil
-        status = kind == .mp4 ? "Exporting selected MP4…" : "Preparing selected clip for GIF…"
+        switch kind {
+        case .mp4: status = "Exporting selected MP4…"
+        case .gif: status = "Preparing selected clip for GIF…"
+        case .webp: status = "Preparing selected clip for animated WebP…"
+        }
         let id = UUID()
         exportID = id
         let sourceURL = url
+        let webpOptions = self.webpOptions
         exportTask = Task { [weak self] in
             let report: @Sendable (Double) -> Void = { [weak self] value in
                 Task { @MainActor [weak self] in
@@ -339,11 +362,15 @@ final class RecordingPreviewModel: ObservableObject {
             }
             do {
                 let result: URL
-                if kind == .mp4 {
+                switch kind {
+                case .mp4:
                     result = try await VideoTrimExporter.export(sourceURL: sourceURL, destination: destination, range: range, progress: report)
-                } else {
+                case .gif:
                     result = try await VideoTrimExporter.exportGIF(sourceURL: sourceURL, destination: destination,
                         range: range, options: Self.gifOptions, progress: report)
+                case .webp:
+                    result = try await VideoTrimExporter.exportWebP(sourceURL: sourceURL, destination: destination,
+                        range: range, options: webpOptions, progress: report)
                 }
                 guard let self, !self.closed, self.exportID == id else { return }
                 self.progress = 1
@@ -423,73 +450,92 @@ private struct RecordingPreviewView: View {
         VStack(spacing: 12) {
             RecordingPlayerView(player: model.player)
                 .frame(minHeight: 220).background(Color.black)
-            VStack(spacing: 12) {
-                HStack {
-                    Button(action: model.togglePlayback) {
-                        Label(model.playing ? "Pause" : "Play", systemImage: model.playing ? "pause.fill" : "play.fill")
-                    }.disabled(!model.canEdit)
-                    Button("Previous frame") { model.step(by: -1) }.disabled(!model.canStepBackward)
-                    Button("Next frame") { model.step(by: 1) }.disabled(!model.canStepForward)
-                    Text(RecordingPreviewModel.displayTime(model.position) + " / " + RecordingPreviewModel.displayTime(model.duration))
-                        .monospacedDigit()
-                    Spacer()
-                }
-                Slider(value: Binding(get: { model.position }, set: { model.seek(to: $0) }), in: timeline)
-                    .disabled(!model.canEdit).accessibilityLabel("Recording playhead")
-                HStack {
-                    Text("Playback speed")
-                    Picker("Playback speed", selection: $model.speed) {
-                        Text("0.25×").tag(Float(0.25)); Text("0.5×").tag(Float(0.5)); Text("1×").tag(Float(1))
-                        Text("1.5×").tag(Float(1.5)); Text("2×").tag(Float(2))
-                    }.labelsHidden().frame(width: 90)
-                    Text("Volume")
-                    Slider(value: $model.volume, in: 0...1).frame(width: 110).accessibilityLabel("Playback volume")
-                    Spacer()
-                    Text("Speed and volume affect preview only").font(.caption).foregroundStyle(.secondary)
-                }.disabled(!model.canEdit)
-                Divider()
-                HStack {
-                    Text("In (seconds)").frame(width: 88, alignment: .leading)
-                    TextField("Start", text: $model.startText).frame(width: 110).monospacedDigit().onSubmit { model.applyRangeFields() }
-                    Slider(value: Binding(get: { model.start }, set: { model.moveStart(to: $0) }), in: timeline)
-                        .accessibilityLabel("Selection start")
-                    Button("Set at playhead", action: model.markStart)
-                }.disabled(!model.canEdit)
-                HStack {
-                    Text("Out (seconds)").frame(width: 88, alignment: .leading)
-                    TextField("End", text: $model.endText).frame(width: 110).monospacedDigit().onSubmit { model.applyRangeFields() }
-                    Slider(value: Binding(get: { model.end }, set: { model.moveEnd(to: $0) }), in: timeline)
-                        .accessibilityLabel("Selection end")
-                    Button("Set at playhead", action: model.markEnd)
-                }.disabled(!model.canEdit)
-                HStack {
-                    Text("Selected: " + RecordingPreviewModel.displayTime(model.selectionDuration)).monospacedDigit()
-                    Button("Play selection", action: model.playSelection).disabled(!model.canEdit)
-                    Button("Reset range", action: model.resetSelection).disabled(!model.canEdit)
-                    Spacer()
-                    Button("Export MP4…") { export(.mp4) }.disabled(!model.canEdit)
-                    Button("Export GIF…") { export(.gif) }.disabled(!model.canEdit)
-                }
-                Text("GIF: selected range ≤30 seconds · 12 FPS · ≤360 frames · ≤1280 px · ≤64 MiB · no audio")
-                    .font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
-                if model.exporting {
+            ScrollView {
+                VStack(spacing: 12) {
                     HStack {
-                        ProgressView(value: model.progress).frame(maxWidth: .infinity)
-                        Text("\(Int(model.progress * 100))%").monospacedDigit()
-                        Button(model.cancelling ? "Cancelling…" : "Cancel", action: model.cancelExport).disabled(model.cancelling)
+                        Button(action: model.togglePlayback) {
+                            Label(model.playing ? "Pause" : "Play", systemImage: model.playing ? "pause.fill" : "play.fill")
+                        }.disabled(!model.canEdit)
+                        Button("Previous frame") { model.step(by: -1) }.disabled(!model.canStepBackward)
+                        Button("Next frame") { model.step(by: 1) }.disabled(!model.canStepForward)
+                        Text(RecordingPreviewModel.displayTime(model.position) + " / " + RecordingPreviewModel.displayTime(model.duration))
+                            .monospacedDigit()
+                        Spacer()
                     }
-                }
-                if let error = model.errorMessage {
-                    Text(error).foregroundStyle(.red).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-                }
-                HStack {
-                    Text(model.status).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                    Spacer()
-                    if let output = model.lastExportURL {
-                        Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([output]) }
+                    Slider(value: Binding(get: { model.position }, set: { model.seek(to: $0) }), in: timeline)
+                        .disabled(!model.canEdit).accessibilityLabel("Recording playhead")
+                    HStack {
+                        Text("Playback speed")
+                        Picker("Playback speed", selection: $model.speed) {
+                            Text("0.25×").tag(Float(0.25)); Text("0.5×").tag(Float(0.5)); Text("1×").tag(Float(1))
+                            Text("1.5×").tag(Float(1.5)); Text("2×").tag(Float(2))
+                        }.labelsHidden().frame(width: 90)
+                        Text("Volume")
+                        Slider(value: $model.volume, in: 0...1).frame(width: 110).accessibilityLabel("Playback volume")
+                        Spacer()
+                        Text("Speed and volume affect preview only").font(.caption).foregroundStyle(.secondary)
+                    }.disabled(!model.canEdit)
+                    Divider()
+                    HStack {
+                        Text("In (seconds)").frame(width: 88, alignment: .leading)
+                        TextField("Start", text: $model.startText).frame(width: 110).monospacedDigit().onSubmit { model.applyRangeFields() }
+                        Slider(value: Binding(get: { model.start }, set: { model.moveStart(to: $0) }), in: timeline)
+                            .accessibilityLabel("Selection start")
+                        Button("Set at playhead", action: model.markStart)
+                    }.disabled(!model.canEdit)
+                    HStack {
+                        Text("Out (seconds)").frame(width: 88, alignment: .leading)
+                        TextField("End", text: $model.endText).frame(width: 110).monospacedDigit().onSubmit { model.applyRangeFields() }
+                        Slider(value: Binding(get: { model.end }, set: { model.moveEnd(to: $0) }), in: timeline)
+                            .accessibilityLabel("Selection end")
+                        Button("Set at playhead", action: model.markEnd)
+                    }.disabled(!model.canEdit)
+                    HStack {
+                        Text("Selected: " + RecordingPreviewModel.displayTime(model.selectionDuration)).monospacedDigit()
+                        Button("Play selection", action: model.playSelection).disabled(!model.canEdit)
+                        Button("Reset range", action: model.resetSelection).disabled(!model.canEdit)
+                        Spacer()
+                        Button("Export MP4…") { export(.mp4) }.disabled(!model.canEdit)
+                        Button("Export GIF…") { export(.gif) }.disabled(!model.canEdit)
                     }
-                }
-            }.padding([.horizontal, .bottom], 16)
+                    Text("GIF: selected range ≤30 seconds · 12 FPS · ≤360 frames · ≤1280 px · ≤64 MiB · no audio")
+                        .font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+                    HStack(spacing: 8) {
+                        Text("WebP")
+                        Picker("WebP frame rate", selection: $model.webpFrameRate) {
+                            ForEach([10, 12, 15, 24, 30], id: \.self) { Text("\($0) FPS").tag($0) }
+                        }.labelsHidden().frame(width: 90)
+                        Picker("WebP maximum dimension", selection: $model.webpMaximumDimension) {
+                            ForEach([640, 1_280, 1_920], id: \.self) { Text("\($0) px").tag($0) }
+                        }.labelsHidden().frame(width: 100)
+                        Toggle("Lossless", isOn: $model.webpLossless).toggleStyle(.checkbox)
+                        Picker("WebP quality", selection: $model.webpQuality) {
+                            ForEach([60, 80, 95], id: \.self) { Text("Q \($0)").tag($0) }
+                        }.labelsHidden().frame(width: 80).disabled(model.webpLossless)
+                        Spacer(minLength: 0)
+                        Button("Export WebP…") { export(.webp) }
+                    }.disabled(!model.canEdit)
+                    Text("WebP: ≤60 seconds · ≤600 frames · ≤64 MiB · no audio. Sampling is reduced if the frame cap is reached.")
+                        .font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+                    if model.exporting {
+                        HStack {
+                            ProgressView(value: model.progress).frame(maxWidth: .infinity)
+                            Text("\(Int(model.progress * 100))%").monospacedDigit()
+                            Button(model.cancelling ? "Cancelling…" : "Cancel", action: model.cancelExport).disabled(model.cancelling)
+                        }
+                    }
+                    if let error = model.errorMessage {
+                        Text(error).foregroundStyle(.red).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    HStack {
+                        Text(model.status).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                        Spacer()
+                        if let output = model.lastExportURL {
+                            Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([output]) }
+                        }
+                    }
+                }.padding([.horizontal, .bottom], 16)
+            }.frame(minHeight: 320, idealHeight: 410, maxHeight: 440)
         }.buttonStyle(.bordered)
     }
 }

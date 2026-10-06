@@ -1,15 +1,36 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+python3 scripts/build-native-codecs.py --arch "$(uname -m)"
 swift build -c release
 bin=$(swift build -c release --show-bin-path)
-version=0.7.0
+version=0.8.0
 arch=$(uname -m)
 sha=$(git rev-parse HEAD)
 app=dist/PicShot.app
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Helpers"
 cp "$bin/PicShot" "$app/Contents/MacOS/PicShot"
 cp "$bin/PicShotMLHelper" "$app/Contents/Helpers/PicShotMLHelper"
+cp "$bin/PicShotCodecHelper" "$app/Contents/Helpers/PicShotCodecHelper"
+codesign --force --sign - --identifier local.picshot.codechelper "$app/Contents/Helpers/PicShotCodecHelper"
+mkdir -p "$app/Contents/Resources/NativeCodecs"
+ditto .build/native-codecs/install/licenses "$app/Contents/Resources/NativeCodecs/licenses"
+cp .build/native-codecs/install/native-build.json .build/native-codecs/install/native-selftest-dependencies.txt "$app/Contents/Resources/NativeCodecs/"
+cp docs/WEB_CODECS.md "$app/Contents/Resources/NativeCodecs/"
+python3 - "$app/Contents/Helpers/PicShotCodecHelper" "$app/Contents/Resources/NativeCodecs" <<'PYTHON'
+import json, pathlib, platform, subprocess, sys, hashlib
+helper, evidence = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+r = json.loads((evidence / 'native-build.json').read_text())
+assert r['native_selftest'] == 'passed' and r['architecture'] == platform.machine(), r
+for name, dependency in r['dependencies'].items():
+    for entry in dependency['notices']:
+        path = evidence / 'licenses' / name / entry['path']
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == entry['sha256_local'], path
+assert subprocess.check_output(['lipo', '-archs', str(helper)], text=True).strip() == platform.machine()
+for line in subprocess.check_output(['otool', '-L', str(helper)], text=True).splitlines()[1:]:
+    library = line.strip().split(' ', 1)[0]
+    assert library.startswith(('/usr/lib/', '/System/Library/')), library
+PYTHON
 python3 scripts/bundle-runtime.py "$app"
 cp "$bin/PicShotEraseHelper" "$app/Contents/Helpers/PicShotEraseHelper"
 codesign --force --sign - --identifier local.picshot.erasehelper "$app/Contents/Helpers/PicShotEraseHelper"

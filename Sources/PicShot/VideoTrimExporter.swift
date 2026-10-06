@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import PicShotCodecCore
 import Darwin
 
 /// A half-open interval in the source movie's timeline. Fractional frame times
@@ -10,8 +11,10 @@ struct VideoTrimRange: Equatable, Sendable {
     let end: TimeInterval
     var duration: TimeInterval { end - start }
     var timeRange: CMTimeRange {
-        CMTimeRange(start: CMTime(seconds: start, preferredTimescale: Self.timescale),
-                    end: CMTime(seconds: end, preferredTimescale: Self.timescale))
+        // Explicit nearest ticks keep decimal in/out boundaries from falling
+        // one tick before the intended source frame through Double truncation.
+        CMTimeRange(start: CMTime(value: Int64((start * Double(Self.timescale)).rounded()), timescale: Self.timescale),
+                    end: CMTime(value: Int64((end * Double(Self.timescale)).rounded()), timescale: Self.timescale))
     }
 
     init(start: TimeInterval, end: TimeInterval, sourceDuration: TimeInterval) throws {
@@ -30,7 +33,7 @@ struct VideoTrimRange: Equatable, Sendable {
 
 enum VideoTrimError: LocalizedError {
     case invalidRange, noVideo, unsupportedExport, destinationExists, destinationChanged, originalDestination
-    case gifDurationLimit(TimeInterval), recoveredDestination(URL), failed(String)
+    case gifDurationLimit(TimeInterval), webpDurationLimit(TimeInterval), recoveredDestination(URL), failed(String)
 
     var errorDescription: String? {
         switch self {
@@ -41,6 +44,7 @@ enum VideoTrimError: LocalizedError {
         case .destinationChanged: return "The destination changed while exporting. Save again to confirm the current file."
         case .originalDestination: return "Choose a different filename to keep the original recording intact."
         case .gifDurationLimit(let seconds): return "GIF export supports at most \(Int(seconds)) seconds. Shorten the selected range first."
+        case .webpDurationLimit(let seconds): return "WebP export supports at most \(Int(seconds)) seconds. Shorten the selected range first."
         case .recoveredDestination(let url): return "The destination changed during saving. Its previous file was preserved at \(url.path). Keep that recovered file and choose a new export name."
         case .failed(let message): return "Couldn’t export the clip: \(message)"
         }
@@ -140,7 +144,8 @@ struct VideoExportDestination: Sendable {
     func makeStagingDirectory() throws -> URL {
         let directory = url.deletingLastPathComponent()
             .appendingPathComponent(".picshot-trim-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
+                                                attributes: [.posixPermissions: 0o700])
         return directory
     }
 
@@ -210,6 +215,39 @@ enum VideoTrimExporter {
         }
         try Task.checkCancellation()
         try destination.publish(stagedURL: gifURL)
+        progress?(1)
+        return destination.url
+    }
+
+    /// Uses the same identity-checked publication as MP4/GIF. The helper sees
+    /// a frozen, self-contained selected clip, never the user's original URL.
+    /// WebP frame extraction/encoding stays in the child; preparing the selected
+    /// MP4 uses the existing cancellable AVFoundation trim exporter.
+    static func exportWebP(
+        sourceURL: URL, destination: VideoExportDestination, range: VideoTrimRange,
+        options: CodecExportRequest,
+        progress: (@Sendable (Double) -> Void)? = nil
+    ) async throws -> URL {
+        try options.validate()
+        guard options.kind == .animation, options.format == .webp, let animation = options.animation
+        else { throw CodecExportFailure(.invalidOptions) }
+        guard range.duration <= animation.maximumDuration else { throw VideoTrimError.webpDurationLimit(animation.maximumDuration) }
+        guard destination.url.pathExtension.lowercased() == "webp" else { throw ImageExportError.invalidDestination }
+        try Task.checkCancellation()
+        let directory = try destination.makeStagingDirectory()
+        // The codec service owns its copied input and helper job in a separate
+        // private system-temp directory. No child ever reads this trim stage,
+        // so it is safe to remove even if the child's exit is unconfirmed.
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let clipURL = directory.appendingPathComponent("selected.mp4")
+        _ = try await export(sourceURL: sourceURL, destinationURL: clipURL, range: range,
+                             progress: { progress?($0 * 0.25) })
+        try Task.checkCancellation()
+        let webpURL = directory.appendingPathComponent("selected.webp")
+        _ = try await CodecExportProcessService.shared.export(sourceURL: clipURL, destinationURL: webpURL,
+            options: options, progress: { progress?(0.25 + $0 * 0.74) })
+        try Task.checkCancellation()
+        try destination.publish(stagedURL: webpURL)
         progress?(1)
         return destination.url
     }

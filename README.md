@@ -7,10 +7,14 @@ Original, local-first macOS screenshot, annotation, pinning and recording utilit
 ## Build
 
 ```sh
-swift test
 bash scripts/package.sh
+swift build --product PicShot
+swift build --product PicShotCodecHelper
+swift test
 bash scripts/smoke.sh
 ```
+
+Builds need macOS, Xcode and preinstalled CMake 3.22+. `package.sh` explicitly fetches and builds the pinned official WebP/AVIF/AOM sources before Swift compilation; upstream build commands are network-denied and full notices are bundled. Codec versions, limitations and verification status are in [the codec document](docs/WEB_CODECS.md).
 
 The `dist/` folder contains a `.app`, drag-to-Applications DMG, ZIP, checksums, native UI snapshots and launch/resource reports. Packages are ad-hoc signed and **not notarized**. No certificates or secrets are needed.
 

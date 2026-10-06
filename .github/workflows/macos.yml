@@ -17,7 +17,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(contains(github.event.head_commit.message || '', '[intel-only]') && '[{"runner":"macos-15-intel","arch":"x86_64"}]' || '[{"runner":"macos-15","arch":"arm64"},{"runner":"macos-15-intel","arch":"x86_64"}]') }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       - name: Test bounded CI command runner
@@ -64,6 +64,8 @@ jobs:
           python3 scripts/run-bounded-command.py --timeout-seconds 540
           --log dist/test-build.log --report dist/test-build-report.json
           -- swift build --build-tests
+      - name: Build dedicated native codec helper for actual lifecycle tests
+        run: swift build --product PicShotCodecHelper
       - name: Upload test compilation evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -79,7 +81,7 @@ jobs:
         run: >-
           python3 scripts/run-bounded-command.py --timeout-seconds 420
           --log dist/critical-tests.log --report dist/critical-tests-report.json
-          -- swift test --skip-build --filter 'CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests'
+          -- swift test --skip-build --filter 'Codec|NativeExport|AnimatedWebP|WebPContainer|RecordingWebP|CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests'
       - name: Upload focused native test evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -246,6 +248,8 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Build pinned native codecs needed by the app and its tests
+        run: python3 scripts/build-native-codecs.py --arch ${{ matrix.arch }} --jobs 4
       - name: Test extraction equivalence, cancellation and diagnostic separation
         timeout-minutes: 8
         run: |
@@ -285,6 +289,8 @@ jobs:
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Build pinned native codecs needed by the app and its tests
+        run: python3 scripts/build-native-codecs.py --arch ${{ matrix.arch }} --jobs 4
       - name: Inspect encoded samples and GIF extraction boundaries
         run: |
           mkdir -p dist

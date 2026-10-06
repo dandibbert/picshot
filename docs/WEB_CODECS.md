@@ -83,3 +83,17 @@ These test approved pins, wrong-host/architecture rejection, pin mismatch reject
 The native build compiles `Sources/CPicShotCodecs/tests/CodecSelfTest.c` with warnings as errors against the actual five archives, then runs it. It checks runtime dependency versions; actual WebP/AVIF container magic; full lossless RGBA equality including alpha-zero RGB; opaque output; actual lossy-quality changes; alpha preservation; invalid/truncated decode; dimensions/stride/output caps; callback abort/cancellation; and independently demuxed, fully decoded three-frame 7×5 animation with exact 17/101/0-ms timing. This source is excluded from the SwiftPM C target. A passing native selftest does not replace signed helper, process-lifecycle, app UI, resource or installed-package tests.
 
 Initial implementation was prepared in a Linux source workspace without downloading or compiling the codec sources there. Native ARM/Intel CI results are required before marking either architecture verified. The first diagnostic runs should retain logs, complete provenance/notices, source hashes, archive hashes and selftest output before proceeding to app packaging.
+
+## Verified dependency-only checkpoint
+
+Commit `51260f2d4122fc9cdba1ad5bdc6f6a6c21677d8b` passed native ARM64 and Intel dependency jobs in [run 37521945118](https://github.com/dandibbert/picshot/actions/runs/37521945118): [ARM job 112469309050](https://github.com/dandibbert/picshot/actions/runs/37521945118/job/112469309050), [Intel job 112469309394](https://github.com/dandibbert/picshot/actions/runs/37521945118/job/112469309394). Both report genuine C encode/decode, complete animation verification and exact lossless RGBA selftests with WebP 1.6.0, AVIF 1.4.2 and AOM v3.15.0. The native toolchain was Xcode 16.4 / Apple Clang 17 / SDK 15.5; minimum deployment remains macOS 14. This does not establish actual macOS 14 runtime acceptance, whole-app helper integration, UI, cancellation or installed-resource acceptance.
+
+Both independently built architectures produced the same source-archive SHA-256 values:
+
+| Source | Locally computed Git-archive SHA-256 |
+| --- | --- |
+| libwebp | `00b71e1030146195239922bb241895d22c4f7f2d2b173c083000a448479ff5b3` |
+| libaom | `e5499eb8d5ff6e1886ab4103c29271f9bcc3d4c8903245ccea2fd96c28b2976f` |
+| libavif | `2c84afde7ea25afbf3ed9981d65a87723920137e1033f5e4fb48c76c4566ede1` |
+
+These are locally computed hashes of exact verified Git objects, not upstream-published checksums. Each architecture's 20 complete legal/notice files match its manifest hashes. Actual selftest dynamic linkage includes system libraries only. AOM's critical option-definition/effective-cache checks passed. Upstream CMake reported only inapplicable `AVIF_ENABLE_WASM`, C++ compiler settings for C-only targets, and no-active-FetchContent hints as unused; this is not a claim that every supplied optional setting controls linked code. AOM uses generic C in native Mach-O files, not Rosetta; AVIF performance remains to be measured in the installed app.
