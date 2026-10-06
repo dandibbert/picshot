@@ -94,7 +94,7 @@ enum RecognitionService {
         textView.isRichText = false; textView.isEditable = true; textView.isSelectable = true
         textView.font = .systemFont(ofSize: 13); textView.string = text
         textView.textContainerInset = NSSize(width: 8, height: 8)
-        textView.minSize = .zero; textView.maxSize = NSSize(width: .greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
+        textView.minSize = .zero; textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.frame = NSRect(x: 0, y: 0, width: 430, height: 194)
         textView.isVerticallyResizable = true; textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]; textView.textContainer?.widthTracksTextView = true

@@ -30,7 +30,7 @@ actor RichPinFrameDecoder {
     var onClose: (() -> Void)?
     var onPresentationChange: ((PinPresentation) -> Void)?
     let kind: PinContentKind
-    private(set) var document: PinRichDocument?
+    private(set) var richDocument: PinRichDocument?
     private let asset: PinRichAsset
     private let textView = NSTextView()
     private let fileTable = NSTableView()
@@ -55,8 +55,8 @@ actor RichPinFrameDecoder {
             guard value.isValid, value.kind == asset.kind else { throw RichPinError.invalidContent }
             decodedDocument = value
         } else { decodedDocument = nil }
-        document = decodedDocument
-        let panel = PinPanel(contentRect: NSRect(origin: .zero, size: RichPinController.initialSize(asset: asset, document: decodedDocument)),
+        richDocument = decodedDocument
+        let panel = PinPanel(contentRect: NSRect(origin: .zero, size: RichPinController.initialSize(asset: asset, richDocument: decodedDocument)),
                              styleMask: [.borderless, .resizable], backing: .buffered, defer: false)
         super.init(window: panel)
         panel.title = title; panel.level = .floating; panel.isReleasedWhenClosed = false; panel.isFloatingPanel = true
@@ -71,15 +71,15 @@ actor RichPinFrameDecoder {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     deinit { playback?.cancel() }
 
-    private static func initialSize(asset: PinRichAsset, document: PinRichDocument?) -> NSSize {
+    private static func initialSize(asset: PinRichAsset, richDocument: PinRichDocument?) -> NSSize {
         switch asset.kind {
         case .animation:
             let scale = min(1, 680 / CGFloat(max(asset.width, asset.height)))
             return NSSize(width: max(180, CGFloat(asset.width) * scale), height: max(64, CGFloat(asset.height) * scale))
         case .color: return NSSize(width: 280, height: 148)
-        case .files: return NSSize(width: 380, height: max(80, min(340, CGFloat(document?.files?.count ?? 1) * 56 + 16)))
+        case .files: return NSSize(width: 380, height: max(80, min(340, CGFloat(richDocument?.files?.count ?? 1) * 56 + 16)))
         case .text:
-            let text = document?.text?.plainText ?? ""
+            let text = richDocument?.text?.plainText ?? ""
             let box = (text as NSString).boundingRect(with: NSSize(width: 496, height: 500), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: NSFont.systemFont(ofSize: 16)])
             return NSSize(width: min(520, max(240, ceil(box.width) + 28)), height: min(360, max(72, ceil(box.height) + 28)))
         }
@@ -92,13 +92,13 @@ actor RichPinFrameDecoder {
             textView.isEditable = false; textView.isSelectable = true; textView.isRichText = true
             textView.isAutomaticLinkDetectionEnabled = false; textView.isAutomaticDataDetectionEnabled = false
             textView.textContainerInset = NSSize(width: 8, height: 8)
-            textView.minSize = .zero; textView.maxSize = NSSize(width: .greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
+            textView.minSize = .zero; textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
             textView.frame = NSRect(x: 0, y: 0, width: 496, height: 200)
             textView.isVerticallyResizable = true; textView.isHorizontallyResizable = false
             textView.autoresizingMask = [.width]; textView.textContainer?.widthTracksTextView = true
             let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
             scroll.scrollerStyle = .overlay; scroll.documentView = textView; content = scroll
-            statusMessage = document?.text?.importedHTML == true ? "HTML 安全子集；外部资源、脚本、链接与 CSS 不加载" : "选择文字复制；拖动边缘移动贴图"
+            statusMessage = richDocument?.text?.importedHTML == true ? "HTML 安全子集；外部资源、脚本、链接与 CSS 不加载" : "选择文字复制；拖动边缘移动贴图"
             renderText()
         case .files:
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("file")); column.title = "文件引用"
@@ -112,7 +112,7 @@ actor RichPinFrameDecoder {
             scroll.scrollerStyle = .overlay; scroll.documentView = fileTable; content = scroll
             statusMessage = "文件引用；双击打开，拖动所选文件可复制引用；不保存文件内容"
         case .color:
-            let color = document!.color!
+            let color = richDocument!.color!
             let swatch = RichPinBackgroundView(); swatch.wantsLayer = true
             swatch.layer?.backgroundColor = NSColor(srgbRed: CGFloat(color.red) / 255, green: CGFloat(color.green) / 255, blue: CGFloat(color.blue) / 255, alpha: CGFloat(color.alpha) / 255).cgColor
             swatch.setAccessibilityLabel("颜色样本 " + color.hex)
@@ -186,7 +186,7 @@ actor RichPinFrameDecoder {
         NSPasteboard.general.clearContents(); NSPasteboard.general.setString((textView.string as NSString).substring(with: range), forType: .string)
     }
     private func renderText() {
-        guard let text = document?.text else { return }
+        guard let text = richDocument?.text else { return }
         let result = NSMutableAttributedString(string: "")
         let runs = plainText ? [PinTextRun(text: text.plainText)] : text.runs
         for run in runs {
@@ -206,7 +206,7 @@ actor RichPinFrameDecoder {
         let pasteboard = NSPasteboard.general
         switch kind {
         case .text:
-            guard let text = document?.text else { return }
+            guard let text = richDocument?.text else { return }
             pasteboard.clearContents(); pasteboard.setString(text.plainText, forType: .string)
             if !plainText, let data = try? textView.attributedString().data(from: NSRange(location: 0, length: textView.attributedString().length), documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]) {
                 pasteboard.setData(data, forType: .rtf)
@@ -215,14 +215,14 @@ actor RichPinFrameDecoder {
             let urls = selectedFiles(fallbackToAll: true).map { URL(fileURLWithPath: $0.path) as NSURL }
             guard !urls.isEmpty else { return }; pasteboard.clearContents(); pasteboard.writeObjects(urls)
         case .color:
-            pasteboard.clearContents(); pasteboard.setString(document?.color?.hex ?? "", forType: .string)
+            pasteboard.clearContents(); pasteboard.setString(richDocument?.color?.hex ?? "", forType: .string)
         case .animation:
             if let image = imageView.image?.cgImage(forProposedRect: nil, context: nil, hints: nil) { copyImage(image) }
         }
     }
-    @objc private func copyRGB() { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(document?.color?.rgb ?? "", forType: .string) }
+    @objc private func copyRGB() { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(richDocument?.color?.rgb ?? "", forType: .string) }
     private func selectedFiles(fallbackToAll: Bool = false) -> [PinFileReference] {
-        let files = document?.files ?? []
+        let files = richDocument?.files ?? []
         if fileTable.selectedRowIndexes.isEmpty { return fallbackToAll ? files : [] }
         return fileTable.selectedRowIndexes.compactMap { files.indices.contains($0) ? files[$0] : nil }
     }
@@ -234,9 +234,9 @@ actor RichPinFrameDecoder {
     }
     @objc private func openFiles() { for url in selectedExistingURLs() { if !NSWorkspace.shared.open(url) { showError(RichPinError.unavailableFile); break } } }
     @objc private func revealFiles() { let urls = selectedExistingURLs(); if !urls.isEmpty { NSWorkspace.shared.activateFileViewerSelecting(urls) } }
-    func numberOfRows(in tableView: NSTableView) -> Int { document?.files?.count ?? 0 }
+    func numberOfRows(in tableView: NSTableView) -> Int { richDocument?.files?.count ?? 0 }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        guard let files = document?.files, files.indices.contains(row) else { return nil }
+        guard let files = richDocument?.files, files.indices.contains(row) else { return nil }
         let file = files[row]
         let rowView = NSView()
         let icon = NSImageView(image: NSImage(systemSymbolName: file.isDirectory ? "folder" : "doc", accessibilityDescription: file.isDirectory ? "文件夹" : "文件")!)
@@ -254,7 +254,7 @@ actor RichPinFrameDecoder {
         rowView.toolTip = file.path; return rowView
     }
     func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
-        guard let files = document?.files, files.indices.contains(row) else { return nil }
+        guard let files = richDocument?.files, files.indices.contains(row) else { return nil }
         return URL(fileURLWithPath: files[row].path) as NSURL
     }
     @objc private func togglePlayback() { if playing { pausePlayback() } else { startPlayback() } }
@@ -317,7 +317,7 @@ actor RichPinFrameDecoder {
         if let decoder { Task { await decoder.release() } }; decoder = nil
         callback?()
         fileTable.dataSource = nil; fileTable.delegate = nil; fileTable.menu = nil; imageView.image = nil; imageView.menu = nil; textView.menu = nil
-        textView.textStorage?.setAttributedString(NSAttributedString(string: "")); document = nil
+        textView.textStorage?.setAttributedString(NSAttributedString(string: "")); richDocument = nil
         window?.delegate = nil; window?.contentView = nil
     }
 }
