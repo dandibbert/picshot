@@ -11,6 +11,7 @@ import Darwin
 @MainActor final class AppDelegate:NSObject,NSApplicationDelegate {
     let history:HistoryStore
     let capture=CaptureService()
+    let advancedCapture=AdvancedCaptureController()
     let recorder=RecordingService()
     var mainWindow:NSWindow!
     var recordingController:RecordingPanelController?
@@ -68,6 +69,10 @@ import Darwin
         Task {defer{busy=false};do{try await Task.sleep(nanoseconds:180_000_000);let image=try await capture.capture(mode:mode);try history.add(image);openEditor(image)}catch CaptureError.cancelled{}catch is CancellationError{}catch{showMain();showError(error)}}
     }
     func startDisplayCapture(_ id:CGDirectDisplayID){guard !busy else{return};busy=true;mainWindow.orderOut(nil);Task{defer{busy=false};do{try await Task.sleep(nanoseconds:180_000_000);let img=try await capture.captureDisplay(displayID:id);try history.add(img);openEditor(img)}catch{showMain();showError(error)}}}
+    func startAdvanced(_ style:AdvancedSelectionStyle){guard !busy else{return};busy=true;mainWindow.orderOut(nil);Task{defer{busy=false};do{try await Task.sleep(nanoseconds:180_000_000);let image=try await advancedCapture.capture(style:style);try history.add(image,title:"高级选区");openEditor(image)}catch CaptureError.cancelled{}catch is CancellationError{}catch{showMain();showError(error)}}}
+    func smartErase(_ image:CGImage){let c=SmartEraseController(image:image){[weak self] result in self?.openEditor(result)};retain(c);c.showWindow(nil)}
+    func recognizeFormula(_ image:CGImage){let c=FormulaRecognitionController(image:image);retain(c);c.showWindow(nil)}
+    func recognizeTable(_ image:CGImage){let c=TableRecognitionController(image:image){[weak self] table,warnings in guard let self else{return};let editor=TableEditorController(table:table,sourceImage:image);self.retain(editor);editor.showWindow(nil);if !warnings.isEmpty{let alert=NSAlert();alert.messageText="请核对表格识别结果";alert.informativeText=warnings.joined(separator:"\n");alert.runModal()}};retain(c);c.showWindow(nil)}
     func openEditor(_ image:CGImage){
         let c=ImageEditorController(image:image,onSave:{[weak self] img in do{try self?.history.add(img,title:"编辑")}catch{showError(error)}},onPin:{[weak self] img in self?.pin(img)},onOCR:{[weak self] img in self?.recognize(img)});retain(c);c.showWindow(nil);NSApp.activate(ignoringOtherApps:true)
     }
@@ -82,12 +87,13 @@ import Darwin
     @objc func hidePins(){pins.forEach{$0.window?.orderOut(nil)}}
     @objc func pastePin(){
         if let objects=NSPasteboard.general.readObjects(forClasses:[NSImage.self],options:nil),let image=objects.first as? NSImage,let cg=image.cgImage(forProposedRect:nil,context:nil,hints:nil){pin(cg)}
-        else if let text=NSPasteboard.general.string(forType:.string){let c=TextResultController(text:text,title:"文字贴图");c.window?.level = .floating;retain(c);c.showWindow(nil)}
+        else if let text=NSPasteboard.general.string(forType:.string){let c=TextResultController(text:text,title:"文字贴图",onTranslate:{[weak self] text in self?.translate(text)});c.window?.level = .floating;retain(c);c.showWindow(nil)}
         else{showError(PicShotError.message("剪贴板中没有图片或文字"))}
     }
     func recognize(_ image:CGImage,recordID:UUID?=nil){
-        Task{do{let result=try await RecognitionService.recognize(image);if let id=recordID{try history.updateText(result.text,id:id)};let text=result.text+(result.barcodes.isEmpty ? "" : "\n\n识别码：\n"+result.barcodes.joined(separator:"\n"));let c=TextResultController(text:text.isEmpty ? "未识别到文字或条码，请尝试更清晰的图片。" : text);retain(c);c.showWindow(nil);NSApp.activate(ignoringOtherApps:true)}catch{showError(error)}}
+        Task{do{let result=try await RecognitionService.recognize(image);if let id=recordID{try history.updateText(result.text,id:id)};let text=result.text+(result.barcodes.isEmpty ? "" : "\n\n识别码：\n"+result.barcodes.joined(separator:"\n"));let c=TextResultController(text:text.isEmpty ? "未识别到文字或条码，请尝试更清晰的图片。" : text,onTranslate:{[weak self] text in self?.translate(text)});retain(c);c.showWindow(nil);NSApp.activate(ignoringOtherApps:true)}catch{showError(error)}}
     }
+    func translate(_ text:String){if #available(macOS 15.0,*){let c=LocalTranslationController(text:text);retain(c);c.showWindow(nil)}else{showError(PicShotError.message("本机翻译需要 macOS 15 或更新版本；当前系统可正常截图和识别文字。"))}}
     func openRecord(_ r:CaptureRecord){if let image=history.image(for:r){openEditor(image)}}
     @objc func importImage(){let p=NSOpenPanel();p.allowedContentTypes=[.image];p.allowsMultipleSelection=true;if p.runModal() == .OK{p.urls.forEach{importURL($0)}}}
     func importURL(_ url:URL){
@@ -97,7 +103,7 @@ import Darwin
     @objc func record(){if recordingController == nil{recordingController=RecordingPanelController(service:recorder,capture:capture)};recordingController?.showWindow(nil);NSApp.activate(ignoringOtherApps:true)}
     @objc func settings(){let c=SettingsController(onChange:{[weak self] in self?.refreshHotkeys();do{try self?.history.prune()}catch{showError(error)}});retain(c);c.showWindow(nil)}
     func refreshHotkeys(){let bindings=(UserDefaults.standard.data(forKey:"hotkeys").flatMap{try? JSONDecoder().decode([HotKeyBinding].self,from:$0)}) ?? HotKeyBinding.defaults;hotKeys?.register(bindings);if let failures=hotKeys?.failures,!failures.isEmpty{NSLog("Some shortcuts are unavailable: %@",failures.description)}}
-    @objc func about(){let a=NSAlert();a.messageText="PicShot 0.1";a.informativeText="原生截图、标注与贴图工具\n图片与文字识别在本机处理\n\n当前为开发预览版。完整 PixPin 功能对照见仓库 docs/PARITY.md。\nmacOS 14+ · 未经 Apple 公证";a.runModal()}
+    @objc func about(){let a=NSAlert();a.messageText="PicShot " + (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "开发版");a.informativeText="原生截图、标注与贴图工具\n图片与文字识别在本机处理\n\n当前为开发预览版。完整 PixPin 功能对照见仓库 docs/PARITY.md。\nmacOS 14+ · 未经 Apple 公证";a.runModal()}
 }
 
 struct LibraryView:View {
@@ -107,7 +113,7 @@ struct LibraryView:View {
         VStack(spacing:0){
             HStack(spacing:8){
                 Button {app.region()} label:{Label("截图",systemImage:"viewfinder")}.keyboardShortcut("n").buttonStyle(.borderedProminent)
-                Menu {Button("窗口截图"){app.windowCapture()};Button("当前屏幕"){app.full()};ForEach(Array(NSScreen.screens.enumerated()),id:\.offset){ index,screen in Button("屏幕 \(index+1) · \(screen.localizedName)"){if let id=screen.displayID{app.startDisplayCapture(id)}}}} label:{Image(systemName:"chevron.down")}.frame(width:30)
+                Menu {Button("多选区域（可减选）"){app.startAdvanced(.multiRegion)};Button("多边形选区"){app.startAdvanced(.polygon)};Button("自由形状选区"){app.startAdvanced(.freehand)};Divider();Button("窗口截图"){app.windowCapture()};Button("当前屏幕"){app.full()};ForEach(Array(NSScreen.screens.enumerated()),id:\.offset){ index,screen in Button("屏幕 \(index+1) · \(screen.localizedName)"){if let id=screen.displayID{app.startDisplayCapture(id)}}}} label:{Image(systemName:"chevron.down")}.frame(width:30)
                 Button {app.scroll()} label:{Label("长截图",systemImage:"rectangle.expand.vertical")}
                 Button {app.record()} label:{Label("录屏",systemImage:"record.circle")}
                 Divider().frame(height:20)
@@ -126,7 +132,7 @@ struct LibraryView:View {
                         ZStack {RoundedRectangle(cornerRadius:8).fill(Color(nsColor:.controlBackgroundColor));if let thumb=store.thumbnail(for:record){Image(nsImage:thumb).resizable().scaledToFit().padding(6)}}.frame(height:116).onTapGesture(count:2){app.openRecord(record)}
                         HStack{Text(record.title).lineLimit(1).font(.system(size:12));Spacer();if record.starred{Image(systemName:"star.fill").foregroundStyle(.yellow)}}
                         Text("\(record.width) × \(record.height) · \(record.createdAt.formatted(date:.abbreviated,time:.shortened))").font(.system(size:10)).foregroundStyle(.secondary)
-                    }.contextMenu{Button("编辑"){app.openRecord(record)};Button("贴图"){if let i=store.image(for:record){app.pin(i)}};Button("复制"){if let i=store.image(for:record){copyImage(i)}};Button("识别文字与条码"){if let i=store.image(for:record){app.recognize(i,recordID:record.id)}};Button(record.starred ? "取消收藏" : "收藏"){try? store.toggleStar(record)};Divider();Button("移到废纸篓"){do{try store.remove(record)}catch{showError(error)}}}
+                    }.contextMenu{Button("编辑"){app.openRecord(record)};Button("贴图"){if let i=store.image(for:record){app.pin(i)}};Button("复制"){if let i=store.image(for:record){copyImage(i)}};Button("识别文字与条码"){if let i=store.image(for:record){app.recognize(i,recordID:record.id)}};Button("智能消除（可选本机模型）"){if let i=store.image(for:record){app.smartErase(i)}};Button("识别公式（可选本机模型）"){if let i=store.image(for:record){app.recognizeFormula(i)}};Button("识别表格（可选本机模型）"){if let i=store.image(for:record){app.recognizeTable(i)}};Button(record.starred ? "取消收藏" : "收藏"){try? store.toggleStar(record)};Divider();Button("移到废纸篓"){do{try store.remove(record)}catch{showError(error)}}}
                 }}.padding(.horizontal,18).padding(.bottom,18)}
             }
             Divider();HStack{Image(systemName:"lock.shield");Text("本机处理 · 历史上限 \(store.policy.maxDays) 天 / \(store.policy.maxItems) 张 / \(store.policy.maxBytes / 1_048_576) MB");Spacer();Text("双击编辑")}.font(.system(size:10)).foregroundStyle(.secondary).padding(.horizontal,16).padding(.vertical,8)

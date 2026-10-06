@@ -27,6 +27,17 @@ jobs:
           mkdir -p dist
           set -o pipefail
           swift test 2>&1 | tee dist/test.log
+      - name: Validate native inference with approved pinned original model fixtures
+        run: |
+          set -o pipefail
+          python3 scripts/fetch-model-fixtures.py 2>&1 | tee dist/model-download.log
+          python3 scripts/SmartErase-fetch-fixture.py 2>&1 | tee dist/erase-model-download.log
+          export PICSHOT_ERASE_MODEL_DIR="$PWD/.build/model-fixtures/erase"
+          export PICSHOT_FORMULA_MODEL_DIR="$PWD/.build/model-fixtures/formula"
+          export PICSHOT_TEST_TABLE_MODEL_DIR="$PWD/.build/model-fixtures/table"
+          export PICSHOT_TEST_ML_HELPER="$(swift build --show-bin-path)/PicShotMLHelper"
+          swift build --product PicShotMLHelper
+          swift test --filter 'FormulaEngineTests|RecordedModelOutputTests|SmartEraseEngineTests' 2>&1 | tee dist/model-inference.log
       - name: Package signed app, ZIP and DMG
         run: |
           set -o pipefail

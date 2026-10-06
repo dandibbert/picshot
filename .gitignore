@@ -2,3 +2,6 @@
 dist/
 .DS_Store
 *.xcodeproj/
+
+__pycache__/
+*.pyc

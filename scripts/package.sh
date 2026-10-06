@@ -3,12 +3,18 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 swift build -c release
 bin=$(swift build -c release --show-bin-path)
-version=0.1.0
+version=0.2.0
 arch=$(uname -m)
 sha=$(git rev-parse HEAD)
 app=dist/PicShot.app
-mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Helpers"
 cp "$bin/PicShot" "$app/Contents/MacOS/PicShot"
+cp "$bin/PicShotMLHelper" "$app/Contents/Helpers/PicShotMLHelper"
+python3 scripts/bundle-runtime.py "$app"
+cp "$bin/PicShotEraseHelper" "$app/Contents/Helpers/PicShotEraseHelper"
+codesign --force --sign - --identifier local.picshot.erasehelper "$app/Contents/Helpers/PicShotEraseHelper"
+cp docs/SmartErase.md docs/SmartErase_CoreMLaMa_LICENSE.txt docs/SmartErase_LaMa_LICENSE.txt "$app/Contents/Resources/"
+cp docs/MODELS.md docs/ONNX_RUNTIME_LICENSE.txt docs/ONNX_RUNTIME_THIRD_PARTY_NOTICES.txt docs/TABLE_MODEL.md "$app/Contents/Resources/"
 swift scripts/build-icon.swift "$PWD/$app/Contents/Resources/PicShot.icns"
 iconutil -c icns "$app/Contents/Resources/PicShot.iconset" -o "$app/Contents/Resources/PicShot.icns"
 rm -rf "$app/Contents/Resources/PicShot.iconset"

@@ -215,7 +215,7 @@ enum ImageEditorHistoryBudget {
 }
 
 @MainActor
-private final class ImageEditorCanvas: NSView {
+final class ImageEditorCanvas: NSView {
     var image: CGImage
     var annotations: [ImageAnnotation] = []
     var tool: ImageEditorTool = .arrow { didSet { draft = nil; cropRect = nil; needsDisplay = true } }
@@ -225,7 +225,7 @@ private final class ImageEditorCanvas: NSView {
     var cropRect: CGRect?
     var onWillChange: (() -> Void)?
     var onChange: (() -> Void)?
-    var onRequestText: ((CGPoint) -> Void)?
+    var onRequestText: ((CGPoint, UUID?) -> Void)?
     var onUndo: (() -> Void)?
     var onRedo: (() -> Void)?
     var onApplyCrop: (() -> Void)?
@@ -237,6 +237,7 @@ private final class ImageEditorCanvas: NSView {
     private var movingOriginal: ImageAnnotation?
     private var didBeginMoving = false
     private var cachedImage: CGImage?
+    var selectedAnnotation: ImageAnnotation? { annotations.first { $0.id == selection } }
 
     init(image: CGImage) {
         self.image = image
@@ -305,9 +306,15 @@ private final class ImageEditorCanvas: NSView {
         if tool == .select {
             selection = annotations.reversed().first { $0.bounds.insetBy(dx: -8 / zoom, dy: -8 / zoom).contains(point) }?.id
             movingOriginal = annotations.first { $0.id == selection }
-            needsDisplay = true
+            if let selected = selectedAnnotation {
+                color = selected.color; strokeWidth = selected.lineWidth
+                if event.clickCount == 2, selected.tool == .text {
+                    onRequestText?(selected.points.first ?? point, selected.id)
+                }
+            }
+            needsDisplay = true; onChange?()
         } else if tool == .text {
-            onRequestText?(point)
+            onRequestText?(point, nil)
         } else if tool == .number {
             let next = (annotations.filter { $0.tool == .number }.map(\.number).max() ?? 0) + 1
             add(ImageAnnotation(tool: .number, points: [point], color: color, lineWidth: strokeWidth, number: next))
@@ -348,6 +355,19 @@ private final class ImageEditorCanvas: NSView {
         if tool == .crop { cropRect = draft.bounds; onChange?(); return }
         guard draft.bounds.width > 1 || draft.bounds.height > 1 else { return }
         add(draft)
+    }
+
+    func updateSelectedStyle(color newColor: CGColor? = nil, width: CGFloat? = nil) {
+        guard let selection, let index = annotations.firstIndex(where: { $0.id == selection }) else { return }
+        onWillChange?()
+        if let newColor { annotations[index].color = newColor }
+        if let width { annotations[index].lineWidth = max(1, width) }
+        changed()
+    }
+
+    func updateText(id: UUID, text: String) {
+        guard let index = annotations.firstIndex(where: { $0.id == id && $0.tool == .text }) else { return }
+        onWillChange?(); annotations[index].text = text; changed()
     }
 
     func deleteSelection() {
@@ -391,6 +411,10 @@ final class ImageEditorController: NSWindowController {
     private var redoStates: [Snapshot] = []
     private let status = NSTextField(labelWithString: "")
     private let toolPicker = NSPopUpButton()
+    private let commonTools: [ImageEditorTool] = [.select, .arrow, .rectangle, .text, .redact, .crop]
+    private let moreTools: [ImageEditorTool] = [.ellipse, .line, .freehand, .number, .highlighter, .blur, .pixelate]
+    private var toolButtons: [ImageEditorTool: NSButton] = [:]
+    var annotationCanvas: ImageEditorCanvas { canvas }
     private let colorWell = NSColorWell()
     private let widthSlider = NSSlider(value: 4, minValue: 1, maxValue: 20, target: nil, action: nil)
     private var undoButton: NSButton!
@@ -410,7 +434,7 @@ final class ImageEditorController: NSWindowController {
         buildInterface()
         canvas.onWillChange = { [weak self] in self?.recordChange() }
         canvas.onChange = { [weak self] in self?.updateStatus() }
-        canvas.onRequestText = { [weak self] point in self?.requestText(at: point) }
+        canvas.onRequestText = { [weak self] point, id in self?.requestText(at: point, editing: id) }
         canvas.onUndo = { [weak self] in self?.undoEdit() }
         canvas.onRedo = { [weak self] in self?.redoEdit() }
         canvas.onApplyCrop = { [weak self] in self?.applyCrop() }
@@ -428,24 +452,42 @@ final class ImageEditorController: NSWindowController {
         return button
     }
 
+    private func iconButton(_ symbol: String, title: String, action: Selector) -> NSButton {
+        let control = NSButton(image: NSImage(systemSymbolName: symbol, accessibilityDescription: title) ?? NSImage(), target: self, action: action)
+        control.bezelStyle = .texturedRounded; control.controlSize = .small
+        control.imagePosition = .imageOnly; control.toolTip = title; control.setAccessibilityLabel(title)
+        control.translatesAutoresizingMaskIntoConstraints = false
+        control.widthAnchor.constraint(equalToConstant: 28).isActive = true
+        return control
+    }
+
     private func buildInterface() {
         guard let content = window?.contentView else { return }
-        let toolbar = NSStackView(); toolbar.orientation = .horizontal; toolbar.spacing = 8
-        toolbar.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
-        toolPicker.addItems(withTitles: ImageEditorTool.allCases.map(\.title)); toolPicker.selectItem(withTitle: ImageEditorTool.arrow.title)
+        let toolbar = NSStackView(); toolbar.orientation = .horizontal; toolbar.spacing = 5
+        toolbar.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
+        let symbols = ["cursorarrow", "arrow.up.right", "rectangle", "textformat", "square.fill", "crop"]
+        for (tool, symbol) in zip(commonTools, symbols) {
+            let control = iconButton(symbol, title: tool.title, action: #selector(selectCommonTool(_:)))
+            control.setButtonType(.toggle)
+            control.tag = ImageEditorTool.allCases.firstIndex(of: tool) ?? 0
+            control.state = tool == canvas.tool ? .on : .off
+            toolButtons[tool] = control; toolbar.addArrangedSubview(control)
+        }
+        toolPicker.addItems(withTitles: ["更多"] + moreTools.map(\.title))
+        toolPicker.controlSize = .small
         toolPicker.target = self; toolPicker.action = #selector(changeTool)
         toolPicker.toolTip = "选择工具可移动标注，Delete 删除；敏感信息请用不透明遮盖，模糊与马赛克仅为视觉效果"
         toolPicker.setAccessibilityLabel("标注工具")
         colorWell.color = .systemRed; colorWell.target = self; colorWell.action = #selector(changeColor)
-        colorWell.translatesAutoresizingMaskIntoConstraints = false; colorWell.widthAnchor.constraint(equalToConstant: 40).isActive = true
+        colorWell.translatesAutoresizingMaskIntoConstraints = false; colorWell.widthAnchor.constraint(equalToConstant: 32).isActive = true
         colorWell.setAccessibilityLabel("标注颜色")
         widthSlider.target = self; widthSlider.action = #selector(changeWidth); widthSlider.isContinuous = false
-        widthSlider.translatesAutoresizingMaskIntoConstraints = false; widthSlider.widthAnchor.constraint(equalToConstant: 82).isActive = true
+        widthSlider.translatesAutoresizingMaskIntoConstraints = false; widthSlider.widthAnchor.constraint(equalToConstant: 56).isActive = true
         widthSlider.toolTip = "线宽 / 字号 / 模糊强度"; widthSlider.setAccessibilityLabel("线宽")
-        undoButton = button("撤销", action: #selector(undoEdit), tooltip: "⌘Z")
-        redoButton = button("重做", action: #selector(redoEdit), tooltip: "⇧⌘Z")
+        undoButton = iconButton("arrow.uturn.backward", title: "撤销 · ⌘Z", action: #selector(undoEdit))
+        redoButton = iconButton("arrow.uturn.forward", title: "重做 · ⇧⌘Z", action: #selector(redoEdit))
         cropButton = button("应用裁剪", action: #selector(applyCrop), tooltip: "先用裁剪工具拖动选区，再按 Return")
-        for view in [toolPicker, colorWell, NSTextField(labelWithString: "粗细"), widthSlider, undoButton!, redoButton!, button("删除", action: #selector(deleteAnnotation)), cropButton!] as [NSView] { toolbar.addArrangedSubview(view) }
+        for view in [toolPicker, colorWell, widthSlider, undoButton!, redoButton!, iconButton("trash", title: "删除标注 · Delete", action: #selector(deleteAnnotation)), cropButton!] as [NSView] { toolbar.addArrangedSubview(view) }
         let spacer = NSView(); spacer.setContentHuggingPriority(.defaultLow, for: .horizontal); toolbar.addArrangedSubview(spacer)
         toolbar.addArrangedSubview(button("复制", action: #selector(copyResult), tooltip: "⌘C · 复制合成图片"))
         toolbar.addArrangedSubview(button("导出…", action: #selector(exportResult), tooltip: "⌘S · PNG / JPEG / TIFF / PDF"))
@@ -506,15 +548,35 @@ final class ImageEditorController: NSWindowController {
         status.stringValue = "\(canvas.image.width) × \(canvas.image.height) px · \(Int(canvas.zoom * 100))% · \(canvas.annotations.count) 个标注"
         undoButton?.isEnabled = !undoStates.isEmpty; redoButton?.isEnabled = !redoStates.isEmpty
         cropButton?.isEnabled = (canvas.cropRect?.width ?? 0) >= 1 && (canvas.cropRect?.height ?? 0) >= 1
+        for (tool, button) in toolButtons { button.state = canvas.tool == tool ? .on : .off }
+        if canvas.tool == .select, let selected = canvas.selectedAnnotation {
+            colorWell.color = NSColor(cgColor: selected.color) ?? colorWell.color
+            widthSlider.doubleValue = Double(selected.lineWidth)
+        }
     }
 
-    @objc private func changeTool() {
-        let index = toolPicker.indexOfSelectedItem
-        guard ImageEditorTool.allCases.indices.contains(index) else { return }
-        canvas.tool = ImageEditorTool.allCases[index]; updateStatus(); window?.makeFirstResponder(canvas)
+    private func chooseTool(_ tool: ImageEditorTool) {
+        canvas.tool = tool
+        toolPicker.selectItem(at: moreTools.firstIndex(of: tool).map { $0 + 1 } ?? 0)
+        updateStatus(); window?.makeFirstResponder(canvas)
     }
-    @objc private func changeColor() { canvas.color = colorWell.color.cgColor }
-    @objc private func changeWidth() { canvas.strokeWidth = CGFloat(widthSlider.doubleValue) }
+    @objc private func selectCommonTool(_ sender: NSButton) {
+        guard ImageEditorTool.allCases.indices.contains(sender.tag) else { return }
+        chooseTool(ImageEditorTool.allCases[sender.tag])
+    }
+    @objc private func changeTool() {
+        let index = toolPicker.indexOfSelectedItem - 1
+        guard moreTools.indices.contains(index) else { return }
+        chooseTool(moreTools[index])
+    }
+    @objc private func changeColor() {
+        canvas.color = colorWell.color.cgColor
+        if canvas.tool == .select { canvas.updateSelectedStyle(color: canvas.color) }
+    }
+    @objc private func changeWidth() {
+        canvas.strokeWidth = CGFloat(widthSlider.doubleValue)
+        if canvas.tool == .select { canvas.updateSelectedStyle(width: canvas.strokeWidth) }
+    }
     @objc private func deleteAnnotation() { canvas.deleteSelection() }
     @objc private func undoEdit() {
         guard let state = undoStates.popLast() else { return }
@@ -548,15 +610,18 @@ final class ImageEditorController: NSWindowController {
     @objc private func pinResult() { result(onPin) }
     @objc private func recognizeResult() { result(onOCR) }
 
-    private func requestText(at point: CGPoint) {
+    private func requestText(at point: CGPoint, editing id: UUID?) {
         guard let window else { return }
-        let alert = NSAlert(); alert.messageText = "添加文字"; alert.informativeText = "文字大小由工具栏的粗细控制"
-        alert.addButton(withTitle: "添加"); alert.addButton(withTitle: "取消")
+        let existing = id.flatMap { identifier in canvas.annotations.first { $0.id == identifier } }
+        let alert = NSAlert(); alert.messageText = existing == nil ? "添加文字" : "编辑文字"; alert.informativeText = "文字大小由工具栏的粗细控制；选择工具下双击文字可再次编辑"
+        alert.addButton(withTitle: existing == nil ? "添加" : "保存"); alert.addButton(withTitle: "取消")
         let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 26)); input.placeholderString = "输入标注文字"
+        input.stringValue = existing?.text ?? ""
         alert.accessoryView = input
         alert.beginSheetModal(for: window) { [weak self] response in
             guard response == .alertFirstButtonReturn, let self, !input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-            self.canvas.add(ImageAnnotation(tool: .text, points: [point], color: self.canvas.color, lineWidth: self.canvas.strokeWidth, text: input.stringValue))
+            if let id { self.canvas.updateText(id: id, text: input.stringValue) }
+            else { self.canvas.add(ImageAnnotation(tool: .text, points: [point], color: self.canvas.color, lineWidth: self.canvas.strokeWidth, text: input.stringValue)) }
             window.makeFirstResponder(self.canvas)
         }
         alert.window.initialFirstResponder = input

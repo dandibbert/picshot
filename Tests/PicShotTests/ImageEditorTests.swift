@@ -174,6 +174,155 @@ final class ImageEditorTests: XCTestCase {
         XCTAssertEqual(pdf.page(at: 1)?.getBoxRect(.mediaBox).size, CGSize(width: 40, height: 40))
     }
 
+    @MainActor
+    func testNativeMouseDrawMoveDeleteAndKeyboardUndoRedo() throws {
+        try withInteractiveEditor { editor in
+            let canvas = editor.annotationCanvas
+            try clickTool(.rectangle, in: editor)
+            try drag(canvas, from: CGPoint(x: 20, y: 30), to: CGPoint(x: 100, y: 90))
+            XCTAssertEqual(canvas.annotations.count, 1)
+            let original = try XCTUnwrap(canvas.annotations.first)
+            XCTAssertEqual(original.bounds, CGRect(x: 20, y: 30, width: 80, height: 60))
+
+            try clickTool(.select, in: editor)
+            try drag(canvas, from: CGPoint(x: 40, y: 50), to: CGPoint(x: 60, y: 70))
+            XCTAssertEqual(canvas.annotations.first?.id, original.id)
+            XCTAssertEqual(canvas.annotations.first?.bounds, CGRect(x: 40, y: 50, width: 80, height: 60))
+            canvas.keyDown(with: try keyEvent(canvas, key: "\u{7f}", code: 51))
+            XCTAssertTrue(canvas.annotations.isEmpty)
+
+            XCTAssertTrue(canvas.performKeyEquivalent(with: try keyEvent(canvas, key: "z", code: 6, modifiers: .command)))
+            XCTAssertEqual(canvas.annotations.first?.bounds, CGRect(x: 40, y: 50, width: 80, height: 60))
+            XCTAssertTrue(canvas.performKeyEquivalent(with: try keyEvent(canvas, key: "z", code: 6, modifiers: .command)))
+            XCTAssertEqual(canvas.annotations.first?.bounds, original.bounds)
+            XCTAssertTrue(canvas.performKeyEquivalent(with: try keyEvent(canvas, key: "z", code: 6, modifiers: [.command, .shift])))
+            XCTAssertEqual(canvas.annotations.first?.bounds, CGRect(x: 40, y: 50, width: 80, height: 60))
+        }
+    }
+
+    @MainActor
+    func testNativeZoomedShiftDragAndMoreMenuFreehand() throws {
+        try withInteractiveEditor { editor in
+            let canvas = editor.annotationCanvas
+            canvas.zoom = 2
+            try clickTool(.rectangle, in: editor)
+            try drag(canvas, from: CGPoint(x: 10, y: 10), to: CGPoint(x: 110, y: 60), modifiers: .shift)
+            XCTAssertEqual(canvas.annotations.first?.bounds, CGRect(x: 10, y: 10, width: 50, height: 50))
+
+            let more = try XCTUnwrap(allSubviews(editor.window?.contentView).compactMap { $0 as? NSPopUpButton }.first { $0.itemTitles.contains("更多") })
+            more.selectItem(withTitle: ImageEditorTool.freehand.title)
+            XCTAssertTrue(more.sendAction(more.action, to: more.target))
+            XCTAssertEqual(canvas.tool, .freehand)
+            canvas.mouseDown(with: try mouseEvent(canvas, kind: .leftMouseDown, point: CGPoint(x: 160, y: 30)))
+            canvas.mouseDragged(with: try mouseEvent(canvas, kind: .leftMouseDragged, point: CGPoint(x: 170, y: 45)))
+            canvas.mouseDragged(with: try mouseEvent(canvas, kind: .leftMouseDragged, point: CGPoint(x: 180, y: 20)))
+            canvas.mouseUp(with: try mouseEvent(canvas, kind: .leftMouseUp, point: CGPoint(x: 180, y: 20)))
+            XCTAssertEqual(canvas.annotations.count, 2)
+            XCTAssertEqual(canvas.annotations.last?.points.last, CGPoint(x: 180, y: 20))
+            XCTAssertEqual(canvas.annotations.last?.tool, .freehand)
+        }
+    }
+
+    @MainActor
+    func testNativeCropReturnAndUndoRestoreOriginalImage() throws {
+        try withInteractiveEditor { editor in
+            let canvas = editor.annotationCanvas
+            try clickTool(.crop, in: editor)
+            try drag(canvas, from: CGPoint(x: 10, y: 20), to: CGPoint(x: 130, y: 100))
+            XCTAssertEqual(canvas.cropRect, CGRect(x: 10, y: 20, width: 120, height: 80))
+            canvas.keyDown(with: try keyEvent(canvas, key: "\r", code: 36))
+            XCTAssertEqual(canvas.image.width, 120)
+            XCTAssertEqual(canvas.image.height, 80)
+            XCTAssertNil(canvas.cropRect)
+            XCTAssertTrue(canvas.performKeyEquivalent(with: try keyEvent(canvas, key: "z", code: 6, modifiers: .command)))
+            XCTAssertEqual(canvas.image.width, 320)
+            XCTAssertEqual(canvas.image.height, 240)
+        }
+    }
+
+    @MainActor
+    func testNativeSelectedStyleControlsAndTextDoubleClickRequest() throws {
+        try withInteractiveEditor { editor in
+            let canvas = editor.annotationCanvas
+            try clickTool(.rectangle, in: editor)
+            try drag(canvas, from: CGPoint(x: 20, y: 20), to: CGPoint(x: 100, y: 80))
+            try clickTool(.select, in: editor)
+            canvas.mouseDown(with: try mouseEvent(canvas, kind: .leftMouseDown, point: CGPoint(x: 30, y: 30)))
+            canvas.mouseUp(with: try mouseEvent(canvas, kind: .leftMouseUp, point: CGPoint(x: 30, y: 30)))
+            let color = try XCTUnwrap(allSubviews(editor.window?.contentView).compactMap { $0 as? NSColorWell }.first)
+            color.color = NSColor(srgbRed: 0, green: 0, blue: 1, alpha: 1)
+            XCTAssertTrue(color.sendAction(color.action, to: color.target))
+            XCTAssertEqual(canvas.annotations.first?.color, color.color.cgColor)
+            let width = try XCTUnwrap(allSubviews(editor.window?.contentView).compactMap { $0 as? NSSlider }.first)
+            width.doubleValue = 9
+            XCTAssertTrue(width.sendAction(width.action, to: width.target))
+            XCTAssertEqual(canvas.annotations.first?.lineWidth, 9)
+
+            let text = ImageAnnotation(tool: .text, points: [CGPoint(x: 160, y: 120)], text: "Original")
+            canvas.add(text)
+            var requestedID: UUID?
+            canvas.onRequestText = { _, id in requestedID = id }
+            canvas.mouseDown(with: try mouseEvent(canvas, kind: .leftMouseDown, point: CGPoint(x: 165, y: 125), clicks: 2))
+            canvas.mouseUp(with: try mouseEvent(canvas, kind: .leftMouseUp, point: CGPoint(x: 165, y: 125), clicks: 2))
+            XCTAssertEqual(requestedID, text.id)
+            canvas.updateText(id: text.id, text: "Revised")
+            XCTAssertEqual(canvas.annotations.last?.text, "Revised")
+            XCTAssertTrue(canvas.performKeyEquivalent(with: try keyEvent(canvas, key: "z", code: 6, modifiers: .command)))
+            XCTAssertEqual(canvas.annotations.last?.text, "Original")
+        }
+    }
+
+    @MainActor
+    private func withInteractiveEditor(_ body: (ImageEditorController) throws -> Void) throws {
+        _ = NSApplication.shared
+        let image = try makeImage(width: 320, height: 240, color: CGColor(gray: 1, alpha: 1))
+        let editor = ImageEditorController(image: image, onSave: { _ in }, onPin: { _ in }, onOCR: { _ in })
+        editor.showWindow(nil)
+        editor.window?.contentView?.layoutSubtreeIfNeeded()
+        editor.annotationCanvas.zoom = 1
+        defer { editor.close() }
+        try body(editor)
+    }
+
+    @MainActor
+    private func allSubviews(_ root: NSView?) -> [NSView] {
+        guard let root else { return [] }
+        return [root] + root.subviews.flatMap { allSubviews($0) }
+    }
+
+    @MainActor
+    private func clickTool(_ tool: ImageEditorTool, in editor: ImageEditorController) throws {
+        let button = try XCTUnwrap(allSubviews(editor.window?.contentView).compactMap { $0 as? NSButton }.first { $0.toolTip == tool.title })
+        button.performClick(nil)
+        XCTAssertEqual(editor.annotationCanvas.tool, tool)
+        XCTAssertEqual(button.state, .on)
+    }
+
+    @MainActor
+    private func mouseEvent(_ canvas: ImageEditorCanvas, kind: NSEvent.EventType, point: CGPoint,
+                            modifiers: NSEvent.ModifierFlags = [], clicks: Int = 1) throws -> NSEvent {
+        let location = canvas.convert(CGPoint(x: point.x * canvas.zoom, y: point.y * canvas.zoom), to: nil)
+        return try XCTUnwrap(NSEvent.mouseEvent(with: kind, location: location, modifierFlags: modifiers, timestamp: 0,
+                                              windowNumber: canvas.window?.windowNumber ?? 0, context: nil,
+                                              eventNumber: 0, clickCount: clicks, pressure: 1))
+    }
+
+    @MainActor
+    private func drag(_ canvas: ImageEditorCanvas, from start: CGPoint, to end: CGPoint,
+                      modifiers: NSEvent.ModifierFlags = []) throws {
+        canvas.mouseDown(with: try mouseEvent(canvas, kind: .leftMouseDown, point: start, modifiers: modifiers))
+        canvas.mouseDragged(with: try mouseEvent(canvas, kind: .leftMouseDragged, point: end, modifiers: modifiers))
+        canvas.mouseUp(with: try mouseEvent(canvas, kind: .leftMouseUp, point: end, modifiers: modifiers))
+    }
+
+    @MainActor
+    private func keyEvent(_ canvas: ImageEditorCanvas, key: String, code: UInt16,
+                          modifiers: NSEvent.ModifierFlags = []) throws -> NSEvent {
+        try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
+                                     windowNumber: canvas.window?.windowNumber ?? 0, context: nil, characters: key,
+                                     charactersIgnoringModifiers: key, isARepeat: false, keyCode: code))
+    }
+
     private func makeImage(width: Int, height: Int, color: CGColor) throws -> CGImage {
         let context = try XCTUnwrap(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue))
         context.setFillColor(color); context.fill(CGRect(x: 0, y: 0, width: width, height: height))

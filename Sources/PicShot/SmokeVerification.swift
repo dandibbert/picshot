@@ -1,5 +1,6 @@
 import AppKit
 import Darwin
+import PicShotCore
 
 @MainActor extension AppDelegate {
     func runSmoke() async {
@@ -7,6 +8,19 @@ import Darwin
         let url=URL(fileURLWithPath:report);let directory=url.deletingLastPathComponent()
         do{
             try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
+            var modelEvidence:[String:Any]=[:]
+            let env=ProcessInfo.processInfo.environment
+            if let formulaPath=env["PICSHOT_SMOKE_FORMULA_MODEL_DIR"],let formulaInput=env["PICSHOT_SMOKE_FORMULA_INPUT"],let formulaImage=CGImage.read(url:URL(fileURLWithPath:formulaInput)) {
+                let result=try await MLHelperService.shared.formula(image:formulaImage,modelDirectory:URL(fileURLWithPath:formulaPath))
+                guard result.latex.replacingOccurrences(of:" ",with:"")=="E=mc^{2}" else{throw PicShotError.message("Packaged helper formula fixture mismatch")}
+                modelEvidence["formulaLaTeX"]=result.latex
+            }
+            if let tablePath=env["PICSHOT_SMOKE_TABLE_MODEL_DIR"],let tableInput=env["PICSHOT_SMOKE_TABLE_INPUT"],let tableImage=CGImage.read(url:URL(fileURLWithPath:tableInput)) {
+                let result=try await MLHelperService.shared.table(image:tableImage,modelDirectory:URL(fileURLWithPath:tablePath))
+                guard result.table.rowCount==4,result.table.columnCount==3,result.table.cells.first?.columnSpan==3 else{throw PicShotError.message("Packaged helper table fixture mismatch")}
+                modelEvidence["tableRows"]=result.table.rowCount;modelEvidence["tableColumns"]=result.table.columnCount
+                let table=TableEditorController(table:result.table,sourceImage:tableImage);table.showWindow(nil);try await Task.sleep(nanoseconds:150_000_000);if let w=table.window{try snapshot(w,to:directory.appendingPathComponent("table-editor.png"))};table.close()
+            }
             let sample=ImageEditorRenderer.makeSampleImage()
             let record=try history.add(sample,title:"示例截图")
             try history.updateText("PicShot native screenshot fixture",id:record.id)
@@ -31,7 +45,7 @@ import Darwin
             let final=residentBytes();let growth=Int64(final)-Int64(baseline);let lastIntervalGrowth=Int64(samples.last ?? final)-Int64(samples.dropLast().last ?? baseline);let windowsStable=windowCount()<=baselineWindows+3 && retainedOwned == 0
             let visible=mainWindow.isVisible && mainWindow.contentView != nil
             let source=(Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String) ?? "unknown"
-            let payload:[String:Any] = ["status":visible && growth<160*1024*1024 && lastIntervalGrowth<32*1024*1024 && windowsStable ? "passed":"failed","bundlePath":Bundle.main.bundlePath,"bundleIdentifier":Bundle.main.bundleIdentifier ?? "", "sourceCommit":source,"mainWindowVisible":visible,"arguments":CommandLine.arguments,"safeMode":true,"captureStarted":false,"windowTitle":mainWindow.title,"resourceCycleCount":40,"warmupCycleCount":10,"rssSamplesEveryTenCycles":samples,"windowCountsEveryTenCycles":windowCounts,"baselineWindowCount":baselineWindows,"finalWindowCount":windowCount(),"weakCycleWindowCounts":weakCounts,"finalRetainedCycleWindows":retained.count,"retainedCycleWindowDetails":retained,"finalRetainedAppControllersOrContent":retainedOwned,"lastTenCyclesGrowthBytes":lastIntervalGrowth,"baselineRSSBytes":baseline,"peakRSSBytes":peak,"finalRSSBytes":final,"growthRSSBytes":growth,"resourceScope":"10 warm-up plus 40 synthetic editor/pin create-render-close cycles; not a screen-capture or recording leak test"]
+            let payload:[String:Any] = ["status":visible && growth<160*1024*1024 && lastIntervalGrowth<32*1024*1024 && windowsStable ? "passed":"failed","bundlePath":Bundle.main.bundlePath,"bundleIdentifier":Bundle.main.bundleIdentifier ?? "", "sourceCommit":source,"mainWindowVisible":visible,"arguments":CommandLine.arguments,"safeMode":true,"captureStarted":false,"packagedModelEvidence":modelEvidence,"windowTitle":mainWindow.title,"resourceCycleCount":40,"warmupCycleCount":10,"rssSamplesEveryTenCycles":samples,"windowCountsEveryTenCycles":windowCounts,"baselineWindowCount":baselineWindows,"finalWindowCount":windowCount(),"weakCycleWindowCounts":weakCounts,"finalRetainedCycleWindows":retained.count,"retainedCycleWindowDetails":retained,"finalRetainedAppControllersOrContent":retainedOwned,"lastTenCyclesGrowthBytes":lastIntervalGrowth,"baselineRSSBytes":baseline,"peakRSSBytes":peak,"finalRSSBytes":final,"growthRSSBytes":growth,"resourceScope":"10 warm-up plus 40 synthetic editor/pin create-render-close cycles; not a screen-capture or recording leak test"]
             try JSONSerialization.data(withJSONObject:payload,options:[.prettyPrinted,.sortedKeys]).write(to:url,options:.atomic)
             try? FileManager.default.removeItem(at:history.directory)
         }catch{try? JSONSerialization.data(withJSONObject:["status":"failed","error":error.localizedDescription]).write(to:url)}
