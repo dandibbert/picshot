@@ -27,17 +27,17 @@ import Darwin
             for index in 0..<40 {autoreleasepool{weakWindows += cycleFixture()};try await Task.sleep(nanoseconds:40_000_000);peak=max(peak,residentBytes());if (index+1)%10==0{samples.append(residentBytes());windowCounts.append(windowCount());weakCounts.append(liveCycleWindows(weakWindows).count)}}
             mainWindow.makeKeyAndOrderFront(nil)
             try await Task.sleep(nanoseconds:800_000_000)
-            let retained=liveCycleWindows(weakWindows)
-            let final=residentBytes();let growth=Int64(final)-Int64(baseline);let lastIntervalGrowth=Int64(samples.last ?? final)-Int64(samples.dropLast().last ?? baseline);let windowsStable=windowCount()<=baselineWindows+3 && retained.isEmpty
+            let retained=liveCycleWindows(weakWindows);let retainedOwned=retainedCycleContentCount(weakWindows)
+            let final=residentBytes();let growth=Int64(final)-Int64(baseline);let lastIntervalGrowth=Int64(samples.last ?? final)-Int64(samples.dropLast().last ?? baseline);let windowsStable=windowCount()<=baselineWindows+3 && retainedOwned == 0
             let visible=mainWindow.isVisible && mainWindow.contentView != nil
             let source=(Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String) ?? "unknown"
-            let payload:[String:Any] = ["status":visible && growth<160*1024*1024 && lastIntervalGrowth<32*1024*1024 && windowsStable ? "passed":"failed","bundlePath":Bundle.main.bundlePath,"bundleIdentifier":Bundle.main.bundleIdentifier ?? "", "sourceCommit":source,"mainWindowVisible":visible,"arguments":CommandLine.arguments,"safeMode":true,"captureStarted":false,"windowTitle":mainWindow.title,"resourceCycleCount":40,"warmupCycleCount":10,"rssSamplesEveryTenCycles":samples,"windowCountsEveryTenCycles":windowCounts,"baselineWindowCount":baselineWindows,"finalWindowCount":windowCount(),"weakCycleWindowCounts":weakCounts,"finalRetainedCycleWindows":retained.count,"retainedCycleWindowDetails":retained,"lastTenCyclesGrowthBytes":lastIntervalGrowth,"baselineRSSBytes":baseline,"peakRSSBytes":peak,"finalRSSBytes":final,"growthRSSBytes":growth,"resourceScope":"10 warm-up plus 40 synthetic editor/pin create-render-close cycles; not a screen-capture or recording leak test"]
+            let payload:[String:Any] = ["status":visible && growth<160*1024*1024 && lastIntervalGrowth<32*1024*1024 && windowsStable ? "passed":"failed","bundlePath":Bundle.main.bundlePath,"bundleIdentifier":Bundle.main.bundleIdentifier ?? "", "sourceCommit":source,"mainWindowVisible":visible,"arguments":CommandLine.arguments,"safeMode":true,"captureStarted":false,"windowTitle":mainWindow.title,"resourceCycleCount":40,"warmupCycleCount":10,"rssSamplesEveryTenCycles":samples,"windowCountsEveryTenCycles":windowCounts,"baselineWindowCount":baselineWindows,"finalWindowCount":windowCount(),"weakCycleWindowCounts":weakCounts,"finalRetainedCycleWindows":retained.count,"retainedCycleWindowDetails":retained,"finalRetainedAppControllersOrContent":retainedOwned,"lastTenCyclesGrowthBytes":lastIntervalGrowth,"baselineRSSBytes":baseline,"peakRSSBytes":peak,"finalRSSBytes":final,"growthRSSBytes":growth,"resourceScope":"10 warm-up plus 40 synthetic editor/pin create-render-close cycles; not a screen-capture or recording leak test"]
             try JSONSerialization.data(withJSONObject:payload,options:[.prettyPrinted,.sortedKeys]).write(to:url,options:.atomic)
             try? FileManager.default.removeItem(at:history.directory)
         }catch{try? JSONSerialization.data(withJSONObject:["status":"failed","error":error.localizedDescription]).write(to:url)}
         NSApp.terminate(nil)
     }
-    private func cycleFixture()->[SmokeWeakWindow]{let image=ImageEditorRenderer.makeSampleImage();let c=ImageEditorController(image:image,onSave:{_ in},onPin:{_ in},onOCR:{_ in});c.showWindow(nil);c.window?.displayIfNeeded();c.close();let p=PinController(image:image);p.showWindow(nil);p.close();return [SmokeWeakWindow(c),SmokeWeakWindow(p)]}
+    private func cycleFixture()->[SmokeWeakWindow]{let image=ImageEditorRenderer.makeSampleImage();let c=ImageEditorController(image:image,onSave:{_ in},onPin:{_ in},onOCR:{_ in});c.showWindow(nil);c.window?.displayIfNeeded();let editorProbe=SmokeWeakWindow(c);c.close();let p=PinController(image:image);p.showWindow(nil);let pinProbe=SmokeWeakWindow(p);p.close();return [editorProbe,pinProbe]}
     private func snapshot(_ window:NSWindow,to url:URL)throws{
         guard let view=window.contentView,let bitmap=view.bitmapImageRepForCachingDisplay(in:view.bounds)else{throw PicShotError.message("Native snapshot unavailable")}
         view.layoutSubtreeIfNeeded();view.cacheDisplay(in:view.bounds,to:bitmap)
@@ -45,7 +45,8 @@ import Darwin
         window.effectiveAppearance.performAsCurrentDrawingAppearance {context.setFillColor(window.backgroundColor.cgColor)}
         context.fill(CGRect(x:0,y:0,width:image.width,height:image.height));context.draw(image,in:CGRect(x:0,y:0,width:image.width,height:image.height));try context.makeImage()!.writePNG(to:url)
     }
-    private func liveCycleWindows(_ refs:[SmokeWeakWindow])->[String]{autoreleasepool{refs.compactMap{ref in guard let w=ref.window else{return nil};return "\(ref.kind): window=\(w.title), visible=\(w.isVisible), controllerAlive=\(ref.controller != nil), key=\(w.isKeyWindow)"}}}
+    private func retainedCycleContentCount(_ refs:[SmokeWeakWindow])->Int{autoreleasepool{refs.filter{$0.controller != nil || $0.content != nil}.count}}
+    private func liveCycleWindows(_ refs:[SmokeWeakWindow])->[String]{autoreleasepool{refs.compactMap{ref in guard let w=ref.window else{return nil};return "\(ref.kind): window=\(w.title), visible=\(w.isVisible), controllerAlive=\(ref.controller != nil), contentAlive=\(ref.content != nil), key=\(w.isKeyWindow)"}}}
     private func windowCount()->Int{autoreleasepool{NSApp.windows.count}}
     private func residentBytes()->UInt64{
         var info=mach_task_basic_info();var count=mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size/MemoryLayout<natural_t>.size)
@@ -54,4 +55,4 @@ import Darwin
     }
 }
 
-private final class SmokeWeakWindow {weak var window:NSWindow?;weak var controller:NSWindowController?;let kind:String;init(_ controller:NSWindowController){self.window=controller.window;self.controller=controller;kind=String(describing:type(of:controller))}}
+private final class SmokeWeakWindow {weak var window:NSWindow?;weak var controller:NSWindowController?;weak var content:NSView?;let kind:String;init(_ controller:NSWindowController){self.window=controller.window;self.controller=controller;self.content=controller.window?.contentView;kind=String(describing:type(of:controller))}}

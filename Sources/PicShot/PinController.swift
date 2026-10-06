@@ -117,6 +117,7 @@ struct PinImageState {
         super.init(window: panel)
         panel.level = .floating; panel.isReleasedWhenClosed = false; panel.isFloatingPanel = true
         panel.hidesOnDeactivate = false; panel.delegate = self
+        panel.isExcludedFromWindowsMenu = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.contentMinSize = NSSize(width: 344, height: 116)
         panel.center()
@@ -278,6 +279,7 @@ struct PinImageState {
 
     /// Always leaves a way back from click-through, extreme opacity, or an offscreen pin.
     func restore() {
+        guard !closed else { return }
         window?.ignoresMouseEvents = false; window?.alphaValue = 1; opacity.doubleValue = 1
         window?.center(); showWindow(nil); window?.orderFrontRegardless()
     }
@@ -287,6 +289,14 @@ struct PinImageState {
         exportPanel?.cancel(nil); exportPanel = nil
         canvas.onCrop = nil; canvas.onCancelCrop = nil; canvas.onSelectionChanged = nil
         let completion = onClose; onClose = nil; completion?()
+        // AppKit can keep the last closed utility panel cached after this controller dies.
+        // Pins are single-use: sever its view/image graph without changing ARC ownership.
+        let closingWindow = notification.object as? NSWindow ?? window
+        closingWindow?.makeFirstResponder(nil)
+        canvas.image = nil; canvas.menu = nil; canvas.selection = nil
+        scrollView.documentView = nil
+        closingWindow?.contentView = nil
+        closingWindow?.delegate = nil
     }
 
     private func updateTitle() {
