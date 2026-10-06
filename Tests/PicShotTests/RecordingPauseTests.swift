@@ -493,7 +493,12 @@ final class RecordingPauseTests: XCTestCase {
             blockLength: frames * bytesPerFrame, blockAllocator: kCFAllocatorDefault, customBlockSource: nil,
             offsetToData: 0, dataLength: frames * bytesPerFrame, flags: 0, blockBufferOut: &block), noErr)
         let data = try XCTUnwrap(block)
-        let values = (0..<(frames * channels)).map { Float(sin(Double($0 / channels) * 2 * .pi * 440 / 48_000) * 0.25) }
+        let sampleCount = frames * channels
+        let angularStep: Double = 2.0 * Double.pi * 440.0 / 48_000.0
+        let values: [Float] = (0..<sampleCount).map { index in
+            let phase = Double(index / channels) * angularStep
+            return Float(sin(phase) * 0.25)
+        }
         values.withUnsafeBytes { bytes in
             XCTAssertEqual(CMBlockBufferReplaceDataBytes(with: bytes.baseAddress!, blockBuffer: data,
                 offsetIntoDestination: 0, dataLength: bytes.count), noErr)

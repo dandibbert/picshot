@@ -114,6 +114,9 @@ struct PinImageState {
     private var applyingPresentation = false
     private var exportPanel: NSSavePanel?
     private(set) var annotationEditor: ImageEditorController?
+    private var annotationGeneration = UUID()
+    private var restorePinAfterAnnotations = false
+    private var temporarilyHidden = false
     private(set) var recognitionWindow: TextResultController?
     private var recognitionTask: Task<Void, Never>?
     private var recognitionGeneration = UUID()
@@ -227,13 +230,26 @@ struct PinImageState {
         }
     }
 
+    /// Both rectangles are in screen points, including the pin's current zoom and scroll offset.
+    var annotationPresentation: PinEditorPresentation? {
+        guard !closed, let window else { return nil }
+        updateLayout()
+        let clip = scrollView.contentView
+        return PinEditorPresentation(viewportFrame: window.convertToScreen(clip.convert(clip.bounds, to: nil)),
+                                     imageFrame: window.convertToScreen(canvas.convert(canvas.imageRect, to: nil)),
+                                     opacity: window.alphaValue, level: window.level)
+    }
+
     @objc func showAnnotations() {
-        guard !closed, exportPanel == nil else { return }
+        guard !closed, !temporarilyHidden, exportPanel == nil else { return }
         if let annotationEditor { annotationEditor.showWindow(nil); annotationEditor.window?.makeKeyAndOrderFront(nil); return }
+        guard let anchor = annotationPresentation else { return }
         setCropping(false)
+        let generation = UUID(); annotationGeneration = generation
         var editingRevision = pixelRevision
         let apply: (CGImage) -> Bool = { [weak self] image in
-            guard let self, !self.closed, self.exportPanel == nil else { return false }
+            guard let self, !self.closed, !self.temporarilyHidden, self.annotationGeneration == generation,
+                  self.annotationEditor != nil, self.exportPanel == nil else { return false }
             guard self.pixelRevision == editingRevision else {
                 showError(PicShotError.message("贴图已在其他操作中更改。当前标注仍可复制或导出；请重新打开标注后再应用到贴图。")); return false
             }
@@ -241,11 +257,60 @@ struct PinImageState {
                 try self.applyAnnotatedImage(image); editingRevision = self.pixelRevision; return true
             } catch { showError(error); return false }
         }
-        let editor = ImageEditorController(image: state.current, onSave: { _ = apply($0) },
-            onPin: { _ = apply($0) }, onOCR: { [weak self] image in self?.recognize(image, copyDirectly: false) }, onApply: apply)
-        editor.onClose = { [weak self] in self?.annotationEditor = nil }
+        let editor = ImageEditorController(image: state.current, onSave: { [weak self] image in
+            if apply(image) { self?.annotationEditor?.close() }
+        }, onPin: { _ = apply($0) }, onOCR: { [weak self] image in
+            guard let self, self.annotationGeneration == generation, self.annotationEditor != nil else { return }
+            self.recognize(image, copyDirectly: false)
+        }, onApply: apply)
+        restorePinAfterAnnotations = window?.isVisible == true
+        editor.onClose = { [weak self, weak editor] in
+            guard let self, self.annotationGeneration == generation, self.annotationEditor === editor else { return }
+            self.annotationEditor = nil
+            let shouldRestore = self.restorePinAfterAnnotations && !self.closed && !self.temporarilyHidden
+            self.restorePinAfterAnnotations = false
+            if shouldRestore { self.bringForward() }
+        }
         annotationEditor = editor
-        editor.show(near: window?.frame ?? .zero)
+        guard editor.showPinned(anchor) else {
+            dismissAnnotations(restoringPin: false); return
+        }
+        // Keep the original window's saved frame/opacity unchanged while its canvas is being edited.
+        if editor.window?.isVisible == true { window?.orderOut(nil) }
+    }
+
+    override func showWindow(_ sender: Any?) {
+        guard !closed else { return }
+        temporarilyHidden = false
+        if let annotationEditor {
+            annotationEditor.showWindow(sender); annotationEditor.window?.makeKeyAndOrderFront(sender)
+        } else { super.showWindow(sender) }
+    }
+
+    /// Bring forward the currently visible surface without showing a second copy behind the editor.
+    func bringForward() {
+        guard !closed else { return }
+        showWindow(nil)
+        let surface = annotationEditor?.window ?? window
+        surface?.makeKeyAndOrderFront(nil); surface?.orderFrontRegardless()
+    }
+
+    /// Fallback (non-session) pins remain reusable while all auxiliary editing windows are dismissed.
+    func hideTemporarily() {
+        guard !closed else { return }
+        temporarilyHidden = true
+        dismissAnnotations(restoringPin: false)
+        recognitionGeneration = UUID(); recognitionTask?.cancel(); recognitionTask = nil
+        recognitionWindow?.close(); recognitionWindow = nil
+        window?.orderOut(nil)
+    }
+
+    private func dismissAnnotations(restoringPin: Bool) {
+        let shouldRestore = restoringPin && restorePinAfterAnnotations && !closed && !temporarilyHidden
+        annotationGeneration = UUID(); restorePinAfterAnnotations = false
+        let editor = annotationEditor; annotationEditor = nil
+        editor?.onClose = nil; editor?.close()
+        if shouldRestore { bringForward() }
     }
 
     /// Keep persistence transactional when flattening the shared annotation editor.
@@ -259,7 +324,7 @@ struct PinImageState {
     @objc private func recognizeText() { recognize(state.current, copyDirectly: false) }
     @objc private func copyRecognizedText() { recognize(state.current, copyDirectly: true) }
     private func recognize(_ image: CGImage, copyDirectly: Bool) {
-        guard !closed else { return }
+        guard !closed, !temporarilyHidden else { return }
         recognitionTask?.cancel()
         let generation = UUID(); recognitionGeneration = generation
         recognitionTask = Task { [weak self] in
@@ -386,6 +451,7 @@ struct PinImageState {
     /// Restoring metadata must not generate persistence events or rewrite image assets.
     func applyPresentation(_ value: PinPresentation) {
         guard !closed else { return }
+        dismissAnnotations(restoringPin: true)
         applyingPresentation = true
         defer { applyingPresentation = false }
         let value = value.normalized()
@@ -419,7 +485,7 @@ struct PinImageState {
         guard !closed else { return }; closed = true
         exportPanel?.cancel(nil); exportPanel = nil
         recognitionGeneration = UUID(); recognitionTask?.cancel(); recognitionTask = nil
-        annotationEditor?.onClose = nil; annotationEditor?.close(); annotationEditor = nil
+        dismissAnnotations(restoringPin: false)
         recognitionWindow?.onClose = nil; recognitionWindow?.close(); recognitionWindow = nil
         canvas.onCrop = nil; canvas.onCancelCrop = nil
         canvas.onAnnotate = nil; canvas.onClose = nil; canvas.onCopy = nil
@@ -474,7 +540,7 @@ struct PinImageState {
     private var anchor: CGPoint?
     override var acceptsFirstResponder: Bool { true }
 
-    private var imageRect: CGRect {
+    var imageRect: CGRect {
         guard let image else { return .zero }
         let size = CGSize(width: CGFloat(image.width) * zoom, height: CGFloat(image.height) * zoom)
         return CGRect(x: (bounds.width - size.width) / 2, y: (bounds.height - size.height) / 2, width: size.width, height: size.height)

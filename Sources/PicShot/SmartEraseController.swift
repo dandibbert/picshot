@@ -8,7 +8,7 @@ import PicShotFormulaCore
 @MainActor
 final class SmartEraseController: NSWindowController, NSWindowDelegate {
     private let model: SmartEraseEditorModel
-    init(image: CGImage, onApply: @escaping (CGImage) -> Void) {
+    init(image: CGImage, onApply: @escaping (CGImage) -> Bool) {
         model = SmartEraseEditorModel(image: image)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 720),
                               styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -18,7 +18,7 @@ final class SmartEraseController: NSWindowController, NSWindowDelegate {
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.contentView = NSHostingView(rootView: SmartEraseEditorView(model: model) { [weak self] image in
-            onApply(image); self?.close()
+            if onApply(image) { self?.close() }
         })
         window.center()
     }

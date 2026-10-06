@@ -92,7 +92,7 @@ final class AutomaticScrollImageTests: XCTestCase {
             XCTAssertThrowsError(try AutomaticScrollScreenDriver.makeScrollEvent(axis: .vertical, points: amount, location: point, windowID: 4242))
         }
         XCTAssertThrowsError(try AutomaticScrollScreenDriver.makeScrollEvent(axis: .vertical, points: 1,
-                                                                             location: CGPoint(x: .nan, y: 0), windowID: 4242))
+                                                                             location: CGPoint(x: CGFloat.nan, y: 0), windowID: 4242))
         // Intentionally no event.post, app activation, screen read or permission request.
     }
 }

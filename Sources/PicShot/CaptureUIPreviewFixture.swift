@@ -54,8 +54,8 @@ enum CaptureUIPreviewFixture {
         try click("editor.tool.rectangle", in: light)
         try click("annotation.swatch.0", in: light)
         let canvas = light.annotationCanvas
-        try drag(canvas, from: CGPoint(x: CGFloat(canvas.image.width) * 0.045, y: CGFloat(canvas.image.height) * 0.70),
-                 to: CGPoint(x: CGFloat(canvas.image.width) * 0.72, y: CGFloat(canvas.image.height) * 0.91))
+        try drag(canvas, from: CGPoint(x: CGFloat(canvas.image.width) * 0.045, y: CGFloat(canvas.image.height) * 0.78),
+                 to: CGPoint(x: CGFloat(canvas.image.width) * 0.72, y: CGFloat(canvas.image.height) * 0.97))
         guard canvas.annotations.count == 1, canvas.annotations[0].tool == .rectangle else { throw failure("Native rectangle gesture did not create its model annotation") }
         try click("editor.tool.arrow", in: light)
         try drag(canvas, from: CGPoint(x: CGFloat(canvas.image.width) * 0.63, y: CGFloat(canvas.image.height) * 0.28),
@@ -63,6 +63,7 @@ enum CaptureUIPreviewFixture {
         try click("editor.tool.rectangle", in: light)
         try await settle(light.window)
         try checkControls(light)
+        guard !light.floatingSurfaceIsDark, light.toolbarSymbolPointSize >= 17 else { throw failure("Light theme or symbol sizing did not apply") }
         try snapshot(light.window, to: evidenceDirectory.appendingPathComponent("ui-capture-rectangle-light.png"))
 
         // Use the toolbar, then native canvas mouse input, then actual NSTextView
@@ -77,7 +78,10 @@ enum CaptureUIPreviewFixture {
         guard light.activeInlineTextView == nil, canvas.annotations.count == initialCount else { throw failure("Inline cancel changed the model") }
         try canvasClick(canvas, at: textPoint)
         guard let input = light.activeInlineTextView else { throw failure("Repeated text tool did not reopen inline input") }
-        input.insertText("Native text\n图上直接编辑", replacementRange: NSRange(location: 0, length: 0))
+        input.insertText("Native text", replacementRange: NSRange(location: 0, length: 0))
+        input.keyDown(with: try key(canvas, code: 36, value: "\r"))
+        guard light.activeInlineTextView === input, canvas.annotations.count == initialCount else { throw failure("Return unexpectedly committed inline text") }
+        input.insertText("图上直接编辑", replacementRange: input.selectedRange())
         try click("annotation.bold", in: light)
         try await settle(light.window)
         guard light.window?.attachedSheet == nil, light.activeInlineTextView != nil else { throw failure("Inline text unexpectedly became modal") }
@@ -97,10 +101,11 @@ enum CaptureUIPreviewFixture {
         NSApp.appearance = NSAppearance(named: .darkAqua)
         let dark = editor(captured)
         try click("editor.tool.rectangle", in: dark)
-        try drag(dark.annotationCanvas, from: CGPoint(x: CGFloat(captured.image.width) * 0.06, y: CGFloat(captured.image.height) * 0.70),
-                 to: CGPoint(x: CGFloat(captured.image.width) * 0.72, y: CGFloat(captured.image.height) * 0.90))
+        try drag(dark.annotationCanvas, from: CGPoint(x: CGFloat(captured.image.width) * 0.06, y: CGFloat(captured.image.height) * 0.78),
+                 to: CGPoint(x: CGFloat(captured.image.width) * 0.72, y: CGFloat(captured.image.height) * 0.97))
         try await settle(dark.window)
         try checkPlacement(dark, presentation: presentation); try checkControls(dark)
+        guard dark.floatingSurfaceIsDark else { throw failure("Dark appearance did not reach native floating surfaces") }
         try snapshot(dark.window, to: evidenceDirectory.appendingPathComponent("ui-capture-rectangle-dark.png"))
         dark.close()
 
@@ -150,6 +155,9 @@ enum CaptureUIPreviewFixture {
         guard editor.floatingToolbarFrame.height == 40,
               bounds.insetBy(dx: -0.5, dy: -0.5).contains(editor.floatingToolbarFrame),
               editor.contextualPaletteVisible,
+              !editor.floatingToolbarFrame.intersects(editor.contextualPaletteFrame),
+              !editor.dimensionLabelFrame.intersects(editor.floatingToolbarFrame),
+              !editor.dimensionLabelFrame.intersects(editor.contextualPaletteFrame),
               bounds.insetBy(dx: -0.5, dy: -0.5).contains(editor.contextualPaletteFrame) else { throw failure("Floating native controls extend beyond the display") }
         for id in ["editor.tool.rectangle", "editor.tool.text", "editor.ocr", "editor.pin", "editor.save", "editor.cancel", "editor.copy", "annotation.swatch.0"] {
             let control = try button(id, in: editor)
@@ -167,7 +175,18 @@ enum CaptureUIPreviewFixture {
         guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw failure("Native bitmap unavailable") }
         view.cacheDisplay(in: view.bounds, to: bitmap)
         guard let image = bitmap.cgImage, image.width > 0, image.height > 0 else { throw failure("Empty native bitmap") }
-        try image.writePNG(to: url)
+        // Titled AppKit content views can leave their system background outside
+        // cacheDisplay's alpha. Resolve and composite that native background for
+        // evidence; genuinely transparent pin/editor windows retain their alpha.
+        if window.isOpaque || window.styleMask.contains(.titled) {
+            guard let context = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
+                                          bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { throw failure("Native background composite unavailable") }
+            window.effectiveAppearance.performAsCurrentDrawingAppearance { context.setFillColor(window.backgroundColor.cgColor) }
+            context.fill(CGRect(x: 0, y: 0, width: image.width, height: image.height))
+            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+            try unwrap(context.makeImage(), "Native background composite is empty").writePNG(to: url)
+        } else { try image.writePNG(to: url) }
     }
     private static func descendants(_ root: NSView?) -> [NSView] {
         guard let root else { return [] }; return [root] + root.subviews.flatMap { descendants($0) }

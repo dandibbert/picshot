@@ -269,7 +269,7 @@ import PicShotCore
     }
     private func present(_ controller: PinController) {
         guard presentWindows else { return }
-        controller.showWindow(nil); controller.window?.orderFrontRegardless()
+        controller.bringForward()
     }
     private func recover(_ controller: PinController) {
         var value = controller.presentation.normalized(screens: screens().map { PinWindowFrame($0) })

@@ -27,6 +27,9 @@ import ImageIO
     var hotKeys:HotKeyService?
     var busy=false
     private var captureTask:Task<Void,Never>?
+    private let frozenEditorAdmission = FrozenEditorCaptureAdmission<ImageEditorController>()
+    private let editorAdmission = EditorAdmissionPolicy()
+    private var editorAdmissionNotices = EditorAdmissionNotices()
     let smoke=ProcessInfo.processInfo.environment["PICSHOT_SMOKE_REPORT"]
     override init(){
         if ProcessInfo.processInfo.environment["PICSHOT_SMOKE_REPORT"] != nil {history=HistoryStore(directory:FileManager.default.temporaryDirectory.appendingPathComponent("PicShot-Smoke-\(UUID().uuidString)"))} else {history=HistoryStore()}
@@ -96,6 +99,9 @@ import ImageIO
         return .terminateLater
     }
     func application(_ sender:NSApplication,openFile filename:String)->Bool{importURL(URL(fileURLWithPath:filename));return true}
+    func application(_ sender:NSApplication,openFiles filenames:[String]) {
+        importURLs(filenames.map { URL(fileURLWithPath:$0) });sender.reply(toOpenOrPrint:.success)
+    }
     func setupMenu(){
         let menu=NSMenu();NSApp.mainMenu=menu
         let appItem=NSMenuItem();menu.addItem(appItem);let app=NSMenu();appItem.submenu=app
@@ -151,7 +157,9 @@ import ImageIO
         runCaptureForEditing(title:title) { CapturedImage(image:try await operation(),presentation:nil) }
     }
     private func runCaptureForEditing(title:String="截图",operation:@escaping @MainActor () async throws -> CapturedImage){
-        guard !busy,captureTask == nil else{return}
+        // This check must precede window hiding, delays, and every capture API.
+        guard frozenEditorAdmission.shouldStart(isBusy:busy || captureTask != nil,
+            isClosed:{$0.isClosed},focus:{self.focusEditor($0)}) else{return}
         busy=true;mainWindow.orderOut(nil)
         captureTask=Task { [weak self] in
             guard let self else{return}
@@ -164,11 +172,42 @@ import ImageIO
             }catch CaptureError.cancelled{}catch is CancellationError{}catch{self.showMain();showError(error)}
         }
     }
-    func smartErase(_ image:CGImage){let c=SmartEraseController(image:image){[weak self] result in self?.openEditor(result)};retain(c);c.showWindow(nil)}
+    func smartErase(_ image:CGImage){
+        let c=SmartEraseController(image:image){[weak self] result in
+            guard let self else{return false}
+            do{
+                try self.history.add(result,title:"智能消除")
+                self.openEditor(result);return true
+            }catch{showError(error);return false}
+        };retain(c);c.showWindow(nil)
+    }
     func recognizeFormula(_ image:CGImage){let c=FormulaRecognitionController(image:image);retain(c);c.showWindow(nil)}
     func recognizeTable(_ image:CGImage){let c=TableRecognitionController(image:image){[weak self] table,warnings in guard let self else{return};let editor=TableEditorController(table:table,sourceImage:image);self.retain(editor);editor.showWindow(nil);if !warnings.isEmpty{let alert=NSAlert();alert.messageText="请核对表格识别结果";alert.informativeText=warnings.joined(separator:"\n");alert.runModal()}};retain(c);c.showWindow(nil)}
     func openEditor(_ image:CGImage,presentation:FrozenCapturePresentation?=nil){
-        let c=ImageEditorController(image:image,presentation:presentation,onSave:{[weak self] img in do{try self?.history.add(img,title:"编辑")}catch{showError(error)}},onPin:{[weak self] img in self?.pin(img)},onOCR:{[weak self] img in self?.recognize(img)},onTranslate:{[weak self] img in self?.translateImage(img)});retain(c);c.showWindow(nil);NSApp.activate(ignoringOtherApps:true)
+        if presentation != nil, !frozenEditorAdmission.shouldStart(isBusy:false,
+            isClosed:{$0.isClosed},focus:{self.focusEditor($0)}) { return }
+        let editors=controllers.compactMap{$0 as? ImageEditorController}.filter{!$0.isClosed}
+        guard editorAdmission.refusal(existingRasterBytes:editors.map(\.estimatedAdmissionRasterBytes),
+            incomingRasterBytes:EditorRasterEstimate.openingBytes(image:image,presentation:presentation)) == nil else {
+            if editorAdmissionNotices.recordRefusal(){showEditorAdmissionNotice()};return
+        }
+        let c=ImageEditorController(image:image,presentation:presentation,onSave:{[weak self] img in do{try self?.history.add(img,title:"编辑")}catch{showError(error)}},onPin:{[weak self] img in self?.pin(img)},onOCR:{[weak self] img in self?.recognize(img)},onTranslate:{[weak self] img in self?.translateImage(img)})
+        c.onClose={ [weak self,weak c] in
+            guard let self,let c else{return}
+            self.frozenEditorAdmission.editorDidClose(c)
+            self.controllers.removeAll{$0 === c}
+        }
+        if presentation != nil {frozenEditorAdmission.register(c)}
+        retain(c);focusEditor(c)
+    }
+    private func focusEditor(_ editor:ImageEditorController){
+        editor.showWindow(nil);editor.window?.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true)
+    }
+    private func showEditorAdmissionNotice(importedCount:Int=0){
+        let alert=NSAlert();alert.messageText="图片编辑窗口已达到资源保护上限"
+        let saved=importedCount > 0 ? "\(importedCount) 张图片已保存到历史记录，暂未打开编辑窗口。\n" : "已保存到历史记录的图片仍可稍后打开。\n"
+        alert.informativeText=saved+"最多同时打开 6 个编辑窗口，估算的保留图像预算为 768 MiB（不是总进程内存上限）。请先保存并关闭不再需要的编辑窗口，再从历史记录打开图片。"
+        alert.addButton(withTitle:"知道了");alert.runModal()
     }
     func translateImage(_ image:CGImage){
         guard #available(macOS 15.0,*) else{translate("");return}
@@ -196,11 +235,11 @@ import ImageIO
     }
     @objc func hideCurrentPins(){
         do{try pinSession?.hideCurrentGroup()}catch{showError(error)}
-        pins.forEach{$0.window?.orderOut(nil)}
+        pins.forEach{$0.hideTemporarily()}
     }
     @objc func hidePins(){
         do{try pinSession?.hideAll()}catch{showError(error)}
-        pins.forEach{$0.window?.orderOut(nil)}
+        pins.forEach{$0.hideTemporarily()}
     }
     @objc func managePinGroups(){
         guard let pinSession else{if let pinSessionLoadError{showError(pinSessionLoadError)};return}
@@ -277,7 +316,12 @@ import ImageIO
     }
     func translate(_ text:String){if #available(macOS 15.0,*){let c=LocalTranslationController(text:text);retain(c);c.showWindow(nil)}else{showError(PicShotError.message("本机翻译需要 macOS 15 或更新版本；当前系统可正常截图和识别文字。"))}}
     func openRecord(_ r:CaptureRecord){if let image=history.image(for:r){openEditor(image)}}
-    @objc func importImage(){let p=NSOpenPanel();p.allowedContentTypes=[.image];p.allowsMultipleSelection=true;if p.runModal() == .OK{p.urls.forEach{importURL($0)}}}
+    @objc func importImage(){let p=NSOpenPanel();p.allowedContentTypes=[.image];p.allowsMultipleSelection=true;if p.runModal() == .OK{importURLs(p.urls)}}
+    private func importURLs(_ urls:[URL]){
+        editorAdmissionNotices.beginBatch()
+        defer{let refused=editorAdmissionNotices.endBatch();if refused > 0{showEditorAdmissionNotice(importedCount:refused)}}
+        urls.forEach{importURL($0)}
+    }
     func importURL(_ url:URL){
         if ["gif", "webp"].contains(url.pathExtension.lowercased()) {
             do {
@@ -292,7 +336,7 @@ import ImageIO
         }
         if let image=CGImage.read(url:url){do{try history.add(image,title:url.deletingPathExtension().lastPathComponent);openEditor(image)}catch{showError(error)}}else{showError(PicShotError.message("无法读取图片。支持 PNG、JPEG、GIF、TIFF 等系统可解码格式；动态 GIF / WebP 会作为动态贴图打开"))}
     }
-    @objc func scroll(){let c=ScrollCaptureController{[weak self] image in do{try self?.history.add(image,title:"长截图");self?.openEditor(image)}catch{showError(error)}};retain(c);c.showWindow(nil)}
+    @objc func scroll(){guard frozenEditorAdmission.shouldStart(isBusy:busy || captureTask != nil,isClosed:{$0.isClosed},focus:{self.focusEditor($0)}) else{return};let c=ScrollCaptureController{[weak self] image in do{try self?.history.add(image,title:"长截图");self?.openEditor(image)}catch{showError(error)}};retain(c);c.showWindow(nil)}
     @objc func record(){if recordingController == nil{recordingController=RecordingPanelController(service:recorder,capture:capture)};recordingController?.showWindow(nil);NSApp.activate(ignoringOtherApps:true)}
     @objc func settings(){
         if let settingsController{settingsController.showWindow(nil);NSApp.activate(ignoringOtherApps:true);return}

@@ -18,44 +18,221 @@ enum EditorFloatingLayout {
         let width = min(toolbarSize.width, max(1, available.width - margin * 2))
         let paletteWidth = min(paletteSize.width, max(1, available.width - margin * 2))
         let x = min(max(available.minX + margin, selection.maxX - width), available.maxX - margin - width)
-        let requiredBelow = toolbarHeight + gap + (paletteSize.height > 0 ? paletteSize.height + gap : 0)
-        let above = selection.minY - requiredBelow < available.minY + margin
-        var y = above ? selection.maxY + gap : selection.minY - gap - toolbarHeight
-        y = max(available.minY + margin, min(y, available.maxY - margin - toolbarHeight))
-        let toolbar = CGRect(x: x, y: y, width: width, height: toolbarHeight)
+        // Clamp the whole two-row group, never each row separately. For a truly
+        // tiny viewport there is no second row until room becomes available.
+        let room = max(0, available.height - margin * 2)
+        let paletteHeight = toolbarHeight + gap + paletteSize.height <= room ? paletteSize.height : 0
+        let groupHeight = toolbarHeight + (paletteHeight > 0 ? gap + paletteHeight : 0)
+        let above = selection.minY - gap - groupHeight < available.minY + margin
+        let proposedBottom = above ? selection.maxY + gap : selection.minY - gap - groupHeight
+        let bottom = max(available.minY + margin, min(proposedBottom, available.maxY - margin - groupHeight))
+        let toolbarY = above ? bottom : bottom + (paletteHeight > 0 ? paletteHeight + gap : 0)
+        let toolbar = CGRect(x: x, y: toolbarY, width: width, height: toolbarHeight)
         let paletteX = max(available.minX + margin, min(x + activeToolOffset - 22, available.maxX - margin - paletteWidth))
-        var paletteY = above ? toolbar.maxY + gap : toolbar.minY - gap - paletteSize.height
-        // Near a screen edge, keep every control reachable even when it must sit
-        // over a small part of the capture. Never move the capture to make room.
-        paletteY = max(available.minY + margin, min(paletteY, available.maxY - margin - paletteSize.height))
+        let paletteY = above ? toolbar.maxY + gap : bottom
         return Frames(toolbar: toolbar,
-                      palette: CGRect(x: paletteX, y: paletteY, width: paletteWidth, height: paletteSize.height),
+                      palette: CGRect(x: paletteX, y: paletteY, width: paletteWidth, height: paletteHeight),
                       isAbove: above)
+    }
+
+    static func dimensionLabelFrame(selection: CGRect, available: CGRect, size: CGSize, avoiding controls: [CGRect]) -> CGRect {
+        let maximumControlY = controls.map(\.maxY).max() ?? selection.maxY
+        let candidates = [
+            CGRect(x: selection.minX + 4, y: selection.maxY + 7, width: size.width, height: size.height),
+            CGRect(x: selection.minX - size.width - 8, y: selection.maxY - size.height, width: size.width, height: size.height),
+            CGRect(x: selection.maxX + 8, y: selection.maxY - size.height, width: size.width, height: size.height),
+            CGRect(x: selection.minX + 4, y: maximumControlY + 7, width: size.width, height: size.height),
+            CGRect(x: selection.minX + 4, y: selection.minY - size.height - 7, width: size.width, height: size.height),
+            CGRect(x: selection.minX + 8, y: selection.maxY - size.height - 8, width: size.width, height: size.height),
+            CGRect(x: available.minX + 8, y: available.minY + 8, width: size.width, height: size.height),
+            CGRect(x: available.maxX - size.width - 8, y: available.maxY - size.height - 8, width: size.width, height: size.height),
+            CGRect(x: available.maxX - size.width - 8, y: available.minY + 8, width: size.width, height: size.height)
+        ]
+        let inset = available.insetBy(dx: 4, dy: 4)
+        for frame in candidates where inset.contains(frame) && !controls.contains(where: { $0.insetBy(dx: -3, dy: -3).intersects(frame) }) { return frame }
+        // A full-screen capture has no outside label band. The label is a real
+        // top-level overlay, so placing it inside the selected pixels stays legible.
+        let y = max(inset.minY, min(selection.maxY - size.height - 8, inset.maxY - size.height))
+        let x = max(inset.minX, min(selection.minX + 8, inset.maxX - size.width))
+        return CGRect(x: x, y: y, width: min(size.width, inset.width), height: size.height)
+
+    }
+}
+
+@MainActor
+class EditorFloatingSurface: NSStackView {
+    static let symbolPointSize: CGFloat = 18
+    static let ink = NSColor(name: NSColor.Name("PicShotEditorInk")) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor(calibratedWhite: 0.96, alpha: 1) : NSColor(calibratedWhite: 0.10, alpha: 1)
+    }
+    var isDarkSurface: Bool { effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua }
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true; layer?.cornerRadius = 7; layer?.borderWidth = 0.7
+        shadow = NSShadow(); shadow?.shadowBlurRadius = 9; shadow?.shadowOffset = NSSize(width: 0, height: -2)
+        refreshSurface()
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); refreshSurface() }
+    func refreshSurface() {
+        let dark = isDarkSurface
+        layer?.backgroundColor = NSColor(calibratedWhite: dark ? 0.17 : 0.99, alpha: 1).cgColor
+        layer?.borderColor = (dark ? NSColor.white.withAlphaComponent(0.18) : NSColor.black.withAlphaComponent(0.16)).cgColor
+        shadow?.shadowColor = NSColor.black.withAlphaComponent(dark ? 0.44 : 0.24)
+        needsDisplay = true
+    }
+}
+
+struct PinEditorPresentation {
+    let viewportFrame: CGRect
+    let imageFrame: CGRect
+    let opacity: CGFloat
+    let level: NSWindow.Level
+}
+
+enum EditorBoundaryHandle: Int, CaseIterable {
+    case topLeft, top, topRight, right, bottomRight, bottom, bottomLeft, left
+    func point(in frame: CGRect) -> CGPoint {
+        switch self {
+        case .topLeft: return CGPoint(x: frame.minX, y: frame.maxY)
+        case .top: return CGPoint(x: frame.midX, y: frame.maxY)
+        case .topRight: return CGPoint(x: frame.maxX, y: frame.maxY)
+        case .right: return CGPoint(x: frame.maxX, y: frame.midY)
+        case .bottomRight: return CGPoint(x: frame.maxX, y: frame.minY)
+        case .bottom: return CGPoint(x: frame.midX, y: frame.minY)
+        case .bottomLeft: return CGPoint(x: frame.minX, y: frame.minY)
+        case .left: return CGPoint(x: frame.minX, y: frame.midY)
+        }
+    }
+    static func hit(at point: CGPoint, frame: CGRect, tolerance: CGFloat = 7) -> EditorBoundaryHandle? {
+        allCases.min { hypot($0.point(in: frame).x - point.x, $0.point(in: frame).y - point.y) < hypot($1.point(in: frame).x - point.x, $1.point(in: frame).y - point.y) }
+            .flatMap { hypot($0.point(in: frame).x - point.x, $0.point(in: frame).y - point.y) <= tolerance ? $0 : nil }
+    }
+    func resized(_ original: CGRect, to point: CGPoint, in bounds: CGRect) -> CGRect {
+        var left = original.minX, right = original.maxX, bottom = original.minY, top = original.maxY
+        if [.topLeft, .bottomLeft, .left].contains(self) { left = max(bounds.minX, min(point.x, right - 2)) }
+        if [.topRight, .bottomRight, .right].contains(self) { right = min(bounds.maxX, max(point.x, left + 2)) }
+        if [.bottomLeft, .bottom, .bottomRight].contains(self) { bottom = max(bounds.minY, min(point.y, top - 2)) }
+        if [.topLeft, .top, .topRight].contains(self) { top = min(bounds.maxY, max(point.y, bottom + 2)) }
+        return CGRect(x: left, y: bottom, width: right - left, height: top - bottom)
+    }
+}
+
+/// One crop-sized allocation at commit; dragging only reuses immutable images.
+/// The old base patch preserves any edits already rasterized by the crop tool.
+enum EditorBoundaryRenderer {
+    static func alignedFrame(_ requested: CGRect, presentation: FrozenCapturePresentation) throws -> CGRect {
+        let geometry = try FrozenCaptureGeometry(pointSize: presentation.displayFrame.size,
+            pixelWidth: presentation.frozenImage.width, pixelHeight: presentation.frozenImage.height)
+        let topLeft = CGRect(x: requested.minX, y: presentation.displayFrame.height - requested.maxY,
+                             width: requested.width, height: requested.height)
+        return try geometry.alignedSelection(topLeft).selectionFrame
+    }
+    static func recrop(_ requested: CGRect, presentation: FrozenCapturePresentation, previousImage: CGImage) throws -> CapturedImage {
+        let source = presentation.frozenImage
+        let geometry = try FrozenCaptureGeometry(pointSize: presentation.displayFrame.size, pixelWidth: source.width, pixelHeight: source.height)
+        let topLeft = CGRect(x: requested.minX, y: presentation.displayFrame.height - requested.maxY, width: requested.width, height: requested.height)
+        let aligned = try geometry.alignedSelection(topLeft)
+        let width = Int(aligned.pixelFrame.width), height = Int(aligned.pixelFrame.height)
+        guard let crop = source.cropping(to: aligned.pixelFrame),
+              let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue) else {
+            throw PicShotError.message("无法调整截图区域，可能内存不足")
+        }
+        context.interpolationQuality = .none
+        context.draw(crop, in: CGRect(x: 0, y: 0, width: width, height: height))
+        let offset = annotationOffset(from: presentation.selectionFrame, to: aligned.selectionFrame, presentation: presentation)
+        context.setBlendMode(.copy)
+        context.draw(previousImage, in: CGRect(x: offset.width, y: offset.height, width: CGFloat(previousImage.width), height: CGFloat(previousImage.height)))
+        guard let image = context.makeImage() else { throw PicShotError.message("无法完成截图区域调整") }
+        return CapturedImage(image: image, presentation: FrozenCapturePresentation(frozenImage: source,
+            displayID: presentation.displayID, displayFrame: presentation.displayFrame, selectionFrame: aligned.selectionFrame))
+    }
+    static func annotationOffset(from previous: CGRect, to next: CGRect, presentation: FrozenCapturePresentation) -> CGSize {
+        CGSize(width: ((previous.minX - next.minX) * CGFloat(presentation.frozenImage.width) / presentation.displayFrame.width).rounded(),
+               height: ((previous.minY - next.minY) * CGFloat(presentation.frozenImage.height) / presentation.displayFrame.height).rounded())
     }
 }
 
 @MainActor
 final class EditorWorkspaceView: NSView {
     var frozenImage: CGImage?
+    var transparentBackground = false { didSet { needsDisplay = true } }
     var selectionFrame: CGRect = .zero { didSet { needsDisplay = true } }
     var pixelSize: CGSize = .zero
     var onLayout: (() -> Void)?
     var onDismiss: (() -> Void)?
     var onOutsideClick: (() -> Void)?
+    weak var selectionContent: NSView?
+    var onBoundaryBegin: (() -> Void)?
+    var onBoundaryChange: ((CGRect) -> Void)?
+    var onBoundaryEnd: ((Bool) -> Void)?
+    var boundaryPreviewImage: CGImage?
+    var boundaryPreviewOriginalFrame: CGRect = .zero
+    private var boundaryHandle: EditorBoundaryHandle?
+    private var boundaryOriginalFrame: CGRect = .zero
+    var isResizingBoundary: Bool { boundaryHandle != nil }
     override var acceptsFirstResponder: Bool { true }
-    override var isOpaque: Bool { true }
+    override var isOpaque: Bool { !transparentBackground }
     override func layout() { super.layout(); onLayout?() }
-    override func mouseDown(with event: NSEvent) { onOutsideClick?() }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        guard frozenImage != nil, onBoundaryBegin != nil else { return hit }
+        // Controls above an edge keep priority over the resize handles.
+        guard hit === self || (selectionContent.map { hit === $0 || hit?.isDescendant(of: $0) == true } ?? false) else { return hit }
+        let local = convert(point, from: superview)
+        return EditorBoundaryHandle.hit(at: local, frame: selectionFrame) == nil ? hit : self
+    }
+    override func resetCursorRects() {
+        guard frozenImage != nil, onBoundaryBegin != nil else { return }
+        for handle in EditorBoundaryHandle.allCases {
+            let point = handle.point(in: selectionFrame)
+            addCursorRect(CGRect(x: point.x - 5, y: point.y - 5, width: 10, height: 10), cursor: .crosshair)
+        }
+    }
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        guard frozenImage != nil, onBoundaryBegin != nil,
+              let handle = EditorBoundaryHandle.hit(at: point, frame: selectionFrame) else { onOutsideClick?(); return }
+        boundaryHandle = handle; boundaryOriginalFrame = selectionFrame
+        window?.makeFirstResponder(self); onBoundaryBegin?()
+    }
+    override func mouseDragged(with event: NSEvent) {
+        guard let handle = boundaryHandle else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        onBoundaryChange?(handle.resized(boundaryOriginalFrame, to: point, in: bounds))
+    }
+    override func mouseUp(with event: NSEvent) {
+        guard boundaryHandle != nil else { return }
+        mouseDragged(with: event); boundaryHandle = nil; onBoundaryEnd?(true)
+    }
+    func cancelBoundaryResize() {
+        guard boundaryHandle != nil else { return }
+        boundaryHandle = nil; onBoundaryEnd?(false)
+    }
+    override func rightMouseDown(with event: NSEvent) {
+        if isResizingBoundary { cancelBoundaryResize() } else { onDismiss?() }
+    }
     override func keyDown(with event: NSEvent) {
-        if event.keyCode == 53 { onDismiss?() } else { super.keyDown(with: event) }
+        if event.keyCode == 53 {
+            if isResizingBoundary { cancelBoundaryResize() } else { onDismiss?() }
+        } else { super.keyDown(with: event) }
     }
     override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
         if let frozenImage {
             context.draw(frozenImage, in: bounds)
             NSColor.black.withAlphaComponent(0.46).setFill(); bounds.fill()
-        } else {
+            if let preview = boundaryPreviewImage {
+                context.saveGState(); context.clip(to: selectionFrame)
+                context.draw(frozenImage, in: bounds)
+                context.draw(preview, in: boundaryPreviewOriginalFrame)
+                context.restoreGState()
+            }
+        } else if !transparentBackground {
             NSColor(calibratedWhite: 0.16, alpha: 1).setFill(); bounds.fill()
+        } else {
+            context.clear(bounds)
         }
         guard !selectionFrame.isEmpty else { return }
         // The canvas supplies the undimmed pixels. The outline is drawn just
@@ -63,20 +240,17 @@ final class EditorWorkspaceView: NSView {
         let border = selectionFrame.insetBy(dx: -1, dy: -1)
         NSColor(calibratedRed: 0.20, green: 0.53, blue: 1, alpha: 1).setStroke()
         let path = NSBezierPath(rect: border); path.lineWidth = 1.5; path.stroke()
-        if frozenImage != nil {
+        if frozenImage != nil, onBoundaryBegin != nil {
             for x in [border.minX, border.midX, border.maxX] {
                 for y in [border.minY, border.midY, border.maxY] where x != border.midX || y != border.midY {
                     let handle = NSRect(x: x - 2, y: y - 2, width: 4, height: 4)
-                    NSColor.white.setFill(); handle.fill(); path.lineWidth = 1
-                    NSBezierPath(rect: handle).stroke()
+                    let dot = NSBezierPath(ovalIn: handle)
+                    NSColor.white.setFill(); dot.fill()
+                    NSColor.systemBlue.setStroke(); dot.lineWidth = 1.5; dot.stroke()
                 }
             }
         }
-        let value = "\(Int(pixelSize.width)) × \(Int(pixelSize.height)) px"
-        let textY = min(bounds.maxY - 23, selectionFrame.maxY + 8)
-        (value as NSString).draw(at: CGPoint(x: selectionFrame.minX + 4, y: textY),
-                                withAttributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
-                                                 .foregroundColor: NSColor.white])
+
     }
 }
 

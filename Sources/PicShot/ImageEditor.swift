@@ -3,6 +3,7 @@ import CoreImage
 import CoreText
 import ImageIO
 import UniformTypeIdentifiers
+import PicShotCore
 
 /// All annotation coordinates are image pixels, with the origin at the bottom left.
 enum ImageEditorTool: String, CaseIterable {
@@ -256,6 +257,7 @@ final class ImageEditorCanvas: NSView {
     private var activeHandle: AnnotationHandle?
     private var didBeginMoving = false
     private var cachedImage: CGImage?
+    var retainedPresentationRaster: CGImage? { cachedImage }
     var selectedAnnotation: ImageAnnotation? { annotations.first { $0.id == selection } }
 
     init(image: CGImage) {
@@ -280,6 +282,11 @@ final class ImageEditorCanvas: NSView {
     }
 
     func flattened() -> CGImage? { ImageEditorRenderer.render(image: image, annotations: annotations) }
+    func rasterForBoundaryPreview() -> CGImage? {
+        if cachedImage == nil { cachedImage = flattened() }
+        return cachedImage
+    }
+    func releasePresentationCache() { cachedImage = nil }
 
     func makeAnnotation(tool: ImageEditorTool, points: [CGPoint], text: String = "") -> ImageAnnotation {
         var result = style
@@ -509,11 +516,11 @@ final class ImageEditorCanvas: NSView {
 
 @MainActor
 final class ImageEditorController: NSWindowController, NSWindowDelegate {
-    private struct Snapshot { var image: CGImage; var annotations: [ImageAnnotation]; var selectionFrame: CGRect? }
+    private struct Snapshot { var image: CGImage; var annotations: [ImageAnnotation]; var selectionFrame: CGRect?; var pinPresentation: PinEditorPresentation? }
     private let canvas: ImageEditorCanvas
     private let scrollView = NSScrollView()
     private let workspace = EditorWorkspaceView(frame: .zero)
-    private let toolbar = NSStackView()
+    private let toolbar = EditorFloatingSurface(frame: .zero)
     private let inspector = AnnotationInspector(frame: .zero)
     private let onSave: (CGImage) -> Void
     private let onPin: (CGImage) -> Void
@@ -521,6 +528,8 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     private let onTranslate: ((CGImage) -> Void)?
     private let onApply: ((CGImage) -> Bool)?
     private var presentation: FrozenCapturePresentation?
+    private var pinPresentation: PinEditorPresentation?
+    private let pinClipView = NSView()
     private var screenObserver: NSObjectProtocol?
     private var undoStates: [Snapshot] = []
     private var redoStates: [Snapshot] = []
@@ -538,13 +547,33 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     private var inlineBox: InlineAnnotationTextBox?
     private var inlineAnnotation: ImageAnnotation?
     private var inlineExistingID: UUID?
+    private var boundaryPreviewFrame: CGRect?
     var onClose: (() -> Void)?
+    private(set) var isClosed = false
+    /// Current/history/cache/frozen rasters once per identity, with a reserved
+    /// redraw raster when the cache is empty. This is not total process memory.
+    var estimatedAdmissionRasterBytes: Int {
+        var images = [canvas.image] + undoStates.map(\.image) + redoStates.map(\.image)
+        images += [canvas.retainedPresentationRaster, presentation?.frozenImage,
+                   workspace.frozenImage, workspace.boundaryPreviewImage].compactMap { $0 }
+        return EditorAdmissionPolicy.sum([EditorRasterEstimate.retainedBytes(images),
+            canvas.retainedPresentationRaster == nil ? EditorRasterEstimate.redrawBytes(canvas.image) : 0])
+    }
     var annotationCanvas: ImageEditorCanvas { canvas }
     var activeInlineTextView: InlineAnnotationTextView? { inlineBox?.input }
     var floatingToolbarFrame: CGRect { toolbar.frame }
+    var dimensionLabelFrame: CGRect { status.frame }
+    var floatingSurfaceIsDark: Bool { toolbar.isDarkSurface }
+    var toolbarSymbolPointSize: CGFloat { EditorFloatingSurface.symbolPointSize }
     var contextualPaletteFrame: CGRect { inspector.frame }
     var contextualPaletteVisible: Bool { !inspector.isHidden }
     var editorSelectionFrame: CGRect { workspace.selectionFrame }
+    var captureBoundaryWorkspace: EditorWorkspaceView { workspace }
+    var editorImageScreenFrame: CGRect? {
+        guard let window else { return nil }
+        return window.convertToScreen(canvas.convert(canvas.bounds, to: nil))
+    }
+    var pinnedViewportScreenFrame: CGRect? { pinPresentation?.viewportFrame }
 
     init(image: CGImage, presentation: FrozenCapturePresentation? = nil,
          onSave: @escaping (CGImage) -> Void, onPin: @escaping (CGImage) -> Void,
@@ -592,6 +621,10 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         workspace.onDismiss = { [weak self] in self?.cancelEditor() }
         workspace.onOutsideClick = { [weak self] in self?.finishInlineText(commit: true) }
         if presentation != nil {
+            workspace.selectionContent = canvas
+            workspace.onBoundaryBegin = { [weak self] in self?.beginBoundaryResize() }
+            workspace.onBoundaryChange = { [weak self] frame in self?.previewBoundaryResize(frame) }
+            workspace.onBoundaryEnd = { [weak self] commit in self?.finishBoundaryResize(commit: commit) }
             screenObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor in self?.cancelEditor() }
             }
@@ -612,13 +645,46 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         showWindow(nil); window.makeKeyAndOrderFront(nil)
     }
 
+    /// Exact pin viewport/image geometry, including an existing zoom/pan offset.
+    /// The new borderless window contains only the viewport and adjacent controls;
+    /// its unused area is transparent and no desktop pixels are acquired.
+    @discardableResult
+    func showPinned(_ placement: PinEditorPresentation) -> Bool {
+        guard presentation == nil, onApply != nil,
+              [placement.viewportFrame.minX, placement.viewportFrame.minY, placement.viewportFrame.width, placement.viewportFrame.height,
+               placement.imageFrame.minX, placement.imageFrame.minY, placement.imageFrame.width, placement.imageFrame.height].allSatisfy({ $0.isFinite }),
+              placement.viewportFrame.width > 0, placement.viewportFrame.height > 0,
+              placement.imageFrame.width > 0, placement.imageFrame.height > 0 else { return false }
+        finishInlineText(commit: true)
+        pinPresentation = placement
+        let oldWindow = window
+        let panel = EditorOverlayWindow(contentRect: placement.viewportFrame, styleMask: [.borderless], backing: .buffered, defer: false)
+        panel.isReleasedWhenClosed = false; panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = false
+        panel.level = placement.level; panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        oldWindow?.delegate = nil; oldWindow?.contentView = nil
+        window = panel; panel.delegate = self; panel.contentView = workspace
+        oldWindow?.orderOut(nil); oldWindow?.close()
+        workspace.transparentBackground = true; workspace.frozenImage = nil
+        scrollView.documentView = nil; scrollView.removeFromSuperview(); canvas.removeFromSuperview()
+        pinClipView.wantsLayer = true; pinClipView.layer?.masksToBounds = true
+        pinClipView.addSubview(canvas); workspace.addSubview(pinClipView, positioned: .below, relativeTo: toolbar)
+        canvas.alphaValue = min(1, max(0.05, placement.opacity))
+        if screenObserver == nil {
+            screenObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.cancelEditor() }
+            }
+        }
+        layoutInterface(); panel.makeFirstResponder(canvas); showWindow(nil); panel.makeKeyAndOrderFront(nil)
+        return true
+    }
+
     private func iconButton(_ symbol: String, title: String, id: String, action: Selector) -> NSButton {
-        let control = NSButton(image: NSImage(systemSymbolName: symbol, accessibilityDescription: title) ?? NSImage(), target: self, action: action)
+        let control = NSButton(image: NSImage(systemSymbolName: symbol, accessibilityDescription: title)?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: EditorFloatingSurface.symbolPointSize, weight: .medium)) ?? NSImage(), target: self, action: action)
         control.isBordered = false; control.bezelStyle = .regularSquare; control.imagePosition = .imageOnly
-        control.contentTintColor = .labelColor; control.toolTip = title; control.setAccessibilityLabel(title)
+        control.contentTintColor = EditorFloatingSurface.ink; control.imageScaling = .scaleProportionallyDown; control.toolTip = title; control.setAccessibilityLabel(title)
         control.identifier = NSUserInterfaceItemIdentifier(id)
         control.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([control.widthAnchor.constraint(equalToConstant: 29), control.heightAnchor.constraint(equalToConstant: 32)])
+        NSLayoutConstraint.activate([control.widthAnchor.constraint(equalToConstant: 32), control.heightAnchor.constraint(equalToConstant: 32)])
         control.wantsLayer = true; control.layer?.cornerRadius = 4
         return control
     }
@@ -634,13 +700,13 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         workspace.frame = window.contentView?.bounds ?? .zero
         workspace.autoresizingMask = [.width, .height]; window.contentView = workspace
         workspace.frozenImage = presentation?.frozenImage
-        toolbar.orientation = .horizontal; toolbar.detachesHiddenViews = true; toolbar.spacing = 3; toolbar.alignment = .centerY
+        toolbar.orientation = .horizontal; toolbar.detachesHiddenViews = true; toolbar.spacing = 2; toolbar.alignment = .centerY
         toolbar.edgeInsets = NSEdgeInsets(top: 4, left: 7, bottom: 4, right: 7)
         toolbar.identifier = NSUserInterfaceItemIdentifier("editor.floatingToolbar")
         styleFloatingSurface(toolbar)
-        let tools: [(ImageEditorTool, String)] = [(.select, "cursorarrow"), (.rectangle, "rectangle"), (.ellipse, "circle"),
-            (.freehand, "pencil.tip"), (.arrow, "arrow.up.right"), (.line, "line.diagonal"), (.text, "textformat"),
-            (.number, "1.circle"), (.highlighter, "highlighter"), (.pixelate, "square.grid.2x2.fill"), (.redact, "eraser.fill"), (.crop, "crop")]
+        let tools: [(ImageEditorTool, String)] = [(.rectangle, "rectangle"), (.ellipse, "circle"), (.freehand, "pencil"),
+            (.arrow, "arrow.up.right"), (.text, "textformat"), (.number, "1.circle"), (.pixelate, "square.grid.2x2.fill"),
+            (.redact, "rectangle.fill"), (.line, "line.diagonal"), (.highlighter, "highlighter"), (.select, "cursorarrow"), (.crop, "crop")]
         for (tool, symbol) in tools {
             let control = iconButton(symbol, title: tool.title, id: "editor.tool.\(tool.rawValue)", action: #selector(selectTool(_:)))
             control.tag = ImageEditorTool.allCases.firstIndex(of: tool) ?? 0
@@ -675,7 +741,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         addMenu("删除标注 · Delete", action: #selector(deleteAnnotation)); overflow.menu?.addItem(.separator())
         addMenu(onApply == nil ? "保存到历史" : "保存编辑", action: #selector(saveResult))
         addMenu("适合窗口", action: #selector(fitImage)); addMenu("100% 像素", action: #selector(actualSize))
-        overflow.translatesAutoresizingMaskIntoConstraints = false; overflow.widthAnchor.constraint(equalToConstant: 29).isActive = true
+        overflow.translatesAutoresizingMaskIntoConstraints = false; overflow.widthAnchor.constraint(equalToConstant: 32).isActive = true
         overflow.heightAnchor.constraint(equalToConstant: 32).isActive = true; toolbar.addArrangedSubview(overflow)
         inspector.identifier = NSUserInterfaceItemIdentifier("editor.contextPalette"); styleFloatingSurface(inspector)
         if presentation != nil {
@@ -686,28 +752,33 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
             workspace.addSubview(scrollView)
         }
         workspace.addSubview(toolbar); workspace.addSubview(inspector)
+        status.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        status.textColor = .white; status.alignment = .center; status.wantsLayer = true
+        status.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.72).cgColor
+        status.layer?.cornerRadius = 4; status.identifier = NSUserInterfaceItemIdentifier("editor.dimensions")
+        workspace.addSubview(status)
         window.makeFirstResponder(canvas)
     }
     private func addMenu(_ title: String, action: Selector) {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: ""); item.target = self; overflow.menu?.addItem(item)
     }
     private func styleFloatingSurface(_ view: NSView) {
-        view.appearance = NSAppearance(named: .aqua)
-        view.wantsLayer = true; view.layer?.backgroundColor = NSColor(calibratedWhite: 0.99, alpha: 1).cgColor
-        view.layer?.cornerRadius = 7; view.layer?.borderWidth = 0.5
-        view.layer?.borderColor = NSColor.black.withAlphaComponent(0.15).cgColor
-        view.shadow = NSShadow(); view.shadow?.shadowColor = NSColor.black.withAlphaComponent(0.24)
-        view.shadow?.shadowBlurRadius = 9; view.shadow?.shadowOffset = NSSize(width: 0, height: -2)
+        view.appearance = nil
+        (view as? EditorFloatingSurface)?.refreshSurface()
     }
     private func layoutInterface() {
         guard !layingOut, workspace.bounds.width > 0 else { return }
         layingOut = true; defer { layingOut = false }
         let selection: CGRect
-        if let presentation {
-            selection = presentation.selectionFrame
-            canvas.verticalZoom = selection.height / CGFloat(canvas.image.height)
-            canvas.zoom = selection.width / CGFloat(canvas.image.width)
-            canvas.frame = selection
+        if let pin = pinPresentation {
+            selection = pin.viewportFrame
+        } else if let presentation {
+            selection = boundaryPreviewFrame ?? presentation.selectionFrame
+            if boundaryPreviewFrame == nil {
+                canvas.verticalZoom = selection.height / CGFloat(canvas.image.height)
+                canvas.zoom = selection.width / CGFloat(canvas.image.width)
+                canvas.frame = selection
+            }
         } else {
             let available = CGRect(x: 22, y: 126, width: max(1, workspace.bounds.width - 44), height: max(1, workspace.bounds.height - 164))
             let imageSize = CGSize(width: canvas.image.width, height: canvas.image.height)
@@ -719,26 +790,53 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
             scrollView.frame = CGRect(x: available.midX - displayed.width / 2, y: available.maxY - displayed.height, width: displayed.width, height: displayed.height)
             selection = scrollView.frame
         }
-        workspace.selectionFrame = selection
-        workspace.pixelSize = CGSize(width: canvas.image.width, height: canvas.image.height)
+        if pinPresentation == nil { workspace.selectionFrame = selection }
+        if let presentation, boundaryPreviewFrame != nil {
+            workspace.pixelSize = CGSize(width: (selection.width * CGFloat(presentation.frozenImage.width) / presentation.displayFrame.width).rounded(),
+                                         height: (selection.height * CGFloat(presentation.frozenImage.height) / presentation.displayFrame.height).rounded())
+        } else { workspace.pixelSize = CGSize(width: canvas.image.width, height: canvas.image.height) }
+        inspector.isHidden = canvas.tool == .crop || (canvas.tool == .select && canvas.selectedAnnotation == nil)
+        let availableBounds = pinPresentation.flatMap { pin in NSScreen.screens.first { $0.frame.intersects(pin.viewportFrame) }?.frame } ?? workspace.bounds
         for button in toolButtons.values { button.isHidden = false }
         var preferredWidth = max(40, toolbar.fittingSize.width)
-        for tool in [ImageEditorTool.ellipse, .line, .highlighter, .select, .crop] where preferredWidth > workspace.bounds.width - 20 {
-            if let button = toolButtons[tool] { button.isHidden = true; preferredWidth -= 32 }
+        for tool in [ImageEditorTool.ellipse, .line, .highlighter, .select, .crop] where preferredWidth > availableBounds.width - 20 {
+            if let button = toolButtons[tool] { button.isHidden = true; preferredWidth -= 34 }
         }
         toolbar.setFrameSize(CGSize(width: preferredWidth, height: 40))
         toolbar.layoutSubtreeIfNeeded(); inspector.layoutSubtreeIfNeeded()
         let active = toolButtons[canvas.tool].map { toolbar.convert($0.bounds, from: $0).midX } ?? 18
-        let frames = EditorFloatingLayout.frames(selection: selection, available: workspace.bounds,
+        let frames = EditorFloatingLayout.frames(selection: selection, available: availableBounds,
             toolbarSize: CGSize(width: preferredWidth, height: 40),
             paletteSize: inspector.isHidden ? .zero : CGSize(width: inspector.fittingSize.width, height: max(38, inspector.fittingSize.height)), activeToolOffset: active)
-        toolbar.frame = frames.toolbar; inspector.frame = frames.palette
+        if let pin = pinPresentation, let window {
+            var union = selection.union(frames.toolbar)
+            if !inspector.isHidden { union = union.union(frames.palette) }
+            let windowFrame = CGRect(x: union.minX - 2, y: union.minY - 2, width: union.width + 4, height: union.height + 28)
+            if window.frame != windowFrame { window.setFrame(windowFrame, display: false) }
+            // AppKit may snap a window origin to backing pixels. Derive local
+            // placement from the actual frame so the pin image itself never moves.
+            let dx = -window.frame.minX, dy = -window.frame.minY
+            workspace.selectionFrame = pin.viewportFrame.offsetBy(dx: dx, dy: dy)
+            pinClipView.frame = workspace.selectionFrame
+            canvas.verticalZoom = pin.imageFrame.height / CGFloat(canvas.image.height)
+            canvas.zoom = pin.imageFrame.width / CGFloat(canvas.image.width)
+            canvas.frame = CGRect(x: pin.imageFrame.minX - pin.viewportFrame.minX, y: pin.imageFrame.minY - pin.viewportFrame.minY,
+                                  width: pin.imageFrame.width, height: pin.imageFrame.height)
+            toolbar.frame = frames.toolbar.offsetBy(dx: dx, dy: dy); inspector.frame = frames.palette.offsetBy(dx: dx, dy: dy)
+        } else {
+            toolbar.frame = frames.toolbar; inspector.frame = frames.palette
+        }
+        if frames.palette.height == 0 { inspector.isHidden = true }
+        status.stringValue = "\(Int(workspace.pixelSize.width)) × \(Int(workspace.pixelSize.height)) px"
+        let labelSize = CGSize(width: (status.stringValue as NSString).size(withAttributes: [.font: status.font!]).width + 14, height: 23)
+        let occupied = inspector.isHidden ? [toolbar.frame] : [toolbar.frame, inspector.frame]
+        status.frame = EditorFloatingLayout.dimensionLabelFrame(selection: workspace.selectionFrame, available: workspace.bounds, size: labelSize, avoiding: occupied)
     }
 
     func setVerificationAnnotations(_ annotations: [ImageAnnotation]) {
         recordChange(); canvas.setContent(image: canvas.image, annotations: annotations); canvas.displayIfNeeded()
     }
-    private var snapshot: Snapshot { Snapshot(image: canvas.image, annotations: canvas.annotations, selectionFrame: presentation?.selectionFrame) }
+    private var snapshot: Snapshot { Snapshot(image: canvas.image, annotations: canvas.annotations, selectionFrame: presentation?.selectionFrame, pinPresentation: pinPresentation) }
     private func recordChange() { undoStates.append(snapshot); redoStates.removeAll(); trimHistory(preferUndo: true); updateStatus() }
     private func trimHistory(preferUndo: Bool) {
         let first = preferUndo ? redoStates : undoStates, second = preferUndo ? undoStates : redoStates
@@ -748,6 +846,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         else { undoStates.removeFirst(firstCount); redoStates.removeFirst(secondCount) }
     }
     private func restore(_ state: Snapshot) {
+        if pinPresentation != nil { pinPresentation = state.pinPresentation }
         if let old = presentation, let frame = state.selectionFrame {
             presentation = FrozenCapturePresentation(frozenImage: old.frozenImage, displayID: old.displayID, displayFrame: old.displayFrame, selectionFrame: frame)
         }
@@ -760,7 +859,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         cropButton?.isEnabled = (canvas.cropRect?.width ?? 0) >= 1 && (canvas.cropRect?.height ?? 0) >= 1
         for (tool, button) in toolButtons {
             button.state = canvas.tool == tool ? .on : .off
-            button.contentTintColor = canvas.tool == tool ? .systemBlue : .labelColor
+            button.contentTintColor = canvas.tool == tool ? .systemBlue : EditorFloatingSurface.ink
             button.layer?.backgroundColor = canvas.tool == tool ? NSColor.systemBlue.withAlphaComponent(0.12).cgColor : NSColor.clear.cgColor
         }
         let selected = canvas.tool == .select ? canvas.selectedAnnotation : nil
@@ -802,6 +901,13 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
             presentation = FrozenCapturePresentation(frozenImage: old.frozenImage, displayID: old.displayID, displayFrame: old.displayFrame,
                 selectionFrame: CGRect(x: old.selectionFrame.minX + clipped.minX * scaleX, y: old.selectionFrame.minY + clipped.minY * scaleY, width: clipped.width * scaleX, height: clipped.height * scaleY))
         }
+        if let pin = pinPresentation {
+            let clipped = rect.standardized.integral.intersection(CGRect(x: 0, y: 0, width: canvas.image.width, height: canvas.image.height))
+            let scaleX = pin.imageFrame.width / CGFloat(canvas.image.width), scaleY = pin.imageFrame.height / CGFloat(canvas.image.height)
+            let frame = CGRect(x: pin.imageFrame.minX + clipped.minX * scaleX, y: pin.imageFrame.minY + clipped.minY * scaleY,
+                               width: clipped.width * scaleX, height: clipped.height * scaleY)
+            pinPresentation = PinEditorPresentation(viewportFrame: pin.viewportFrame, imageFrame: frame, opacity: pin.opacity, level: pin.level)
+        }
         canvas.setContent(image: cropped, annotations: []); fitImage()
     }
     @objc private func fitImage() { finishInlineText(commit: true); fitToWindow = true; needsFit = true; layoutInterface() }
@@ -821,6 +927,43 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         result { image in if onApply(image) { window?.close() } }
     }
     @objc private func cancelEditor() { finishInlineText(commit: false); window?.close() }
+
+    private func beginBoundaryResize() {
+        finishInlineText(commit: true)
+        guard let presentation, let preview = canvas.rasterForBoundaryPreview() else {
+            workspace.cancelBoundaryResize(); return
+        }
+        boundaryPreviewFrame = presentation.selectionFrame
+        workspace.boundaryPreviewOriginalFrame = presentation.selectionFrame
+        workspace.boundaryPreviewImage = preview
+        canvas.isHidden = true; workspace.needsDisplay = true
+    }
+    private func previewBoundaryResize(_ requested: CGRect) {
+        guard let presentation, boundaryPreviewFrame != nil,
+              let aligned = try? EditorBoundaryRenderer.alignedFrame(requested, presentation: presentation) else { return }
+        boundaryPreviewFrame = aligned; layoutInterface(); workspace.needsDisplay = true
+    }
+    private func finishBoundaryResize(commit: Bool) {
+        let requested = boundaryPreviewFrame
+        boundaryPreviewFrame = nil; workspace.boundaryPreviewImage = nil
+        canvas.isHidden = false
+        guard commit, let requested, let previous = presentation, requested != previous.selectionFrame else {
+            layoutInterface(); window?.makeFirstResponder(canvas); return
+        }
+        // Drop the redraw cache before allocating the new selected raster. Drag
+        // motion made no raster copies and did not touch the annotation/history model.
+        canvas.releasePresentationCache()
+        do {
+            let next = try EditorBoundaryRenderer.recrop(requested, presentation: previous, previousImage: canvas.image)
+            guard let nextPresentation = next.presentation else { return }
+            let offset = EditorBoundaryRenderer.annotationOffset(from: previous.selectionFrame, to: nextPresentation.selectionFrame, presentation: previous)
+            let translated = canvas.annotations.map { $0.translated(by: offset) }
+            recordChange()
+            presentation = nextPresentation
+            canvas.setContent(image: next.image, annotations: translated)
+        } catch { showError(error) }
+        layoutInterface(); workspace.needsDisplay = true; window?.makeFirstResponder(canvas)
+    }
 
     func beginInlineText(at point: CGPoint, editing id: UUID?) {
         finishInlineText(commit: true)
@@ -857,20 +1000,24 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         window?.makeFirstResponder(canvas)
     }
     func windowWillClose(_ notification: Notification) {
+        guard !isClosed else { return }; isClosed = true
+        workspace.cancelBoundaryResize()
         finishInlineText(commit: false)
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }; screenObserver = nil
-        workspace.frozenImage = nil; presentation = nil
+        workspace.frozenImage = nil; presentation = nil; pinPresentation = nil
         undoStates.removeAll(); redoStates.removeAll()
         canvas.onWillChange = nil; canvas.onChange = nil; canvas.onRequestText = nil
         canvas.onUndo = nil; canvas.onRedo = nil; canvas.onApplyCrop = nil
         canvas.onCopy = nil; canvas.onExport = nil; canvas.onCancel = nil; canvas.onBeforeInteraction = nil
         inspector.onEdit = nil; inspector.deactivateColorWells()
         workspace.onLayout = nil; workspace.onDismiss = nil; workspace.onOutsideClick = nil
+        workspace.onBoundaryBegin = nil; workspace.onBoundaryChange = nil; workspace.onBoundaryEnd = nil
+        workspace.boundaryPreviewImage = nil; workspace.selectionContent = nil
         if let sheet = window?.attachedSheet { window?.endSheet(sheet, returnCode: .cancel); sheet.orderOut(nil) }
         window?.contentView = nil; window?.delegate = nil
         let completion = onClose; onClose = nil; completion?()
     }
-    func windowDidResize(_ notification: Notification) { finishInlineText(commit: true); layoutInterface() }
+    func windowDidResize(_ notification: Notification) { guard !layingOut else { return }; finishInlineText(commit: true); layoutInterface() }
 
     @objc private func exportResult() {
         finishInlineText(commit: true)
@@ -880,7 +1027,9 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         let formats = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 180, height: 28)); formats.addItems(withTitles: ["PNG", "JPEG", "TIFF", "PDF"])
         let accessory = ExportFormatAccessory(picker: formats, panel: panel); panel.accessoryView = accessory
         panel.beginSheetModal(for: window) { [weak self, accessory] response in
-            guard response == .OK, let url = panel.url else { return }
+            guard response == .OK, let url = panel.url else {
+                self?.window?.makeFirstResponder(self?.canvas); return
+            }
             do {
                 try Self.writeFlattened(image, to: url, format: accessory.picker.indexOfSelectedItem)
                 if self?.presentation != nil { self?.window?.close() }

@@ -3,8 +3,14 @@ import AppKit
 /// A single compact contextual row. These controls edit the same model used by hit testing
 /// and export; hidden controls have no separate preview-only state.
 @MainActor
-final class AnnotationInspector: NSStackView {
+final class AnnotationInspector: EditorFloatingSurface {
     var onEdit: (((inout ImageAnnotation) -> Void) -> Void)?
+    private let detailButton = NSButton(title: "…", target: nil, action: nil)
+    private var detailsGroup = NSStackView()
+    private var showsDetails = false
+    private var previousTool: ImageEditorTool?
+    private var displayedAnnotation = ImageAnnotation(tool: .arrow, points: [])
+    private var displayedSelected = false, displayedEnabled = false
     private let colorWell = NSColorWell()
     private let widthPicker = NSPopUpButton()
     private var widthGroup = NSStackView()
@@ -31,19 +37,19 @@ final class AnnotationInspector: NSStackView {
         super.init(frame: frameRect)
         orientation = .horizontal; spacing = 7; alignment = .centerY; detachesHiddenViews = true
         edgeInsets = NSEdgeInsets(top: 5, left: 9, bottom: 5, right: 9)
-        widthPicker.addItems(withTitles: ["1", "3", "6", "10", "16", "24"])
+        widthPicker.addItems(withTitles: ["1", "3", "4", "6", "10", "16", "24"])
         widthPicker.target = self; widthPicker.action = #selector(changeWidth); widthPicker.controlSize = .small
         widthPicker.identifier = NSUserInterfaceItemIdentifier("annotation.lineWidth")
         widthPicker.setAccessibilityLabel("线宽（像素）"); fixedWidth(widthPicker, 49)
         widthGroup = group([widthPicker])
-        colorWell.controlSize = .small; colorWell.target = self; colorWell.action = #selector(changeColor)
+        colorWell.isBordered = false; colorWell.controlSize = .small; colorWell.target = self; colorWell.action = #selector(changeColor)
         colorWell.identifier = NSUserInterfaceItemIdentifier("annotation.color")
-        colorWell.setAccessibilityLabel("自定义标注颜色"); fixedWidth(colorWell, 25)
+        colorWell.setAccessibilityLabel("自定义标注颜色"); fixedWidth(colorWell, 20); colorWell.heightAnchor.constraint(equalToConstant: 20).isActive = true
         colorGroup = group([colorWell]); colorGroup.spacing = 3
         for (index, color) in colors.enumerated() {
             let button = NSButton(title: "", target: self, action: #selector(selectColor(_:)))
             button.tag = index; button.isBordered = false; button.wantsLayer = true
-            button.layer?.backgroundColor = color.cgColor; button.layer?.borderColor = NSColor.gray.cgColor; button.layer?.borderWidth = 0.5
+            button.layer?.cornerRadius = 2; button.layer?.backgroundColor = color.cgColor; button.layer?.borderColor = NSColor.gray.cgColor; button.layer?.borderWidth = 0.5
             button.identifier = NSUserInterfaceItemIdentifier("annotation.swatch.\(index)")
             button.setAccessibilityLabel(["红色", "橙色", "黄色", "绿色", "蓝色", "紫色", "黑色", "白色"][index])
             button.toolTip = ["红色", "橙色", "黄色", "绿色", "蓝色", "紫色", "黑色", "白色"][index]; fixedWidth(button, 17)
@@ -53,9 +59,9 @@ final class AnnotationInspector: NSStackView {
         fillToggle.target = self; fillToggle.action = #selector(changeFill)
         fillToggle.identifier = NSUserInterfaceItemIdentifier("annotation.fill")
         fillToggle.controlSize = .small
-        fillWell.target = self; fillWell.action = #selector(changeFillColor)
+        fillWell.isBordered = false; fillWell.target = self; fillWell.action = #selector(changeFillColor)
         fillWell.identifier = NSUserInterfaceItemIdentifier("annotation.fillColor")
-        fillWell.setAccessibilityLabel("填充 / 文字背景颜色"); fixedWidth(fillWell, 28)
+        fillWell.setAccessibilityLabel("填充 / 文字背景颜色"); fixedWidth(fillWell, 20); fillWell.heightAnchor.constraint(equalToConstant: 20).isActive = true
         fillGroup = group([fillToggle, fillWell])
         dashPicker.addItems(withTitles: AnnotationStrokeStyle.allCases.map(\.title))
         dashPicker.target = self; dashPicker.action = #selector(changeDash); dashPicker.controlSize = .small
@@ -65,7 +71,7 @@ final class AnnotationInspector: NSStackView {
         opacitySlider.target = self; opacitySlider.action = #selector(changeOpacity); opacitySlider.isContinuous = false
         opacitySlider.identifier = NSUserInterfaceItemIdentifier("annotation.opacity")
         opacitySlider.setAccessibilityLabel("不透明度"); opacitySlider.toolTip = "不透明遮盖始终为 100%，不会显示原始像素"
-        fixedWidth(opacitySlider, 42); opacityGroup = group([opacitySlider])
+        fixedWidth(opacitySlider, 42); opacityGroup = group([label("不透明度"), opacitySlider])
         configureField(radiusField, id: "annotation.radius", label: "圆角半径（像素）", action: #selector(changeRadius))
         radiusGroup = group([label("圆角"), radiusField])
         configureField(rotationField, id: "annotation.rotation", label: "旋转角度", action: #selector(changeRotation))
@@ -81,10 +87,16 @@ final class AnnotationInspector: NSStackView {
             button.setAccessibilityLabel(title); button.toolTip = title
             button.target = self; button.action = #selector(changeTextTraits); fixedWidth(button, 25)
         }
-        textGroup = group([fontPicker, sizeField, boldButton, italicButton, underlineButton])
+        textGroup = group([boldButton, italicButton, underlineButton, fontPicker, sizeField])
         hint.font = .systemFont(ofSize: 10); hint.textColor = .secondaryLabelColor
         hint.lineBreakMode = .byTruncatingTail; hint.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        for view in [widthGroup, dashGroup, fillGroup, radiusGroup, textGroup, opacityGroup, rotationGroup, colorGroup] as [NSView] { addArrangedSubview(view) }
+        detailButton.target = self; detailButton.action = #selector(toggleDetails)
+        detailButton.isBordered = false; detailButton.font = .systemFont(ofSize: 17, weight: .medium)
+        detailButton.identifier = NSUserInterfaceItemIdentifier("annotation.details")
+        detailButton.setAccessibilityLabel("更多样式：不透明度、旋转、圆角"); detailButton.toolTip = "更多样式"
+        fixedWidth(detailButton, 24)
+        detailsGroup = group([opacityGroup, rotationGroup, radiusGroup])
+        for view in [textGroup, widthGroup, dashGroup, fillGroup, colorGroup, detailButton, detailsGroup] as [NSView] { addArrangedSubview(view) }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -97,7 +109,7 @@ final class AnnotationInspector: NSStackView {
     }
     private func group(_ views: [NSView]) -> NSStackView {
         let result = NSStackView(views: views); result.orientation = .horizontal; result.spacing = 4
-        result.alignment = .centerY; return result
+        result.alignment = .centerY; result.detachesHiddenViews = true; return result
     }
     private func configureField(_ field: NSTextField, id: String, label: String, action: Selector) {
         field.identifier = NSUserInterfaceItemIdentifier(id); field.setAccessibilityLabel(label)
@@ -106,12 +118,16 @@ final class AnnotationInspector: NSStackView {
     }
 
     func display(annotation: ImageAnnotation, selected: Bool, enabled: Bool) {
+        if previousTool != annotation.tool { showsDetails = false }
+        previousTool = annotation.tool; displayedAnnotation = annotation; displayedSelected = selected; displayedEnabled = enabled
+        detailsGroup.isHidden = !enabled || !showsDetails
+        detailButton.isHidden = !enabled
         widthGroup.isHidden = !enabled || annotation.tool == .text
         colorGroup.isHidden = !enabled || [.blur, .pixelate].contains(annotation.tool)
         colorWell.color = NSColor(cgColor: annotation.color) ?? .systemRed
-        let widths: [CGFloat] = [1, 3, 6, 10, 16, 24]
-        let nearest = widths.indices.min { abs(widths[$0] - annotation.lineWidth) < abs(widths[$1] - annotation.lineWidth) } ?? 1
-        widthPicker.selectItem(at: nearest)
+        let widthTitle = annotation.lineWidth.rounded() == annotation.lineWidth ? String(Int(annotation.lineWidth)) : String(format: "%.1f", annotation.lineWidth)
+        if widthPicker.item(withTitle: widthTitle) == nil { widthPicker.addItem(withTitle: widthTitle) }
+        widthPicker.selectItem(withTitle: widthTitle)
         for (button, color) in swatches {
             let selectedColor = color.usingColorSpace(.sRGB), current = colorWell.color.usingColorSpace(.sRGB)
             let selected = selectedColor != nil && current != nil && abs(selectedColor!.redComponent - current!.redComponent) < 0.02 && abs(selectedColor!.greenComponent - current!.greenComponent) < 0.02 && abs(selectedColor!.blueComponent - current!.blueComponent) < 0.02
@@ -128,7 +144,7 @@ final class AnnotationInspector: NSStackView {
         hint.stringValue = annotation.tool == .redact ? "遮盖始终不透明；旋转 / 缩放后请确认覆盖范围" : "拖动控制点缩放 / 旋转 · ⇧ 约束 · ⌘D 副本"
         fillToggle.title = annotation.tool == .text ? "背景" : "填充"
         fillToggle.state = annotation.fillEnabled ? .on : .off
-        fillWell.color = NSColor(cgColor: annotation.fillColor) ?? .yellow; fillWell.isEnabled = annotation.fillEnabled
+        fillWell.color = NSColor(cgColor: annotation.fillColor) ?? .yellow; fillWell.isEnabled = annotation.fillEnabled; fillWell.isHidden = !annotation.fillEnabled
         dashPicker.selectItem(at: AnnotationStrokeStyle.allCases.firstIndex(of: annotation.strokeStyle) ?? 0)
         opacitySlider.doubleValue = Double(annotation.opacity)
         radiusField.integerValue = Int(annotation.cornerRadius.rounded())
@@ -137,6 +153,12 @@ final class AnnotationInspector: NSStackView {
         sizeField.integerValue = Int(annotation.effectiveFontSize.rounded())
         boldButton.state = annotation.bold ? .on : .off; italicButton.state = annotation.italic ? .on : .off
         underlineButton.state = annotation.underline ? .on : .off
+    }
+
+    @objc private func toggleDetails() {
+        showsDetails.toggle()
+        display(annotation: displayedAnnotation, selected: displayedSelected, enabled: displayedEnabled)
+        superview?.needsLayout = true
     }
 
     func deactivateColorWells() { colorWell.deactivate(); fillWell.deactivate() }

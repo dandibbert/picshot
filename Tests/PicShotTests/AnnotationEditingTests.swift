@@ -213,6 +213,7 @@ final class AnnotationEditingTests: XCTestCase {
             try drag(canvas, from: CGPoint(x: 30, y: 30), to: CGPoint(x: 140, y: 120))
             canvas.tool = .select; try click(canvas, CGPoint(x: 60, y: 60))
             let fill: NSButton = try control("annotation.fill", editor); fill.performClick(nil)
+            let details: NSButton = try control("annotation.details", editor); details.performClick(nil)
             let radius: NSTextField = try control("annotation.radius", editor); radius.doubleValue = 18
             XCTAssertTrue(radius.sendAction(radius.action, to: radius.target))
             let opacity: NSSlider = try control("annotation.opacity", editor); opacity.doubleValue = 0.4
