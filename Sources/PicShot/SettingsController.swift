@@ -7,7 +7,7 @@ import Carbon
     private var counts:[NSTextField]=[]
     init(onChange:@escaping()->Void){
         change=onChange;bindings=(UserDefaults.standard.data(forKey:"hotkeys").flatMap{try? JSONDecoder().decode([HotKeyBinding].self,from:$0)}) ?? HotKeyBinding.defaults
-        let w=NSWindow(contentRect:NSRect(x:0,y:0,width:480,height:370),styleMask:[.titled,.closable],backing:.buffered,defer:false);super.init(window:w);w.title="设置";w.isReleasedWhenClosed=false;w.center()
+        let w=NSWindow(contentRect:NSRect(x:0,y:0,width:500,height:470),styleMask:[.titled,.closable],backing:.buffered,defer:false);super.init(window:w);w.title="设置";w.isReleasedWhenClosed=false;w.center()
         var rows:[NSView]=[]
         let title=NSTextField(labelWithString:"全局快捷键");title.font = .boldSystemFont(ofSize:13);rows.append(title)
         for (i,name) in ["区域截图","剪贴板贴图","历史记录"].enumerated(){let label=NSTextField(labelWithString:name);label.widthAnchor.constraint(equalToConstant:135).isActive=true;let key=ShortcutButton(binding:bindings[i]);key.onChange={ [weak self] binding in self?.bindings[i]=binding };rows.append(NSStackView(views:[label,key]))}

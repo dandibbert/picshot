@@ -373,7 +373,7 @@ enum RecordingFileStorage {
 
 /// All writer, input, sample, and limit state is confined to `queue` after init.
 /// ScreenCaptureKit invokes sample callbacks on that same serial queue.
-private final class RecordingWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
+final class RecordingWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
     let queue = DispatchQueue(label: "PicShot.Recording.Encoder", qos: .userInitiated)
     private let writer: AVAssetWriter
     private let video: AVAssetWriterInput
@@ -393,10 +393,10 @@ private final class RecordingWriter: NSObject, SCStreamOutput, SCStreamDelegate,
     private var lastMicrophoneTime = CMTime.invalid
     private var lastDiskCheck: TimeInterval = 0
 
-    init(size: CGSize, options: RecordingOptions, requestStop: @escaping @Sendable (String?) -> Void) throws {
+    init(size: CGSize, options: RecordingOptions, outputDirectory: URL? = nil, requestStop: @escaping @Sendable (String?) -> Void) throws {
         self.options = options
         self.requestStop = requestStop
-        let recordingDirectory = try RecordingFileStorage.makeStagingDirectory()
+        let recordingDirectory = try RecordingFileStorage.makeStagingDirectory(in: outputDirectory)
         directory = recordingDirectory
         url = recordingDirectory.appendingPathComponent("recording.mp4")
         do {
@@ -441,6 +441,12 @@ private final class RecordingWriter: NSObject, SCStreamOutput, SCStreamDelegate,
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
+        consume(sampleBuffer, of: type)
+    }
+
+    /// Queue-confined entry shared by live capture and synthetic media tests.
+    func consume(_ sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
+        dispatchPrecondition(condition: .onQueue(queue))
         guard accepting, sampleBuffer.isValid, CMSampleBufferDataIsReady(sampleBuffer) else { return }
         let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         guard timestamp.isValid, timestamp.isNumeric else { return }
@@ -521,7 +527,7 @@ private final class RecordingWriter: NSObject, SCStreamOutput, SCStreamDelegate,
                 self.accepting = false
                 guard self.writer.status == .writing, let start = self.sessionStart, let lastFrame = self.lastVideo else {
                     let error = self.writer.error.map { RecordingError.failed($0.localizedDescription) } ?? .noFrames
-                    self.writer.cancelWriting()
+                    if self.writer.status == .writing || self.writer.status == .unknown { self.writer.cancelWriting() }
                     self.lastVideo = nil
                     continuation.resume(throwing: error)
                     return
@@ -542,6 +548,10 @@ private final class RecordingWriter: NSObject, SCStreamOutput, SCStreamDelegate,
                        let copy { _ = self.video.append(copy) }
                 }
                 self.lastVideo = nil
+                guard self.writer.status == .writing else {
+                    continuation.resume(throwing: RecordingError.failed(self.writer.error?.localizedDescription ?? "The final video frame could not be encoded."))
+                    return
+                }
                 self.writer.endSession(atSourceTime: end)
                 self.video.markAsFinished()
                 self.systemAudio?.markAsFinished()

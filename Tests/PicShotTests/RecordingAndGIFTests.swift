@@ -2,6 +2,7 @@ import XCTest
 import AVFoundation
 import CoreGraphics
 import ImageIO
+import ScreenCaptureKit
 @testable import PicShot
 
 final class RecordingAndGIFTests: XCTestCase {
@@ -53,6 +54,48 @@ final class RecordingAndGIFTests: XCTestCase {
         XCTAssertFalse(recorder.isStopping)
         XCTAssertEqual(recorder.elapsed, 0)
         XCTAssertNil(recorder.outputURL)
+    }
+
+    func testActualRecordingWriterExtendsStaticScreenAndFinalizesMP4() async throws {
+        let root = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let writer = try RecordingWriter(size: CGSize(width: 40, height: 24), options: .init(), outputDirectory: root) { _ in }
+        let frame = try makeScreenSample()
+        writer.queue.sync { writer.consume(frame, of: .screen) }
+        // A static desktop sends no subsequent complete frames. The writer must
+        // nevertheless preserve wall-clock video duration at stop.
+        try await Task.sleep(nanoseconds: 220_000_000)
+        let url = try await writer.finish()
+        let asset = AVURLAsset(url: url)
+        let tracks = try await asset.loadTracks(withMediaType: .video)
+        XCTAssertEqual(tracks.count, 1)
+        let duration = try await asset.load(.duration).seconds
+        XCTAssertGreaterThanOrEqual(duration, 0.18)
+        XCTAssertLessThan(duration, 5)
+        let image = try await AVAssetImageGenerator(asset: asset).image(at: .zero).image
+        XCTAssertEqual(image.width, 40)
+        XCTAssertEqual(image.height, 24)
+        let saved = try RecordingFileStorage.publish(from: url, in: root)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: saved.path))
+        // Discarding a now-finished writer must never delete the promoted movie.
+        await writer.discard()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: saved.path))
+    }
+
+    func testActualRecordingWriterNoFramesAndCancellationCleanUp() async throws {
+        let root = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let writer = try RecordingWriter(size: CGSize(width: 40, height: 24), options: .init(), outputDirectory: root) { _ in }
+        do { _ = try await writer.finish(); XCTFail("Empty recording must fail") }
+        catch RecordingError.noFrames { } catch { XCTFail("Unexpected error: \(error)") }
+        await writer.discard()
+        await writer.discard()
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+        let cancelled = try RecordingWriter(size: CGSize(width: 40, height: 24), options: .init(), outputDirectory: root) { _ in }
+        let frame = try makeScreenSample()
+        cancelled.queue.sync { cancelled.consume(frame, of: .screen) }
+        await cancelled.discard()
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
     }
 
     func testRecordingPublicationOwnsOnlyItsStagingDirectory() throws {
@@ -182,6 +225,27 @@ final class RecordingAndGIFTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PicShot-Tests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
+    }
+
+    private func makeScreenSample() throws -> CMSampleBuffer {
+        var buffer: CVPixelBuffer?
+        let attributes = [kCVPixelBufferCGImageCompatibilityKey: true, kCVPixelBufferCGBitmapContextCompatibilityKey: true] as CFDictionary
+        XCTAssertEqual(CVPixelBufferCreate(kCFAllocatorDefault, 40, 24, kCVPixelFormatType_32BGRA, attributes, &buffer), kCVReturnSuccess)
+        let pixel = try XCTUnwrap(buffer)
+        CVPixelBufferLockBaseAddress(pixel, [])
+        memset(try XCTUnwrap(CVPixelBufferGetBaseAddress(pixel)), 0x7F, CVPixelBufferGetDataSize(pixel))
+        CVPixelBufferUnlockBaseAddress(pixel, [])
+        var format: CMVideoFormatDescription?
+        XCTAssertEqual(CMVideoFormatDescriptionCreateForImageBuffer(allocator: kCFAllocatorDefault, imageBuffer: pixel, formatDescriptionOut: &format), noErr)
+        var timing = CMSampleTimingInfo(duration: CMTime(value: 1, timescale: 30), presentationTimeStamp: .zero, decodeTimeStamp: .invalid)
+        var result: CMSampleBuffer?
+        XCTAssertEqual(CMSampleBufferCreateReadyWithImageBuffer(allocator: kCFAllocatorDefault, imageBuffer: pixel,
+            formatDescription: try XCTUnwrap(format), sampleTiming: &timing, sampleBufferOut: &result), noErr)
+        let sample = try XCTUnwrap(result)
+        let attachments = try XCTUnwrap(CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: true))
+        let attachment = unsafeBitCast(CFArrayGetValueAtIndex(attachments, 0), to: NSMutableDictionary.self)
+        attachment[SCStreamFrameInfo.status.rawValue] = SCFrameStatus.complete.rawValue
+        return sample
     }
 
     /// A tiny real H.264 fixture makes GIF verification independent of screen/TCC.

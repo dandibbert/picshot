@@ -473,6 +473,14 @@ final class ImageEditorController: NSWindowController {
         window?.makeFirstResponder(canvas)
     }
 
+    /// Seeds real annotations for a reproducible native-window verification capture.
+    /// This uses the same model, redraw, history, and export path as interactive edits.
+    func setVerificationAnnotations(_ annotations: [ImageAnnotation]) {
+        recordChange()
+        canvas.setContent(image: canvas.image, annotations: annotations)
+        canvas.displayIfNeeded()
+    }
+
     private var snapshot: Snapshot { Snapshot(image: canvas.image, annotations: canvas.annotations) }
     private func recordChange() {
         undoStates.append(snapshot)
