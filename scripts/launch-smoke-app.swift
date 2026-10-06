@@ -31,7 +31,7 @@ NSWorkspace.shared.openApplication(at: appURL, configuration: configuration) { a
         callbackReceived = true
     }
 }
-let diagnosticMode = ProcessInfo.processInfo.environment["PICSHOT_GIF_DIAGNOSTIC_MODE", "PICSHOT_GIF_EXTRACTION"] ?? ""
+let diagnosticMode = ProcessInfo.processInfo.environment["PICSHOT_GIF_DIAGNOSTIC_MODE"] ?? ""
 let timeout: TimeInterval = ["export-only", "decode-only"].contains(diagnosticMode) ? 900 : 600
 let deadline = Date().addingTimeInterval(timeout)
 while Date() < deadline {
