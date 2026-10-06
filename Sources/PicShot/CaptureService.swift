@@ -264,7 +264,7 @@ private final class RegionSelectionView: NSView {
             outline.lineWidth = 2
             outline.stroke()
         }
-        let text = selected.isEmpty ? "Drag to select the recording area · Esc to cancel" : "\(Int(selected.width)) × \(Int(selected.height)) points · Release to confirm"
+        let text = selected.isEmpty ? "Drag to select the capture area · Esc to cancel" : "\(Int(selected.width)) × \(Int(selected.height)) points · Release to confirm"
         (text as NSString).draw(at: CGPoint(x: 24, y: 24), withAttributes: [.font: NSFont.systemFont(ofSize: 17, weight: .semibold), .foregroundColor: NSColor.white])
     }
 }

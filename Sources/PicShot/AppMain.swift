@@ -80,7 +80,7 @@ import Darwin
         Task{do{let result=try await RecognitionService.recognize(image);if let id=recordID{try history.updateText(result.text,id:id)};let text=result.text+(result.barcodes.isEmpty ? "" : "\n\n识别码：\n"+result.barcodes.joined(separator:"\n"));let c=TextResultController(text:text.isEmpty ? "未识别到文字或条码，请尝试更清晰的图片。" : text);retain(c);c.showWindow(nil);NSApp.activate(ignoringOtherApps:true)}catch{showError(error)}}
     }
     func openRecord(_ r:CaptureRecord){if let image=history.image(for:r){openEditor(image)}}
-    @objc func importImage(){let p=NSOpenPanel();p.allowedContentTypes=[.image,.pdf];p.allowsMultipleSelection=true;if p.runModal() == .OK{p.urls.forEach{importURL($0)}}}
+    @objc func importImage(){let p=NSOpenPanel();p.allowedContentTypes=[.image];p.allowsMultipleSelection=true;if p.runModal() == .OK{p.urls.forEach{importURL($0)}}}
     func importURL(_ url:URL){
         if let image=CGImage.read(url:url){do{try history.add(image,title:url.deletingPathExtension().lastPathComponent);openEditor(image)}catch{showError(error)}}else{showError(PicShotError.message("无法读取图片。支持 PNG、JPEG、GIF、TIFF 等系统可解码格式；动态图片编辑当前首帧"))}
     }
@@ -120,7 +120,7 @@ struct LibraryView:View {
                     }.contextMenu{Button("编辑"){app.openRecord(record)};Button("贴图"){if let i=store.image(for:record){app.pin(i)}};Button("复制"){if let i=store.image(for:record){copyImage(i)}};Button("识别文字与条码"){if let i=store.image(for:record){app.recognize(i,recordID:record.id)}};Button(record.starred ? "取消收藏" : "收藏"){try? store.toggleStar(record)};Divider();Button("移到废纸篓"){do{try store.remove(record)}catch{showError(error)}}}
                 }}.padding(.horizontal,18).padding(.bottom,18)}
             }
-            Divider();HStack{Image(systemName:"lock.shield");Text("本机处理 · 自动保留 30 天 / 200 张 / 1 GB，收藏除外");Spacer();Text("双击编辑")}.font(.system(size:10)).foregroundStyle(.secondary).padding(.horizontal,16).padding(.vertical,8)
+            Divider();HStack{Image(systemName:"lock.shield");Text("本机处理 · 历史上限 \(store.policy.maxDays) 天 / \(store.policy.maxItems) 张 / \(store.policy.maxBytes / 1_048_576) MB");Spacer();Text("双击编辑")}.font(.system(size:10)).foregroundStyle(.secondary).padding(.horizontal,16).padding(.vertical,8)
         }.frame(minWidth:660,minHeight:400)
     }
 }

@@ -133,7 +133,7 @@ enum ImageEditorRenderer {
                         filtered = input.applyingFilter("CIPixellate", parameters: [kCIInputScaleKey: max(8, annotation.lineWidth * 4), kCIInputCenterKey: CIVector(x: 0, y: 0)])
                     }
                     if let patch = filterContext.createCGImage(filtered.cropped(to: region), from: region) {
-                        context.setInterpolationQuality(.none)
+                        context.interpolationQuality = .none
                         context.draw(patch, in: region)
                     }
                 }

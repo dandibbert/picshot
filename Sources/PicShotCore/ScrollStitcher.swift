@@ -27,9 +27,11 @@ public struct ScrollFrame: Sendable {
     public let height: Int
     public let pixels: [UInt8]
     public static let maximumPixels = 24_000_000
+    public static let maximumDimension = 32_768
 
     public init(width: Int, height: Int, grayscale: [UInt8]) throws {
-        guard width > 0, height > 0, width <= Self.maximumPixels / height,
+        guard width > 0, height > 0, width <= Self.maximumDimension, height <= Self.maximumDimension,
+              width <= Self.maximumPixels / height,
               grayscale.count == width * height else { throw ScrollStitchError.invalidPixels }
         self.width = width
         self.height = height
@@ -38,7 +40,8 @@ public struct ScrollFrame: Sendable {
 
     /// RGBA byte order, with optional row padding; alpha is composited on white.
     public init(width: Int, height: Int, rgba: [UInt8], bytesPerRow: Int? = nil) throws {
-        guard width > 0, height > 0, width <= Self.maximumPixels / height,
+        guard width > 0, height > 0, width <= Self.maximumDimension, height <= Self.maximumDimension,
+              width <= Self.maximumPixels / height,
               width <= Int.max / 4 else { throw ScrollStitchError.invalidPixels }
         let stride = bytesPerRow ?? width * 4
         guard stride >= width * 4, stride <= Int.max / height,
@@ -128,6 +131,10 @@ public struct ScrollStitcher: Sendable {
         guard previous.width == next.width, previous.height == next.height else {
             throw ScrollStitchError.differentDimensions
         }
+        guard configuration.minimumOverlapFraction.isFinite, configuration.maximumMeanError.isFinite,
+              configuration.minimumTextureDeviation.isFinite, configuration.minimumUniquenessMargin.isFinite,
+              configuration.maximumMeanError > 0, configuration.minimumTextureDeviation > 0,
+              configuration.minimumUniquenessMargin > 0 else { throw ScrollStitchError.invalidPixels }
         let length = axis == .vertical ? previous.height : previous.width
         let cross = axis == .vertical ? previous.width : previous.height
         guard length >= 16, cross >= 8 else { throw ScrollStitchError.insufficientTexture }

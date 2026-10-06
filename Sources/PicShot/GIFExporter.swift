@@ -81,7 +81,7 @@ enum GIFExporter {
             if let info { Unmanaged<GIFByteSink>.fromOpaque(info).release() }
         })
         let retainedSink = Unmanaged.passRetained(sink)
-        guard let consumer = CGDataConsumer(info: retainedSink.toOpaque(), callbacks: &callbacks) else {
+        guard let consumer = CGDataConsumer(info: retainedSink.toOpaque(), cbks: &callbacks) else {
             retainedSink.release()
             throw GIFExportError.failed("The output file could not be opened.")
         }

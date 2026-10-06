@@ -36,7 +36,7 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
 
     init(onComplete: @escaping (CGImage) -> Void) {
         self.onComplete = onComplete
-        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 690, height: 480),
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 690, height: 570),
                               styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         super.init(window: window)
         window.title = "Scrolling Capture"
@@ -319,7 +319,8 @@ private enum ScrollImageIO {
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
               let width = properties[kCGImagePropertyPixelWidth] as? Int,
               let height = properties[kCGImagePropertyPixelHeight] as? Int,
-              width > 0, height > 0, width <= ScrollFrame.maximumPixels / height,
+              width > 0, height > 0, width <= ScrollFrame.maximumDimension, height <= ScrollFrame.maximumDimension,
+              width <= ScrollFrame.maximumPixels / height,
               let image = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
         else { throw ScrollSessionError.imageIO }
         return image
@@ -327,7 +328,8 @@ private enum ScrollImageIO {
 
     static func luminance(_ image: CGImage) throws -> ScrollFrame {
         let width = image.width, height = image.height
-        guard width > 0, height > 0, width <= ScrollFrame.maximumPixels / height else { throw ScrollStitchError.invalidPixels }
+        guard width > 0, height > 0, width <= ScrollFrame.maximumDimension, height <= ScrollFrame.maximumDimension,
+              width <= ScrollFrame.maximumPixels / height else { throw ScrollStitchError.invalidPixels }
         var pixels = [UInt8](repeating: 255, count: width * height)
         let success = pixels.withUnsafeMutableBytes { buffer -> Bool in
             guard let context = CGContext(data: buffer.baseAddress, width: width, height: height,
@@ -361,7 +363,7 @@ private enum ScrollImageIO {
                 kCGImageSourceThumbnailMaxPixelSize: 800,
                 kCGImageSourceCreateThumbnailWithTransform: true
               ] as CFDictionary) else { return nil }
-        return NSImage(cgImage: image, size: .zero)
+        return NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
     }
 
     static func render(_ frames: [StoredScrollFrame], width: Int, height: Int, axis: ScrollAxis) throws -> CGImage {

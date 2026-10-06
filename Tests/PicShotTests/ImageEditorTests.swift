@@ -71,6 +71,38 @@ final class ImageEditorTests: XCTestCase {
         XCTAssertNil(ImageEditorRenderer.crop(image: image, to: .zero))
     }
 
+    func testCropUsesBottomLeftAnnotationCoordinates() throws {
+        let context = try XCTUnwrap(CGContext(data: nil, width: 60, height: 80, bitsPerComponent: 8, bytesPerRow: 60 * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue))
+        context.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 60, height: 40))
+        context.setFillColor(CGColor(red: 0, green: 0, blue: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 40, width: 60, height: 40))
+        let original = try XCTUnwrap(context.makeImage())
+        let bottom = try XCTUnwrap(ImageEditorRenderer.crop(image: original, to: CGRect(x: 0, y: 0, width: 60, height: 40)))
+        XCTAssertEqual(try rgba(bottom, x: 30, y: 20), [255, 0, 0, 255])
+    }
+
+    func testFiltersChangeOnlyTheSelectedRegion() throws {
+        let context = try XCTUnwrap(CGContext(data: nil, width: 80, height: 80, bitsPerComponent: 8, bytesPerRow: 80 * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue))
+        for y in stride(from: 0, to: 80, by: 2) {
+            for x in stride(from: 0, to: 80, by: 2) {
+                context.setFillColor(CGColor(gray: ((x / 2 + y / 2) % 2 == 0) ? 0 : 1, alpha: 1))
+                context.fill(CGRect(x: x, y: y, width: 2, height: 2))
+            }
+        }
+        let original = try XCTUnwrap(context.makeImage())
+        for tool in [ImageEditorTool.blur, .pixelate] {
+            let annotation = ImageAnnotation(tool: tool, points: [CGPoint(x: 20, y: 20), CGPoint(x: 60, y: 60)])
+            let rendered = try XCTUnwrap(ImageEditorRenderer.render(image: original, annotations: [annotation]))
+            XCTAssertEqual(try rgba(rendered, x: 5, y: 5), try rgba(original, x: 5, y: 5))
+            var foundChangedPixel = false
+            for x in 30..<50 {
+                if try rgba(rendered, x: x, y: 40) != rgba(original, x: x, y: 40) { foundChangedPixel = true }
+            }
+            XCTAssertTrue(foundChangedPixel, "\(tool) must affect pixels inside the selected area")
+        }
+    }
+
     func testTranslationPreservesIdentityAndText() {
         let original = ImageAnnotation(tool: .text, points: [CGPoint(x: 10, y: 20)], text: "Label")
         let moved = original.translated(by: CGSize(width: 14, height: -8))

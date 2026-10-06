@@ -82,6 +82,26 @@ final class ScrollStitcherTests: XCTestCase {
         }
     }
 
+    func testReverseScrollingIsRejected() throws {
+        XCTAssertThrowsError(try ScrollStitcher.match(previous: frame(y: 75), next: frame(y: 20), axis: .vertical)) {
+            XCTAssertEqual($0 as? ScrollStitchError, .noOverlap)
+        }
+    }
+
+    func testTooLittleOverlapIsRejected() throws {
+        XCTAssertThrowsError(try ScrollStitcher.match(previous: frame(), next: frame(y: 120), axis: .vertical)) {
+            XCTAssertEqual($0 as? ScrollStitchError, .noOverlap)
+        }
+    }
+
+    func testNonfiniteConfigurationIsRejectedSafely() throws {
+        var config = ScrollStitcher.Configuration()
+        config.minimumOverlapFraction = .nan
+        XCTAssertThrowsError(try ScrollStitcher.match(previous: frame(), next: frame(y: 20), axis: .vertical, configuration: config)) {
+            XCTAssertEqual($0 as? ScrollStitchError, .invalidPixels)
+        }
+    }
+
     func testRepeatedPatternIsAmbiguous() throws {
         func patterned(offset: Int) throws -> ScrollFrame {
             let width = 80, height = 160
