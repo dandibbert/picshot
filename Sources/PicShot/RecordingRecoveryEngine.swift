@@ -41,7 +41,8 @@ enum RecordingRecoveryEngine {
         let prefix = try lease.copyCompletePrefix(in: work)
         try deadline.check()
         try work.validatePaths()
-        let asset = AVURLAsset(url: copy, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
+        let asset = AVURLAsset(url: copy, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true,
+            AVURLAssetReferenceRestrictionsKey: NSNumber(value: AVAssetReferenceRestrictions.forbidAll.rawValue)])
         let before = try await inspect(asset, maximumDuration: candidate.journal.durationLimit, deadline: deadline)
         progress?(0.1)
         guard let exporter = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetPassthrough),
@@ -67,7 +68,8 @@ enum RecordingRecoveryEngine {
         } onCancel: { operation.cancel() }
         polling.cancel(); try deadline.check()
         try work.validatePaths()
-        let recovered = AVURLAsset(url: output, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
+        let recovered = AVURLAsset(url: output, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true,
+            AVURLAssetReferenceRestrictionsKey: NSNumber(value: AVAssetReferenceRestrictions.forbidAll.rawValue)])
         let after = try await inspect(recovered, maximumDuration: candidate.journal.durationLimit, deadline: deadline)
         guard before.audioTracks == after.audioTracks, abs(before.duration - after.duration) <= 0.25,
               let outputSize = try output.resourceValues(forKeys: [.fileSizeKey]).fileSize,

@@ -57,7 +57,7 @@ enum RecordingCompositionSmokeFixture {
             "cameraHeight": profile.cameraHeight, "frameRate": profile.frameRate,
             "encodedFramesPerCycle": profile.encodedFrames, "activeDurationSeconds": profile.duration,
             "removedPauseSeconds": 1.0, "warmupCycles": profile.warmupCycles, "measuredCycles": profile.measuredCycles,
-            "syntheticInputColorSpace": "sRGB", "compositorOutputColorSpace": "ITU-R BT.709",
+            "syntheticInputColorSpace": "sRGB", "compositorInputToWriterColorSpace": "sRGB", "encodedOutputColorSpace": "ITU-R BT.709",
             "rampValidationColorSpace": "sRGB", "rampMaximumChannelError": 12,
             "overlayRefreshScheduling": "deterministic clock; manually invoke the production timer handler on its encoder queue; timer scheduling itself is not tested",
             "controllerScope": "direct production overlay-controller drag/resize/crop/pen/eraser/clear methods; no window, screen coordinates, mouse event delivery or camera provider is exercised",
@@ -73,6 +73,7 @@ enum RecordingCompositionSmokeFixture {
             "nativeCameraAndTCCAcceptance": "not exercised", "screenWindowExclusionAcceptance": "not exercised"
         ]
         do {
+            report["phase"] = "warmup"
             let warmup = try await cycle(root: root, profile: profile, witnessDirectory: nil, deadline: deadline)
             report["warmup"] = warmup.report
             let baseline = GIFResourceMemoryReading.current()
@@ -80,6 +81,7 @@ enum RecordingCompositionSmokeFixture {
             report["baselineAfterWarmup"] = try object(baseline)
             var runs: [[String: Any]] = [], settled: [GIFResourceMemoryReading] = [], peaks: [GIFResourceMemoryStatistics] = []
             for index in 0..<profile.measuredCycles {
+                report["phase"] = "measured-cycle-\(index + 1)"
                 try checkDeadline(deadline)
                 let result = try await cycle(root: root, profile: profile,
                     witnessDirectory: index == 0 ? evidenceDirectory : nil, deadline: deadline)
@@ -107,7 +109,7 @@ enum RecordingCompositionSmokeFixture {
             report["phase"] = "owned-root-cleanup"
             report["completedMeasuredCycles"] = runs.count
             try write(report, to: reportURL)
-            report["rootCleanupDisposition"] = try removeOwnedFixtureDirectory(root)
+            report["rootCleanupDisposition"] = try removeOwnedEmptyRoot(root)
             try require(ownedDirectoryIsAbsent(root), "Temporary recording directory was not removed")
             report["temporaryDirectoryRemoved"] = true
             report["elapsedSeconds"] = ProcessInfo.processInfo.systemUptime - started
@@ -278,7 +280,7 @@ enum RecordingCompositionSmokeFixture {
             $0["primaries"] == (kCMFormatDescriptionColorPrimaries_ITU_R_709_2 as String) &&
             $0["transfer"] == (kCMFormatDescriptionTransferFunction_ITU_R_709_2 as String) &&
             $0["matrix"] == (kCMFormatDescriptionYCbCrMatrix_ITU_R_709_2 as String)
-        }, "Encoded MP4 color declarations differ from the compositor converted Rec.709 raster: \(colorProperties)")
+        }, "Encoded MP4 color declarations differ from the writer Rec.709 output contract: \(colorProperties)")
         let duration = try await asset.load(.duration).seconds
         try require(abs(duration - profile.duration) < 0.02, "Pause removal or final MP4 duration differs")
         let stored = try storedTiming(asset: asset, track: videoTracks[0], profile: profile)
@@ -482,6 +484,20 @@ enum RecordingCompositionSmokeFixture {
         return bytes.prefix(3).map(Int.init)
     }
     private static func point(_ x: CGFloat, _ y: CGFloat, _ size: CGSize) -> CGPoint { CGPoint(x: x * size.width, y: y * size.height) }
+    /// Every cycle directory was already removed and independently checked.
+    /// Require the root to be empty: rmdir cannot silently delete a leftover
+    /// descendant, and avoids Foundation's recursive removal on an empty root.
+    static func removeOwnedEmptyRoot(_ url: URL) throws -> String {
+        if rmdir(url.path) == 0 {
+            try require(ownedDirectoryIsAbsent(url), "Empty fixture root remained after rmdir")
+            return "empty-root-rmdir-and-lstat-confirmed"
+        }
+        let code = errno
+        if code == ENOENT, ownedDirectoryIsAbsent(url) { return "empty-root-already-absent-lstat-confirmed" }
+        let entries = (try? FileManager.default.contentsOfDirectory(atPath: url.path)) ?? []
+        throw failure("Empty fixture root cleanup failed: errno=\(code), rootAbsent=\(ownedDirectoryIsAbsent(url)), entries=\(Array(entries.prefix(16)))")
+    }
+
     /// Cleanup of this fixture's unique owned paths is idempotent, but a
     /// missing descendant or inaccessible path is not proof the root is gone.
     /// The independent lstat must report ENOENT for this exact entire directory.

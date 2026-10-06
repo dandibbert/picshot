@@ -22,10 +22,22 @@ final class RecordingCompositionSmokeTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PicShot-Composition-Smoke-Test-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let report = try await RecordingCompositionSmokeFixture.verify(evidenceDirectory: directory, profile: .quickTest)
+        let report: [String: Any]
+        do { report = try await RecordingCompositionSmokeFixture.verify(evidenceDirectory: directory, profile: .quickTest) }
+        catch {
+            let url = directory.appendingPathComponent("recording-composition.json")
+            if let data = try? String(contentsOf: url, encoding: .utf8) {
+                print("Recording smoke failure evidence: \(data.prefix(32_768))")
+            }
+            throw error
+        }
         XCTAssertEqual(report["status"] as? String, "passed")
         XCTAssertEqual(report["profile"] as? String, "unit-test-recording-composition")
         XCTAssertEqual(report["temporaryDirectoryRemoved"] as? Bool, true)
+        let finalCleanup = try XCTUnwrap(report["rootCleanupDisposition"] as? String)
+        XCTAssertTrue(["empty-root-rmdir-and-lstat-confirmed", "empty-root-already-absent-lstat-confirmed"].contains(finalCleanup),
+                      "verify() itself must exercise the checked final-root path")
+        XCTAssertEqual(report["completedMeasuredCycles"] as? Int, 2)
         for key in ["screenCaptureStarted", "cameraCaptureStarted", "microphoneStarted", "permissionRequested"] {
             XCTAssertEqual(report[key] as? Bool, false, key)
         }
@@ -84,6 +96,19 @@ final class RecordingCompositionSmokeTests: XCTestCase {
         XCTAssertThrowsError(try RecordingCompositionSmokeFixture.removeOwnedFixtureDirectory(root, remover: { _ in
             throw CocoaError(.fileWriteNoPermission)
         }))
+    }
+
+    func testFinalRootRemovalRequiresEmptyDirectoryAndConfirmsAbsence() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("PicShot-Recording-Composition-EmptyRoot-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let child = root.appendingPathComponent("leftover.txt")
+        try Data([1]).write(to: child)
+        XCTAssertThrowsError(try RecordingCompositionSmokeFixture.removeOwnedEmptyRoot(root))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: child.path))
+        try FileManager.default.removeItem(at: child)
+        XCTAssertEqual(try RecordingCompositionSmokeFixture.removeOwnedEmptyRoot(root), "empty-root-rmdir-and-lstat-confirmed")
+        XCTAssertEqual(try RecordingCompositionSmokeFixture.removeOwnedEmptyRoot(root), "empty-root-already-absent-lstat-confirmed")
     }
 
     func testRejectsUnrecognizedProfileBeforeWritingOrCapturing() async throws {

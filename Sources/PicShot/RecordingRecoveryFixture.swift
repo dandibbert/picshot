@@ -273,6 +273,10 @@ struct RecordingRecoverySyntheticMovie {
     }
     /// Read live size from the open descriptor. URL resource values may cache
     /// an earlier size while AVAssetWriter is still extending the same file.
+    static func liveSize(at url: URL) throws -> UInt64 {
+        let file = try FileHandle(forReadingFrom: url); defer { try? file.close() }
+        return try file.seekToEnd()
+    }
     static func prefix(at url: URL) throws -> RecordingRecoveryPrefix {
         let file = try FileHandle(forReadingFrom: url); defer { try? file.close() }
         let size = try file.seekToEnd()
@@ -320,6 +324,12 @@ struct RecordingRecoverySyntheticMovie {
                 var atomSize = header.prefix(4).reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
                 if atomSize == 1, header.count >= 16 { atomSize = header[8..<16].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) } }
                 atoms.append("\(offset):\(type):\(atomSize)")
+                if ["moov", "moof"].contains(type), report[type + "MetadataHex"] == nil,
+                   atomSize >= 8, atomSize <= 8_192, atomSize <= size - offset {
+                    try file.seek(toOffset: offset)
+                    let metadata = try file.read(upToCount: Int(atomSize)) ?? Data()
+                    report[type + "MetadataHex"] = metadata.map { String(format: "%02x", $0) }.joined()
+                }
                 guard atomSize >= 8, atomSize <= size - offset else { break }
                 offset += atomSize
             }

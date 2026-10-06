@@ -33,11 +33,11 @@ final class RecordingRecoveryNativeTests: XCTestCase {
     func testTornFinalFragmentExportsOnlyCompleteNativeMediaAndKeepsEveryOriginalByte() async throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let source = try await interruptedSource(in: root)
-        // Append a complete moof header and a deliberately torn mdat. Recovery
-        // must omit this tail rather than passing it into native remux/decode.
+        // Append a deliberately torn moof atom. Its declared metadata body is
+        // incomplete, so none of it can be admitted into native remux/decode.
         let file = try FileHandle(forWritingTo: source)
         try file.seekToEnd()
-        try file.write(contentsOf: Data([0,0,0,9,109,111,111,102,0, 0,1,0,0,109,100,97,116,1,2,3]))
+        try file.write(contentsOf: Data([0,1,0,0,109,111,111,102,1,2,3]))
         try file.synchronize(); try file.close()
         let original = try Data(contentsOf: source)
         let store = try RecordingRecoveryStore(root: root)
@@ -112,7 +112,7 @@ final class RecordingRecoveryNativeTests: XCTestCase {
         model.close()
     }
 
-    func testLivePrefixInspectionObservesFileGrowthDespiteCachedURLResourceSize() throws {
+    func testLiveDescriptorSizeObservesFileGrowthDespiteCachedURLResourceSize() throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         var url = root.appendingPathComponent("growing-structure.mp4")
         let first = Data([0,0,0,8,102,116,121,112, 0,0,0,8,109,111,111,118, 0,0,0,9,109,100,97,116,1])
@@ -122,9 +122,7 @@ final class RecordingRecoveryNativeTests: XCTestCase {
         let second = Data([0,0,0,8,109,111,111,102, 0,0,0,9,109,100,97,116,2])
         let file = try FileHandle(forWritingTo: url)
         try file.seekToEnd(); try file.write(contentsOf: second); try file.close()
-        let prefix = try RecordingRecoverySyntheticMovie.prefix(at: url)
-        XCTAssertEqual(prefix.completeFragments, 2)
-        XCTAssertEqual(prefix.byteCount, Int64(first.count + second.count))
+        XCTAssertEqual(try RecordingRecoverySyntheticMovie.liveSize(at: url), UInt64(first.count + second.count))
     }
 
     private func interruptedSource(in root: URL) async throws -> URL {

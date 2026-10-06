@@ -29,7 +29,7 @@ Protection is idempotent and deliberately permits an oversize take to be retaine
 
 1. Lock the chosen session and revalidate its exact journal, source identity and candidate version
 2. Require free disk for the bounded prefix copy, recovered movie and 64 MiB reserve
-3. Constant-memory ISO-BMFF parser walks at most 16,384 top-level atoms and never reads entire media into RAM. It preserves all original byte offsets and selects the prefix ending at the last complete initial movie/media or moof/mdat pair. Open-ended or torn capture tails are excluded
+3. Bounded ISO-BMFF parser walks at most 16,384 top-level atoms and never reads entire media into RAM. Initial stsz/stsc/stco/co64 tables and fragmented tfhd/trun references must point entirely within complete mdat payloads. Both the native Apple mdat→moof ordering and moof→mdat are supported. Data references must be self-contained. Original byte offsets are preserved; open-ended or torn capture tails are excluded
 4. Copy the prefix in at most 1 MiB buffers into a fresh private workspace; never edit/truncate the source
 5. AVFoundation validates one video track, at most two audio tracks, finite duration and bounded dimensions, then passthrough-remuxes into a fresh MP4
 6. Verify output duration/audio track count and actually decode first and last video regions. This is endpoint verification, not a full-frame integrity scan of arbitrary user media
@@ -45,7 +45,7 @@ Scratch creation/publication/cleanup are descriptor-anchored. Native AVFoundatio
 - Maximum 3,600 seconds plus 1 second metadata tolerance; video <=3,840 per dimension and <=8,294,400 pixels
 - One video and at most two audio tracks; one recovery operation per UI model
 - 16 KiB journal; 4,096 scanned root entries; 128 pending candidates/warnings; 16,384 atoms; 16 MiB moov and 4 MiB moof bounds
-- 1 MiB copy buffer; decoder endpoints reduced to 320 pixels; no retained decoded frame array
+- 1 MiB copy buffer; at most one 16 MiB moov or 4 MiB moof metadata buffer, 64 MiB aggregate metadata admission, and 1,000,000 total checked sample references; decoder endpoints reduced to 320 pixels; no retained decoded frame array
 - Two-minute shared cancellation deadline covers metadata loads, export and endpoint decoding. Timeout requests the framework's cancellation APIs. Cleanup waits for framework completion rather than force-closing a file still being written. This is not a guarantee that an OS/framework call or faulty storage device will return by a hard wall-clock deadline
 
 Limits stop work and retain media. No automatic age-based eviction or permanent deletion of old recordings is performed. Discard only archives the reminder and preserves the source/journal, with the UI explaining that behavior and offering the recording folder in Finder.
@@ -84,3 +84,7 @@ Installed-app abrupt fixture:
 - It compares every synthetic source byte before/after recovery, confirms cleanup of its own temporary root, and writes JSON with status, source commit/bundle provenance, child exit/signal, no capture/camera/microphone starts, decoded sample counts, recovered duration, fragment count, source preservation and preview-journal result
 
 The parent packaging script supplies a separate 180-second own-process watchdog. No force-kill target is taken from user input or selected from the user's running applications. Ordinary native app launch/package validation and real camera/microphone/screen acceptance remain separate required checks.
+
+### Native investigation, 2026-10-06
+
+ARM64 compiled and passed the original 7 journal/parser, 17 store, and 6 integration tests. Native interrupted-media tests initially failed readiness. A diagnostic rerun proved AVAssetWriter was writing valid fragments using `ftyp → mdat → moov → mdat → moof` ordering, with a final open-ended mdat. The original parser incorrectly required later moof-before-mdat ordering. Its replacement admits fragments by checked sample-byte references rather than atom-order assumptions and adds structural reference/security fixtures. Full native remux/decoded-media verification of the replacement remains pending; the readiness threshold and audio/video/source-preservation checks were not weakened.
