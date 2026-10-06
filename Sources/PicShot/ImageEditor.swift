@@ -827,6 +827,15 @@ final class ImageEditorCanvas: NSView {
     }
 }
 
+/// The save chevron has an explicit hit frame. A stock popup's ornament
+/// alignment insets otherwise make its frame wider than its width constraint.
+@MainActor
+final class EditorSaveActionsButton: NSPopUpButton {
+    override var alignmentRectInsets: NSEdgeInsets { NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0) }
+    override func alignmentRect(forFrame frame: NSRect) -> NSRect { frame }
+    override func frame(forAlignmentRect alignmentRect: NSRect) -> NSRect { alignmentRect }
+}
+
 @MainActor
 final class ImageEditorController: NSWindowController, NSWindowDelegate {
     private struct Snapshot { var image: CGImage; var annotations: [ImageAnnotation]; var selectionFrame: CGRect?; var pinPresentation: PinEditorPresentation? }
@@ -842,7 +851,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     private let onApply: ((CGImage) -> Bool)?
     private let saveWorkflow: SaveWorkflowPresenter?
     private let copyAction: (CGImage) -> Void
-    let saveActions = NSPopUpButton()
+    let saveActions = EditorSaveActionsButton()
     private var presentation: FrozenCapturePresentation?
     private var pinPresentation: PinEditorPresentation?
     private let pinClipView = NSView()
@@ -1111,7 +1120,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         } else { toolbar.addArrangedSubview(iconButton("pin", title: "贴图", id: "editor.pin", action: #selector(pinResult))) }
         toolbar.addArrangedSubview(iconButton("arrow.down.to.line", title: "保存图片… · ⌘S", id: "editor.save", action: #selector(exportResult)))
         saveActions.pullsDown = true; saveActions.isBordered = false; saveActions.addItem(withTitle: "")
-        saveActions.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: "保存选项")?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold))
+        saveActions.item(at: 0)?.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: "保存选项")?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold))
         (saveActions.cell as? NSPopUpButtonCell)?.arrowPosition = .noArrow
         saveActions.imagePosition = .imageOnly; saveActions.contentTintColor = EditorFloatingSurface.ink
         saveActions.identifier = .init("editor.saveActions"); saveActions.setAccessibilityLabel("保存选项")
@@ -1120,8 +1129,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
             item.isEnabled = saveWorkflow != nil; saveActions.menu?.addItem(item)
         }
         saveActions.menu?.autoenablesItems = false; saveActions.translatesAutoresizingMaskIntoConstraints = false
-        // Native pull-down cells retain a 19 pt minimum even with noArrow.
-        // Match that geometry rather than imposing a conflicting 14 pt width.
+        // Width is the actual clickable frame, not an ornament alignment rect.
         saveActions.widthAnchor.constraint(equalToConstant: 19).isActive = true
         saveActions.heightAnchor.constraint(equalToConstant: 32).isActive = true; toolbar.addArrangedSubview(saveActions)
         if saveWorkflow != nil { canvas.menu = saveActions.menu?.copy() as? NSMenu }

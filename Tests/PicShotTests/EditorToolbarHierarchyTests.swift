@@ -27,6 +27,12 @@ final class EditorToolbarHierarchyTests: XCTestCase {
                 XCTAssertEqual(editor.annotationCanvas.tool, .rectangle)
                 XCTAssertEqual((editor.saveActions.cell as? NSPopUpButtonCell)?.arrowPosition, .noArrow)
                 XCTAssertEqual(editor.saveActions.bounds.width, 19, accuracy: 0.5)
+                XCTAssertEqual(editor.saveActions.bounds.height, 32, accuracy: 0.5)
+                XCTAssertEqual(editor.saveActions.alignmentRect(forFrame: editor.saveActions.frame), editor.saveActions.frame)
+                XCTAssertEqual(editor.saveActions.frame(forAlignmentRect: editor.saveActions.frame), editor.saveActions.frame)
+                XCTAssertNotNil(editor.saveActions.item(at: 0)?.image)
+                let hitPoint = CGPoint(x: editor.saveActions.frame.midX, y: editor.saveActions.frame.midY)
+                XCTAssertTrue(editor.saveActions.hitTest(hitPoint) === editor.saveActions)
             }
             editor.close()
         }

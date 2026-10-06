@@ -46,7 +46,7 @@ enum ImageExportPreviewFixture {
                 report["resourceObservation"] = ["status": "skipped", "reason": "early-ui-only profile; full installed smoke must run repeated memory sampling"]
             }
             report["status"] = "passed"; report["completedChecks"] = completed
-            report["files"] = ["ui-export-jpeg-preview.png", "ui-export-pdf-page-2.png", "ui-export-small-desktop.png", "export-preview-result.jpg",
+            report["files"] = ["ui-export-owned-edge-light.png", "ui-export-owned-edge-dark.png", "ui-export-jpeg-preview.png", "ui-export-pdf-page-2.png", "ui-export-small-desktop.png", "export-preview-result.jpg",
                                "export-paginated-result.pdf", "export-result.bmp", "image-export-preview.json"] + (includeResourceCycles ? ["image-export-resource.json"] : [])
             try write(report, directory: evidenceDirectory)
             return report
@@ -65,6 +65,9 @@ enum ImageExportPreviewFixture {
         try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: workspace) }
         let source = try makeSource(width: 612, height: 1711)
+        let owned = try await ownedParentChecks(source: source, evidenceDirectory: evidenceDirectory)
+        report["ownedParentEdgeLayout"] = owned.layouts
+        completed.append("owned-export-edge-parent-movement-and-close")
         let raster = try ImageExportController(image: source)
         let weakRaster = ImageExportFixtureWeakController(raster)
         defer { raster.cancelExport() }
@@ -141,7 +144,63 @@ enum ImageExportPreviewFixture {
         report["visualTemporaryWorkspaceRemoved"] = true
         report["visualControllersClosed"] = true
         report["evidencePublication"] = "Verified private create-only outputs copied atomically to exact fixture evidence filenames; safe to rerun"
-        return (report, completed, [weakRaster, weakPDF, weakCancelled])
+        return (report, completed, [weakRaster, weakPDF, weakCancelled] + owned.controllers)
+    }
+
+    /// Early installed evidence of the actual production relationship and
+    /// screen geometry; no test call repairs the export frame after presentation.
+    private static func ownedParentChecks(source: CGImage, evidenceDirectory: URL) async throws
+        -> (layouts: [[String: Any]], controllers: [ImageExportFixtureWeakController]) {
+        guard let screen = NSScreen.main, screen.visibleFrame.width >= 720, screen.visibleFrame.height >= 650 else {
+            throw failure("Owned export evidence needs a 720×650 usable display")
+        }
+        var layouts: [[String: Any]] = [], controllers: [ImageExportFixtureWeakController] = []
+        for borderless in [false, true] {
+            let mode = borderless ? "dark" : "light"
+            let style: NSWindow.StyleMask = borderless ? [.borderless] : [.titled, .closable]
+            let parent = NSWindow(contentRect: CGRect(x: screen.visibleFrame.maxX - 370,
+                y: screen.visibleFrame.minY + 10, width: 360, height: 200), styleMask: style, backing: .buffered, defer: false)
+            parent.isReleasedWhenClosed = false; parent.title = "Synthetic export parent"
+            parent.appearance = NSAppearance(named: borderless ? .darkAqua : .aqua)
+            if borderless { parent.level = .floating }
+            parent.orderFront(nil); defer { parent.close() }
+            let originalFrame = parent.frame
+            let controller = try unwrap(ImageExportController.present(image: source, from: parent), "Owned export did not open")
+            controllers.append(ImageExportFixtureWeakController(controller)); defer { controller.cancelExport() }
+            controller.window?.appearance = parent.appearance
+            let artifact = try await ready(controller)
+            try await Task.sleep(nanoseconds: 450_000_000)
+            // Save the actual owned-view pixels even if the strict geometry
+            // check below fails, so a native failure remains visually actionable.
+            try snapshot(controller, to: evidenceDirectory.appendingPathComponent("ui-export-owned-edge-" + mode + ".png"))
+            let initial = try verifyLayout(controller)
+            guard parent.frame == originalFrame, controller.window?.parent === parent,
+                  controller.window?.sheetParent == nil, controller.window!.level.rawValue > parent.level.rawValue else {
+                throw failure("Export changed its parent or lost above-parent ownership")
+            }
+            parent.setFrameOrigin(CGPoint(x: screen.visibleFrame.minX + 10, y: screen.visibleFrame.maxY - 240))
+            try await Task.sleep(nanoseconds: 450_000_000)
+            let moved = try verifyLayout(controller)
+            guard controller.window?.parent === parent, controller.latestArtifact?.data == artifact.data else {
+                throw failure("Parent movement detached export or changed its frozen bytes")
+            }
+            if borderless { parent.close() }
+            else {
+                let root = try unwrap(controller.window?.contentView, "Owned export content missing")
+                let cancel = try unwrap(descendants(root).first { $0.identifier?.rawValue == "export.cancel" } as? NSControl,
+                                        "Owned export cancel control missing")
+                try send(cancel)
+            }
+            try await Task.sleep(nanoseconds: 50_000_000)
+            guard controller.isClosed, controller.window?.parent == nil, controller.window?.contentView == nil,
+                  controller.window?.isVisible == false, parent.childWindows?.isEmpty ?? true,
+                  borderless || parent.isVisible else { throw failure("Owned export cancel/parent-close left an orphan or closed its parent") }
+            layouts.append(["appearance": mode, "borderlessFloatingParent": borderless,
+                "sourceWidth": source.width, "sourceHeight": source.height, "initial": initial, "afterParentMove": moved,
+                "frozenBytesPreserved": true, "parentUnmovedByPresentation": true,
+                "closeRoute": borderless ? "parent close" : "native Cancel control", "detachedAndClosed": true])
+        }
+        return (layouts, controllers)
     }
 
     /// Real screen-space bounds, not merely a content-cache screenshot. Every

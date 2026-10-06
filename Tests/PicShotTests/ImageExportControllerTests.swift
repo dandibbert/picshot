@@ -222,9 +222,13 @@ final class ImageExportControllerTests: XCTestCase {
         let before = ImageExportController.activeSessionCount
         let controller = try XCTUnwrap(ImageExportController.present(image: fixture(), from: parent))
         XCTAssertEqual(ImageExportController.activeSessionCount, before + 1)
+        XCTAssertTrue(controller.window?.parent === parent)
         parent.close()
         try await Task.sleep(nanoseconds: 30_000_000)
         XCTAssertTrue(controller.isClosed); XCTAssertEqual(ImageExportController.activeSessionCount, before)
+        XCTAssertNil(controller.window?.parent); XCTAssertNil(controller.window?.contentView)
+        XCTAssertFalse(controller.window?.isVisible ?? true)
+        XCTAssertTrue(parent.childWindows?.isEmpty ?? true)
     }
     func testOnlyOneSessionPerParentWindow() throws {
         _ = NSApplication.shared
@@ -233,6 +237,8 @@ final class ImageExportControllerTests: XCTestCase {
         let first = try XCTUnwrap(ImageExportController.present(image: fixture(), from: parent))
         let second = try XCTUnwrap(ImageExportController.present(image: fixture(), from: parent))
         XCTAssertTrue(first === second); first.cancelExport()
+        XCTAssertNil(first.window?.parent); XCTAssertTrue(parent.childWindows?.isEmpty ?? true)
+        XCTAssertNil(first.window?.contentView)
     }
     func testPickerRejectsExistingFilesBeforeCompletion() throws {
         let controller = try makeController(); defer { controller.cancelExport() }
@@ -311,10 +317,10 @@ final class ImageExportControllerTests: XCTestCase {
         }
     }
 
-    func testAttachedExportSheetKeepsAllActionsOnScreenAfterDecode() async throws {
+    func testOwnedExportWindowKeepsAllActionsOnScreenAfterDecodeAndParentMoves() async throws {
         _ = NSApplication.shared
         guard let screen = NSScreen.main, screen.visibleFrame.width >= 720, screen.visibleFrame.height >= 650 else {
-            throw XCTSkip("Native attached-sheet layout needs a 720×650 usable desktop")
+            throw XCTSkip("Native owned-export layout needs a 720×650 usable desktop")
         }
         let parent = NSWindow(contentRect: CGRect(x: screen.visibleFrame.maxX - 370,
                               y: screen.visibleFrame.minY + 10, width: 360, height: 200),
@@ -324,23 +330,64 @@ final class ImageExportControllerTests: XCTestCase {
         let controller = try XCTUnwrap(ImageExportController.present(image: fixture(width: 612, height: 1711), from: parent))
         defer { controller.cancelExport() }
         _ = try await ready(controller)
-        // Allow AppKit's sheet attachment animation/repositioning to finish.
+        // Let the real native child/parent ordering and layout settle.
         // Do not manually repair its frame from the test.
         try await Task.sleep(nanoseconds: 350_000_000)
         let layout = try ImageExportPreviewFixture.verifyLayout(controller)
         XCTAssertEqual(layout["allControlsWithinVisibleFrame"] as? Bool, true)
-        XCTAssertTrue(controller.window?.sheetParent === parent)
+        XCTAssertTrue(controller.window?.parent === parent)
+        XCTAssertNil(controller.window?.sheetParent)
         XCTAssertLessThanOrEqual(try XCTUnwrap(controller.window?.contentView).bounds.height, 550)
-        // Moving an already attached parent must keep every actual action on
-        // screen too. The test never calls fitWindow to repair the sheet.
+        // Moving the parent must keep every actual action on screen too.
+        // The test never calls fitWindow to repair the export.
         for origin in [CGPoint(x: screen.visibleFrame.minX + 10, y: screen.visibleFrame.minY + 10),
                        CGPoint(x: screen.visibleFrame.maxX - 370, y: screen.visibleFrame.maxY - 230)] {
             parent.setFrameOrigin(origin)
             try await Task.sleep(nanoseconds: 550_000_000)
             let moved = try ImageExportPreviewFixture.verifyLayout(controller)
             XCTAssertEqual(moved["allControlsWithinVisibleFrame"] as? Bool, true)
-            XCTAssertTrue(controller.window?.sheetParent === parent)
+            XCTAssertTrue(controller.window?.parent === parent)
+            XCTAssertNil(controller.window?.sheetParent)
         }
+    }
+
+    func testFloatingBorderlessExportStaysOwnedAndCancelPreservesParent() async throws {
+        _ = NSApplication.shared
+        guard let screen = NSScreen.main else { throw XCTSkip("Native owned export requires WindowServer") }
+        let parent = NSWindow(contentRect: CGRect(x: screen.visibleFrame.maxX - 180, y: screen.visibleFrame.minY + 4,
+                              width: 170, height: 130), styleMask: [.borderless], backing: .buffered, defer: false)
+        parent.isReleasedWhenClosed = false; parent.level = .floating; parent.orderFront(nil)
+        defer { parent.close() }
+        let originalFrame = parent.frame
+        let controller = try XCTUnwrap(ImageExportController.present(image: fixture(), from: parent))
+        defer { controller.cancelExport() }
+        _ = try await ready(controller); try await Task.sleep(nanoseconds: 450_000_000)
+        _ = try ImageExportPreviewFixture.verifyLayout(controller)
+        XCTAssertEqual(parent.frame, originalFrame, "Export must not move the capture or pin")
+        XCTAssertTrue(controller.window?.parent === parent)
+        XCTAssertGreaterThan(try XCTUnwrap(controller.window).level.rawValue, parent.level.rawValue)
+        controller.cancelExport()
+        XCTAssertTrue(parent.isVisible); XCTAssertEqual(parent.frame, originalFrame)
+        XCTAssertTrue(parent.childWindows?.isEmpty ?? true); XCTAssertNil(controller.window?.parent)
+        XCTAssertNil(controller.window?.contentView)
+    }
+
+    func testOwnedExportKeepsFrozenBytesWhileParentEditorChanges() async throws {
+        _ = NSApplication.shared
+        let editor = ImageEditorController(image: try fixture(), onSave: { _ in }, onPin: { _ in }, onOCR: { _ in })
+        defer { editor.close() }; editor.showWindow(nil)
+        let original = try XCTUnwrap(editor.annotationCanvas.flattened())
+        let controller = try XCTUnwrap(ImageExportController.present(image: original, from: try XCTUnwrap(editor.window)))
+        defer { controller.cancelExport() }
+        let before = try await ready(controller)
+        editor.setVerificationAnnotations([ImageAnnotation(tool: .redact, points: [CGPoint(x: 4, y: 4), CGPoint(x: 64, y: 48)],
+                                                           color: CGColor(gray: 0, alpha: 1))])
+        XCTAssertEqual(editor.annotationCanvas.annotations.count, 1)
+        let edited = try XCTUnwrap(editor.annotationCanvas.flattened())
+        XCTAssertNotEqual(try SaveWorkflowUIPreviewFixture.pixels(original), try SaveWorkflowUIPreviewFixture.pixels(edited))
+        controller.requestPreview()
+        let after = try await ready(controller)
+        XCTAssertEqual(after.data, before.data, "Editing the parent must not refresh an already frozen export")
     }
 
     private func until(_ condition: () -> Bool, _ message: String) async throws {

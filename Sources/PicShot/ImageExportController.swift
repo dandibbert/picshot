@@ -1,6 +1,6 @@
 import AppKit
 
-/// Compact, shared export sheet for editor, pin, original and history images.
+/// Compact, shared owned export window for editor, pin, original and history images.
 /// At most two immutable sessions are admitted. The serial ImageIO/PDF queue
 /// and the shared GIF/WebP/AVIF child lease are separate and may overlap.
 @MainActor
@@ -35,6 +35,7 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
     private var generation = 0
     private var pageGeneration = 0
     private var parentObserver: NSObjectProtocol?
+    private var parentLayoutObservers: [NSObjectProtocol] = []
     private weak var parentWindow: NSWindow?
     private var savePanel: NSSavePanel?
     private let suggestedName: String
@@ -67,10 +68,28 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
                 object: parent, queue: .main) { [weak controller] _ in
                     MainActor.assumeIsolated { controller?.cancelExport() }
                 }
+            for name in [NSWindow.didMoveNotification, NSWindow.didResizeNotification, NSWindow.didChangeScreenNotification] {
+                controller.parentLayoutObservers.append(NotificationCenter.default.addObserver(forName: name, object: parent, queue: .main) { [weak controller] _ in
+                    MainActor.assumeIsolated { controller?.scheduleWindowFit() }
+                })
+            }
             controller.fitWindow(to: parent.screen?.visibleFrame)
             if let window = controller.window {
-                parent.beginSheet(window)
+                // Sheets retain AppKit's parent-titlebar anchor even when that
+                // places a large export below the visible desktop. An owned
+                // child has explicit screen-clamped geometry for small pins,
+                // borderless captures and ordinary windows alike.
+                window.setFrameOrigin(CGPoint(x: parent.frame.midX - window.frame.width / 2,
+                                              y: parent.frame.midY - window.frame.height / 2))
+                parent.addChildWindow(window, ordered: .above)
+                var level = parent.level.rawValue, ancestor: NSWindow? = parent
+                for _ in 0..<8 {
+                    guard let next = ancestor?.sheetParent ?? ancestor?.parent else { break }
+                    level = max(level, next.level.rawValue); ancestor = next
+                }
+                window.level = NSWindow.Level(rawValue: level < Int.max ? level + 1 : level)
                 controller.fitWindow(to: parent.screen?.visibleFrame)
+                window.makeKeyAndOrderFront(nil)
                 controller.scheduleWindowFit()
             }
             controller.requestPreview()
@@ -146,22 +165,22 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
         refreshPageControls()
     }
 
-    /// Image pixels never participate in the sheet's fitting size. Keep the
+    /// Image pixels never participate in the export window's fitting size. Keep the
     /// preferred 620×550 content rectangle, shrinking it for the actual usable
-    /// desktop, and clamp both standalone windows and attached sheets on screen.
+    /// desktop, and clamp both standalone and parent-owned windows on screen.
     func fitWindow(to visibleFrame: CGRect? = nil) {
         guard let window, !isClosed, !fittingWindow else { return }
         fittingWindow = true; defer { fittingWindow = false }
         layoutVisibleFrame = visibleFrame
-        let usable = visibleFrame ?? window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1024, height: 768)
-        let inset: CGFloat = window.sheetParent == nil ? 12 : 20
+        let usable = visibleFrame ?? parentWindow?.screen?.visibleFrame ?? window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1024, height: 768)
+        let inset: CGFloat = window.parent == nil ? 12 : 20
         let safe = usable.insetBy(dx: min(inset, usable.width / 20), dy: min(inset, usable.height / 20))
         let chrome = max(0, window.frame.height - window.contentRect(forFrameRect: window.frame).height)
         let size = CGSize(width: min(620, max(1, safe.width)), height: min(550, max(1, safe.height - chrome)))
-        // A non-resizable sheet should not silently enlarge when a decoded
+        // A non-resizable export should not silently enlarge when a decoded
         // image is assigned, or when format/page/quality controls change.
         window.contentMinSize = size; window.contentMaxSize = size
-        // Setting an unchanged content size can restart AppKit sheet placement.
+        // Avoid redundant size changes while its parent is moving.
         if window.contentView?.bounds.size != size { window.setContentSize(size) }
         window.contentView?.layoutSubtreeIfNeeded()
         var frame = window.frame
@@ -172,14 +191,14 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
     func windowDidChangeScreen(_ notification: Notification) { fitWindow(); scheduleWindowFit() }
     func windowDidMove(_ notification: Notification) {
         guard !fittingWindow else { return }
-        if window?.sheetParent != nil { scheduleWindowFit() }
+        if window?.parent != nil { scheduleWindowFit() }
         else { fitWindow(to: layoutVisibleFrame) }
     }
     private func scheduleWindowFit() {
         guard !isClosed, windowFitTask == nil else { return }
-        // Sheet attachment/movement can overwrite a synchronous delegate fit.
-        // Coalesce to one bounded task and fit after AppKit's layout/animation;
-        // no polling loop, image retention, parent movement or delegate takeover.
+        // Child movement can follow its parent's notification. Coalesce a
+        // bounded post-layout fit without moving the parent or taking over its
+        // delegate; no polling loop or image retention.
         windowFitTask = Task { @MainActor [weak self] in
             await Task.yield()
             for delay in [UInt64(0), 100_000_000, 300_000_000] {
@@ -384,13 +403,16 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
         previewInput?.clear(); pageInput?.clear(); saveInput?.clear()
         previewInput = nil; pageInput = nil; saveInput = nil
         if let parentObserver { NotificationCenter.default.removeObserver(parentObserver) }; parentObserver = nil
+        parentLayoutObservers.forEach { NotificationCenter.default.removeObserver($0) }; parentLayoutObservers.removeAll()
         if let savePanel { savePanel.cancel(nil) }; savePanel = nil
         accessory.onChange = nil; latestArtifact = nil; cachedPage = nil; previewView.image = nil; saveButton.isEnabled = false
         retryButton.isHidden = true; retryButton.isEnabled = false
         if let window {
-            if let parent = window.sheetParent { parent.endSheet(window, returnCode: .cancel) }
-            window.orderOut(nil); window.delegate = nil; window.close()
+            window.parent?.removeChildWindow(window)
+            window.level = .normal
+            window.orderOut(nil); window.delegate = nil; window.contentView = nil; window.close()
         }
+        parentWindow = nil
         onSaved = nil; Self.active.removeValue(forKey: ObjectIdentifier(self))
     }
 }
@@ -484,7 +506,7 @@ final class ExportFormatAccessory: NSView {
 
 /// NSImageView normally advertises the decoded image's pixel-sized intrinsic
 /// dimensions. That can enlarge an Auto Layout NSWindow far beyond the display.
-/// This view is sized exclusively by the compact sheet's layout constraints.
+/// This view is sized exclusively by the compact export panel's layout constraints.
 @MainActor
 final class ImageExportPreviewView: NSImageView {
     override func viewDidChangeEffectiveAppearance() {

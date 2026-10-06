@@ -179,7 +179,17 @@ final class VideoTrimTests: XCTestCase {
                 catch GIFExportProcessError.exitUnconfirmed { }
                 let child = try JSONDecoder().decode(TrimChildMarker.self, from: Data(contentsOf: marker))
                 let job = URL(fileURLWithPath: child.directory, isDirectory: true)
-                XCTAssertEqual(job.deletingLastPathComponent().path, root.path)
+                // Darwin may report /private/var while Foundation retains
+                // /var. Compare the actual parent directories, not their aliases.
+                var jobParent = stat(), fixtureParent = stat()
+                guard lstat(job.deletingLastPathComponent().path, &jobParent) == 0,
+                      lstat(root.path, &fixtureParent) == 0 else {
+                    throw GIFProcessTestSupportError.failed("Could not inspect sibling job parent identity")
+                }
+                XCTAssertEqual(jobParent.st_mode & S_IFMT, S_IFDIR)
+                XCTAssertEqual(fixtureParent.st_mode & S_IFMT, S_IFDIR)
+                XCTAssertEqual(jobParent.st_dev, fixtureParent.st_dev)
+                XCTAssertEqual(jobParent.st_ino, fixtureParent.st_ino)
                 XCTAssertTrue(job.lastPathComponent.hasPrefix(".picshot-gif-job-"))
                 XCTAssertEqual(Darwin.kill(child.pid, 0), 0, "Synthetic child must still be alive")
                 let copiedInput = try Data(contentsOf: job.appendingPathComponent("source.mp4"))
