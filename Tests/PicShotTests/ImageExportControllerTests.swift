@@ -148,6 +148,55 @@ final class ImageExportControllerTests: XCTestCase {
         XCTAssertNil(weakController)
     }
 
+    func testDecodedLongImageDoesNotEnlargeWindowAndActionsFitSmallVisibleFrame() async throws {
+        _ = NSApplication.shared
+        guard let screen = NSScreen.main, screen.visibleFrame.width >= 600, screen.visibleFrame.height >= 500 else {
+            throw XCTSkip("Native compact export layout needs a WindowServer display")
+        }
+        let controller = try ImageExportController(image: fixture(width: 612, height: 1711))
+        defer { controller.cancelExport() }
+        controller.showWindow(nil); controller.window?.center(); controller.fitWindow()
+        XCTAssertEqual(controller.previewView.intrinsicContentSize, NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric))
+        for format in [ImageExportFormat.jpeg, .pdf] {
+            controller.accessory.picker.selectItem(at: format.rawValue); try send(controller.accessory.picker)
+            if format == .pdf { controller.accessory.paper.selectItem(at: 2); try send(controller.accessory.paper) }
+            let artifact = try await ready(controller)
+            let bytesBeforeLayout = artifact.data
+            let regular = try ImageExportPreviewFixture.verifyLayout(controller)
+            XCTAssertEqual(regular["allControlsWithinVisibleFrame"] as? Bool, true)
+            let small = CGRect(x: screen.visibleFrame.minX + 12, y: screen.visibleFrame.minY + 12, width: 580, height: 480)
+            controller.fitWindow(to: small)
+            let compact = try ImageExportPreviewFixture.verifyLayout(controller, visibleFrame: small)
+            XCTAssertEqual(compact["allControlsWithinVisibleFrame"] as? Bool, true)
+            XCTAssertEqual(compact["previewAspectRatioPreserved"] as? Bool, true)
+            XCTAssertEqual(controller.latestArtifact?.data, bytesBeforeLayout, "Window adaptation must not alter encoded bytes")
+            controller.fitWindow()
+            _ = try ImageExportPreviewFixture.verifyLayout(controller)
+        }
+    }
+
+    func testAttachedExportSheetKeepsAllActionsOnScreenAfterDecode() async throws {
+        _ = NSApplication.shared
+        guard let screen = NSScreen.main, screen.visibleFrame.width >= 720, screen.visibleFrame.height >= 650 else {
+            throw XCTSkip("Native attached-sheet layout needs a 720×650 usable desktop")
+        }
+        let parent = NSWindow(contentRect: CGRect(x: screen.visibleFrame.maxX - 370,
+                              y: screen.visibleFrame.minY + 10, width: 360, height: 200),
+                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        parent.isReleasedWhenClosed = false; parent.makeKeyAndOrderFront(nil)
+        defer { parent.close() }
+        let controller = try XCTUnwrap(ImageExportController.present(image: fixture(width: 612, height: 1711), from: parent))
+        defer { controller.cancelExport() }
+        _ = try await ready(controller)
+        // Allow AppKit's sheet attachment animation/repositioning to finish.
+        // Do not manually repair its frame from the test.
+        try await Task.sleep(nanoseconds: 350_000_000)
+        let layout = try ImageExportPreviewFixture.verifyLayout(controller)
+        XCTAssertEqual(layout["allControlsWithinVisibleFrame"] as? Bool, true)
+        XCTAssertTrue(controller.window?.sheetParent === parent)
+        XCTAssertLessThanOrEqual(try XCTUnwrap(controller.window?.contentView).bounds.height, 550)
+    }
+
     private func started(_ barrier: ImageExportTestBarrier) async throws {
         let deadline = Date().addingTimeInterval(10)
         while !barrier.started && Date() < deadline { try await Task.sleep(nanoseconds: 10_000_000) }

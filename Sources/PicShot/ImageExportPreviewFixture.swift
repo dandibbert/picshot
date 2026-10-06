@@ -46,7 +46,7 @@ enum ImageExportPreviewFixture {
                 report["resourceObservation"] = ["status": "skipped", "reason": "early-ui-only profile; full installed smoke must run repeated memory sampling"]
             }
             report["status"] = "passed"; report["completedChecks"] = completed
-            report["files"] = ["ui-export-jpeg-preview.png", "ui-export-pdf-page-2.png", "export-preview-result.jpg",
+            report["files"] = ["ui-export-jpeg-preview.png", "ui-export-pdf-page-2.png", "ui-export-small-desktop.png", "export-preview-result.jpg",
                                "export-paginated-result.pdf", "export-result.bmp", "image-export-preview.json"] + (includeResourceCycles ? ["image-export-resource.json"] : [])
             try write(report, directory: evidenceDirectory)
             return report
@@ -75,7 +75,17 @@ enum ImageExportPreviewFixture {
         for value in [15.0, 88, 31] { raster.accessory.quality.doubleValue = value; try send(raster.accessory.quality) }
         let jpeg = try await ready(raster)
         guard jpeg.options.format == .jpeg, jpeg.options.quality == 0.31 else { throw failure("Stale JPEG preview replaced latest request") }
+        report["jpegWindowLayout"] = try verifyLayout(raster)
         try snapshot(raster, to: evidenceDirectory.appendingPathComponent("ui-export-jpeg-preview.png"))
+        if let screen = raster.window?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame {
+            let compact = CGRect(x: screen.minX + 12, y: screen.minY + 12,
+                                 width: min(580, screen.width - 24), height: min(480, screen.height - 24))
+            raster.fitWindow(to: compact)
+            report["compactWindowLayout"] = try verifyLayout(raster, visibleFrame: compact)
+            report["compactViewportScope"] = "Synthetic 580×480-or-smaller usable desktop rectangle inside the actual screen"
+            try snapshot(raster, to: evidenceDirectory.appendingPathComponent("ui-export-small-desktop.png"))
+            raster.fitWindow()
+        }
         let jpegURL = workspace.appendingPathComponent("export-preview-result.jpg")
         try await raster.savePrepared(to: jpegURL)
         guard try Data(contentsOf: jpegURL) == jpeg.data else { throw failure("Saved JPEG differs from preview bytes") }
@@ -93,6 +103,7 @@ enum ImageExportPreviewFixture {
         let document = try await ready(pdf)
         guard document.pageCount > 1 else { throw failure("Long PDF was not paginated") }
         pdf.showPage(1); try await awaitPreview(pdf)
+        report["pdfWindowLayout"] = try verifyLayout(pdf)
         try snapshot(pdf, to: evidenceDirectory.appendingPathComponent("ui-export-pdf-page-2.png"))
         let pdfURL = workspace.appendingPathComponent("export-paginated-result.pdf")
         try await pdf.savePrepared(to: pdfURL)
@@ -132,6 +143,47 @@ enum ImageExportPreviewFixture {
         report["evidencePublication"] = "Verified private create-only outputs copied atomically to exact fixture evidence filenames; safe to rerun"
         return (report, completed, [weakRaster, weakPDF, weakCancelled])
     }
+
+    /// Real screen-space bounds, not merely a content-cache screenshot. Every
+    /// visible export control and both bottom actions must fit before evidence
+    /// is accepted; image dimensions must never increase the window dimensions.
+    static func verifyLayout(_ controller: ImageExportController, visibleFrame: CGRect? = nil) throws -> [String: Any] {
+        guard let window = controller.window, let root = window.contentView,
+              let usable = visibleFrame ?? window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame else { throw failure("No display is available for export layout verification") }
+        root.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        let tolerance = usable.insetBy(dx: -1, dy: -1)
+        guard tolerance.contains(window.frame), root.bounds.width <= 620.5, root.bounds.height <= 550.5 else {
+            throw failure("Export window exceeds the compact screen bounds: \(window.frame), content \(root.bounds.size), visible \(usable)")
+        }
+        let controls = descendants(root).compactMap { $0 as? NSControl }.filter {
+            $0.window === window && !$0.isHiddenOrHasHiddenAncestor && ($0.identifier?.rawValue.hasPrefix("export.") ?? false)
+        }
+        let required: Set<String> = ["export.format", "export.save", "export.cancel"]
+        guard required.isSubset(of: Set(controls.compactMap { $0.identifier?.rawValue })) else { throw failure("Export actions are missing from the native window") }
+        var frames: [[String: Any]] = []
+        for control in controls {
+            let rect = control.convert(control.bounds, to: root)
+            let screen = window.convertToScreen(control.convert(control.bounds, to: nil))
+            guard rect.width > 0, rect.height > 0, root.bounds.insetBy(dx: -1, dy: -1).contains(rect), tolerance.contains(screen) else {
+                throw failure("Export control is clipped or off screen: \(control.identifier?.rawValue ?? "unknown") \(screen)")
+            }
+            frames.append(["id": control.identifier?.rawValue ?? "unknown", "screenFrame": rectangle(screen)])
+        }
+        guard let image = controller.previewView.image else { throw failure("Export preview is missing during layout verification") }
+        let displayed = controller.previewView.displayedImageRect
+        guard displayed.width > 0, displayed.height > 0,
+              controller.previewView.bounds.insetBy(dx: -0.5, dy: -0.5).contains(displayed),
+              abs(displayed.width / displayed.height - image.size.width / image.size.height) < 0.0001 else {
+            throw failure("Export preview aspect-fit geometry is invalid")
+        }
+        return ["windowFrame": rectangle(window.frame), "visibleFrame": rectangle(usable),
+            "contentSize": [root.bounds.width, root.bounds.height], "allControlsWithinVisibleFrame": true,
+            "visibleControls": frames, "previewBounds": rectangle(controller.previewView.bounds),
+            "displayedImageRect": rectangle(displayed), "decodedImageSize": [image.size.width, image.size.height],
+            "previewAspectRatioPreserved": true, "imageIntrinsicSizeIgnored": controller.previewView.intrinsicContentSize.width == NSView.noIntrinsicMetric]
+    }
+    private static func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap { descendants($0) } }
+    private static func rectangle(_ rect: CGRect) -> [CGFloat] { [rect.minX, rect.minY, rect.width, rect.height] }
 
     private static func ready(_ controller: ImageExportController) async throws -> ImageExportArtifact {
         let deadline = Date().addingTimeInterval(30)

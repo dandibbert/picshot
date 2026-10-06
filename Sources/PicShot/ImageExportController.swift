@@ -9,7 +9,7 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
     static let maximumSessions = 2
     private var snapshot: ImageExportSnapshot?
     let accessory = ExportFormatAccessory()
-    let previewView = NSImageView()
+    let previewView = ImageExportPreviewView()
     let statusLabel = NSTextField(wrappingLabelWithString: "正在编码…")
     let pageLabel = NSTextField(labelWithString: "")
     let saveButton = NSButton(title: "保存…", target: nil, action: nil)
@@ -32,6 +32,8 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
     private var savePanel: NSSavePanel?
     private let suggestedName: String
     private var onSaved: ((URL) -> Void)?
+    private var fittingWindow = false
+    private var layoutVisibleFrame: CGRect?
     private(set) var latestArtifact: ImageExportArtifact?
     private(set) var previewPage = 0
     private(set) var isClosed = false
@@ -56,7 +58,11 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
                 object: parent, queue: .main) { [weak controller] _ in
                     MainActor.assumeIsolated { controller?.cancelExport() }
                 }
-            if let window = controller.window { parent.beginSheet(window) }
+            controller.fitWindow(to: parent.screen?.visibleFrame)
+            if let window = controller.window {
+                parent.beginSheet(window)
+                controller.fitWindow(to: parent.screen?.visibleFrame)
+            }
             controller.requestPreview()
             return controller
         } catch { showError(error); return nil }
@@ -76,7 +82,7 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "导出图片"; window.isReleasedWhenClosed = false
         super.init(window: window); window.delegate = self
-        buildInterface()
+        buildInterface(); fitWindow()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -114,11 +120,39 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
             stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 16),
             stack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -16),
             accessory.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            previewView.widthAnchor.constraint(equalTo: stack.widthAnchor), previewView.heightAnchor.constraint(greaterThanOrEqualToConstant: 220),
+            previewView.widthAnchor.constraint(equalTo: stack.widthAnchor), previewView.heightAnchor.constraint(greaterThanOrEqualToConstant: 60),
             statusLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
             actions.widthAnchor.constraint(equalTo: stack.widthAnchor), spinner.widthAnchor.constraint(equalToConstant: 16)
         ])
         refreshPageControls()
+    }
+
+    /// Image pixels never participate in the sheet's fitting size. Keep the
+    /// preferred 620×550 content rectangle, shrinking it for the actual usable
+    /// desktop, and clamp both standalone windows and attached sheets on screen.
+    func fitWindow(to visibleFrame: CGRect? = nil) {
+        guard let window, !fittingWindow else { return }
+        fittingWindow = true; defer { fittingWindow = false }
+        layoutVisibleFrame = visibleFrame
+        let usable = visibleFrame ?? window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1024, height: 768)
+        let safe = usable.insetBy(dx: min(12, usable.width / 20), dy: min(12, usable.height / 20))
+        let chrome = max(0, window.frame.height - window.contentRect(forFrameRect: window.frame).height)
+        let size = CGSize(width: min(620, max(1, safe.width)), height: min(550, max(1, safe.height - chrome)))
+        // A non-resizable sheet should not silently enlarge when a decoded
+        // image is assigned, or when format/page/quality controls change.
+        window.contentMinSize = size; window.contentMaxSize = size
+        window.setContentSize(size)
+        var frame = window.frame
+        frame.origin.x = max(safe.minX, min(frame.minX, safe.maxX - frame.width))
+        frame.origin.y = max(safe.minY, min(frame.minY, safe.maxY - frame.height))
+        window.setFrame(frame, display: false)
+        window.contentView?.layoutSubtreeIfNeeded()
+    }
+    func windowDidChangeScreen(_ notification: Notification) { fitWindow() }
+    func windowDidMove(_ notification: Notification) {
+        // AppKit may reposition a sheet after beginSheet or when its small/edge
+        // parent moves. Reapply the same usable-screen constraint after that move.
+        fitWindow(to: layoutVisibleFrame)
     }
 
     func requestPreview() {
@@ -323,8 +357,11 @@ final class ExportFormatAccessory: NSView {
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: leadingAnchor), stack.trailingAnchor.constraint(equalTo: trailingAnchor),
             stack.topAnchor.constraint(equalTo: topAnchor), stack.bottomAnchor.constraint(equalTo: bottomAnchor),
-            quality.widthAnchor.constraint(equalToConstant: 160), picker.widthAnchor.constraint(equalToConstant: 110)
+            quality.widthAnchor.constraint(greaterThanOrEqualToConstant: 90),
+            quality.widthAnchor.constraint(lessThanOrEqualToConstant: 160), picker.widthAnchor.constraint(equalToConstant: 110)
         ])
+        let preferredQualityWidth = quality.widthAnchor.constraint(equalToConstant: 160)
+        preferredQualityWidth.priority = .defaultHigh; preferredQualityWidth.isActive = true
         updateControls()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -339,5 +376,28 @@ final class ExportFormatAccessory: NSView {
         orientation.isEnabled = enabled && selected.paper != .image
         margin.isEnabled = enabled && selected.paper != .image
         pagination.isEnabled = enabled && selected.paper != .image
+    }
+}
+
+/// NSImageView normally advertises the decoded image's pixel-sized intrinsic
+/// dimensions. That can enlarge an Auto Layout NSWindow far beyond the display.
+/// This view is sized exclusively by the compact sheet's layout constraints.
+@MainActor
+final class ImageExportPreviewView: NSImageView {
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
+    }
+    var displayedImageRect: CGRect {
+        guard let image, image.size.width > 0, image.size.height > 0, bounds.width > 0, bounds.height > 0 else { return .zero }
+        let scale = min(bounds.width / image.size.width, bounds.height / image.size.height)
+        let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+        return CGRect(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2, width: size.width, height: size.height)
+    }
+    override func draw(_ dirtyRect: NSRect) {
+        // Draw into the exact aspect-fit rectangle exposed to the fixture. The
+        // source NSImage still comes only from independently decoded export bytes.
+        guard let image else { return }
+        image.draw(in: displayedImageRect, from: .zero, operation: .sourceOver, fraction: 1,
+                   respectFlipped: true, hints: [.interpolation: NSImageInterpolation.high.rawValue])
     }
 }

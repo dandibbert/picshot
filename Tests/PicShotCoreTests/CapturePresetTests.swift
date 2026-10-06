@@ -61,7 +61,7 @@ final class CapturePresetTests: XCTestCase {
         let display = try display()
         for pixels in [CGRect(x: -1, y: 0, width: 20, height: 20), CGRect(x: 0.5, y: 0, width: 20, height: 20),
                        CGRect(x: 2870, y: 0, width: 20, height: 20), CGRect(x: 0, y: 0, width: 0, height: 20),
-                       CGRect(x: 0, y: 0, width: 3, height: 20), CGRect(x: .infinity, y: 0, width: 20, height: 20)] {
+                       CGRect(x: 0, y: 0, width: 3, height: 20), CGRect(x: CGFloat.infinity, y: 0, width: 20, height: 20)] {
             XCTAssertThrowsError(try CapturePreset(name: "无效", delay: .none, display: display,
                 topLeftFrame: CGRect(x: pixels.origin.x / 2, y: pixels.origin.y / 2, width: pixels.width / 2, height: pixels.height / 2),
                 pixelFrame: pixels))

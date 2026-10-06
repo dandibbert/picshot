@@ -21,12 +21,19 @@ final class ImageExportPreviewFixtureTests: XCTestCase {
             XCTAssertEqual(report["visualTemporaryWorkspaceRemoved"] as? Bool, true)
             XCTAssertEqual(report["queuedJobsBeforeResource"] as? Int, 0)
             XCTAssertEqual(report["snapshotPixelsPerPoint"] as? Int, 1)
+            for key in ["jpegWindowLayout", "pdfWindowLayout", "compactWindowLayout"] {
+                let layout = try XCTUnwrap(report[key] as? [String: Any])
+                XCTAssertEqual(layout["allControlsWithinVisibleFrame"] as? Bool, true)
+                XCTAssertEqual(layout["previewAspectRatioPreserved"] as? Bool, true)
+                XCTAssertEqual(layout["imageIntrinsicSizeIgnored"] as? Bool, true)
+            }
             XCTAssertEqual((report["resourceObservation"] as? [String: Any])?["status"] as? String, "skipped")
         }
-        for name in ["ui-export-jpeg-preview.png", "ui-export-pdf-page-2.png"] {
+        for name in ["ui-export-jpeg-preview.png", "ui-export-pdf-page-2.png", "ui-export-small-desktop.png"] {
             let source = try XCTUnwrap(CGImageSourceCreateWithURL(directory.appendingPathComponent(name) as CFURL, nil))
             let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
-            XCTAssertEqual(image.width, 620); XCTAssertEqual(image.height, 550)
+            XCTAssertGreaterThan(image.width, 0); XCTAssertGreaterThan(image.height, 0)
+            XCTAssertLessThanOrEqual(image.width, 620); XCTAssertLessThanOrEqual(image.height, 550)
             let context = try XCTUnwrap(CGContext(data: nil, width: image.width, height: image.height,
                 bitsPerComponent: 8, bytesPerRow: image.width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue))
