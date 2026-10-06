@@ -286,7 +286,8 @@ enum GIFResourceSmokeFixture {
         return rgba.reduce(UInt64(14_695_981_039_346_656_037)) { ($0 ^ UInt64($1)) &* 1_099_511_628_211 }
     }
 
-    private static func makeMovie(in directory: URL, profile: Profile) async throws -> URL {
+    // Shared only by explicit non-TCC resource diagnostics and their tests.
+    static func makeMovie(in directory: URL, profile: Profile) async throws -> URL {
         let url = directory.appendingPathComponent("authored-animation.mp4")
         let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
         defer { if writer.status == .writing { writer.cancelWriting() } }
@@ -479,7 +480,7 @@ struct GIFResourceSingleExportAssessment: Encodable, Equatable, Sendable {
 
 /// Timer queue is independent of the task executing ImageIO's synchronous
 /// finalization. Constant-space counters only; no per-tick arrays or images.
-private final class GIFResourceMemorySampler: @unchecked Sendable {
+final class GIFResourceMemorySampler: @unchecked Sendable {
     static let interval = 0.05
     private let lock = NSLock()
     private let queue = DispatchQueue(label: "PicShot.GIFResourceSmoke.Memory")

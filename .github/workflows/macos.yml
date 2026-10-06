@@ -10,6 +10,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
+    if: ${{ !contains(github.event.head_commit.message || '', '[gif-attribution]') }}
     strategy:
       fail-fast: false
       matrix:
@@ -85,4 +86,42 @@ jobs:
             dist/PicShot-*.json
             dist/PicShot-*.sha256
           if-no-files-found: error
+          retention-days: 14
+
+  gif-attribution:
+    if: ${{ contains(github.event.head_commit.message || '', '[gif-attribution]') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Test diagnostic phase separation and cleanup
+        timeout-minutes: 8
+        run: |
+          mkdir -p dist
+          set -o pipefail
+          swift test --filter GIFResourceAttributionTests 2>&1 | tee dist/gif-attribution-tests.log
+      - name: Package unchanged production exporter for isolated observation
+        run: |
+          set -o pipefail
+          bash scripts/package.sh 2>&1 | tee dist/package.log
+      - name: Observe export-only and decode-only in fresh installed processes
+        run: |
+          set -o pipefail
+          bash scripts/gif-attribution.sh 2>&1 | tee dist/gif-attribution.log
+      - name: Upload observations without an installer release
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-GIF-Diagnostics-${{ matrix.arch }}-${{ github.sha }}
+          path: |
+            dist/*.log
+            dist/evidence/gif-attribution/
           retention-days: 14

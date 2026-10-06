@@ -9,6 +9,13 @@ import PicShotFormulaRenderCore
         let url=URL(fileURLWithPath:report);let directory=url.deletingLastPathComponent()
         do{
             try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
+            if let value=ProcessInfo.processInfo.environment["PICSHOT_GIF_DIAGNOSTIC_MODE"] {
+                guard let mode=GIFResourceAttributionFixture.Mode(rawValue:value) else {throw PicShotError.message("Unknown GIF diagnostic mode")}
+                let payload=try await GIFResourceAttributionFixture.verify(evidenceDirectory:directory,mode:mode)
+                try JSONSerialization.data(withJSONObject:payload,options:[.prettyPrinted,.sortedKeys]).write(to:url,options:.atomic)
+                try? FileManager.default.removeItem(at:history.directory)
+                NSApp.terminate(nil);return
+            }
             if ProcessInfo.processInfo.environment["PICSHOT_UI_PREVIEW_ONLY"] == "1" {
                 let previews=try await CaptureUIPreviewFixture.verify(evidenceDirectory:directory)
                 let originalAppearance=NSApp.appearance
@@ -87,6 +94,7 @@ import PicShotFormulaRenderCore
             try JSONSerialization.data(withJSONObject:payload,options:[.prettyPrinted,.sortedKeys]).write(to:url,options:.atomic)
             try? FileManager.default.removeItem(at:history.directory)
         }catch{try? JSONSerialization.data(withJSONObject:["status":"failed","error":error.localizedDescription]).write(to:url)}
+        if ProcessInfo.processInfo.environment["PICSHOT_GIF_DIAGNOSTIC_MODE"] != nil {try? FileManager.default.removeItem(at:history.directory)}
         NSApp.terminate(nil)
     }
     private func cycleFixture()->[SmokeWeakWindow]{let image=ImageEditorRenderer.makeSampleImage();let c=ImageEditorController(image:image,onSave:{_ in},onPin:{_ in},onOCR:{_ in});c.showWindow(nil);c.window?.displayIfNeeded();let editorProbe=SmokeWeakWindow(c);c.close();let p=PinController(image:image);p.showWindow(nil);let pinProbe=SmokeWeakWindow(p);p.close();return [editorProbe,pinProbe]}
