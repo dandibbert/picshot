@@ -180,7 +180,7 @@ final class ImageExportServiceTests: XCTestCase {
     }
     func testSuccessfulAtomicPublicationHasExactPreviewedBytesNoStageFiles() throws {
         try withDirectory { directory in
-            for format in ImageExportFormat.allCases {
+            for format in ImageExportFormat.nativeFormats {
                 let artifact = try ImageExportService.encode(snapshot: ImageExportSnapshot(image: fixture()), options: ImageExportOptions(format: format))
                 let destination = directory.appendingPathComponent("result.\(format.filenameExtension)")
                 try ImageExportService.publish(artifact, to: destination)

@@ -19,11 +19,13 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
     private let cancellation = ImageExportCancellation()
     private var previewCancellation = ImageExportCancellation()
     private var previewOperation: Operation?
+    private var codecTask: Task<Void, Never>?
     private var pageOperation: Operation?
     private var previewInput: ImageExportJobInput<ImageExportSnapshot>?
     private var pageInput: ImageExportJobInput<ImageExportArtifact>?
     private var saveInput: ImageExportJobInput<ImageExportArtifact>?
     private let encoder: ImageExportEncoder
+    private let bundledEncoder: ImageExportBundledEncoder
     private var debounce: Task<Void, Never>?
     private var generation = 0
     private var pageGeneration = 0
@@ -73,8 +75,10 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
     init(image: CGImage, suggestedName: String = "PicShot", sourceURL: URL? = nil, onSaved: ((URL) -> Void)? = nil,
          encoder: @escaping ImageExportEncoder = { snapshot, options, token in
              try ImageExportService.encode(snapshot: snapshot, options: options, cancellation: token)
+         }, bundledEncoder: @escaping ImageExportBundledEncoder = { snapshot, options in
+             try await ImageExportService.encodeBundled(snapshot: snapshot, options: options)
          }) throws {
-        self.encoder = encoder
+        self.encoder = encoder; self.bundledEncoder = bundledEncoder
         snapshot = try ImageExportSnapshot(image: image, sourceURL: sourceURL)
         self.suggestedName = (suggestedName as NSString).deletingPathExtension
         self.onSaved = onSaved
@@ -158,18 +162,37 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
     func requestPreview() {
         guard !isClosed, !isSaving, let snapshot else { return }
         generation += 1; pageGeneration += 1
-        debounce?.cancel(); previewCancellation.cancel(); previewOperation?.cancel(); pageOperation?.cancel()
+        debounce?.cancel(); previewCancellation.cancel(); previewOperation?.cancel(); pageOperation?.cancel(); codecTask?.cancel(); codecTask = nil
         previewOperation = nil; pageOperation = nil; debounce = nil
         previewInput?.clear(); pageInput?.clear(); previewInput = nil; pageInput = nil
         previewCancellation = ImageExportCancellation()
         latestArtifact = nil; cachedPage = nil; previewPage = 0; previewView.image = nil
         saveButton.isEnabled = false; statusLabel.textColor = .secondaryLabelColor
         statusLabel.stringValue = "正在编码完整图片…"; spinner.startAnimation(nil); refreshPageControls()
-        let options = accessory.options, token = previewCancellation, current = generation, encoder = encoder
+        let options = accessory.options, token = previewCancellation, current = generation, encoder = encoder, bundledEncoder = bundledEncoder
         let input = ImageExportJobInput(snapshot); previewInput = input
         let job = Task { @MainActor [weak self] in
             do { try await Task.sleep(nanoseconds: 160_000_000) } catch { return }
             guard !Task.isCancelled, !token.isCancelled, let self, !self.isClosed, current == self.generation else { return }
+            if options.format.usesBundledCodec {
+                self.codecTask = Task { @MainActor [weak self] in
+                    guard let snapshot = input.take(), !token.isCancelled else { return }
+                    let result: Result<ImageExportArtifact, Error>
+                    do { result = .success(try await bundledEncoder(snapshot, options)) }
+                    catch { result = .failure(error) }
+                    guard let self, !self.isClosed, current == self.generation, !token.isCancelled, !Task.isCancelled else { return }
+                    self.codecTask = nil; self.debounce = nil; self.previewInput = nil
+                    self.spinner.stopAnimation(nil)
+                    switch result {
+                    case .success(let artifact):
+                        self.latestArtifact = artifact; self.previewView.image = artifact.firstPreview.nsImage
+                        self.saveButton.isEnabled = true; self.showSize(artifact); self.refreshPageControls()
+                    case .failure(let error):
+                        self.statusLabel.textColor = .systemRed; self.statusLabel.stringValue = error.localizedDescription
+                    }
+                }
+                return
+            }
             let operation = BlockOperation { [weak self] in
                 guard let snapshot = input.take(), !token.isCancelled else { return }
                 let result: Result<ImageExportArtifact, Error> = Result {
@@ -196,7 +219,7 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
 
     private func showSize(_ artifact: ImageExportArtifact) {
         let size = ByteCountFormatter.string(fromByteCount: Int64(artifact.byteCount), countStyle: .binary)
-        let alpha = artifact.options.format.preservesAlpha ? "" : " · 透明区域合成白底"
+        let alpha = artifact.options.retainsAlpha ? "" : " · 透明区域合成白底"
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.stringValue = "实际编码 \(size)（\(artifact.byteCount) 字节） · \(artifact.width) × \(artifact.height)\(alpha)\n预览来自待保存文件；保存不再重新编码"
     }
@@ -296,7 +319,7 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
     func windowWillClose(_ notification: Notification) { cancellation.cancel(); finish() }
     private func finish() {
         guard !isClosed else { return }; isClosed = true
-        previewCancellation.cancel(); previewOperation?.cancel(); pageOperation?.cancel(); debounce?.cancel()
+        previewCancellation.cancel(); previewOperation?.cancel(); pageOperation?.cancel(); debounce?.cancel(); codecTask?.cancel(); codecTask = nil
         previewOperation = nil; pageOperation = nil; debounce = nil; snapshot = nil
         previewInput?.clear(); pageInput?.clear(); saveInput?.clear()
         previewInput = nil; pageInput = nil; saveInput = nil
@@ -311,13 +334,16 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
     }
 }
 
-/// Only real encoders are offered. WebP/AVIF remain an explicit capability gap
-/// until the native probe (or a reviewed bundled codec) verifies actual output.
+/// WebP/AVIF require the signed bundled helper; native writers are never substituted.
 @MainActor
 final class ExportFormatAccessory: NSView {
     let picker = NSPopUpButton()
     let quality = NSSlider(value: 94, minValue: 1, maxValue: 100, target: nil, action: nil)
     let qualityValue = NSTextField(labelWithString: "94%")
+    let lossless = NSButton(checkboxWithTitle: "无损", target: nil, action: nil)
+    let preserveAlpha = NSButton(checkboxWithTitle: "保留透明度", target: nil, action: nil)
+    let alphaQuality = NSSlider(value: 100, minValue: 0, maxValue: 100, target: nil, action: nil)
+    let alphaQualityValue = NSTextField(labelWithString: "100%")
     let paper = NSPopUpButton()
     let orientation = NSPopUpButton()
     let margin = NSPopUpButton()
@@ -325,10 +351,13 @@ final class ExportFormatAccessory: NSView {
     var onChange: (() -> Void)?
     private let pdfRow = NSStackView()
     private let qualityRow = NSStackView()
+    private let codecRow = NSStackView()
+    private let note = NSTextField(wrappingLabelWithString: "")
     private var enabled = true
     var options: ImageExportOptions {
         ImageExportOptions(format: ImageExportFormat(rawValue: picker.indexOfSelectedItem) ?? .png,
-            quality: quality.doubleValue / 100,
+            quality: quality.doubleValue / 100, lossless: lossless.state == .on,
+            preserveAlpha: preserveAlpha.state == .on, alphaQuality: alphaQuality.doubleValue / 100,
             paper: ImageExportPaper(rawValue: paper.indexOfSelectedItem) ?? .image,
             orientation: ImageExportOrientation(rawValue: orientation.indexOfSelectedItem) ?? .portrait,
             margin: Double(margin.selectedItem?.tag ?? 24),
@@ -350,13 +379,19 @@ final class ExportFormatAccessory: NSView {
         stack.addArrangedSubview(first)
         pdfRow.setViews([paper, orientation, NSTextField(labelWithString: "边距"), margin, pagination], in: .leading); pdfRow.spacing = 6
         stack.addArrangedSubview(pdfRow)
-        let note = NSTextField(labelWithString: "PNG / TIFF 保留透明度 · WebP / AVIF 编码尚未提供")
+        lossless.identifier = NSUserInterfaceItemIdentifier("export.lossless")
+        preserveAlpha.identifier = NSUserInterfaceItemIdentifier("export.preserveAlpha"); preserveAlpha.state = .on
+        alphaQuality.identifier = NSUserInterfaceItemIdentifier("export.alphaQuality"); alphaQuality.isContinuous = true
+        alphaQuality.widthAnchor.constraint(equalToConstant: 90).isActive = true
+        codecRow.setViews([lossless, preserveAlpha, NSTextField(labelWithString: "透明度质量"), alphaQuality, alphaQualityValue], in: .leading)
+        codecRow.spacing = 8; stack.addArrangedSubview(codecRow)
         note.font = .systemFont(ofSize: 10); note.textColor = .secondaryLabelColor; stack.addArrangedSubview(note)
-        let controls: [NSControl] = [picker, quality, paper, orientation, margin, pagination]
+        let controls: [NSControl] = [picker, quality, paper, orientation, margin, pagination, lossless, preserveAlpha, alphaQuality]
         for control in controls { control.target = self; control.action = #selector(changed) }
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: leadingAnchor), stack.trailingAnchor.constraint(equalTo: trailingAnchor),
             stack.topAnchor.constraint(equalTo: topAnchor), stack.bottomAnchor.constraint(equalTo: bottomAnchor),
+            note.widthAnchor.constraint(equalTo: stack.widthAnchor),
             quality.widthAnchor.constraint(greaterThanOrEqualToConstant: 90),
             quality.widthAnchor.constraint(lessThanOrEqualToConstant: 160), picker.widthAnchor.constraint(equalToConstant: 110)
         ])
@@ -370,9 +405,16 @@ final class ExportFormatAccessory: NSView {
     private func updateControls() {
         let selected = options
         qualityValue.stringValue = "\(Int(quality.doubleValue.rounded()))%"
-        qualityRow.isHidden = selected.format != .jpeg
+        qualityRow.isHidden = selected.format != .jpeg && !selected.format.usesBundledCodec
+        codecRow.isHidden = !selected.format.usesBundledCodec
+        alphaQualityValue.stringValue = "\(Int(alphaQuality.doubleValue.rounded()))%"
+        lossless.isEnabled = enabled; preserveAlpha.isEnabled = enabled
+        alphaQuality.isEnabled = enabled && !selected.lossless && selected.preserveAlpha
+        note.stringValue = selected.format.usesBundledCodec
+            ? "独立编码进程 · 上限 1600 万像素 / 128 MiB · 关闭透明度时合成白底\n" + (selected.lossless ? "无损模式：颜色与透明度质量设为无损（滑块不参与编码）" : "有损模式：颜色与透明度分别按质量压缩")
+            : "PNG / TIFF 保留透明度 · JPEG / BMP / PDF 合成白底"
         pdfRow.isHidden = selected.format != .pdf
-        picker.isEnabled = enabled; quality.isEnabled = enabled; paper.isEnabled = enabled
+        picker.isEnabled = enabled; quality.isEnabled = enabled && !(selected.format.usesBundledCodec && selected.lossless); paper.isEnabled = enabled
         orientation.isEnabled = enabled && selected.paper != .image
         margin.isEnabled = enabled && selected.paper != .image
         pagination.isEnabled = enabled && selected.paper != .image
@@ -384,6 +426,12 @@ final class ExportFormatAccessory: NSView {
 /// This view is sized exclusively by the compact sheet's layout constraints.
 @MainActor
 final class ImageExportPreviewView: NSImageView {
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        }
+    }
     override var intrinsicContentSize: NSSize {
         NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
     }

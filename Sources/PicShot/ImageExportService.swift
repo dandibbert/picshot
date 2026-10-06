@@ -3,6 +3,7 @@ import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
 import Darwin
+import PicShotCodecCore
 
 /// A cancellation/commit fence: cancellation that wins the lock prevents all
 /// publication. A successfully committed file is complete and never rolled back.
@@ -29,6 +30,8 @@ final class ImageExportJobInput<Value>: @unchecked Sendable {
     func take() -> Value? { lock.lock(); defer { lock.unlock() }; let result = value; value = nil; return result }
     func clear() { lock.lock(); value = nil; lock.unlock() }
 }
+
+typealias ImageExportBundledEncoder = @Sendable (ImageExportSnapshot, ImageExportOptions) async throws -> ImageExportArtifact
 
 typealias ImageExportEncoder = @Sendable (ImageExportSnapshot, ImageExportOptions, ImageExportCancellation) throws -> ImageExportArtifact
 
@@ -67,7 +70,7 @@ struct ImageExportArtifact: @unchecked Sendable {
 }
 
 enum ImageExportService {
-    /// One shared worker bounds concurrent native encoders across all sessions.
+    /// One shared worker bounds in-process ImageIO/PDF encoders across all sessions.
     /// UI coalescing cancels obsolete pending jobs before adding a replacement.
     static let queue: OperationQueue = {
         let queue = OperationQueue(); queue.name = "PicShot.image-export"
@@ -75,10 +78,39 @@ enum ImageExportService {
         return queue
     }()
 
+    /// Reviewed bundled writers execute only in a signed child. Native ImageIO
+    /// writer availability never enables or substitutes either of these formats.
+    static func encodeBundled(snapshot: ImageExportSnapshot, options: ImageExportOptions,
+                              service: CodecExportProcessService = .shared) async throws -> ImageExportArtifact {
+        try options.validate(); try Task.checkCancellation()
+        guard options.format.usesBundledCodec else { throw ImageExportError.invalidOptions }
+        try CodecExportLimits.validateStillDimensions(width: snapshot.image.width, height: snapshot.image.height)
+        let request = CodecExportRequest(format: options.format == .webp ? .webp : .avif,
+            quality: Int((options.quality * 100).rounded()), lossless: options.lossless,
+            preserveAlpha: options.preserveAlpha, alphaQuality: Int((options.alphaQuality * 100).rounded()))
+        // Rapid UI changes cancel the old child but cannot release its lease
+        // before exit. Wait cooperatively for cleanup instead of starting a
+        // second child or replacing the latest preview with a spurious failure.
+        let deadline = ProcessInfo.processInfo.systemUptime + CodecExportLimits.wallSeconds
+        while true {
+            do {
+                let result = try await service.prepare(snapshot: snapshot, options: request)
+                try Task.checkCancellation()
+                return ImageExportArtifact(data: result.data, options: options, width: result.width, height: result.height,
+                                           pageCount: 1, firstPreview: result.preview, sourceURL: snapshot.sourceURL)
+            } catch CodecExportProcessError.busy {
+                try Task.checkCancellation()
+                guard ProcessInfo.processInfo.systemUptime < deadline else { throw CodecExportProcessError.busy }
+                try await Task.sleep(nanoseconds: 100_000_000)
+            }
+        }
+    }
+
     static func encode(snapshot: ImageExportSnapshot, options: ImageExportOptions,
                        cancellation: ImageExportCancellation = ImageExportCancellation(),
                        limits: ImageExportLimits = .standard) throws -> ImageExportArtifact {
         try limits.validate(); try options.validate(); try cancellation.check()
+        guard !options.format.usesBundledCodec else { throw ImageExportError.unavailable(options.format.title + "（需要已签名的独立编码进程）") }
         let image = snapshot.image
         guard image.width <= limits.maximumSourcePixels / image.height else { throw ImageExportError.sourceTooLarge }
         let buffer = ImageExportBuffer(maximumBytes: limits.maximumEncodedBytes, cancellation: cancellation)

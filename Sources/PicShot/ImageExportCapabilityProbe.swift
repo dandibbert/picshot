@@ -12,7 +12,8 @@ enum ImageExportCapabilityProbe {
         let writers = CGImageDestinationCopyTypeIdentifiers() as! [String]
         var result: [String: Any] = [
             "osVersion": ProcessInfo.processInfo.operatingSystemVersionString,
-            "architecture": architecture, "probeVersion": 1,
+            "architecture": architecture, "probeVersion": 2,
+            "bundledCodecSupport": bundledHelperReport(),
             "scope": "Native ImageIO synthetic 8x8 encode, independent decode and pixel/alpha validation; not browser display support",
             "networkAttempted": false, "dependenciesInstalled": false,
             "destinationIdentifiers": writers.sorted()
@@ -22,6 +23,16 @@ enum ImageExportCapabilityProbe {
             result[name] = probe(identifier: identifier, name: name, readers: readers, writers: writers)
         }
         return result
+    }
+
+    /// Signing/installation is a separate fact from native ImageIO capability
+    /// and from successful encoding. The installed codec fixture verifies output.
+    private static func bundledHelperReport() -> [String: Any] {
+        let verified = (try? CodecHelperExecutable.verified()) != nil
+        return ["provider": "bundled-signed-PicShotCodecHelper", "helperSignatureVerified": verified,
+                "formats": ["webp", "avif", "animated-webp"], "runtimeEncodeVerified": false,
+                "verification": "See codec-export-resource.json for actual bytes, decode, alpha, cancellation and memory evidence",
+                "nativeImageIOFallback": false]
     }
 
     private static func probe(identifier: String, name: String, readers: [String], writers: [String]) -> [String: Any] {

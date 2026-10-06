@@ -7,14 +7,14 @@ enum GIFExportProcessError: LocalizedError {
     case failed(String)
     var errorDescription: String? {
         switch self {
-        case .busy: return "A GIF export is still running or cleaning up. Wait for it to finish or cancel."
+        case .busy: return "A GIF, WebP, or AVIF export is still running or cleaning up. Wait for it to finish or cancel."
         case .helperUnavailable: return "The signed GIF export helper is unavailable. Reinstall the complete PicShot app."
         case .signature: return "The GIF helper's bundle path or code signature could not be verified."
         case .invalidSource: return "GIF export requires a regular local, self-contained H.264 MP4 file no larger than 1 GiB (optional AAC audio)."
         case .invalidProtocol: return "The GIF helper returned an invalid or oversized response."
         case .timedOut: return "The GIF export exceeded its time limit and was stopped."
         case .memoryLimit: return "The GIF helper exceeded its memory limit and was stopped."
-        case .exitUnconfirmed: return "The GIF helper has not confirmed exit. Further GIF exports are blocked until it exits."
+        case .exitUnconfirmed: return "The GIF helper has not confirmed exit. Further native exports are blocked until it exits."
         case .failed(let message): return "GIF export failed: \(message)"
         }
     }
@@ -88,7 +88,7 @@ struct GIFExportProcessMetrics: Codable, Equatable, Sendable {
     var configuredWallSeconds: TimeInterval = 300
     var configuredChildResidentLimitBytes: UInt64 = 1_073_741_824
     var sampleIntervalSeconds: TimeInterval = 0.05
-    let admissionScope = "one GIF child; independent of the model-helper gate, so a GIF and a model job may overlap"
+    let admissionScope = "one native export child shared by GIF, WebP and AVIF; independent of the model-helper gate"
     let measurementScope = "main-process RSS/footprint plus this GIF child's parent-polled RSS and child-reported RSS/footprint; sampled maxima, not kernel lifetime peaks; other helpers/framework services/GPU memory excluded"
 }
 struct GIFExportProcessSnapshot: Encodable, Sendable {
@@ -103,6 +103,7 @@ actor GIFExportProcessService {
     static let shared = GIFExportProcessService()
     private let configuration: GIFProcessConfiguration
     private var active: GIFProcessJob?
+    private var admissionToken: UUID?
     private var lastJob: GIFExportProcessMetrics?
     init(configuration: GIFProcessConfiguration = .production) { self.configuration = configuration }
 
@@ -111,7 +112,8 @@ actor GIFExportProcessService {
                 progress: (@Sendable (Double) -> Void)? = nil) async throws -> URL {
         refreshStrandedJob()
         try options.validate(); try Task.checkCancellation()
-        guard active == nil else { throw GIFExportProcessError.busy }
+        guard active == nil, let lease = NativeExportAdmission.shared.acquire() else { throw GIFExportProcessError.busy }
+        admissionToken = lease
         let configuration = self.configuration
         let job = GIFProcessJob(configuration: configuration)
         active = job
@@ -134,12 +136,26 @@ actor GIFExportProcessService {
     private func complete(_ job: GIFProcessJob) {
         guard active === job else { return }
         lastJob = job.snapshot()
-        if (!lastJob!.childLaunched || lastJob!.childExitConfirmed) && lastJob!.temporaryDirectoryRemoved { active = nil }
-        else { job.markStranded() }
+        if (!lastJob!.childLaunched || lastJob!.childExitConfirmed) && lastJob!.temporaryDirectoryRemoved {
+            active = nil
+            if let admissionToken { NativeExportAdmission.shared.release(admissionToken) }
+            admissionToken = nil
+        } else {
+            job.markStranded()
+            if let admissionToken { NativeExportAdmission.shared.retainUntilRecovered(admissionToken) {
+                let state = job.snapshot()
+                if (!state.childLaunched || state.childExitConfirmed) && state.temporaryDirectoryRemoved { return true }
+                return job.finishStrandedCleanupIfExited()
+            } }
+        }
     }
     private func refreshStrandedJob() {
-        guard let active, active.isStranded, active.finishStrandedCleanupIfExited() else { return }
+        guard let active, active.isStranded else { return }
+        let state = active.snapshot()
+        guard ((!state.childLaunched || state.childExitConfirmed) && state.temporaryDirectoryRemoved) || active.finishStrandedCleanupIfExited() else { return }
         lastJob = active.snapshot(); self.active = nil
+        if let admissionToken { NativeExportAdmission.shared.release(admissionToken) }
+        admissionToken = nil
     }
 
     private nonisolated static func run(sourceURL: URL, destinationURL: URL?, options: GIFExportOptions,
@@ -462,7 +478,9 @@ private final class GIFProcessJob: @unchecked Sendable {
         metrics.temporaryDirectoryRemoved = directory.map(GIFExportProcessService.removalConfirmed) ?? true
         if !published, let ownedDestinationDirectory { try? FileManager.default.removeItem(at: ownedDestinationDirectory) }
         guard metrics.temporaryDirectoryRemoved else { return false }
-        stranded = false; return true
+        // Keep the recovery marker until the owning actor observes completion.
+        // The shared admission may reclaim this job before that actor wakes.
+        return true
     }
 }
 

@@ -4,11 +4,17 @@ import UniformTypeIdentifiers
 
 /// Stable raw values keep the original PNG/JPEG/TIFF/PDF export API compatible.
 enum ImageExportFormat: Int, CaseIterable, Hashable {
-    case png, jpeg, tiff, pdf, bmp
-    var title: String { ["PNG", "JPEG", "TIFF", "PDF", "BMP"][rawValue] }
-    var contentType: UTType { [.png, .jpeg, .tiff, .pdf, .bmp][rawValue] }
-    var filenameExtension: String { ["png", "jpg", "tiff", "pdf", "bmp"][rawValue] }
-    var preservesAlpha: Bool { self == .png || self == .tiff }
+    case png, jpeg, tiff, pdf, bmp, webp, avif
+    var title: String { ["PNG", "JPEG", "TIFF", "PDF", "BMP", "WebP", "AVIF"][rawValue] }
+    var contentType: UTType {
+        if self == .webp { return UTType(filenameExtension: "webp") ?? UTType(exportedAs: "org.webmproject.webp", conformingTo: .image) }
+        if self == .avif { return UTType(filenameExtension: "avif") ?? UTType(exportedAs: "public.avif", conformingTo: .image) }
+        return [.png, .jpeg, .tiff, .pdf, .bmp][rawValue]
+    }
+    var filenameExtension: String { ["png", "jpg", "tiff", "pdf", "bmp", "webp", "avif"][rawValue] }
+    var usesBundledCodec: Bool { self == .webp || self == .avif }
+    static var nativeFormats: [Self] { allCases.filter { !$0.usesBundledCodec } }
+    var preservesAlpha: Bool { self == .png || self == .tiff || usesBundledCodec }
 }
 
 enum ImageExportPaper: Int, CaseIterable, Hashable {
@@ -28,6 +34,10 @@ enum ImageExportPagination: Int, CaseIterable, Hashable { case vertical, horizon
 struct ImageExportOptions: Hashable {
     var format: ImageExportFormat = .png
     var quality: Double = 0.94
+    var lossless: Bool = false
+    var preserveAlpha: Bool = true
+    var alphaQuality: Double = 1
+    var retainsAlpha: Bool { format.preservesAlpha && (!format.usesBundledCodec || preserveAlpha) }
     var paper: ImageExportPaper = .image
     var orientation: ImageExportOrientation = .portrait
     /// Equal margins in PDF points (72 points/inch), never source pixels.
@@ -35,7 +45,7 @@ struct ImageExportOptions: Hashable {
     var pagination: ImageExportPagination = .vertical
 
     func validate() throws {
-        guard quality.isFinite, (0...1).contains(quality), margin.isFinite, (0...144).contains(margin) else {
+        guard quality.isFinite, (0...1).contains(quality), alphaQuality.isFinite, (0...1).contains(alphaQuality), margin.isFinite, (0...144).contains(margin) else {
             throw ImageExportError.invalidOptions
         }
     }

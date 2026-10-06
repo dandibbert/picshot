@@ -23,6 +23,67 @@ final class ImageExportControllerTests: XCTestCase {
         view.setControlsEnabled(false)
         XCTAssertFalse(view.picker.isEnabled); XCTAssertFalse(view.paper.isEnabled); XCTAssertFalse(view.margin.isEnabled)
     }
+    func testBundledCodecControlsAreHonestAndDisableLossyKnobsInLosslessMode() throws {
+        _ = NSApplication.shared
+        let view = ExportFormatAccessory()
+        for format in [ImageExportFormat.webp, .avif] {
+            view.picker.selectItem(at: format.rawValue); try send(view.picker)
+            view.lossless.state = .off; try send(view.lossless)
+            view.preserveAlpha.state = .on; try send(view.preserveAlpha)
+            view.alphaQuality.doubleValue = 72; try send(view.alphaQuality)
+            XCTAssertEqual(view.options.format, format); XCTAssertEqual(view.options.alphaQuality, 0.72)
+            XCTAssertTrue(view.options.retainsAlpha); XCTAssertTrue(view.alphaQuality.isEnabled); XCTAssertTrue(view.quality.isEnabled)
+            view.lossless.state = .on; try send(view.lossless)
+            XCTAssertTrue(view.options.lossless); XCTAssertFalse(view.alphaQuality.isEnabled); XCTAssertFalse(view.quality.isEnabled)
+            view.preserveAlpha.state = .off; try send(view.preserveAlpha)
+            XCTAssertFalse(view.options.retainsAlpha)
+        }
+        view.setControlsEnabled(false)
+        XCTAssertFalse(view.lossless.isEnabled); XCTAssertFalse(view.preserveAlpha.isEnabled); XCTAssertFalse(view.alphaQuality.isEnabled)
+    }
+
+    func testObsoleteBundledPreviewCannotReplaceLatestNativeOrEnableSaveAfterClose() async throws {
+        let barrier = ImageExportTestBarrier()
+        // Deliberately synthetic encoder verifies UI generation fences only.
+        // Real codec bytes and signed-helper execution have separate native tests.
+        let controller = try ImageExportController(image: fixture(), bundledEncoder: { snapshot, options in
+            let png = try ImageExportService.encode(snapshot: snapshot, options: ImageExportOptions())
+            if barrier.claimFirst() { try await Task.detached { try barrier.pause() }.value }
+            return ImageExportArtifact(data: png.data, options: options, width: png.width, height: png.height,
+                                       pageCount: 1, firstPreview: png.firstPreview, sourceURL: nil)
+        })
+        defer { barrier.release(); controller.cancelExport() }
+        controller.accessory.picker.selectItem(at: ImageExportFormat.webp.rawValue); try send(controller.accessory.picker)
+        try await started(barrier)
+        controller.accessory.picker.selectItem(at: ImageExportFormat.jpeg.rawValue); try send(controller.accessory.picker)
+        let latest = try await ready(controller)
+        XCTAssertEqual(latest.options.format, .jpeg)
+        barrier.release(); try await Task.sleep(nanoseconds: 80_000_000)
+        XCTAssertEqual(controller.latestArtifact?.options.format, .jpeg)
+        controller.accessory.picker.selectItem(at: ImageExportFormat.avif.rawValue); try send(controller.accessory.picker)
+        controller.cancelExport(); try await Task.sleep(nanoseconds: 250_000_000)
+        XCTAssertNil(controller.latestArtifact); XCTAssertFalse(controller.saveButton.isEnabled)
+    }
+
+    func testBundledCodecControlsKeepCompactWindowOnSmallDesktop() async throws {
+        _ = NSApplication.shared
+        guard let screen = NSScreen.main, screen.visibleFrame.width >= 600, screen.visibleFrame.height >= 500 else {
+            throw XCTSkip("Native compact control layout needs a WindowServer display")
+        }
+        let controller = try makeController(); defer { controller.cancelExport() }
+        controller.showWindow(nil); controller.requestPreview(); _ = try await ready(controller)
+        for format in [ImageExportFormat.webp, .avif] {
+            // Layout-only fixture: no asynchronous encoding request needed.
+            controller.accessory.onChange = nil
+            controller.accessory.picker.selectItem(at: format.rawValue); try send(controller.accessory.picker)
+            controller.fitWindow(to: CGRect(x: screen.visibleFrame.minX, y: screen.visibleFrame.minY, width: 580, height: 480))
+            let result = try ImageExportPreviewFixture.verifyLayout(controller,
+                visibleFrame: CGRect(x: screen.visibleFrame.minX, y: screen.visibleFrame.minY, width: 580, height: 480))
+            XCTAssertEqual(result["allControlsWithinVisibleFrame"] as? Bool, true)
+            XCTAssertLessThanOrEqual(try XCTUnwrap(controller.window?.contentView).bounds.height, 550)
+        }
+    }
+
     func testRapidFormatAndQualityChangesDiscardStalePreview() async throws {
         let controller = try makeController(); defer { controller.cancelExport() }
         controller.requestPreview()
