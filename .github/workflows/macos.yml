@@ -6,7 +6,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: picshot-${{ github.ref }}
+  group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
   cancel-in-progress: true
 jobs:
   build:
@@ -14,13 +14,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - runner: macos-15
-            arch: arm64
-          - runner: macos-15-intel
-            arch: x86_64
+        include: ${{ fromJSON(contains(github.event.head_commit.message || '', '[intel-only]') && '[{"runner":"macos-15-intel","arch":"x86_64"}]' || '[{"runner":"macos-15","arch":"arm64"},{"runner":"macos-15-intel","arch":"x86_64"}]') }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 25
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       - name: Package signed native app for early pixel review
