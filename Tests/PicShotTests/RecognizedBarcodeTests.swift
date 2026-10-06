@@ -5,8 +5,8 @@ import Vision
 
 final class RecognizedBarcodeTests: XCTestCase {
     func testNativeSymbologyAndUPCAAliasNeverRewritePayload() {
-        XCTAssertEqual(BarcodeSymbology(.qr), .qr); XCTAssertEqual(BarcodeSymbology(.dataMatrix), .dataMatrix)
-        XCTAssertEqual(BarcodeSymbology(.pdf417), .pdf417); XCTAssertEqual(BarcodeSymbology(.code128), .code128)
+        XCTAssertEqual(PicShot.BarcodeSymbology(.qr), .qr); XCTAssertEqual(PicShot.BarcodeSymbology(.dataMatrix), .dataMatrix)
+        XCTAssertEqual(PicShot.BarcodeSymbology(.pdf417), .pdf417); XCTAssertEqual(PicShot.BarcodeSymbology(.code128), .code128)
         let upca = code("0012345678905", symbology: .ean13)
         XCTAssertEqual(upca.upcaEquivalent, "012345678905"); XCTAssertEqual(upca.payload, "0012345678905")
         XCTAssertEqual(upca.title, "EAN-13（兼容 UPC-A）")
@@ -55,7 +55,7 @@ final class RecognizedBarcodeTests: XCTestCase {
             XCTAssertNil(BarcodeURLPolicy.url(for: invalid), invalid)
         }
     }
-    private func code(_ payload: String, symbology: BarcodeSymbology = .qr, quad: RecognizedTextQuad? = nil) -> RecognizedBarcode {
+    private func code(_ payload: String, symbology: PicShot.BarcodeSymbology = .qr, quad: RecognizedTextQuad? = nil) -> RecognizedBarcode {
         RecognizedBarcode(symbology: symbology, payload: payload, quad: quad)
     }
 }
