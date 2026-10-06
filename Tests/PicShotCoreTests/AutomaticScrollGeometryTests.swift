@@ -25,7 +25,7 @@ final class AutomaticScrollGeometryTests: XCTestCase {
 
     func testInvalidOrOffDisplayRegionsAreRejected() throws {
         for region in [CGRect.zero, CGRect(x: -1, y: 0, width: 5, height: 5),
-                       CGRect(x: 9, y: 9, width: 2, height: 2), CGRect(x: .infinity, y: 0, width: 2, height: 2)] {
+                       CGRect(x: 9, y: 9, width: 2, height: 2), CGRect(x: CGFloat.infinity, y: 0, width: 2, height: 2)] {
             XCTAssertThrowsError(try AutomaticScrollGeometry.targetPoint(region: region,
                 displayBounds: CGRect(x: 0, y: 0, width: 10, height: 10)))
         }
