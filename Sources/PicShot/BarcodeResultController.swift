@@ -5,7 +5,7 @@ import AppKit
 @MainActor final class BarcodeResultController: NSWindowController, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate {
     var onClose: (() -> Void)?
     var onSelect: ((Int) -> Void)?
-    private(set) var document: RecognizedBarcodeDocument?
+    private(set) var barcodeDocument: RecognizedBarcodeDocument?
     private(set) var selectedIndex: Int?
     let showsSourceImage: Bool
     let preview = BarcodeSourcePreview()
@@ -19,7 +19,7 @@ import AppKit
     private let copyPasteboard: NSPasteboard
     private var closed = false
     var selectedResult: RecognizedBarcode? {
-        guard let document, let selectedIndex, document.results.indices.contains(selectedIndex) else { return nil }
+        guard let document = barcodeDocument, let selectedIndex, document.results.indices.contains(selectedIndex) else { return nil }
         return document.results[selectedIndex]
     }
     var resultText: String { payloadView.string }
@@ -27,7 +27,7 @@ import AppKit
 
     init(image: CGImage, document: RecognizedBarcodeDocument, showsSourceImage: Bool = true, pasteboard: NSPasteboard = .general,
          openURL: @escaping (URL) -> Void = { _ = NSWorkspace.shared.open($0) }) {
-        self.document = document; self.openURL = openURL; self.showsSourceImage = showsSourceImage; copyPasteboard = pasteboard
+        self.barcodeDocument = document; self.openURL = openURL; self.showsSourceImage = showsSourceImage; copyPasteboard = pasteboard
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: showsSourceImage ? 700 : 480, height: showsSourceImage ? 490 : 430),
                               styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         super.init(window: window)
@@ -94,9 +94,9 @@ import AppKit
         table.reloadData(); selectResult(at: document.results.isEmpty ? nil : 0, notify: false)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) unavailable") }
-    func numberOfRows(in tableView: NSTableView) -> Int { document?.results.count ?? 0 }
+    func numberOfRows(in tableView: NSTableView) -> Int { barcodeDocument?.results.count ?? 0 }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        guard let document, document.results.indices.contains(row) else { return nil }
+        guard let document = barcodeDocument, document.results.indices.contains(row) else { return nil }
         let result = document.results[row]
         let summary = String(result.payload.prefix(80)).replacingOccurrences(of: "\n", with: " ↵ ") + (result.payload.count > 80 ? "…" : "")
         let label = NSTextField(wrappingLabelWithString: "\(row + 1) · \(result.title)\n" + summary)
@@ -108,7 +108,7 @@ import AppKit
         if table.selectedRow >= 0 { selectResult(at: table.selectedRow) }
     }
     func selectResult(at index: Int?, notify: Bool = true) {
-        guard !closed, let document else { return }
+        guard !closed, let document = barcodeDocument else { return }
         if let index, !document.results.indices.contains(index) { return }
         let changed = selectedIndex != index
         selectedIndex = index
@@ -135,7 +135,7 @@ import AppKit
     }
     func windowWillClose(_ notification: Notification) {
         guard !closed else { return }; closed = true
-        document = nil; selectedIndex = nil; preview.releaseResources(); payloadView.string = ""
+        barcodeDocument = nil; selectedIndex = nil; preview.releaseResources(); payloadView.string = ""
         status.stringValue = ""; status.toolTip = nil; selectionLabel.stringValue = ""; selectionLabel.toolTip = nil
         openButton.toolTip = nil; openButton.isEnabled = false; copyButton.isEnabled = false
         table.dataSource = nil; table.delegate = nil; table.reloadData(); onSelect = nil; openURL = nil

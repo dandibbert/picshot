@@ -166,7 +166,7 @@ import PicShotCore
         try require(browser.selectedIndex == 0, "Keyboard previous-result navigation failed")
         try require(opened.count == 1, "Navigation opened a URL")
         _ = view.handleKeyDown(try PinTextSelectionSmokeFixture.key("", code: 53, flags: [], window: try required(browser.window, "Window missing")))
-        try require(browser.document == nil && browser.preview.image == nil && browser.window?.contentView == nil, "Escape did not release standalone results")
+        try require(browser.barcodeDocument == nil && browser.preview.image == nil && browser.window?.contentView == nil, "Escape did not release standalone results")
         browser.openSelected(nil); try require(opened.count == 1 && !browser.copySelected(to: pasteboard), "Closed results still performed actions")
         return ["nativeRegionSelection": true, "listSelectionSync": selection.contains(1), "keyboardNavigation": true,
                 "exactUnicodeCopy": true, "nativeCopyShortcut": true, "escapeReleasesResults": true, "explicitValidatedOpenOnly": true, "injectedOpenerCallCount": opened.count,
