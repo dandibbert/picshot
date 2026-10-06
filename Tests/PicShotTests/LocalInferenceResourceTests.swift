@@ -87,13 +87,14 @@ final class LocalInferenceResourceTests: XCTestCase {
         let resources = LocalInferenceResources()
         let ready = InferenceTestLatch()
         let invoked = InferenceTestCounter()
-        let task = Task {
-            await ready.wait()
+        let task = InferenceTestOperation {
+            try await ready.wait(phase: "pre-cancelled caller released")
             return try await resources.withJob(.formula) { _ in invoked.increment(); return 1 }
         }
+        defer { ready.open(); task.cancel() }
         task.cancel()
-        await ready.open()
-        do { _ = try await task.value; XCTFail("Pre-cancelled task must not launch work") }
+        ready.open()
+        do { _ = try await task.value(phase: "pre-cancelled caller completed"); XCTFail("Pre-cancelled task must not launch work") }
         catch { XCTAssertTrue(error is CancellationError) }
         XCTAssertEqual(invoked.value, 0)
         XCTAssertNil(resources.snapshot().activeJob)
@@ -103,25 +104,26 @@ final class LocalInferenceResourceTests: XCTestCase {
     func testCancellationKeepsLeaseUntilNonCooperativeWorkerActuallyUnwinds() async throws {
         let resources = LocalInferenceResources()
         let entered = InferenceTestLatch(), mayFinish = InferenceTestLatch()
-        let task = Task {
+        let task = InferenceTestOperation {
             try await resources.withJob(.smartErase) { recorder in
                 recorder.willCreateTemporaryDirectory()
-                await entered.open()
+                entered.open()
                 // Simulates a detached child still exiting/cleaning up. A task
                 // cancellation must not hand its lease to another model yet.
-                await mayFinish.wait()
+                try await mayFinish.wait(phase: "cancelled worker allowed to clean up")
                 recorder.recordCleanup(confirmed: true)
                 return 1
             }
         }
-        await entered.wait()
+        defer { mayFinish.open(); task.cancel() }
+        try await entered.wait(phase: "worker acquired heavy lease")
         task.cancel()
         XCTAssertEqual(resources.snapshot().activeJob, .smartErase)
         XCTAssertThrowsError(try resources.acquire(.formula)) {
             XCTAssertEqual($0 as? LocalInferenceResourceError, .busy)
         }
-        await mayFinish.open()
-        do { _ = try await task.value; XCTFail("Late successful result must be discarded") }
+        mayFinish.open()
+        do { _ = try await task.value(phase: "cancelled worker completed cleanup"); XCTFail("Late successful result must be discarded") }
         catch { XCTAssertTrue(error is CancellationError) }
         XCTAssertNil(resources.snapshot().activeJob)
         let last = try XCTUnwrap(resources.snapshot().lastJobs.first)
@@ -134,14 +136,14 @@ final class LocalInferenceResourceTests: XCTestCase {
     func testRepeatedAcquireCancelRacesCannotStrandGate() async throws {
         let resources = LocalInferenceResources()
         for _ in 0..<128 {
-            let task = Task.detached {
+            let task = InferenceTestOperation {
                 try await resources.withJob(.formula) { _ in
                     await Task.yield()
                     return 1
                 }
             }
             task.cancel()
-            do { _ = try await task.value }
+            do { _ = try await task.value(phase: "acquire/cancel race completed") }
             catch { XCTAssertTrue(error is CancellationError) }
             XCTAssertNil(resources.snapshot().activeJob)
         }
@@ -165,20 +167,6 @@ final class LocalInferenceResourceTests: XCTestCase {
 
 private enum InferenceTestFailure: Error { case expected }
 private final class InferenceTestInput: @unchecked Sendable { let value = 7 }
-
-private actor InferenceTestLatch {
-    private var opened = false
-    private var continuation: CheckedContinuation<Void, Never>?
-    func wait() async {
-        if opened { return }
-        await withCheckedContinuation { continuation = $0 }
-    }
-    func open() {
-        opened = true
-        let waiting = continuation; continuation = nil
-        waiting?.resume()
-    }
-}
 
 private final class InferenceTestCounter: @unchecked Sendable {
     private let lock = NSLock()

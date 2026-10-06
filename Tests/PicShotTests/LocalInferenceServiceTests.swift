@@ -140,15 +140,12 @@ final class LocalInferenceServiceTests: XCTestCase {
     func testCancellationHoldsLeaseThroughActualChildExitAndPrivateDirectoryCleanup() async throws {
         for harness in InferenceProcessHarness.makeAll() {
             let resources = LocalInferenceResources()
-            let launched = expectation(description: "\(harness.kind) fixture launched")
-            let exited = expectation(description: "\(harness.kind) fixture exited")
-            let allowCleanup = DispatchSemaphore(value: 0)
-            // Always unblock the detached fixture, even if an assertion fails.
-            defer { allowCleanup.signal() }
-            let task = Task {
+            let launched = InferenceTestLatch(), exited = InferenceTestLatch()
+            let allowCleanup = InferenceTestLatch()
+            let task = InferenceTestOperation {
                 try await resources.withJob(harness.kind) { recorder in
                     try await withTaskCancellationHandler(operation: {
-                        try await Task.detached { () throws -> Int in
+                        try await Task.detached { () async throws -> Int in
                             let fm = FileManager.default
                             let directory = fm.temporaryDirectory.appendingPathComponent("picshot-inference-fixture-\(UUID().uuidString)")
                             recorder.willCreateTemporaryDirectory()
@@ -158,23 +155,13 @@ final class LocalInferenceServiceTests: XCTestCase {
                                 recorder.recordCleanup(confirmed: LocalInferenceResources.removalIsConfirmed(at: directory))
                             }
                             let process = Self.sleepProcess()
-                            try harness.start(process); recorder.recordLaunch(); launched.fulfill()
-                            let deadline = ProcessInfo.processInfo.systemUptime + 5
-                            while process.isRunning && ProcessInfo.processInfo.systemUptime < deadline {
-                                if harness.isCancelled() { harness.stop() }
-                                var info = proc_taskinfo()
-                                let read = proc_pidinfo(process.processIdentifier, PROC_PIDTASKINFO, 0, &info, Int32(MemoryLayout<proc_taskinfo>.size))
-                                recorder.recordResidentBytes(read == Int32(MemoryLayout<proc_taskinfo>.size) ? info.pti_resident_size : nil)
-                                Thread.sleep(forTimeInterval: 0.01)
-                            }
-                            let leaked = process.isRunning
-                            if leaked { kill(process.processIdentifier, SIGKILL) }
-                            process.waitUntilExit()
+                            try harness.start(process); recorder.recordLaunch(); launched.open()
+                            let leaked = Self.pollUntilFixtureExit(process, harness: harness, recorder: recorder)
                             recorder.recordExit(status: process.terminationStatus, reason: process.terminationReason == .exit ? .exit : .uncaughtSignal)
-                            exited.fulfill()
+                            exited.open()
                             // Hold cleanup long enough for the test to check
                             // ownership even after the child has already exited.
-                            _ = allowCleanup.wait(timeout: .now() + 5)
+                            try await allowCleanup.wait(timeout: 5, phase: "\(harness.kind) private directory cleanup released")
                             if leaked { throw InferenceProcessFixtureError.didNotExit }
                             if harness.isCancelled() { throw CancellationError() }
                             return 1
@@ -182,16 +169,18 @@ final class LocalInferenceServiceTests: XCTestCase {
                     }, onCancel: { harness.cancel() })
                 }
             }
-            await fulfillment(of: [launched], timeout: 3)
+            // Always unblock and cancel the fixture even on a phase timeout.
+            defer { allowCleanup.open(); task.cancel() }
+            try await launched.wait(phase: "\(harness.kind) fixture launched")
             task.cancel()
-            await fulfillment(of: [exited], timeout: 4)
+            try await exited.wait(timeout: 4, phase: "\(harness.kind) fixture exited")
             XCTAssertEqual(resources.snapshot().activeJob, harness.kind)
             XCTAssertTrue(resources.snapshot().lastJobs.isEmpty)
             XCTAssertThrowsError(try resources.acquire(.table)) {
                 XCTAssertEqual($0 as? LocalInferenceResourceError, .busy)
             }
-            allowCleanup.signal()
-            do { _ = try await task.value; XCTFail("Cancelled fixture should fail") }
+            allowCleanup.open()
+            do { _ = try await task.value(phase: "\(harness.kind) cleanup and cancellation completed"); XCTFail("Cancelled fixture should fail") }
             catch { XCTAssertTrue(error is CancellationError) }
             XCTAssertNil(resources.snapshot().activeJob)
             let last = try XCTUnwrap(resources.snapshot().lastJobs.first)
@@ -201,6 +190,24 @@ final class LocalInferenceServiceTests: XCTestCase {
             XCTAssertNotNil(last.childElapsedSeconds)
             XCTAssertEqual(last.temporaryDirectoryCleanup, .confirmed)
         }
+    }
+
+    /// Keep the Foundation/POSIX polling loop synchronous, as in production;
+    /// the subsequent test-only cleanup handshake suspends asynchronously.
+    private static func pollUntilFixtureExit(_ process: Process, harness: InferenceProcessHarness,
+                                             recorder: LocalInferenceJobRecorder) -> Bool {
+        let deadline = ProcessInfo.processInfo.systemUptime + 5
+        while process.isRunning && ProcessInfo.processInfo.systemUptime < deadline {
+            if harness.isCancelled() { harness.stop() }
+            var info = proc_taskinfo()
+            let read = proc_pidinfo(process.processIdentifier, PROC_PIDTASKINFO, 0, &info, Int32(MemoryLayout<proc_taskinfo>.size))
+            recorder.recordResidentBytes(read == Int32(MemoryLayout<proc_taskinfo>.size) ? info.pti_resident_size : nil)
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        let leaked = process.isRunning
+        if leaked { kill(process.processIdentifier, SIGKILL) }
+        process.waitUntilExit()
+        return leaked
     }
 
     private static func sleepProcess() -> Process {

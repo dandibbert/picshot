@@ -398,13 +398,19 @@ final class RecordingPauseTests: XCTestCase {
         XCTAssertEqual(videoRange.end.seconds, 1.3, accuracy: 0.025)
         try checkStoredVideoTimeline(asset: asset, track: videoTrack, expectedDuration: 1.3)
         try decodeAndCheck(asset: asset, track: videoTrack, audio: false, expectedDuration: 1.3)
+        var audioChannelCounts = Set<UInt32>()
         for track in audioTracks {
             let formats = try await track.load(.formatDescriptions)
-            XCTAssertEqual(CMFormatDescriptionGetMediaSubType(try XCTUnwrap(formats.first)), kAudioFormatMPEG4AAC)
-            try decodeAndCheck(asset: asset, track: track, audio: true, expectedDuration: 1.3)
+            let format = try XCTUnwrap(formats.first)
+            XCTAssertEqual(CMFormatDescriptionGetMediaSubType(format), kAudioFormatMPEG4AAC)
+            let encodedAudio = try XCTUnwrap(CMAudioFormatDescriptionGetStreamBasicDescription(format)).pointee
+            audioChannelCounts.insert(encodedAudio.mChannelsPerFrame)
+            try decodeAndCheck(asset: asset, track: track, audio: true, expectedDuration: 1.3,
+                               expectedAudioChannels: encodedAudio.mChannelsPerFrame)
             let range = try await track.load(.timeRange)
             XCTAssertEqual(range.duration.seconds, 1.3, accuracy: 0.06, "AAC must not keep pause-sized gaps")
         }
+        XCTAssertEqual(audioChannelCounts, includeMicrophone ? Set<UInt32>([1, 2]) : Set<UInt32>([2]))
         let generator = AVAssetImageGenerator(asset: asset)
         generator.requestedTimeToleranceBefore = .zero
         generator.requestedTimeToleranceAfter = .zero
@@ -431,6 +437,9 @@ final class RecordingPauseTests: XCTestCase {
         var previousEnd = CMTime.zero
         var samples = 0
         while let sample = output.copyNextSampleBuffer() {
+            let sampleCount = CMSampleBufferGetNumSamples(sample)
+            if sampleCount == 0 { assertEmptyMarker(sample); continue }
+            XCTAssertGreaterThan(sampleCount, 0)
             let timestamp = CMSampleBufferGetPresentationTimeStamp(sample)
             let duration = CMSampleBufferGetDuration(sample)
             XCTAssertTrue(timestamp.isNumeric)
@@ -439,8 +448,10 @@ final class RecordingPauseTests: XCTestCase {
             XCTAssertEqual(CMTimeCompare(timestamp, previousEnd), 0,
                 "Stored video packets must be adjacent; frame \(samples), PTS \(timestamp.seconds), prior end \(previousEnd.seconds)")
             previousEnd = CMTimeAdd(timestamp, duration)
-            XCTAssertNotNil(CMSampleBufferGetDataBuffer(sample))
-            samples += CMSampleBufferGetNumSamples(sample)
+            let payload = try XCTUnwrap(CMSampleBufferGetDataBuffer(sample))
+            XCTAssertGreaterThan(CMBlockBufferGetDataLength(payload), 0)
+            XCTAssertGreaterThan(CMSampleBufferGetTotalSampleSize(sample), 0)
+            samples += sampleCount
         }
         XCTAssertEqual(reader.status, .completed, reader.error?.localizedDescription ?? "Stored packet read did not complete")
         XCTAssertEqual(samples, 13)
@@ -448,8 +459,21 @@ final class RecordingPauseTests: XCTestCase {
             "Stored H.264 sample timing must reach the full active duration")
     }
 
-    private func decodeAndCheck(asset: AVAsset, track: AVAssetTrack, audio: Bool, expectedDuration: Double) throws {
+    /// Core Media permits attachment-only buffers for stream events such as
+    /// discontinuity/drain markers. They contain zero media samples and must not
+    /// replace a real packet's endpoint, even when their PTS is invalid.
+    /// https://developer.apple.com/documentation/coremedia/cmsamplebuffer-api
+    private func assertEmptyMarker(_ sample: CMSampleBuffer) {
+        XCTAssertEqual(CMSampleBufferGetNumSamples(sample), 0)
+        XCTAssertEqual(CMSampleBufferGetTotalSampleSize(sample), 0)
+        XCTAssertNil(CMSampleBufferGetImageBuffer(sample))
+        if let data = CMSampleBufferGetDataBuffer(sample) { XCTAssertEqual(CMBlockBufferGetDataLength(data), 0) }
+    }
+
+    private func decodeAndCheck(asset: AVAsset, track: AVAssetTrack, audio: Bool, expectedDuration: Double,
+                                expectedAudioChannels: UInt32? = nil) throws {
         let reader = try AVAssetReader(asset: asset)
+        defer { if reader.status == .reading { reader.cancelReading() } }
         let settings: [String: Any] = audio ? [
             AVFormatIDKey: kAudioFormatLinearPCM, AVLinearPCMIsFloatKey: true,
             AVLinearPCMBitDepthKey: 32, AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsNonInterleaved: false
@@ -458,28 +482,70 @@ final class RecordingPauseTests: XCTestCase {
         reader.add(output)
         XCTAssertTrue(reader.startReading())
         var previous = CMTime.invalid
+        var previousPCMEnd = CMTime.invalid
         var end = 0.0
         var samples = 0
+        var pcmSquaredSum = 0.0
+        var pcmValueCount = 0
         while let sample = output.copyNextSampleBuffer() {
+            let sampleCount = CMSampleBufferGetNumSamples(sample)
+            if sampleCount == 0 { assertEmptyMarker(sample); continue }
+            XCTAssertGreaterThan(sampleCount, 0)
             let timestamp = CMSampleBufferGetPresentationTimeStamp(sample)
+            XCTAssertTrue(timestamp.isNumeric)
             if previous.isValid { XCTAssertGreaterThan(CMTimeCompare(timestamp, previous), 0) }
             XCTAssertGreaterThanOrEqual(timestamp.seconds, -0.03) // AAC encoder priming may precede zero.
             XCTAssertLessThan(timestamp.seconds, expectedDuration + 0.03)
             if audio {
+                let format = try XCTUnwrap(CMSampleBufferGetFormatDescription(sample))
+                let pcm = try XCTUnwrap(CMAudioFormatDescriptionGetStreamBasicDescription(format)).pointee
+                let channels = try XCTUnwrap(expectedAudioChannels)
+                XCTAssertEqual(pcm.mFormatID, kAudioFormatLinearPCM)
+                XCTAssertEqual(pcm.mSampleRate, 48_000)
+                XCTAssertEqual(pcm.mChannelsPerFrame, channels)
+                XCTAssertEqual(pcm.mBitsPerChannel, 32)
+                XCTAssertNotEqual(pcm.mFormatFlags & kAudioFormatFlagIsFloat, 0)
+                XCTAssertEqual(pcm.mFormatFlags & kAudioFormatFlagIsNonInterleaved, 0)
                 let duration = CMSampleBufferGetDuration(sample)
                 XCTAssertTrue(duration.isNumeric)
                 XCTAssertGreaterThan(duration.seconds, 0)
-                end = max(end, timestamp.seconds + duration.seconds)
-            }
+                XCTAssertEqual(duration.seconds, Double(sampleCount) / 48_000, accuracy: 1.0 / 48_000,
+                    "Decoded PCM duration must match the actual audio-frame count")
+                if previousPCMEnd.isNumeric {
+                    XCTAssertEqual(timestamp.seconds, previousPCMEnd.seconds, accuracy: 1.0 / 48_000,
+                        "Decoded PCM packets must be continuous across the removed pauses")
+                }
+                previousPCMEnd = CMTimeAdd(timestamp, duration)
+                end = max(end, previousPCMEnd.seconds)
+                let data = try XCTUnwrap(CMSampleBufferGetDataBuffer(sample))
+                let valueCount = sampleCount * Int(channels)
+                let byteCount = valueCount * MemoryLayout<Float>.size
+                XCTAssertEqual(CMBlockBufferGetDataLength(data), byteCount)
+                guard byteCount > 0, byteCount <= 1_048_576, CMBlockBufferGetDataLength(data) == byteCount else {
+                    throw RecordingError.failed("The decoded PCM fixture has invalid payload size.")
+                }
+                var values = [Float](repeating: 0, count: valueCount)
+                let copied = values.withUnsafeMutableBytes { bytes in
+                    CMBlockBufferCopyDataBytes(data, atOffset: 0, dataLength: byteCount, destination: bytes.baseAddress!)
+                }
+                XCTAssertEqual(copied, noErr)
+                XCTAssertTrue(values.allSatisfy { $0.isFinite }, "Decoded PCM must contain finite samples")
+                for value in values where value.isFinite { pcmSquaredSum += Double(value) * Double(value) }
+                pcmValueCount += valueCount
+            } else { XCTAssertNotNil(CMSampleBufferGetImageBuffer(sample)) }
             previous = timestamp
-            samples += 1
-            if audio { XCTAssertNotNil(CMSampleBufferGetDataBuffer(sample)) }
-            else { XCTAssertNotNil(CMSampleBufferGetImageBuffer(sample)) }
+            samples += sampleCount
         }
         XCTAssertEqual(reader.status, .completed, reader.error?.localizedDescription ?? "Decode did not complete")
         if audio {
-            XCTAssertGreaterThan(samples, 20)
+            // Decoder chunking is implementation-dependent (one run emitted only
+            // eight buffers). Validate real PCM frames and bytes instead. Retain
+            // the existing 60ms AAC priming/padding allowance in both checks.
+            XCTAssertEqual(Double(samples), expectedDuration * 48_000, accuracy: 0.06 * 48_000)
             XCTAssertEqual(end, expectedDuration, accuracy: 0.06)
+            XCTAssertGreaterThan(pcmValueCount, 0)
+            XCTAssertGreaterThan(pcmSquaredSum / Double(max(1, pcmValueCount)), 0.00001,
+                "The fixture's tone must survive AAC encoding as non-silent PCM")
         } else {
             // All 13 source frames must decode, including the final green frame
             // whose presentation starts at 1.2s. Its real 0.1s extent is checked
