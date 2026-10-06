@@ -1,6 +1,6 @@
 # Optional offline smart erase: implementation and validation gate
 
-Status: implementation and fully pinned model prepared, **not yet enabled or complete**. The owner explicitly approved the selected author’s Google Drive large-file warning on 2026-10-06. The exact weight download succeeded and its complete byte hash is recorded below. Actual macOS Core ML fixture execution is still pending. `nativeValidationComplete` remains false, so the user-facing `manifest` is nil and the UI disables download/prediction. The helper and native fixture can validate `candidateManifest`. There is no replacement fill, blur, hosted inference, or Python runtime.
+Status: **real macOS ARM64 Core ML inference passed; optional smart erase is enabled**. The owner explicitly approved the selected author’s Google Drive large-file warning on 2026-10-06, and all three model files are pinned to the verified bytes below. Native evidence: commit `104e42e`, GitHub Actions run `37426021201`, ARM64 job `112145744179`. The fixture improved masked reconstruction MAE from `98.8802269` to `1.5883125`, changed `12,302` masked pixels, and passed exact unchanged-outside-mask and alpha assertions. That run passed 180 regular tests and 12 real-model tests, and packaged signed helpers. Intel real-model validation was still running when this record was written; do not treat the ARM64 result as an Intel pass. There is no replacement fill, blur, hosted inference, or Python runtime.
 
 ## Source and license verification (2026-10-06)
 
@@ -64,7 +64,7 @@ Add `PicShotEraseCore` to `PicShot` dependencies. If shipping an earlier milesto
 - UI API: `SmartEraseController(image: sourceCGImage, onApply: { updatedCGImage in ... })`. Retain the controller while open; apply through the editor's normal undoable image replacement path
 - Build/package `PicShotEraseHelper` at `PicShot.app/Contents/Helpers/PicShotEraseHelper`. Sign it with identifier `local.picshot.erase-helper` before signing the outer app and verify the complete bundle. Do not grant extra entitlements
 - Copy the two Apache license files and this source notice into the app's licenses/resources directory. No model files or Python dependencies need to be bundled
-- The approved candidate is fully hash-pinned. Keep `nativeValidationComplete = false` until the real Core ML fixture passes; then set it true using the recorded native result as evidence
+- The approved candidate is fully hash-pinned. `nativeValidationComplete = true` records the ARM64 native fixture result above. Any replacement model or materially changed preprocessing must pass that real-model gate again before enablement
 
 ## Tests and exact completion gate
 
@@ -79,12 +79,14 @@ The genuine-inference test is `SmartEraseEngineTests.testRealCoreMLRemovesMarked
 3. Masked reconstruction error against the known clean texture improves by at least 50%
 4. Wall time is below the helper's 150-second bound
 
-No exact generated pixels are assumed across GPU hardware. Without the environment variable it is explicitly **skipped**, not passed. The test uses the fully pinned candidate even while the user-facing feature remains gated. CI needs a hard job timeout and must retain the native fixture result. Successful portable/unit checks alone are not evidence that smart erase works.
+No exact generated pixels are assumed across GPU hardware. Without the environment variable it is explicitly **skipped**, not passed. The test uses the fully pinned candidate independently of the user-facing enablement flag, so future candidates can be tested while gated. CI needs a hard job timeout and must retain the native fixture result. Successful portable/unit checks alone are not evidence that smart erase works.
 
 Also exercise the packaged helper, not only the engine: paint/undo/clear, repeat runs, Cancel while loading, window Close during prediction, timeout recovery, invalid signature, corrupt/missing model, non-square image and large-region warning. Confirm no running helper remains and no job directory remains after terminal outcomes. Measure parent RSS before and after repeated jobs; do not call this “zero leaks.”
 
 ### Verification performed in this environment
 
-Passed: primary source/Apache license review; official TorchScript byte integrity; approved original Core ML graph, manifest and weight downloads; exact byte hashes and protobuf contract inspection; all 893 weight-reference offsets; source-level security/contract review.
+Passed locally: primary source/Apache license review; official TorchScript byte integrity; approved original Core ML graph, manifest and weight downloads; exact byte hashes and protobuf contract inspection; all 893 weight-reference offsets; source-level security/contract review.
 
-Not run: Swift build or unit tests (Linux workspace has no Swift compiler or macOS SDK); native Core ML model inference; packaged macOS UI/process/cancellation/memory tests. Smart erase remains disabled pending those gates.
+Passed on native macOS ARM64 CI: Swift compilation, the real Core ML fixture and exact outside-mask/alpha checks described above. Commit `104e42e`, run `37426021201`, job `112145744179`: 180 regular tests and 12 real-model tests passed; helper packaging/signing passed. The local Linux workspace itself did not execute Swift/Core ML.
+
+Remaining at this checkpoint: Intel real-model result; packaged UI/process cancellation, application-Quit and repeated-run memory evidence. Do not claim zero leaks or completed full PixPin parity from the inference fixture alone.

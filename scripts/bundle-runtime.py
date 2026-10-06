@@ -24,3 +24,12 @@ if frameworks:
     for framework in frameworks: subprocess.run(['codesign', '--force', '--deep', '--sign', '-', str(framework)], check=True)
 subprocess.run(['codesign', '--force', '--sign', '-', '--identifier', 'local.picshot.mlhelper', str(helper)], check=True)
 subprocess.run(['codesign', '--verify', '--strict', str(helper)], check=True)
+
+# macOS 14.0–14.3 do not ship Translation.framework. Availability guards
+# must result in an optional framework load, not merely weak symbols.
+loads = subprocess.check_output(['otool', '-l', str(app/'Contents/MacOS/PicShot')], text=True)
+for block in loads.split('Load command ')[1:]:
+    if 'Translation.framework/' in block or 'libswiftTranslation' in block:
+        print('Translation linkage:', '\n'.join(line.strip() for line in block.splitlines() if 'cmd ' in line or 'name ' in line))
+        if 'cmd LC_LOAD_WEAK_DYLIB' not in block:
+            raise RuntimeError('Translation must be weak-linked for macOS 14.0 launch compatibility')

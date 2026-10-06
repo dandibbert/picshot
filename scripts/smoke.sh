@@ -1,6 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+export PICSHOT_SMOKE_ERASE_MODEL_DIR="$PWD/.build/model-fixtures/erase"
 export PICSHOT_SMOKE_FORMULA_MODEL_DIR="$PWD/.build/model-fixtures/formula"
 export PICSHOT_SMOKE_FORMULA_INPUT="$PWD/Tests/PicShotMLHelperTests/Fixtures/energy.png"
 export PICSHOT_SMOKE_TABLE_MODEL_DIR="$PWD/.build/model-fixtures/table"
@@ -34,6 +35,8 @@ assert r['resourceCycleCount']==40 and r['baselineRSSBytes']>0,r
 assert r['packagedModelEvidence']['formulaLaTeX'].replace(' ','')=='E=mc^{2}',r
 assert r['packagedModelEvidence']['tableRows']==4 and r['packagedModelEvidence']['tableColumns']==3,r
 assert r['finalRetainedAppControllersOrContent']==0,r
+assert r['packagedModelEvidence']['smartErase']['status']=='passed',r
+assert r['packagedModelEvidence']['smartErase']['outsideMaskByteMismatches']==0,r
 print(json.dumps(r,indent=2))
 PY
 done

@@ -18,8 +18,8 @@ configuration.environment = [
     "PICSHOT_SMOKE_TEST": "1",
     "PICSHOT_SMOKE_REPORT": CommandLine.arguments[2],
 ]
-for key in ["PICSHOT_SMOKE_FORMULA_MODEL_DIR", "PICSHOT_SMOKE_FORMULA_INPUT", "PICSHOT_SMOKE_TABLE_MODEL_DIR", "PICSHOT_SMOKE_TABLE_INPUT"] {
-    if let value = ProcessInfo.processInfo.environment[key] { configuration.environment?[key] = value }
+for key in ["PICSHOT_SMOKE_FORMULA_MODEL_DIR", "PICSHOT_SMOKE_FORMULA_INPUT", "PICSHOT_SMOKE_TABLE_MODEL_DIR", "PICSHOT_SMOKE_TABLE_INPUT", "PICSHOT_SMOKE_ERASE_MODEL_DIR"] {
+    if let value = ProcessInfo.processInfo.environment[key] { configuration.environment[key] = value }
 }
 var launched: NSRunningApplication?
 var launchError: Error?
@@ -31,7 +31,7 @@ NSWorkspace.shared.openApplication(at: appURL, configuration: configuration) { a
         callbackReceived = true
     }
 }
-let deadline = Date().addingTimeInterval(90)
+let deadline = Date().addingTimeInterval(210)
 while Date() < deadline {
     if callbackReceived {
         if let launchError {
@@ -46,6 +46,6 @@ while Date() < deadline {
     }
     RunLoop.current.run(until: Date().addingTimeInterval(0.1))
 }
-fputs("LaunchServices smoke app did not terminate within 90 seconds\n", stderr)
+fputs("LaunchServices smoke app did not terminate within 210 seconds\n", stderr)
 launched?.terminate()
 exit(1)

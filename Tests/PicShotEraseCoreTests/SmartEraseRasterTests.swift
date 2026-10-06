@@ -27,8 +27,10 @@ final class SmartEraseRasterTests: XCTestCase {
         XCTAssertEqual(output.rgba[25 * 4], 128)
     }
     func testPrematureModelEnablingIsForbidden() {
-        // Until the full model's native validation is recorded, no Download
-        // action or prediction path can accidentally enable an unpinned pack.
+        // User-facing enablement must agree with the recorded native gate,
+        // and every enabled download remains an exact immutable byte manifest.
+        XCTAssertEqual(SmartEraseModelPack.manifest != nil, SmartEraseModelPack.nativeValidationComplete)
+        XCTAssertEqual(SmartEraseModelPack.candidateManifest.totalBytes, 216_647_386)
         if let manifest = SmartEraseModelPack.manifest {
             XCTAssertEqual(Set(manifest.assets.map(\.name)), Set(["Manifest.json", "model.mlmodel", "weight.bin"]))
             for asset in manifest.assets { XCTAssertEqual(asset.sha256.count, 64); XCTAssertGreaterThan(asset.bytes, 0) }

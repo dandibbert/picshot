@@ -21,6 +21,9 @@ import PicShotCore
                 modelEvidence["tableRows"]=result.table.rowCount;modelEvidence["tableColumns"]=result.table.columnCount
                 let table=TableEditorController(table:result.table,sourceImage:tableImage);table.showWindow(nil);try await Task.sleep(nanoseconds:150_000_000);if let w=table.window{try snapshot(w,to:directory.appendingPathComponent("table-editor.png"))};table.close()
             }
+            if let erasePath=env["PICSHOT_SMOKE_ERASE_MODEL_DIR"] {
+                modelEvidence["smartErase"]=try await SmartEraseSmokeFixture.verifyPackagedHelper(modelDirectory:URL(fileURLWithPath:erasePath),evidenceDirectory:directory)
+            }
             let sample=ImageEditorRenderer.makeSampleImage()
             let record=try history.add(sample,title:"示例截图")
             try history.updateText("PicShot native screenshot fixture",id:record.id)

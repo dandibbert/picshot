@@ -13,6 +13,12 @@ public struct CaptureRecord: Codable, Identifiable, Equatable, Sendable {
     public init(id: UUID = UUID(), createdAt: Date = Date(), title: String, filename: String, width: Int, height: Int, byteCount: Int64, text: String = "", starred: Bool = false) {
         self.id=id; self.createdAt=createdAt; self.title=title; self.filename=filename; self.width=width; self.height=height; self.byteCount=byteCount; self.text=text; self.starred=starred
     }
+    public var hasSafeStorageMetadata: Bool {
+        guard filename.hasSuffix(".png"), filename.count == 40, UUID(uuidString: String(filename.dropLast(4))) != nil,
+              width > 0, height > 0, width <= 100_000_000 / height, byteCount >= 0, byteCount <= 1_073_741_824,
+              text.utf8.count <= 1_048_576, title.utf8.count <= 4_096 else { return false }
+        return true
+    }
     public func matches(_ query: String) -> Bool {
         query.isEmpty || title.localizedCaseInsensitiveContains(query) || text.localizedCaseInsensitiveContains(query)
     }

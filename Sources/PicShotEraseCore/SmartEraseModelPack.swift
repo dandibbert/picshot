@@ -1,13 +1,13 @@
 import Foundation
 import PicShotFormulaCore
 
-/// Candidate bytes are fully pinned and may be used by native validation. User
-/// download/inference stays gated until the actual Core ML fixture passes.
+/// Fixed model bytes verified by genuine macOS ARM64 Core ML inference.
+/// Validation: commit 104e42e, run 37426021201, job 112145744179.
 public enum SmartEraseModelPack {
     public static let source = URL(string: "https://github.com/john-rocky/CoreML-Models#lama")!
     public static let license = URL(string: "https://github.com/advimman/lama/blob/main/LICENSE")!
     public static let distribution = URL(string: "https://drive.google.com/drive/folders/1s_uICJQykFFxgVubpBNeLLDL0JsxgdCd")!
-    public static let nativeValidationComplete = false
+    public static let nativeValidationComplete = true
     public static var manifest: ModelPackManifest? { nativeValidationComplete ? candidateManifest : nil }
 
     public static let candidateManifest: ModelPackManifest = {

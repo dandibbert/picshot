@@ -16,7 +16,14 @@ import PicShotCore
         thumbnails.totalCostLimit = 24 * 1024 * 1024; thumbnails.countLimit = 80
         do {
             try FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true)
-            if let data = try? Data(contentsOf: self.directory.appendingPathComponent("index.json")) { records = try JSONDecoder().decode([CaptureRecord].self, from: data) }
+            let indexURL=self.directory.appendingPathComponent("index.json")
+            if FileManager.default.fileExists(atPath:indexURL.path) {
+                let bytes=try indexURL.resourceValues(forKeys:[.fileSizeKey]).fileSize ?? 0
+                guard bytes <= 16_777_216 else {throw PicShotError.message("历史索引超过安全大小，原文件已保留")}
+                let loaded=try JSONDecoder().decode([CaptureRecord].self,from:Data(contentsOf:indexURL))
+                // Never let an edited/corrupt index direct reads or retention cleanup outside this store.
+                records=Array(loaded.filter(\.hasSafeStorageMetadata).prefix(10_000))
+            }
             records.removeAll { !FileManager.default.fileExists(atPath: self.directory.appendingPathComponent($0.filename).path) }
             try prune()
         } catch { NSLog("History: %@", error.localizedDescription) }
