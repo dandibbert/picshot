@@ -41,7 +41,9 @@ enum FormulaRenderResources {
     }
 
     private static func currentExecutableURL() throws -> URL {
-        var bytes = [CChar](repeating: 0, count: Int(PROC_PIDPATHINFO_MAXSIZE))
+        // proc_pidpath accepts at most 4 * MAXPATHLEN (4096 bytes). The C macro
+        // PROC_PIDPATHINFO_MAXSIZE is not imported by every supported Swift SDK.
+        var bytes = [CChar](repeating: 0, count: 4096)
         let count = bytes.withUnsafeMutableBytes { buffer in
             proc_pidpath(getpid(), buffer.baseAddress, UInt32(buffer.count))
         }
