@@ -59,6 +59,7 @@ enum GIFHelperExecutable {
 
 struct GIFExportProcessMetrics: Codable, Equatable, Sendable {
     var outcome = "failed"
+    var lastStage = "admission"
     var elapsedSeconds: TimeInterval = 0
     var childLaunched = false
     var childExitConfirmed = false
@@ -78,6 +79,10 @@ struct GIFExportProcessMetrics: Codable, Equatable, Sendable {
     var stdoutBytes = 0
     var stderrBytes = 0
     var stderrTruncated = false
+    // Bounded protocol diagnostics. Admission failures never include a source
+    // path or media contents; retain the first rejecting predicate for QA.
+    var helperErrorCode: String?
+    var helperErrorMessage: String?
     var outputBytes: Int?
     var sourceBytes: Int64?
     var configuredWallSeconds: TimeInterval = 300
@@ -158,8 +163,10 @@ actor GIFExportProcessService {
             try job.checkCancellation()
             guard configuration.wallSeconds.isFinite, configuration.wallSeconds > 0,
                   configuration.residentLimitBytes > 0 else { throw GIFExportProcessError.invalidProtocol }
+            job.update { $0.lastStage = "executableValidation" }
             let executable = try autoreleasepool { try configuration.executable() }
             guard ProcessInfo.processInfo.systemUptime < started + configuration.wallSeconds else { throw GIFExportProcessError.timedOut }
+            job.update { $0.lastStage = "destinationPreparation" }
             let destination: URL
             if let destinationURL {
                 guard destinationURL.isFileURL else { throw GIFExportProcessError.invalidSource }
@@ -175,6 +182,7 @@ actor GIFExportProcessService {
                 .appendingPathComponent(".picshot-gif-job-" + UUID().uuidString, isDirectory: true)
             try FileManager.default.createDirectory(at: jobDirectory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
             directory = jobDirectory; job.setDirectory(jobDirectory, ownedDestinationDirectory: ownedDestinationDirectory)
+            job.update { $0.lastStage = "sourceSnapshot" }
             try copySource(sourceURL, to: jobDirectory.appendingPathComponent("source.mp4"), job: job,
                            deadline: started + configuration.wallSeconds)
             try job.checkCancellation()
@@ -191,6 +199,7 @@ actor GIFExportProcessService {
             let reader = GIFProcessPipeState(progressLimit: options.maximumFrames + 2)
             reader.start(stdout: output.fileHandleForReading, stderr: errors.fileHandleForReading)
             defer { reader.close() }
+            job.update { $0.lastStage = "helperLaunch" }
             do { try process.run() }
             catch { reader.closeWriters(output: output, errors: errors); throw error }
             job.setProcess(process)
@@ -213,6 +222,7 @@ actor GIFExportProcessService {
             }
             var stopStarted: TimeInterval?
             var sentTerminate = false, sentKill = false
+            job.update { $0.lastStage = "helperRunning" }
             while process.isRunning {
                 let now = ProcessInfo.processInfo.systemUptime
                 sample(job: job, child: process.processIdentifier)
@@ -249,6 +259,7 @@ actor GIFExportProcessService {
             }
             process.waitUntilExit() // Already observed exited; never an unbounded running-child wait.
             job.recordExit(process)
+            job.update { $0.lastStage = "helperResponse" }
             let drainDeadline = ProcessInfo.processInfo.systemUptime + 1
             while !reader.snapshot().finished, ProcessInfo.processInfo.systemUptime < drainDeadline {
                 Thread.sleep(forTimeInterval: 0.01)
@@ -285,6 +296,7 @@ actor GIFExportProcessService {
             if (statistics.childSampledPeakResidentBytes ?? 0) > configuration.residentLimitBytes ||
                 (statistics.childReportedPeakResidentBytes ?? 0) > configuration.residentLimitBytes { throw GIFExportProcessError.memoryLimit }
             let result = jobDirectory.appendingPathComponent("result.gif")
+            job.update { $0.lastStage = "outputVerification" }
             try validateOutput(result, expectedBytes: bytes, expectedFrames: frames, duration: duration, options: options) {
                 try job.checkCancellation()
                 guard ProcessInfo.processInfo.systemUptime < started + configuration.wallSeconds else { throw GIFExportProcessError.timedOut }
@@ -293,13 +305,16 @@ actor GIFExportProcessService {
             guard ProcessInfo.processInfo.systemUptime < started + configuration.wallSeconds else { throw GIFExportProcessError.timedOut }
             // The private job sits beside the destination, so this publication is
             // on one filesystem and cannot replace a concurrently-created file.
+            job.update { $0.lastStage = "publication" }
             try FileManager.default.moveItem(at: result, to: destination)
             completed = true
             job.markPublished()
             job.update { $0.outputBytes = bytes; $0.outcome = "succeeded" }
+            job.update { $0.lastStage = "stagingCleanup" }
             try FileManager.default.removeItem(at: jobDirectory)
             guard removalConfirmed(jobDirectory) else { throw GIFExportProcessError.failed("GIF staging cleanup could not be confirmed.") }
             job.update { $0.temporaryDirectoryRemoved = true }
+            job.update { $0.lastStage = "complete" }
             sample(job: job, child: nil)
             progress?(1) // Never report completion before actual publication/cleanup.
             return destination
@@ -425,6 +440,10 @@ private final class GIFProcessJob: @unchecked Sendable {
             $0.stdoutBytes = value.stdoutBytes; $0.stderrBytes = value.stderrBytes; $0.stderrTruncated = value.stderrTruncated
             $0.childReportedPeakResidentBytes = value.childPeakRSS; $0.childReportedPeakPhysicalFootprintBytes = value.childPeakFootprint
             $0.childReportedResidentSampleCount = value.childRSSCount; $0.childReportedPhysicalFootprintSampleCount = value.childFootprintCount
+            if value.terminal?.kind == .error {
+                $0.helperErrorCode = value.terminal?.errorCode
+                $0.helperErrorMessage = value.terminal?.errorMessage
+            }
         }
     }
     func markStranded() { lock.lock(); stranded = true; lock.unlock() }
@@ -479,28 +498,55 @@ private final class GIFProcessPipeState: @unchecked Sendable {
     private var terminal: GIFHelperEvent?
     private var childPeakRSS: UInt64?, childPeakFootprint: UInt64?
     private var childRSSCount = 0, childFootprintCount = 0
-    private var readers: [FileHandle] = []
+    private var stopping = false
     init(progressLimit: Int) { self.progressLimit = progressLimit }
     func start(stdout: FileHandle, stderr: FileHandle) {
-        readers = [stdout, stderr]
         DispatchQueue(label: "PicShot.GIF.stdout").async { self.read(stdout, isError: false) }
         DispatchQueue(label: "PicShot.GIF.stderr").async { self.read(stderr, isError: true) }
     }
     func closeWriters(output: Pipe, errors: Pipe) { try? output.fileHandleForWriting.close(); try? errors.fileHandleForWriting.close() }
-    func close() { for reader in readers { try? reader.close() } }
+    // Each reader alone owns/closes its fd. Closing from another queue could
+    // race a read against a reused descriptor; the nonblocking poll bounds the
+    // stop observation without cross-thread close or a detached blocked read.
+    func close() { lock.lock(); stopping = true; lock.unlock() }
+    private var shouldStop: Bool { lock.lock(); defer { lock.unlock() }; return stopping }
     private func read(_ handle: FileHandle, isError: Bool) {
+        defer {
+            try? handle.close()
+            lock.lock(); defer { lock.unlock() }
+            if isError { stderrDone = true }
+            else { stdoutDone = true; if !pending.isEmpty, failure == nil { failure = GIFExportProcessError.invalidProtocol } }
+        }
         do {
-            while true {
-                let data = try autoreleasepool { try handle.read(upToCount: 4_096) ?? Data() }
-                if data.isEmpty { break }
-                lock.lock(); consume(data, isError: isError); lock.unlock()
+            let descriptor = handle.fileDescriptor
+            let flags = fcntl(descriptor, F_GETFL)
+            guard flags >= 0, fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0 else {
+                throw GIFExportProcessError.invalidProtocol
+            }
+            var buffer = [UInt8](repeating: 0, count: 4_096)
+            while !shouldStop {
+                var polling = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
+                let ready = poll(&polling, 1, 50)
+                if ready < 0, errno == EINTR { continue }
+                guard ready >= 0, polling.revents & Int16(POLLERR | POLLNVAL) == 0 else {
+                    throw GIFExportProcessError.invalidProtocol
+                }
+                if ready == 0 { continue }
+                // FileHandle.read(upToCount:) can wait for a full requested
+                // chunk or EOF. POSIX read forwards a short progress line now,
+                // while the helper is still alive and cancellation can act.
+                let count = Darwin.read(descriptor, &buffer, buffer.count)
+                if count == 0 { break }
+                if count < 0, errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK { continue }
+                guard count > 0 else { throw GIFExportProcessError.invalidProtocol }
+                autoreleasepool {
+                    let data = Data(buffer.prefix(count))
+                    lock.lock(); consume(data, isError: isError); lock.unlock()
+                }
             }
         } catch {
             lock.lock(); if failure == nil { failure = GIFExportProcessError.invalidProtocol }; lock.unlock()
         }
-        lock.lock(); defer { lock.unlock() }
-        if isError { stderrDone = true }
-        else { stdoutDone = true; if !pending.isEmpty, failure == nil { failure = GIFExportProcessError.invalidProtocol } }
     }
     private func consume(_ data: Data, isError: Bool) {
         if isError {

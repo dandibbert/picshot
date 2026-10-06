@@ -171,6 +171,7 @@ enum GIFHelperMain {
         case GIFExportError.destinationExists: code = "destinationExists"
         case GIFExportError.tooLarge: code = "tooLarge"
         case GIFExportError.unsupportedTransparency: code = "unsupportedTransparency"
+        case is GIFSourceAdmissionFailure: code = "invalidSource"
         case GIFHelperProtocolError.invalidSource: code = "invalidSource"
         case GIFHelperProtocolError.invalidJobDirectory, GIFHelperProtocolError.unexpectedOutput:
             code = "invalidJobDirectory"
@@ -187,6 +188,54 @@ enum GIFHelperMain {
         }
         return GIFHelperEvent(kind: .error, errorCode: code, errorMessage: message)
     }
+}
+
+/// Bounded, path-free diagnostics for a rejected source. These describe only
+/// our admission predicate and a whitelisted box type/offset, never media data.
+struct GIFSourceAdmissionFailure: LocalizedError, Equatable, Sendable {
+    enum Stage: String, Sendable { case jobSource, mp4Path, mp4Open, mp4Stat, mp4Parser }
+    let stage: Stage
+    let check: String
+    let function: String
+    let line: UInt
+    let atomType: String?
+    let offset: UInt64?
+    let count: Int?
+
+    init(stage: Stage, check: StaticString, function: StaticString = #function, line: UInt = #line,
+         atomType: String? = nil, offset: UInt64? = nil, count: Int? = nil) {
+        self.stage = stage
+        self.check = Self.safeLabel(String(describing: check), limit: 48)
+        self.function = Self.safeLabel(String(describing: function), limit: 96)
+        self.line = line
+        if let atomType { self.atomType = Self.knownAtomTypes.contains(atomType) ? atomType : "unrecognized" }
+        else { self.atomType = nil }
+        self.offset = offset
+        self.count = count
+    }
+
+    var errorDescription: String? {
+        var text = "Source admission stage=\(stage.rawValue) check=\(check) function=\(function) line=\(line)"
+        if let atomType { text += " atom=\(atomType)" }
+        if let offset { text += " offset=\(offset)" }
+        if let count { text += " count=\(count)" }
+        return text
+    }
+
+    private static func safeLabel(_ value: String, limit: Int) -> String {
+        String(value.unicodeScalars.prefix(limit).map { scalar -> Character in
+            let allowed = (65...90).contains(scalar.value) || (97...122).contains(scalar.value) ||
+                (48...57).contains(scalar.value) || "_():.-".unicodeScalars.contains(scalar)
+            return allowed ? Character(String(scalar)) : "_"
+        })
+    }
+    private static let knownAtomTypes: Set<String> = [
+        "ftyp", "moov", "mdat", "moof", "mfra", "free", "skip", "wide", "mvhd", "trak", "mvex", "udta", "meta", "iods",
+        "tkhd", "mdia", "edts", "tapt", "mdhd", "hdlr", "minf", "elng", "vmhd", "smhd", "dinf", "dref", "stbl", "url ", "urn ", "alis",
+        "stsd", "stts", "ctts", "stsc", "stsz", "stz2", "stco", "co64", "stss", "stps", "sdtp", "sgpd", "sbgp", "padb", "stsh", "subs",
+        "avc1", "avc3", "mp4a", "esds", "btrt", "avcC", "pasp", "colr", "clap", "fiel", "gama", "cspc", "mdcv", "clli", "chrm",
+        "rmra", "rmda", "rdrf", "cmov", "sinf", "wave", "encv", "enca", "hvc1", "hev1", "jpeg", "mp4s"
+    ]
 }
 
 /// A deliberately narrow input gate for PicShot's recorded/trimmed MP4 files.
@@ -207,23 +256,27 @@ enum GIFHelperMP4Validation {
 
     @discardableResult
     static func validate(sourceURL: URL) throws -> Report {
-        guard sourceURL.isFileURL, sourceURL.standardizedFileURL.resolvingSymlinksInPath().path == sourceURL.standardizedFileURL.path
-        else { throw GIFHelperProtocolError.invalidSource }
+        guard sourceURL.isFileURL else { throw GIFSourceAdmissionFailure(stage: .mp4Path, check: "file-url") }
+        guard sourceURL.standardizedFileURL.resolvingSymlinksInPath().path == sourceURL.standardizedFileURL.path
+        else { throw GIFSourceAdmissionFailure(stage: .mp4Path, check: "canonical-path") }
         // Nonblocking admission prevents a substituted FIFO/device from
         // trapping open() before the post-open regular-file identity check.
         let descriptor = Darwin.open(sourceURL.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
-        guard descriptor >= 0 else { throw GIFHelperProtocolError.invalidSource }
+        guard descriptor >= 0 else { throw GIFSourceAdmissionFailure(stage: .mp4Open, check: "open") }
         defer { Darwin.close(descriptor) }
         var information = stat()
-        guard fstat(descriptor, &information) == 0, information.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG),
-              information.st_uid == getuid(), information.st_nlink == 1,
-              information.st_size > 0, information.st_size <= GIFHelperLimits.sourceBytes
-        else { throw GIFHelperProtocolError.invalidSource }
+        guard fstat(descriptor, &information) == 0 else { throw GIFSourceAdmissionFailure(stage: .mp4Stat, check: "fstat") }
+        guard information.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG) else { throw GIFSourceAdmissionFailure(stage: .mp4Stat, check: "regular") }
+        guard information.st_uid == getuid() else { throw GIFSourceAdmissionFailure(stage: .mp4Stat, check: "uid") }
+        guard information.st_nlink == 1 else { throw GIFSourceAdmissionFailure(stage: .mp4Stat, check: "nlink") }
+        guard information.st_size > 0, information.st_size <= GIFHelperLimits.sourceBytes
+        else { throw GIFSourceAdmissionFailure(stage: .mp4Stat, check: "size") }
         return try Reader(descriptor: descriptor, size: UInt64(information.st_size)).validate()
     }
 
     private struct Atom {
         let type: String
+        let offset: UInt64
         let payload: UInt64
         let end: UInt64
         var payloadBytes: UInt64 { end - payload }
@@ -242,7 +295,7 @@ enum GIFHelperMP4Validation {
         func validate() throws -> Report {
             let roots = try atoms(from: 0, to: size, depth: 0)
             let topTypes: Set<String> = ["ftyp", "moov", "mdat", "moof", "mfra", "free", "skip", "wide"]
-            try require(roots.allSatisfy { topTypes.contains($0.type) })
+            try allowed(roots, topTypes)
             let fileType = try one("ftyp", in: roots)
             let movie = try one("moov", in: roots)
             try validateFileType(fileType)
@@ -328,12 +381,16 @@ enum GIFHelperMP4Validation {
                 try require(prefix.prefix(6).allSatisfy { $0 == 0 })
                 let reference = Int(number(prefix[6..<8]))
                 if entry.type == "mp4a" { try require(number(prefix[8..<10]) == 0) } // Version-0 audio sample entry.
-                let extensions = try atoms(from: entry.payload + UInt64(headerBytes), to: entry.end, depth: 7)
+                let extensions = try atoms(from: entry.payload + UInt64(headerBytes), to: entry.end, depth: 7,
+                    allowNativeChrmLeaf: entry.type == "avc1" || entry.type == "avc3")
                 if entry.type == "mp4a" {
                     try allowed(extensions, ["esds", "btrt"])
                     try validateAudioDescriptor(try one("esds", in: extensions))
                 } else {
-                    try allowed(extensions, ["avcC", "pasp", "colr", "clap", "btrt", "fiel", "gama", "cspc", "mdcv", "clli"])
+                    try allowed(extensions, ["avcC", "pasp", "colr", "clap", "btrt", "fiel", "gama", "cspc", "mdcv", "clli", "chrm"])
+                    // Native evidence contains one opaque 00 00 leaf. Admit
+                    // only that representation without inferring its semantics.
+                    try require(extensions.filter { $0.type == "chrm" }.count <= 1)
                     let configuration = try one("avcC", in: extensions)
                     try require(configuration.payloadBytes > 0 && configuration.payloadBytes <= 65_536)
                 }
@@ -366,18 +423,25 @@ enum GIFHelperMP4Validation {
             try require(number(prefix.prefix(4)) == 0 && (1...16).contains(count))
             return count
         }
-        private func allowed(_ atoms: [Atom], _ types: Set<String>) throws {
-            try require(atoms.allSatisfy { types.contains($0.type) })
+        private func allowed(_ atoms: [Atom], _ types: Set<String>, function: StaticString = #function, line: UInt = #line) throws {
+            if let rejected = atoms.first(where: { !types.contains($0.type) }) {
+                throw GIFSourceAdmissionFailure(stage: .mp4Parser, check: "unexpected-atom", function: function, line: line,
+                    atomType: rejected.type, offset: rejected.offset)
+            }
         }
-        private func one(_ type: String, in atoms: [Atom]) throws -> Atom {
+        private func one(_ type: String, in atoms: [Atom], function: StaticString = #function, line: UInt = #line) throws -> Atom {
             let matches = atoms.filter { $0.type == type }
-            try require(matches.count == 1)
+            guard matches.count == 1 else {
+                throw GIFSourceAdmissionFailure(stage: .mp4Parser, check: "atom-count", function: function, line: line,
+                    atomType: type, offset: matches.first?.offset, count: matches.count)
+            }
             return matches[0]
         }
         private func atoms(in parent: Atom, depth: Int) throws -> [Atom] {
             try atoms(from: parent.payload, to: parent.end, depth: depth)
         }
-        private func atoms(from start: UInt64, to end: UInt64, depth: Int, allowSelfContainedURL: Bool = false) throws -> [Atom] {
+        private func atoms(from start: UInt64, to end: UInt64, depth: Int, allowSelfContainedURL: Bool = false,
+                           allowNativeChrmLeaf: Bool = false) throws -> [Atom] {
             try require(depth <= maximumDepth && start <= end && end <= size)
             var offset = start
             var result: [Atom] = []
@@ -402,7 +466,13 @@ enum GIFHelperMP4Validation {
                     length = end - offset
                 }
                 try require(length >= headerBytes && length <= end - offset)
-                result.append(Atom(type: type, payload: offset + headerBytes, end: offset + length))
+                if type == "chrm" {
+                    // Compatibility is confined to one normal-header leaf in
+                    // avc1/avc3. Every other traversed container rejects it.
+                    try require(allowNativeChrmLeaf && headerBytes == 8 && length == 10)
+                    try require(number(try read(at: offset + headerBytes, count: 2)) == 0)
+                }
+                result.append(Atom(type: type, offset: offset, payload: offset + headerBytes, end: offset + length))
                 offset += length
             }
             return result
@@ -428,8 +498,10 @@ enum GIFHelperMP4Validation {
         private func number<T: Sequence>(_ bytes: T) -> UInt64 where T.Element == UInt8 {
             bytes.reduce(0) { ($0 << 8) | UInt64($1) }
         }
-        private func require(_ condition: Bool) throws {
-            guard condition else { throw GIFHelperProtocolError.invalidSource }
+        private func require(_ condition: Bool, function: StaticString = #function, line: UInt = #line) throws {
+            guard condition else {
+                throw GIFSourceAdmissionFailure(stage: .mp4Parser, check: "predicate", function: function, line: line)
+            }
         }
     }
 }
@@ -456,9 +528,14 @@ struct GIFHelperJobFiles: Sendable {
         else { throw GIFHelperProtocolError.invalidJobDirectory }
         let directoryDevice = information.st_dev, directoryInode = information.st_ino
         let source = canonical.appendingPathComponent("source.mp4")
-        guard lstat(source.path, &information) == 0, isPrivateRegularFile(information),
-              information.st_size > 0, information.st_size <= GIFHelperLimits.sourceBytes
-        else { throw GIFHelperProtocolError.invalidSource }
+        guard lstat(source.path, &information) == 0 else { throw GIFSourceAdmissionFailure(stage: .jobSource, check: "lstat") }
+        guard information.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG) else { throw GIFSourceAdmissionFailure(stage: .jobSource, check: "regular") }
+        guard information.st_uid == getuid() else { throw GIFSourceAdmissionFailure(stage: .jobSource, check: "uid") }
+        guard information.st_nlink == 1 else { throw GIFSourceAdmissionFailure(stage: .jobSource, check: "nlink") }
+        guard information.st_mode & 0o7077 == 0, information.st_mode & 0o400 != 0
+        else { throw GIFSourceAdmissionFailure(stage: .jobSource, check: "permission") }
+        guard information.st_size > 0, information.st_size <= GIFHelperLimits.sourceBytes
+        else { throw GIFSourceAdmissionFailure(stage: .jobSource, check: "size") }
         let sourceDevice = information.st_dev, sourceInode = information.st_ino
         let output = canonical.appendingPathComponent("result.gif")
         guard lstat(output.path, &information) != 0, errno == ENOENT else { throw GIFHelperProtocolError.unexpectedOutput }

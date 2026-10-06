@@ -18,7 +18,9 @@ final class GIFProcessTests: XCTestCase {
                                      options: profile.options) { progress.record($0) }
         }
         defer { operation.cancel() }
-        let result = try await operation.value(timeout: 35, phase: "signed GIF helper export")
+        let result = try await GIFProcessTestDiagnostics.run(service: service, phase: "signed GIF helper export") {
+            try await operation.value(timeout: 35, phase: "signed GIF helper export")
+        }
         XCTAssertEqual(result, destination)
         let plan = try GIFFramePlan(duration: profile.duration, options: profile.options)
         let decoded = try GIFResourceSmokeFixture.validate(output: result, profile: profile, plan: plan)
@@ -64,7 +66,12 @@ final class GIFProcessTests: XCTestCase {
         do {
             _ = try await operation.value(timeout: 35, phase: "cancelled signed GIF helper exit")
             XCTFail("Cancelled helper must not publish a GIF")
-        } catch { XCTAssertTrue(error is CancellationError, "Unexpected error: \(error)") }
+        } catch {
+            if !(error is CancellationError) {
+                await GIFProcessTestDiagnostics.record(service: service, phase: "real-helper cancellation", detail: String(describing: error))
+            }
+            XCTAssertTrue(error is CancellationError, "Unexpected error: \(error)")
+        }
         XCTAssertTrue(cancellation.wasRequested)
         XCTAssertTrue(progress.values.contains { $0 > 0 && $0 < 1 })
         XCTAssertFalse(progress.values.contains(1))
@@ -95,7 +102,13 @@ final class GIFProcessTests: XCTestCase {
             try await service.export(sourceURL: source, destinationURL: root.appendingPathComponent("first.gif")) { _ in ready.open() }
         }
         defer { first.cancel() }
-        try await ready.wait(timeout: 5, phase: "SIGTERM-resistant child ready")
+        do { try await ready.wait(timeout: 5, phase: "SIGTERM-resistant child ready") }
+        catch {
+            let markerExists = FileManager.default.fileExists(atPath: jobMarker.path)
+            await GIFProcessTestDiagnostics.record(service: service, phase: "SIGTERM-resistant child ready",
+                detail: "\(error); childWroteReadyMarker=\(markerExists)")
+            throw error
+        }
         let running = await service.snapshot()
         XCTAssertTrue(running.active)
         XCTAssertNil(running.lastJob)
@@ -332,6 +345,10 @@ final class GIFProcessTests: XCTestCase {
             _ = try await operation.value(timeout: 35, phase: "late GIF destination collision")
             XCTFail("A late destination collision must fail instead of replacing the file")
         } catch {
+            if (error as NSError).domain != NSCocoaErrorDomain ||
+                (error as NSError).code != CocoaError.Code.fileWriteFileExists.rawValue {
+                await GIFProcessTestDiagnostics.record(service: service, phase: "late destination collision", detail: String(describing: error))
+            }
             XCTAssertEqual((error as NSError).domain, NSCocoaErrorDomain)
             XCTAssertEqual((error as NSError).code, CocoaError.Code.fileWriteFileExists.rawValue)
         }

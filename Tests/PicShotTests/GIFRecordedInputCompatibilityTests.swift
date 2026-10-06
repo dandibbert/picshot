@@ -11,7 +11,7 @@ import PicShotCore
 /// Genuine recording/trim producers, synthetic pixels and PCM only. These
 /// tests never create SCStream, touch a device, or request capture permission.
 final class GIFRecordedInputCompatibilityTests: XCTestCase {
-    func testSignedHelperAcceptsRecoveryPublishedFragmentedH264AndAACRecording() async throws {
+    func testSignedHelperAcceptsRecoveryPublishedFinalizedH264AndAACRecording() async throws {
         let app = try GIFProcessTestApplication.make()
         defer { app.cleanup() }
         let source = try await makePublishedRecording(in: app.root)
@@ -19,7 +19,9 @@ final class GIFRecordedInputCompatibilityTests: XCTestCase {
         XCTAssertLessThan(original.count, 16 * 1_024 * 1_024)
         let atoms = try topLevelAtoms(original)
         XCTAssertTrue(atoms.contains("moov"), "Recording lacks its movie metadata: \(atoms)")
-        XCTAssertTrue(atoms.contains("moof"), "Exercise the actual fragmented recording container: \(atoms)")
+        // AVAssetWriter defragments movieFragmentInterval output when finish
+        // succeeds. Native evidence here is [ftyp, mdat, moov]; the interrupted
+        // RecordingWriter test below separately requires real moof atoms.
         XCTAssertTrue(atoms.contains("mdat"), "Recording lacks encoded media: \(atoms)")
         try await assertH264AndAAC(source, duration: 2.4)
         let service = app.service()
@@ -29,13 +31,46 @@ final class GIFRecordedInputCompatibilityTests: XCTestCase {
             try await service.export(sourceURL: source, destinationURL: destination, options: options)
         }
         defer { operation.cancel() }
-        let result = try await operation.value(timeout: 35, phase: "H.264/AAC recording through signed GIF helper")
+        let result = try await GIFProcessTestDiagnostics.run(service: service, phase: "finalized H.264/AAC recording") {
+            try await operation.value(timeout: 35, phase: "H.264/AAC recording through signed GIF helper")
+        }
         XCTAssertEqual(result, destination)
         try validateGIF(result, frameCount: 24, duration: 2.4,
                         expectedColors: Array(repeating: RecordedColor.red, count: 8) + Array(repeating: .blue, count: 8) + Array(repeating: .green, count: 8))
         XCTAssertEqual(try Data(contentsOf: source), original, "GIF conversion must preserve the published recording byte-for-byte")
         try await assertExitedAndCleaned(service, root: app.root)
         try assertPublishedJournal(source: source, root: app.root)
+    }
+
+    func testSignedHelperAcceptsCompleteFragmentPrefixFromInterruptedRecordingWriter() async throws {
+        let app = try GIFProcessTestApplication.make()
+        defer { app.cleanup() }
+        let fragment = try await makeInterruptedRecordingPrefix(in: app.root)
+        let original = try Data(contentsOf: fragment.original)
+        let prefixBefore = try Data(contentsOf: fragment.prefix)
+        let atoms = try topLevelAtoms(prefixBefore)
+        XCTAssertTrue(atoms.contains("moof"), "This separate input must contain actual movie fragments: \(atoms)")
+        XCTAssertGreaterThanOrEqual(fragment.completeFragments, 2)
+        let duration = try await AVURLAsset(url: fragment.prefix).load(.duration).seconds
+        XCTAssertGreaterThanOrEqual(duration, 2.4, "The closed fragments must cover the requested GIF interval")
+        try await assertH264AndAAC(fragment.prefix, duration: duration)
+        let service = app.service()
+        let destination = app.root.appendingPathComponent("fragment-prefix.gif")
+        let options = GIFExportOptions(frameRate: 10, maximumDimension: 40, maximumDuration: 2.4, maximumFrames: 24)
+        let operation = InferenceTestOperation {
+            try await service.export(sourceURL: fragment.prefix, destinationURL: destination, options: options)
+        }
+        defer { operation.cancel() }
+        let result = try await GIFProcessTestDiagnostics.run(service: service, phase: "interrupted RecordingWriter fragment prefix") {
+            try await operation.value(timeout: 35, phase: "actual recording fragments through signed GIF helper")
+        }
+        // The production writer uses a two-second H.264 keyframe interval.
+        // Crossing the color boundary exercises later fragment media too.
+        try validateGIF(result, frameCount: 24, duration: 2.4,
+            expectedColors: Array(repeating: RecordedColor.red, count: 20) + Array(repeating: .blue, count: 4))
+        XCTAssertEqual(try Data(contentsOf: fragment.original), original)
+        XCTAssertEqual(try Data(contentsOf: fragment.prefix), prefixBefore)
+        try await assertExitedAndCleaned(service, root: app.root)
     }
 
     func testSignedHelperAcceptsReencodedAACTrimAndProductionTrimToGIFPath() async throws {
@@ -62,7 +97,9 @@ final class GIFRecordedInputCompatibilityTests: XCTestCase {
             try await service.export(sourceURL: trimmed, destinationURL: directDestination, options: options)
         }
         defer { direct.cancel() }
-        let directResult = try await direct.value(timeout: 35, phase: "re-encoded H.264/AAC trim through signed GIF helper")
+        let directResult = try await GIFProcessTestDiagnostics.run(service: service, phase: "re-encoded H.264/AAC trim") {
+            try await direct.value(timeout: 35, phase: "re-encoded H.264/AAC trim through signed GIF helper")
+        }
         try validateGIF(directResult, frameCount: 12, duration: 1.2, expectedColors: expected)
         XCTAssertEqual(try Data(contentsOf: trimmed), trimmedBefore)
         try await assertExitedAndCleaned(service, root: app.root)
@@ -76,13 +113,89 @@ final class GIFRecordedInputCompatibilityTests: XCTestCase {
             }
         }
         defer { pipeline.cancel() }
-        let pipelineResult = try await pipeline.value(timeout: 65, phase: "production recording trim-to-GIF pipeline")
+        let pipelineResult = try await GIFProcessTestDiagnostics.run(service: service, phase: "production recording trim-to-GIF pipeline") {
+            try await pipeline.value(timeout: 65, phase: "production recording trim-to-GIF pipeline")
+        }
         XCTAssertEqual(pipelineResult, destination.url)
         try validateGIF(pipelineResult, frameCount: 12, duration: 1.2, expectedColors: expected)
         XCTAssertEqual(try Data(contentsOf: source), original)
         XCTAssertEqual(try Data(contentsOf: trimmed), trimmedBefore)
         try await assertExitedAndCleaned(service, root: app.root)
         try assertPublishedJournal(source: source, root: app.root)
+    }
+
+    private struct InterruptedRecording {
+        let original: URL
+        let prefix: URL
+        let completeFragments: Int
+    }
+
+    private func makeInterruptedRecordingPrefix(in root: URL) async throws -> InterruptedRecording {
+        let clock = GIFRecordedInputClock(CMTime(value: 480_000, timescale: 48_000))
+        let stops = GIFRecordedInputStops()
+        let writer = try RecordingWriter(size: CGSize(width: 40, height: 24),
+            options: RecordingOptions(frameRate: 10, capturesSystemAudio: true),
+            outputDirectory: root, clock: { clock.now }) { stops.record($0) }
+        do {
+            let stages = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+                .filter { $0.lastPathComponent.hasPrefix(".recording-") }
+            let stage = try XCTUnwrap(stages.first)
+            let liveSource = stage.appendingPathComponent("recording.mp4")
+            let producerDeadline = ProcessInfo.processInfo.systemUptime + 20
+            // Include the 6-second keyframe and following samples so the
+            // encoder can close later two-second fragments before interruption.
+            for index in 0..<80 {
+                guard ProcessInfo.processInfo.systemUptime < producerDeadline else {
+                    throw RecordingError.failed("Actual RecordingWriter fixture exceeded its 20-second producer deadline")
+                }
+                let timestamp = CMTime(value: 480_000 + Int64(index) * 4_800, timescale: 48_000)
+                clock.set(timestamp)
+                let color: RecordedColor = index < 20 ? .red : (index < 40 ? .blue : .green)
+                try await appendInterleaved(screen: screenSample(at: timestamp, color: color),
+                    audio: audioSample(at: timestamp), to: writer, stops: stops)
+                // Give native encoders a bounded flush opportunity without
+                // changing the controlled media PTS or invoking live capture.
+                try await Task.sleep(nanoseconds: 5_000_000)
+            }
+            clock.set(CMTime(value: 480_000 + 80 * 4_800, timescale: 48_000))
+            _ = await writer.stopAccepting()
+            let deadline = ProcessInfo.processInfo.systemUptime + 10
+            var lastObservation = "no closed media yet"
+            var ready = false
+            while ProcessInfo.processInfo.systemUptime < deadline {
+                try Task.checkCancellation()
+                do {
+                    // Reuse only the existing bounded descriptor-based reader;
+                    // this test's producer is the real RecordingWriter above.
+                    let prefix = try RecordingRecoverySyntheticMovie.prefix(at: liveSource)
+                    lastObservation = "completeFragments=\(prefix.completeFragments), bytes=\(prefix.byteCount)"
+                    if prefix.completeFragments >= 2 { ready = true; break }
+                } catch { lastObservation = String(describing: error) }
+                guard stops.messages.isEmpty else { break }
+                try await Task.sleep(nanoseconds: 50_000_000)
+            }
+            guard ready else { throw RecordingError.failed("Actual RecordingWriter fragment readiness failed: \(lastObservation); \(stops.messages)") }
+            // The production interruption path preserves an alias before
+            // cancelling the writer, then releases the recovery lease.
+            try await writer.abandonPreservingRecovery()
+            let store = try RecordingRecoveryStore(root: root)
+            let scan = try store.discover()
+            XCTAssertEqual(scan.candidates.count, 1)
+            let candidate = try XCTUnwrap(scan.candidates.first)
+            XCTAssertEqual(candidate.journal.phase, .capturing)
+            let originalBefore = try Data(contentsOf: candidate.sourceURL)
+            let lease = try store.open(candidate)
+            defer { lease.closeLease() }
+            let destination = root.appendingPathComponent("complete-recording-fragments.mp4")
+            let copied = try lease.copyCompletePrefix(to: destination)
+            XCTAssertGreaterThanOrEqual(copied.completeFragments, 2)
+            XCTAssertEqual(try Data(contentsOf: candidate.sourceURL), originalBefore)
+            XCTAssertTrue(try topLevelAtoms(Data(contentsOf: destination)).contains("moof"))
+            return InterruptedRecording(original: candidate.sourceURL, prefix: destination, completeFragments: copied.completeFragments)
+        } catch {
+            try? await writer.abandonPreservingRecovery()
+            throw error
+        }
     }
 
     private func makePublishedRecording(in root: URL) async throws -> URL {

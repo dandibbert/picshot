@@ -100,6 +100,29 @@ enum GIFProcessTestSupportError: Error, CustomStringConvertible {
     var description: String { switch self { case .failed(let message): return message } }
 }
 
+/// Preserve bounded subprocess evidence in XCTest's captured output before an
+/// unexpected error unwinds the fixture and removes its private test files.
+enum GIFProcessTestDiagnostics {
+    static func run<Value>(service: GIFExportProcessService, phase: String,
+                           operation: () async throws -> Value) async throws -> Value {
+        do { return try await operation() }
+        catch {
+            await record(service: service, phase: phase, detail: String(describing: error))
+            throw error
+        }
+    }
+
+    static func record(service: GIFExportProcessService, phase: String, detail: String) async {
+        let snapshot = await service.snapshot()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let encoded = (try? encoder.encode(snapshot)) ?? Data("{\"snapshotEncodingFailed\":true}".utf8)
+        let json = String(decoding: encoded.prefix(8_192), as: UTF8.self)
+        let boundedDetail = String(decoding: Data(detail.utf8).prefix(1_024), as: UTF8.self)
+        print("GIF process test diagnostic [\(phase)]: \(boundedDetail); snapshot=\(json)")
+    }
+}
+
 /// Thread-safe probes keep callbacks independent of the caller's executor.
 final class GIFProcessTestProgress: @unchecked Sendable {
     private let lock = NSLock()

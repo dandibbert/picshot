@@ -1,10 +1,65 @@
 # Verification evidence and release boundary
 
-Reviewed 6 October 2026. **0.4.0 at [6c808a5edc2b36ba12a38706239a965386edb03b](https://github.com/dandibbert/picshot/commit/6c808a5edc2b36ba12a38706239a965386edb03b) passed its configured native and installed-package pipeline.** [Run 37454104537](https://github.com/dandibbert/picshot/actions/runs/37454104537) completed successfully on [arm64](https://github.com/dandibbert/picshot/actions/runs/37454104537/job/112237360074) and [x86_64](https://github.com/dandibbert/picshot/actions/runs/37454104537/job/112237360447). The ARM DMG and guide were delivered; verified Intel artifacts are available. This is a development preview with incomplete parity, remaining real-device work and an unresolved ARM GIF memory-growth attribution question. The full **133-row scope and status categories** remain in [PARITY.md](PARITY.md).
+Reviewed 6 October 2026. **The last delivered installer remains 0.4.0 at [6c808a5edc2b36ba12a38706239a965386edb03b](https://github.com/dandibbert/picshot/commit/6c808a5edc2b36ba12a38706239a965386edb03b).** [Run 37454104537](https://github.com/dandibbert/picshot/actions/runs/37454104537) completed successfully on [arm64](https://github.com/dandibbert/picshot/actions/runs/37454104537/job/112237360074) and [x86_64](https://github.com/dandibbert/picshot/actions/runs/37454104537/job/112237360447). The ARM DMG and guide were delivered; verified Intel artifacts are available. This is a development preview with incomplete parity, remaining real-device work and unresolved ARM GIF export retention. The full **133-row scope and status categories** remain in [PARITY.md](PARITY.md).
 
-Only this exact published source and its artifacts are covered. Later annotation/recording changes and independent export-only/decode-only experiments are not part of this pass.
+**The not-yet-delivered 0.5 functionality batch at [04999d0fd92a00e11bcbbfd2c9fe813f8ea9f11d](https://github.com/dandibbert/picshot/commit/04999d0fd92a00e11bcbbfd2c9fe813f8ea9f11d) separately passed its full ARM/Intel pipelines in [run 37471951304](https://github.com/dandibbert/picshot/actions/runs/37471951304).** It verifies the four annotation effects, synthetic recording composition and journaled recovery described below. Later GIF helper source has a failed focused gate and no isolated-helper memory result. Full 0.5 delivery is held for those helper gates and remaining final integrated checks. Results and resource measurements apply only to their explicitly identified source, process and fixture; a version label or earlier passing run does not cover subsequent changes.
 
-## Final run and artifacts
+## Verified 0.5 functionality batch at 04999d0, not delivered
+
+Both architecture jobs in run 37471951304 passed on macOS 15.7.9 (24G830). This is not a macOS 14 runtime result. Evidence is in that run's architecture-specific QA artifacts, including `test.log`, `critical-tests.log`, `model-inference.log`, `ui-preview.log`, `package.log`, `smoke.log`, `recording-recovery.log` and `evidence/`.
+
+| Stage | arm64 and x86_64 result | Boundary |
+| --- | --- | --- |
+| Ordinary native suite | **689 tests reported, 3 intentional model-dependent skips, zero failures** | The skipped cases are not model passes |
+| Selected critical stage | **204 tests passed, zero skips/failures** | Overlaps the ordinary suite |
+| Genuine-model stage | **12 tests passed, zero skips/failures** | Also overlaps; do not add these stages into a distinct-test total |
+| Native annotation/UI | **Passed**, including all four effects and their flattened outputs | Original 1× synthetic desktop, native AppKit controls/synthetic events; no real desktop capture, physical input or TCC |
+| Installed ZIP and DMG | **Passed on both architectures** | Launch/signature/architecture, model, pin, editor and recording-composition checks for this exact source |
+| Installed recording composition | **One warm-up plus three measured cycles passed per ZIP/DMG install** | Synthetic camera/screen, production compositor/controller/writer and actual H.264 decode; no hardware capture |
+| Installed abrupt recovery | **Passed on both architectures** | A signed installed app killed only its own unfinished writer child, then recovered and decoded the bounded synthetic media |
+| Existing GIF resource profile | **Passed from ZIP only** | The in-process writer's configured regression envelope; not helper isolation or proof of a plateau |
+
+### Annotation effect evidence
+
+ANN-11–14 have reachable native controls and verified pixel paths at 04999d0. `evidence/ui/annotation-effects-preview.json` reports `status=passed`, all owned editors closed and original raster preserved:
+
+- Brush/rectangle eraser removes preceding ink without erasing the captured base or later marks. Native gestures, Escape/cancel, clear and repeated pixel-identical undo/redo pass
+- Spotlight varies shape, dimming and border; its interior remains unchanged, exterior dims and light/dark appearance does not alter export. Native tests also check stacking and transparent-base alpha
+- Watermark supports tiled/anchored text, opacity/spacing and frozen date/timezone substitution. Native controls and repeated undo/redo preserve the timestamp. Imported images are labeled with editing-start time rather than an invented capture time
+- Magnifier moves source and lens independently, with shape/scale/connector/smoothing/shadow controls. Export tests preserve redactions even when ordinary annotation visibility changes or a redaction is added after the lens
+
+The main fixture desktops are 1024 × 768 ARM and 1920 × 1080 Intel, both 1×. The earlier ARM preview set at source `535833a` contains the same annotation code; it is also an **original 1× synthetic desktop**, not user-screen or Retina evidence. The 04999d0 artifacts provide an exact-batch repeat. Raster bounds and released fixture windows are not a sustained-memory or leak measurement. These tests support Code status for the narrow ledger rows, not complete parity acceptance.
+
+### Installed recording composition and color
+
+Each `evidence/{zip,dmg}/recording-composition.json` reports three measured cycles after one warm-up. Each cycle encodes and decodes seven H.264 frames at 640 × 360 / 10 FPS for 0.7 seconds, with 95 decoded pixel checks. Synthetic quadrants and gray/color ramps verify placement, resize, mirror/crop, live pen/eraser, static-screen updates, pause removal and the frozen Stop snapshot. The source/compositor input is sRGB; encoded properties are BT.709, with decoded ramps checked in sRGB against a 12-channel-value tolerance. Frame packets are adjacent with positive durations; the synthetic one-second pause is absent from output.
+
+Four production pipelines and four overlay controllers are created and released per installed copy, with no tracked objects, retained writer-frame references, camera slots or temporary files left after each cleanup. Resource samples cover the **main process only**, including composition, encode, decode and cleanup: a 50 ms timer plus explicit boundaries, not kernel peaks. They exclude GPU and AVFoundation service memory.
+
+| Architecture / format | Sampled peak RSS / footprint MiB | Settled RSS / footprint growth MiB |
+| --- | ---: | ---: |
+| arm64 ZIP | 129.594 / 66.049 | -5.078 / +7.297 |
+| arm64 DMG | 127.703 / 65.830 | -4.266 / +0.125 |
+| x86_64 ZIP | 86.094 / 41.066 | -7.375 / -2.281 |
+| x86_64 DMG | 91.629 / 45.527 | -7.297 / -2.031 |
+
+These short fixed-resolution observations pass the configured envelope; falling RSS is not a zero-leak result. The fixture directly calls production overlay-controller methods and invokes the refresh handler on a deterministic encoder clock. It creates no overlay window, posts no physical input, and does not exercise timer scheduling, camera provider/hardware, TCC, Retina placement, actual ScreenCaptureKit window exclusion or live screen/audio sync. The source behavior and remaining device checks are described in [RecordingOverlays.md](RecordingOverlays.md); its authored-test inventory is not itself execution evidence.
+
+### Installed journaled recovery
+
+Both `evidence/recording-recovery/recovery.json` reports identify 04999d0 and `status=passed`. Each confirms its own child exited from **SIGKILL (signal 9)**, discovers one interrupted capture, and recovers **five complete fragments into a five-second MP4**, fully decoding **50 video frames and 239,552 non-silent audio frames**. Expected synthetic video colors pass. Original source bytes remain unchanged; child exit and temporary-directory cleanup are confirmed. Screen, camera and microphone started flags are all false.
+
+Saved-preview journal reopening and explicit dismissal also pass, preserving the movie. This models reopening a fresh store; **the visible preview window was not force-killed**. Recovery remuxes only complete owned journaled fragments to a new file; it does not resume devices/capture, reconstruct missing fragments or adopt arbitrary legacy MP4s. Native tests separately cover real writer cancellation, protected-file survival, torn tails, malformed inputs and source preservation. Power loss, storage removal and real hardware/permission timing remain open. [RecordingRecovery.md](RecordingRecovery.md) records the transaction, limits and remaining acceptance gates.
+
+## Pending GIF helper: failed native gate, no isolation result
+
+The later candidate [f65f4749cd00972c8e539aea7e856118ded5e06b](https://github.com/dandibbert/picshot/commit/f65f4749cd00972c8e539aea7e856118ded5e06b), [run 37474097686](https://github.com/dandibbert/picshot/actions/runs/37474097686), compiled, packaged and passed synthetic UI. Its first ARM focused stage instead reported **276 tests with 17 failures (7 unexpected)**. `critical-tests.log` shows legitimate production-style MP4s rejected as `invalidSource`, preventing successful export/cancellation/collision paths, alongside a child-readiness timeout and orphan-cleanup assertion failure. Packaging and UI success do not override this failed gate.
+
+Validation/diagnostics fixes are in progress. No isolated-helper memory measurement or helper-isolation success is available for this candidate, and neither its presence in source nor the earlier 04999d0 full pass makes it production-verified. Required next evidence is the corrected final source's full native and installed ARM/Intel gates, production recording/trim input compatibility, semantic/cancellation/cleanup checks and explicit eight-cycle `isolated-helper` attribution with unchanged envelopes.
+
+[GIFExport.md](GIFExport.md) describes the proposed process boundary: one on-demand same-executable child, with a **regular local self-contained H.264 MP4/optional AAC input cap of 1 GiB** and no silent in-process fallback. This is narrower than general video input or the recording/recovery maximum; larger otherwise valid recordings are not silently accepted for GIF. One GIF job has a separate admission gate from the ML gate, so one GIF job may overlap one model job. Evidence must separately identify parent RSS/footprint, parent-polled child RSS, child-reported RSS/footprint, child exit and cleanup; those scopes exclude other helpers, framework services and GPU allocations. None of these intended boundaries substitutes for the missing measured result.
+
+## Delivered 0.4 run and artifacts
 
 Both jobs ran on GitHub-hosted macOS 15.7.9 (24G830), Xcode 16.4 / macOS 15.5 SDK. The package minimum is macOS 14; this run does not establish macOS 14 runtime compatibility.
 
@@ -29,7 +84,7 @@ All six accompanying SHA-256 files (four installers and two build-info files) we
 
 QA artifacts contain `test.log`, `critical-tests.log`, `model-inference.log`, `package.log`, `ui-preview.log`, `smoke.log` and `evidence/{ui,zip,dmg}`. They include `launch.json`, `model-evidence.json`, `pin-session.json` and ZIP-only `gif-resource.json`. GitHub artifact retention is 14 days. These hashes identify exact bytes, not a later build sharing the version label.
 
-## Native UI and functional fixture scope
+## Delivered 0.4 native UI and functional fixture scope
 
 - The frozen-desktop fixture is **1024 × 768 on ARM and 1920 × 1080 on Intel, both 1×**. Actual AppKit toolbar/canvas events exercise rectangle drawing, inline text accept/cancel, styled text, light/dark surfaces, capture-boundary resize/undo/Escape/redo, preserved annotation placement, pin Space-open/cancel and dark OCR-result presentation. It uses original synthetic pixels; no user screen, TCC database, OCR inference or system preference is modified
 - Genuine formula recognition passes three authored image fixtures. Installed formula recognition returns `E = m c ^ { 2 }`; local MathJax produces the preview plus SVG/MathML/PNG/PDF. This does not establish multi-formula segmentation, editable Office OMML, Typst/AsciiMath or broad recognition accuracy
@@ -39,7 +94,7 @@ QA artifacts contain `test.log`, `critical-tests.log`, `model-inference.log`, `p
 
 Weights remain optional external data from pinned original publisher locations, verified by exact size/SHA-256, never committed or bundled as model weights. Model provenance/licenses are in [MODELS.md](MODELS.md), [TABLE_MODEL.md](TABLE_MODEL.md) and [SmartErase.md](SmartErase.md); the recording-GIF architecture and limits are in [GIFExport.md](GIFExport.md).
 
-## Main-process lifecycle measurements
+## Delivered 0.4 main-process lifecycle measurements
 
 Each installed copy performs **10 warm-up plus 40 synthetic editor/pin create-render-close cycles**. All end with 7 → 7 windows, zero retained cycle controllers/content and zero retained cycle windows. RSS below is the main process during that phase, not whole-app-plus-helper or peak inference memory; earlier model/GIF phases may affect its baseline.
 
@@ -61,7 +116,7 @@ A separate **3-warm-up plus 20-cycle pin-session fixture** exercises hide/show, 
 
 These bounded synthetic observations are not a sustained-use or zero-leak result. File-reference drag behavior, every rich-pin decoder, physical monitor removal and real restart scenarios still require broader acceptance.
 
-## Signed model-child resource evidence
+## Delivered 0.4 signed model-child resource evidence
 
 All recorded formula/table/inpainting children exit with status 0, confirmed process exit and confirmed temporary-directory cleanup. The service samples **child RSS every 100 ms** while the child runs. Values below are maximum successful samples; transient peaks between samples and separate system/GPU-service allocations are not included. They are not kernel lifetime peaks or complete device memory use. Counts in parentheses are actual successful RSS samples.
 
@@ -74,7 +129,7 @@ All recorded formula/table/inpainting children exit with status 0, confirmed pro
 
 Configured caps remain formula/table **1 GiB / 120 seconds**, smart erase **2 GiB / ARM 150 seconds or Intel 300 seconds**. Those are limits, not observed peaks. The largest sampled erase value here is about 1,872 MiB on ARM; passing this fixture does not guarantee headroom for every input or machine. The table covers three inference helpers, not every process or a formula-render-helper RSS peak. Main-process lifecycle results above must not be substituted for these child measurements.
 
-## Streaming GIF: improvement and remaining uncertainty
+## Delivered 0.4 streaming GIF and subsequent attribution
 
 The published writer replaces the old multi-frame ImageIO destination with **one native still-frame encode at a time plus file-backed GIF89a assembly**. Native palettes/LZW payloads are preserved. The encoded frame buffer is capped at 8 MiB and final output at 64 MiB. Screen-recording export supports **opaque frames only**: actual transparent/fractional-alpha frames fail explicitly rather than being flattened or incorrectly composited. Alpha-capable storage with genuinely opaque pixels remains supported. This restriction does **not** change animated GIF/WebP pin decoding.
 
@@ -104,10 +159,6 @@ The unchanged repeated-run regression envelopes are **384 MiB sampled peak growt
 
 ## Still requires real-device and full-scope acceptance
 
-User-TCC grant/deny/revoke/relaunch; real application capture; physical multi-monitor/mixed Retina/negative-origin/display-removal flows; complete capture → annotate → copy/export → pin → OCR → history paths; system/microphone audio sync and sustained recording; camera/effect features still absent from the published scope; long scrolling and prolonged resource use; broad multilingual/table/formula/inpainting quality; real Apple language download/translation; independent Office/export interoperability; failure/crash recovery and every remaining parity-row requirement.
+User-TCC grant/deny/revoke/relaunch; real application capture; physical multi-monitor/mixed Retina/negative-origin/display-removal flows; complete capture → annotate → copy/export → pin → OCR → history paths; system/microphone audio sync and sustained recording; real camera selection/disconnect/indicator shutdown and overlay exclusion; Retina/user-desktop annotation effects; visible-preview force-kill, power loss and storage-removal recovery; long scrolling and prolonged resource use; broad multilingual/table/formula/inpainting quality; real Apple language download/translation; independent Office/export interoperability; verified GIF helper isolation and every remaining parity-row requirement. The four annotation effects, camera/live annotations and recovery exist in verified 04999d0 source but remain absent from the delivered 0.4 installer. Click/scroll/keystroke effects, animated WebP and the other Missing/Partial features remain unfinished scope.
 
 CI does not grant the user's OS permissions or modify permission databases. Packages are ad-hoc signed and **not notarized**; integrity checks do not establish publisher identity or Gatekeeper acceptance. Missing/Partial requirements remain in scope. No full-parity, zero-leak, universal latency or whole-device memory claim is made.
-
-## 0.5 source integration, not yet a delivered release
-
-Seven existing parity gaps now have authored source awaiting this batch's native gates: annotation eraser, spotlight, watermark and magnifier (ANN-11–14); camera/live recording annotations (REC-09–10); and recording/preview recovery (REC-16). The source adds native UI/pixel fixtures, production H.264 composition fixtures, durable journal/cancellation fault tests and an installed own-child abrupt-termination recovery fixture. No source review or test inventory is reported as an execution pass. Real camera/TCC, Retina, live capture and visible-preview force-kill remain separate acceptance requirements. GIF helper isolation is still under implementation; this intermediate source batch is not an installer delivery.

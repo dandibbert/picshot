@@ -58,7 +58,8 @@ final class GIFHelperOrphanTests: XCTestCase {
         XCTAssertFalse(lines.isEmpty, "Helper-only startup should emit the bounded protocol, not an ordinary GUI launch")
         let events = try lines.map { try GIFHelperProtocol.decodeEventLine(Data($0)) }
         XCTAssertEqual(events.last?.kind, .error)
-        XCTAssertEqual(events.last?.errorCode, "cancelled")
+        XCTAssertEqual(events.last?.errorCode, "cancelled",
+            "exit=\(process.terminationStatus), bounded helper response=\(String(decoding: bytes.prefix(4_096), as: UTF8.self))")
         XCTAssertFalse(events.contains { $0.kind == .result })
         XCTAssertFalse(FileManager.default.fileExists(atPath: job.path), "Orphan cleanup must remove only its validated private job")
         XCTAssertEqual(try Data(contentsOf: original), originalBytes)

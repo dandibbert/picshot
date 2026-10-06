@@ -312,6 +312,97 @@ final class GIFHelperProtocolTests: XCTestCase {
         XCTAssertEqual(audioVideo.trackCount, 2)
     }
 
+    func testSourceAdmissionDiagnosticIdentifiesPermissionPredicateWithoutPaths() throws {
+        let directory = try makeJob()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: directory.appendingPathComponent("source.mp4").path)
+        XCTAssertThrowsError(try GIFHelperJobFiles.validate(directory: directory)) { error in
+            guard let diagnostic = error as? GIFSourceAdmissionFailure else { return XCTFail("Missing admission diagnostic") }
+            XCTAssertEqual(diagnostic.stage, .jobSource)
+            XCTAssertEqual(diagnostic.check, "permission")
+            XCTAssertGreaterThan(diagnostic.line, 0)
+            XCTAssertFalse(diagnostic.localizedDescription.contains(directory.path))
+            XCTAssertFalse(diagnostic.localizedDescription.contains("/"))
+        }
+    }
+
+    func testMP4DiagnosticIdentifiesForbiddenSampleExtension() throws {
+        let data = mp4(tracks: mp4Track(extraVideoAtoms: atom("sinf")))
+        XCTAssertThrowsError(try validateMP4(data)) { error in
+            guard let diagnostic = error as? GIFSourceAdmissionFailure else { return XCTFail("Missing parser diagnostic") }
+            XCTAssertEqual(diagnostic.stage, .mp4Parser)
+            XCTAssertEqual(diagnostic.check, "unexpected-atom")
+            XCTAssertEqual(diagnostic.atomType, "sinf")
+            XCTAssertGreaterThan(diagnostic.offset ?? 0, 0)
+            XCTAssertTrue(diagnostic.function.contains("sampleDescriptions"))
+            XCTAssertGreaterThan(diagnostic.line, 0)
+            XCTAssertLessThan(diagnostic.localizedDescription.utf8.count, 768)
+        }
+    }
+
+    func testMP4GateAcceptsOneEvidenceMatchedZeroChrmInsideEachH264SampleEntry() throws {
+        for codec in ["avc1", "avc3"] {
+            let report = try validateMP4(mp4(tracks: mp4Track(codec: codec, extraVideoAtoms: atom("chrm", Data([0, 0])))))
+            XCTAssertEqual(report.trackCount, 1)
+        }
+    }
+
+    func testMP4GateRejectsDuplicateWrongValueWrongSizeAndExtendedHeaderChrm() throws {
+        let leaf = atom("chrm", Data([0, 0]))
+        XCTAssertThrowsError(try validateMP4(mp4(tracks: mp4Track(extraVideoAtoms: leaf + leaf))))
+        let unsupportedValues: [[UInt8]] = [[0, 1], [1, 0], [255, 255]]
+        for bytes in unsupportedValues {
+            XCTAssertThrowsError(try validateMP4(mp4(tracks: mp4Track(extraVideoAtoms: atom("chrm", Data(bytes))))))
+        }
+        for count in [0, 1, 3, 32] {
+            XCTAssertThrowsError(try validateMP4(mp4(tracks: mp4Track(extraVideoAtoms: atom("chrm", Data(repeating: 0, count: count))))))
+        }
+        let extended = word32(1) + Data("chrm".utf8) + word64(18) + Data([0, 0])
+        XCTAssertThrowsError(try validateMP4(mp4(tracks: mp4Track(extraVideoAtoms: extended))))
+    }
+
+    func testMP4GateRejectsChrmInOtherTraversedContainers() throws {
+        let leaf = atom("chrm", Data([0, 0]))
+        for data in [mp4() + leaf, mp4(extraMovie: leaf), mp4(tracks: atom("trak", leaf)),
+                     mp4(tracks: atom("trak", atom("mdia", leaf))),
+                     mp4(tracks: mp4Track(references: [leaf])),
+                     mp4(tracks: mp4Track() + mp4Track(handler: "soun", codec: "mp4a", extraAudioAtoms: leaf))] {
+            XCTAssertThrowsError(try validateMP4(data))
+        }
+    }
+
+    func testNativeChrmCompatibilityDoesNotAdmitExternalReferencesOrAudioURLs() throws {
+        let leaf = atom("chrm", Data([0, 0]))
+        let external = atom("url ", Data([0, 0, 0, 0]) + Data("https://example.invalid/media\0".utf8))
+        XCTAssertThrowsError(try validateMP4(mp4(tracks: mp4Track(references: [external], extraVideoAtoms: leaf))))
+        let video = mp4Track(extraVideoAtoms: leaf)
+        let audio = mp4Track(handler: "soun", codec: "mp4a", audioURLFlag: true)
+        XCTAssertThrowsError(try validateMP4(mp4(tracks: video + audio)))
+    }
+
+    func testAdmissionDiagnosticBoundsAndSanitizesStructuralLabels() throws {
+        let diagnostic = GIFSourceAdmissionFailure(stage: .mp4Parser, check: "predicate", function: "no/paths\nor spaces",
+            line: UInt.max, atomType: "user-controlled-contents", offset: UInt64.max, count: Int.max)
+        XCTAssertEqual(diagnostic.atomType, "unrecognized")
+        XCTAssertFalse(diagnostic.localizedDescription.contains("user-controlled-contents"))
+        XCTAssertFalse(diagnostic.localizedDescription.contains("/"))
+        XCTAssertFalse(diagnostic.localizedDescription.contains("\n"))
+        XCTAssertNoThrow(try GIFHelperProtocol.encodeEventLine(GIFHelperEvent(kind: .error, errorCode: "invalidSource",
+            errorMessage: diagnostic.localizedDescription)))
+    }
+
+    func testNativeGeneratedH264MP4PassesSourceGateWithExactFailureDiagnostic() async throws {
+        let directory = try makeJob()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = try await GIFResourceSmokeFixture.makeMovie(in: directory, profile: .quickTest)
+        do {
+            let report = try GIFHelperMP4Validation.validate(sourceURL: source)
+            XCTAssertGreaterThan(report.trackCount, 0)
+        } catch {
+            XCTFail("Native H.264 source gate rejected: \(error.localizedDescription)")
+        }
+    }
+
     func testMP4GatePreservesLocalFragmentedMovieLayout() throws {
         let movie = mp4(extraMovie: atom("mvex")) + atom("moof") + atom("mdat", Data([5, 6])) + atom("mfra")
         let result = try validateMP4(movie)
@@ -508,14 +599,15 @@ final class GIFHelperProtocolTests: XCTestCase {
     }
 
     private func mp4Track(handler: String = "vide", codec: String = "avc1", references: [Data]? = nil,
-                          sampleReference: Int = 1, omitReferences: Bool = false, audioURLFlag: Bool = false) -> Data {
+                          sampleReference: Int = 1, omitReferences: Bool = false, audioURLFlag: Bool = false,
+                          extraVideoAtoms: Data = Data(), extraAudioAtoms: Data = Data()) -> Data {
         let references = references ?? [atom("url ", Data([0, 0, 0, 1]))]
         let referenceTable = atom("dinf", atom("dref", word32(0) + word32(UInt32(references.count)) + references.reduce(Data(), +)))
         var sample = Data(repeating: 0, count: codec == "mp4a" ? 28 : 78)
         sample[6] = UInt8((sampleReference >> 8) & 0xFF)
         sample[7] = UInt8(sampleReference & 0xFF)
-        if codec == "mp4a" { sample += atom("esds", Data([0, 0, 0, 0, 3, 3, 0, 1, audioURLFlag ? 0x40 : 0])) }
-        else { sample += atom("avcC", Data([1])) }
+        if codec == "mp4a" { sample += atom("esds", Data([0, 0, 0, 0, 3, 3, 0, 1, audioURLFlag ? 0x40 : 0])) + extraAudioAtoms }
+        else { sample += atom("avcC", Data([1])) + extraVideoAtoms }
         let sampleTable = atom("stbl", atom("stsd", word32(0) + word32(1) + atom(codec, sample)))
         let information = atom("minf", (omitReferences ? Data() : referenceTable) + sampleTable)
         let handlerAtom = atom("hdlr", word32(0) + word32(0) + Data(handler.utf8))

@@ -2,7 +2,7 @@
 
 ## Status and honest scope
 
-Source implementation and native fixtures are present. **No Swift compiler or macOS runtime is available in the authoring environment. Native compilation, the new tests, and the installed-app SIGKILL fixture must pass on both ARM64 and Intel before this is called verified.** Writer/service/AppMain integration belongs to the recording integration change, not this module alone. Hardware capture, microphone/camera permission timing, disk-removal, genuine power loss, and force-termination of the visible preview window remain manual acceptance gates.
+**Native compilation, tests, installed-app recovery and integration passed on ARM64 and Intel for source `04999d0fd92a00e11bcbbfd2c9fe813f8ea9f11d`, CI run `37471951304` (2026-10-06).** The installed-app fixture actually SIGKILLed its own unfinished writer and recovered decoded media. Hardware capture, microphone/camera permission timing, disk-removal, genuine power loss, and force-termination of the visible preview window remain manual acceptance gates. This recovery verification does not imply that unrelated release gates have passed.
 
 Recovery creates a new independently remuxed MP4 from complete on-disk fragments. It does not resume capture, reconstruct missing/unfinished fragments, restore paused capture devices, grant permissions, or claim that every frame in arbitrary damaged media is repairable. Legacy non-journaled MP4s are not automatically adopted. A file existing on disk is not counted as successful recovery.
 
@@ -73,7 +73,7 @@ Existing writer tests that asserted an empty staging root after discard must now
 
 Core tests cover malformed/versioned journals, exact owned names, traversal/symlink/hardlink rejection, live-lock discovery, preserved-source identity, same-inode edits, native-free prefix framing, incomplete/extended/open-ended atoms, parser bounds, explicit archival, normal publication/preview dismissal, original preservation on collision, root substitution, nonrecursive scratch cleanup, protection crash boundaries and unrelated extra links.
 
-Native `RecordingRecoveryNativeTests` creates small H.264/AAC media using the shared fragment configuration, calls real `cancelWriting`, checks protected-file survival, recovers and fully decodes video and audio, tests a torn final fragment, and verifies cancellation/malformed media preservation. These are authored tests until the native run passes.
+Native `RecordingRecoveryNativeTests` creates small H.264/AAC media using the shared fragment configuration, calls real `cancelWriting`, checks protected-file survival, recovers and fully decodes video and audio, tests a torn final fragment, and verifies cancellation/malformed media preservation. These tests passed in the native run identified above; actual media decode remains a required gate for future changes.
 
 Installed-app abrupt fixture:
 
@@ -87,4 +87,10 @@ The parent packaging script supplies a separate 180-second own-process watchdog.
 
 ### Native investigation, 2026-10-06
 
-ARM64 compiled and passed the original 7 journal/parser, 17 store, and 6 integration tests. Native interrupted-media tests initially failed readiness. A diagnostic rerun proved AVAssetWriter was writing valid fragments using `ftyp → mdat → moov → mdat → moof` ordering, with a final open-ended mdat. The original parser incorrectly required later moof-before-mdat ordering. Its replacement admits fragments by checked sample-byte references rather than atom-order assumptions and adds structural reference/security fixtures. Full native remux/decoded-media verification of the replacement remains pending; the readiness threshold and audio/video/source-preservation checks were not weakened.
+ARM64 compiled and passed the original 7 journal/parser, 17 store, and 6 integration tests. Native interrupted-media tests initially failed readiness. A diagnostic rerun proved AVAssetWriter was writing valid fragments using `ftyp → mdat → moov → mdat → moof` ordering, with a final open-ended mdat. The original parser incorrectly required later moof-before-mdat ordering. Its replacement admits fragments by checked sample-byte references rather than atom-order assumptions and adds structural reference/security fixtures. The replacement passed full native remux/decoded-media verification at source `04999d0fd92a00e11bcbbfd2c9fe813f8ea9f11d`; the readiness threshold and audio/video/source-preservation checks were not weakened.
+
+### Verified recovery evidence at 04999d0
+
+The ARM64 installed-app `recording-recovery/recovery.json` reports `status=passed` and the exact source commit above: own child SIGKILL exit confirmed (`terminationSignal=9`), one interrupted capture discovered, 5 complete fragments recovered into a 5-second movie, 50 decoded video frames with expected pixel colors, and 239,552 decoded non-silent audio frames. The original bytes were unchanged; temporary-directory and child cleanup were confirmed. Preview-journal reopening/dismissal passed. Capture, camera and microphone started flags were all false. The Intel pipeline also passed its installed-app gate; these numeric measurements are the separately inspected ARM64 report.
+
+ARM64 full suite: 689 tests, 3 intentional model skips, 0 failures. The focused 204-test gate and 12 real-model tests also passed; these overlap the full suite and must not be added as independent totals. Visible-preview force-kill, hardware/TCC scenarios, disk-removal and actual power-loss durability remain open manual checks.

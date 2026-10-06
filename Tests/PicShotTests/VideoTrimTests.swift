@@ -84,9 +84,12 @@ final class VideoTrimTests: XCTestCase {
         let range = try VideoTrimRange(start: 1, end: 1.75, sourceDuration: 2)
         let helper = try GIFProcessTestApplication.make()
         defer { helper.cleanup() }
-        let result = try await GIFExporter.withProcessServiceForTesting(helper.service()) {
-            try await VideoTrimExporter.exportGIF(sourceURL: source, destination: destination, range: range,
-                                                  options: GIFExportOptions(maximumDimension: 64))
+        let service = helper.service()
+        let result = try await GIFProcessTestDiagnostics.run(service: service, phase: "selected trim GIF") {
+            try await GIFExporter.withProcessServiceForTesting(service) {
+                try await VideoTrimExporter.exportGIF(sourceURL: source, destination: destination, range: range,
+                                                      options: GIFExportOptions(maximumDimension: 64))
+            }
         }
         let gif = try XCTUnwrap(CGImageSourceCreateWithURL(result as CFURL, nil))
         XCTAssertEqual(CGImageSourceGetCount(gif), 9)
@@ -150,6 +153,11 @@ final class VideoTrimTests: XCTestCase {
         defer { cancellation.clear(); operation.cancel() }
         do { _ = try await operation.value(timeout: 35, phase: "trim GIF cancellation after helper exit"); XCTFail("Must cancel before final destination publication") }
         catch is CancellationError { }
+        catch {
+            await GIFProcessTestDiagnostics.record(service: service, phase: "trim cancellation after helper publication",
+                                                    detail: String(describing: error))
+            throw error
+        }
         XCTAssertTrue(cancellation.wasRequested)
         XCTAssertFalse(FileManager.default.fileExists(atPath: target.path))
         let snapshot = await service.snapshot()
