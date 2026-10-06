@@ -25,4 +25,6 @@ The replacement has authored tests for strict parsing and truncation rejection, 
 
 Export peaks, immediately-after-export memory, settled-before-validation memory, validator peaks and post-validation memory are recorded separately. The original repeated-export envelopes remain 384 MiB peak growth, 96 MiB final growth and 32 MiB last-interval growth. The one-shot high-resolution case uses the same peak/final envelopes and makes no plateau claim.
 
-**The streaming replacement's native tests and installed ARM/Intel memory results are pending.** Source changes and static review are not runtime evidence. Keep the installer unreleased until exact-commit verification passes.
+**The replacement passed its configured native and installed ARM/Intel gates at [6c808a5](https://github.com/dandibbert/picshot/commit/6c808a5edc2b36ba12a38706239a965386edb03b), [run 37454104537](https://github.com/dandibbert/picshot/actions/runs/37454104537).** The 480×270 export peak was about 195 MiB RSS on ARM and 83 MiB on Intel; the 12-frame 1920×1080 case peaked about 330 MiB and 192 MiB respectively. Full GIF stress ran from ZIP only; both installed formats passed their other native checks.
+
+ARM still settled +49.0 MiB RSS across four combined export/validation cycles, versus +0.504 MiB on Intel. This is not a demonstrated ARM plateau or a zero-leak result. Export-only and decoder-only attribution is now being observed separately; no completed attribution finding is recorded here. See [VERIFICATION.md](VERIFICATION.md) for exact artifact hashes, sample scopes and limits.

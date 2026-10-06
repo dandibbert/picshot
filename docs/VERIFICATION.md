@@ -1,67 +1,109 @@
 # Verification evidence and release boundary
 
-Reviewed 6 October 2026. This records **commit-specific results**, not complete PixPin parity. The full 133-row target remains in [PARITY.md](PARITY.md).
+Reviewed 6 October 2026. **0.4.0 at [6c808a5edc2b36ba12a38706239a965386edb03b](https://github.com/dandibbert/picshot/commit/6c808a5edc2b36ba12a38706239a965386edb03b) passed its configured native and installed-package pipeline.** [Run 37454104537](https://github.com/dandibbert/picshot/actions/runs/37454104537) completed successfully on [arm64](https://github.com/dandibbert/picshot/actions/runs/37454104537/job/112237360074) and [x86_64](https://github.com/dandibbert/picshot/actions/runs/37454104537/job/112237360447). The ARM DMG and guide were delivered; verified Intel artifacts are available. This is a development preview with incomplete parity, remaining real-device work and an unresolved ARM GIF memory-growth attribution question. The full **133-row scope and status categories** remain in [PARITY.md](PARITY.md).
 
-The **0.2 development preview is verified at [caf71931e5c622d7ee0d7d6d549a902c00a6658f](https://github.com/dandibbert/picshot/commit/caf71931e5c622d7ee0d7d6d549a902c00a6658f)**. [Run 37429201431](https://github.com/dandibbert/picshot/actions/runs/37429201431) completed successfully on arm64 and x86_64, including native tests, actual-model inference, signed packaging and installed ZIP/DMG LaunchServices smoke. Formula, table and inpainting helpers succeeded from all four installed copies. This resolves the earlier packaged image-lifetime and Intel time-bound failures for this commit. It remains a development preview with incomplete parity and untested real-device paths.
+Only this exact published source and its artifacts are covered. Later annotation/recording changes and independent export-only/decode-only experiments are not part of this pass.
 
-The first delivered 0.1 preview is commit `0143e58d5a576a3def256267ac53cda5d5618e31`. Historical failures below remain evidence about their own commits; they are not current release blockers.
+## Final run and artifacts
 
-## Exact runs
+Both jobs ran on GitHub-hosted macOS 15.7.9 (24G830), Xcode 16.4 / macOS 15.5 SDK. The package minimum is macOS 14; this run does not establish macOS 14 runtime compatibility.
 
-All eight jobs below ran on GitHub-hosted macOS 15.7.9 (24G830), using Xcode 16.4 / the macOS 15.5 SDK. This is not a macOS 14 runtime test or an exhaustive supported-OS matrix.
+| Stage | arm64 and x86_64 result | Boundary |
+| --- | --- | --- |
+| Ordinary native suite | **561 tests reported, 3 intentional weight-dependent skips, zero failures** | A skipped case is not a model pass |
+| Selected critical stage | **87 tests passed, zero skips/failures** | Overlaps the ordinary suite |
+| Genuine-model stage | **12 tests passed, zero skips/failures**, using original-source SHA-256-verified optional weights | Also overlaps; do not claim 660 distinct tests |
+| Streaming GIF writer | **9 new tests passed** within the suites above | Parser/truncation, native palette/LZW preservation, alpha rejection, caps, cancellation and cleanup; not nine extra tests |
+| Native UI | **Revised installed-AppKit fixture passed** | Synthetic desktop at 1×, no TCC, screen capture or OCR inference |
+| Installed packages | **ZIP and DMG passed on both architectures** | Signature/architecture, no-argument LaunchServices, visible native windows, signed model paths, pin sessions and editor cycles |
+| GIF resource profile | **Passed from each architecture's ZIP install** | Not repeated from DMG; residual growth remains below the configured regression envelope |
 
-| Source commit / run | Native test stage | Real-model stage | Package / installed-app result |
-| --- | --- | --- | --- |
-| [caf71931e5c622d7ee0d7d6d549a902c00a6658f](https://github.com/dandibbert/picshot/commit/caf71931e5c622d7ee0d7d6d549a902c00a6658f), [run 37429201431](https://github.com/dandibbert/picshot/actions/runs/37429201431), [arm64 job](https://github.com/dandibbert/picshot/actions/runs/37429201431/job/112155823185), [Intel job](https://github.com/dandibbert/picshot/actions/runs/37429201431/job/112155823406) | **Passed** on each architecture: 184 tests reported, including 3 intentional weight-dependent skips, zero failures | **Passed** on each: 12 selected real-model tests, zero skips/failures after original-source, SHA-256-verified provisioning | **Passed** on both architectures and both ZIP/DMG copies: signatures/architecture, LaunchServices, visible native window, snapshots, signed formula/table/erase helpers, output pixel/cleanup checks and synthetic lifecycle/RSS. Installer and QA artifacts uploaded |
-| [0143e58d5a576a3def256267ac53cda5d5618e31](https://github.com/dandibbert/picshot/commit/0143e58d5a576a3def256267ac53cda5d5618e31), [run 37420240366](https://github.com/dandibbert/picshot/actions/runs/37420240366), [arm64 job](https://github.com/dandibbert/picshot/actions/runs/37420240366/job/112127743956), [Intel job](https://github.com/dandibbert/picshot/actions/runs/37420240366/job/112127744181) | **Passed**: 65 tests, zero failures on each architecture | Not present in this preview; it predates the formula/table/inpainting engines | **Passed** on both architectures: build/signature/architecture checks, ZIP and DMG installation into separate clean temporary directories, LaunchServices launch without app arguments, visible native window, view snapshots and synthetic lifecycle/RSS checks. Installer artifacts uploaded |
-| [104e42e181eabac60a1df9c81cc6d85424a60314](https://github.com/dandibbert/picshot/commit/104e42e181eabac60a1df9c81cc6d85424a60314), [run 37426021201](https://github.com/dandibbert/picshot/actions/runs/37426021201), [arm64 job](https://github.com/dandibbert/picshot/actions/runs/37426021201/job/112145744179), [Intel job](https://github.com/dandibbert/picshot/actions/runs/37426021201/job/112145744528) | **Passed**: 180 tests reported, including 3 explicitly skipped weight-dependent tests, zero failures on each architecture | **Passed** on both: after original-source, SHA-256-verified fixture provisioning, 12 selected tests, zero skips/failures, including the 3 previously skipped actual-model cases | Signed app, ZIP and DMG packaging **passed** on both. Installed smoke **failed before app launch** compiling `launch-smoke-app.swift`: optional chaining on non-optional `configuration.environment`. This is a launcher-harness failure, not a failed inference result; it blocked acceptance of that commit. Installer upload skipped |
-| [199566dd87af4f79ade76795bd21eb250e7e5ae7](https://github.com/dandibbert/picshot/commit/199566dd87af4f79ade76795bd21eb250e7e5ae7), [run 37427240555](https://github.com/dandibbert/picshot/actions/runs/37427240555), [arm64 job](https://github.com/dandibbert/picshot/actions/runs/37427240555/job/112149577246) | **Passed**: 181 tests reported, including 3 explicit model skips, zero failures | **Passed**: 12 selected tests, zero skips/failures with real weights | Packaging **passed** and installed signed-app formula/table calls succeeded. Smoke **failed** in packaged smart erase: output lost pixel/alpha content after temporary-file cleanup. The run did not complete both-format installed acceptance or upload an accepted installer |
-| Same [199566d run](https://github.com/dandibbert/picshot/actions/runs/37427240555), [Intel job](https://github.com/dandibbert/picshot/actions/runs/37427240555/job/112149577120) | **Passed**: 181 tests reported, including 3 explicit model skips, zero failures | **Failed**: 12 selected tests, one failure. Formula/table passed; real CoreML output passed pixel checks but took 182.048 seconds against a 150-second assertion | Packaging and installed smoke **skipped** after the model-stage failure. No accepted installer |
+All six accompanying SHA-256 files (four installers and two build-info files) were checked against downloaded bytes. Build metadata identifies `6c808a5edc2b36ba12a38706239a965386edb03b`, version 0.4.0, architecture, ad-hoc signing and `notarized: false`.
 
-The selected 12-test model stage reruns tests from the regular suite with weights configured; it is not 12 additional unique tests: the final run does not represent 196 distinct tests. A skipped model test is not an inference pass. QA artifacts contain logs and, where reached, `dist/evidence` reports; GitHub artifact retention is 14 days. Installer checksum files belong to the exact successful artifact, not to another build with the same version label.
-
-## What native execution has established
-
-- **Annotation and selection:** native AppKit tests dispatch mouse/key events through the real editor canvas and controls for drawing, movement, deletion, Shift/zoom, crop confirmation, undo/redo, selected style changes and a text re-edit request. Capture tests check multi-region/subtraction, polygon/freehand masks, asymmetric pixel geometry, transparency and cancellation against synthetic images. These are stronger than model-only drawing tests, but do not exercise user-TCC or selection over real apps on physical displays
-- **Structured tables:** genuine SLANet-plus ONNX inference plus native Apple Vision OCR and the bundled helper passed the merged-header fixture. Recorded genuine tensor fixtures also cover 3 × 3 and three-column merged-header layouts. Cell edit/span rules, cancellation/late-result handling and real OOXML/ZIP XLSX structure have separate tests. A known high-confidence rowspan misprediction remains documented and rejected; this is not general recognition-quality or Excel/LibreOffice UI acceptance
-- **Formula recognition:** actual Pix2Text-MFR-1.5 weights passed three authored native fixtures: x²+y²=z², E=mc² and a fraction. These are genuine ONNX outputs, not fixed strings or text OCR relabeled as math. They establish the native tensor/tokenizer path for those fixtures only. Single-formula output is editable LaTeX; multi-formula segmentation, rendered preview and interchange remain incomplete
-- **Inpainting engine and installed helper:** actual CoreML LaMa passed native tests and the production signed-helper path for both architectures/formats at `caf7193`. All four installed 800 × 800 fixture runs changed 12,302 masked pixels, with zero outside-mask RGB-byte mismatches, zero alpha mismatches and zero new job directories remaining. Masked RGB mean absolute error fell from 98.8802269 to about 1.5883. Returned pixels remained valid after temporary-job cleanup. Installed-helper times were ARM 22.29–22.69 seconds and Intel 52.38–69.59 seconds; these fixture measurements are not general latency guarantees. Cancellable wall limits are ARM 150 seconds / Intel 300 seconds. The 2 GiB helper RSS value is a configured cap, **not a measured inference peak**
-- **Local translation:** Apple Translation API integration and request/state/error tests compile and pass. Real language-pack download, successful translation, subsequent offline translation and the complete cancellation/retry UI have **not** been runtime-validated. The feature requires macOS 15+; weak Translation framework linkage was verified in both architecture packages, but is not itself a macOS 14 launch test
-
-Optional model weights come from their pinned original publisher locations, with exact size/SHA-256 verification. They remain external optional data, never committed or bundled as weights in the installer. Provenance, licensing and contracts are in [MODELS.md](MODELS.md), [TABLE_MODEL.md](TABLE_MODEL.md) and [SmartErase.md](SmartErase.md). The native results above supersede older reference-only validation statements; they do not remove documented accuracy limits.
-
-## Verified 0.2 resource evidence
-
-At `caf7193`, all four installed copies completed **10 warm-up plus 40 synthetic editor/pin create-render-close cycles**, with no live screen capture or recording. The exact launch reports are in the run's QA artifacts at `evidence/{zip,dmg}/launch.json`.
-
-| Architecture / format | Baseline → final RSS (bytes) | Delta (MiB) | Baseline → final windows | Retained cycle controllers/content | Retained empty cycle windows |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| arm64 DMG | 139,100,160 → 137,379,840 | -1.641 | 6 → 6 | 0 | 1 |
-| arm64 ZIP | 130,842,624 → 129,220,608 | -1.547 | 6 → 6 | 0 | 1 |
-| x86_64 DMG | 92,606,464 → 93,384,704 | +0.742 | 5 → 5 | 0 | 0 |
-| x86_64 ZIP | 94,203,904 → 95,412,224 | +1.152 | 5 → 5 | 0 | 0 |
-
-The retained ARM window was an invisible AppKit-cached utility panel with its controller and content released. These are bounded app lifecycle/RSS observations, **not a zero-leak claim**, a sustained-load result or a measurement of peak model-inference memory. Each installed erase fixture covers one successful production-helper job; forced timeout/crash/cancellation and general helper-leak testing remain separate acceptance work.
-
-## Verified installer checksums
-
-These SHA-256 values were checked against the downloaded `caf7193` artifact bytes and accompanying build metadata. They identify these exact 0.2.0 files, not any later rebuild with the same version label.
-
-| File | SHA-256 |
+| Installer | SHA-256 |
 | --- | --- |
-| `PicShot-0.2.0-macos-arm64.dmg` | `03f92238f6617bd854eeb084b50b52fd58b0bda40775012a0b420c8c06eb87f4` |
-| `PicShot-0.2.0-macos-arm64.zip` | `3b281030c59db9c890144e394757047a85eb6f9125f713d37a6269659fb5a985` |
-| `PicShot-0.2.0-macos-x86_64.dmg` | `f43480e219e40c62308c6796c12117e6ccccf47f61b5936050472c7f2ac4687a` |
-| `PicShot-0.2.0-macos-x86_64.zip` | `3f7f124b4b5f68bd7145603252d7c6092020da5315416d7c2f35e89227561ee5` |
+| `PicShot-0.4.0-macos-arm64.dmg` | `672b80ecc749f8fa788d9c928977c454864731a860af33c7253c2f12528018bf` |
+| `PicShot-0.4.0-macos-arm64.zip` | `3dfa9067f99c98f16657a93ebdf7d0dae160993ad4b048ff836dffe021244fe0` |
+| `PicShot-0.4.0-macos-x86_64.dmg` | `6eeadfad7b59bef934c34af5be9970b7fa894e7e6ee48b5a0fa9a5e5b0398da1` |
+| `PicShot-0.4.0-macos-x86_64.zip` | `56d4264020a666e7ab41688d81a54f2896ac885bf233c880d9e19a0ba563c295` |
 
-## Remaining acceptance boundary
+QA artifacts contain `test.log`, `critical-tests.log`, `model-inference.log`, `package.log`, `ui-preview.log`, `smoke.log` and `evidence/{ui,zip,dmg}`. They include `launch.json`, `model-evidence.json`, `pin-session.json` and ZIP-only `gif-resource.json`. GitHub artifact retention is 14 days. These hashes identify exact bytes, not a later build sharing the version label.
 
-- The final run validates the fixed image-lifetime path and architecture-aware runtime limits for its fixtures. It does not validate all failure/recovery paths or every image size/content
-- Any later source change needs its own complete pipeline and exact-commit evidence; this successful run cannot be carried forward automatically
-- Unpublished pin-session/group, recording-preview/trim, capture-precision and formula-SVG work is outside this 0.2 snapshot. Local files, wiring or authored tests do not establish native/runtime parity
+## Native UI and functional fixture scope
 
-## Still requires real-device acceptance
+- The frozen-desktop fixture is **1024 × 768 on ARM and 1920 × 1080 on Intel, both 1×**. Actual AppKit toolbar/canvas events exercise rectangle drawing, inline text accept/cancel, styled text, light/dark surfaces, capture-boundary resize/undo/Escape/redo, preserved annotation placement, pin Space-open/cancel and dark OCR-result presentation. It uses original synthetic pixels; no user screen, TCC database, OCR inference or system preference is modified
+- Genuine formula recognition passes three authored image fixtures. Installed formula recognition returns `E = m c ^ { 2 }`; local MathJax produces the preview plus SVG/MathML/PNG/PDF. This does not establish multi-formula segmentation, editable Office OMML, Typst/AsciiMath or broad recognition accuracy
+- The native table helper uses real SLANet-plus structure and Apple Vision text. Installed results retain four rows/three columns. Structured editing and OOXML/ZIP tests pass; the known high-confidence rowspan misprediction remains a rejection case, and independent Excel/LibreOffice UI acceptance remains open
+- All four installed smart-erase fixtures change 12,302 masked pixels, preserve every outside-mask RGB byte and alpha byte, and leave no new job directory. Masked RGB MAE falls from 98.8802269 to about 1.5883. This covers one successful 800 × 800 production-helper job per installed copy, not arbitrary images or forced timeout/crash/cancellation
+- Translation request/state tests and weak framework linkage pass. Actual Apple language download, successful/offline translation and macOS 14 launch remain untested
 
-User-TCC grant/deny/revoke/relaunch; capture of real app content; two physical monitors with mixed Retina scales, negative origins and display removal; complete capture → annotate → copy/export → pin → OCR → history paths; real system/microphone audio and synchronization; long recording/scrolling and resource use; broad multilingual/table/formula quality; native language-download/translation flow; independent document/export interoperability; interruption/recovery and full parity-row acceptance.
+Weights remain optional external data from pinned original publisher locations, verified by exact size/SHA-256, never committed or bundled as model weights. Model provenance/licenses are in [MODELS.md](MODELS.md), [TABLE_MODEL.md](TABLE_MODEL.md) and [SmartErase.md](SmartErase.md); the recording-GIF architecture and limits are in [GIFExport.md](GIFExport.md).
 
-CI does not modify permission databases or grant the user's OS permissions. Packages are ad-hoc signed and **not notarized**: integrity checks do not establish publisher identity or Gatekeeper acceptance. Missing or partial features in the ledger remain in scope.
+## Main-process lifecycle measurements
+
+Each installed copy performs **10 warm-up plus 40 synthetic editor/pin create-render-close cycles**. All end with 7 → 7 windows, zero retained cycle controllers/content and zero retained cycle windows. RSS below is the main process during that phase, not whole-app-plus-helper or peak inference memory; earlier model/GIF phases may affect its baseline.
+
+| Architecture / format | Baseline → final RSS bytes | Delta MiB | Sampled peak RSS MiB |
+| --- | ---: | ---: | ---: |
+| arm64 ZIP | 268,632,064 → 269,008,896 | +0.359 | 256.656 |
+| arm64 DMG | 153,255,936 → 154,091,520 | +0.797 | 147.031 |
+| x86_64 ZIP | 110,010,368 → 110,817,280 | +0.770 | 105.684 |
+| x86_64 DMG | 114,003,968 → 115,261,440 | +1.199 | 109.922 |
+
+A separate **3-warm-up plus 20-cycle pin-session fixture** exercises hide/show, archive/reopen, group switching, saved original/current presentation, new-store restoration guards and explicit removal in a temporary store. All four pass 54 weak release probes with zero retained pin controllers/content or empty panels; temporary directories are removed and user defaults stay unchanged.
+
+| Architecture / format | Pin-session RSS delta MiB |
+| --- | ---: |
+| arm64 ZIP | -1.312 |
+| arm64 DMG | -1.375 |
+| x86_64 ZIP | -1.152 |
+| x86_64 DMG | -1.289 |
+
+These bounded synthetic observations are not a sustained-use or zero-leak result. File-reference drag behavior, every rich-pin decoder, physical monitor removal and real restart scenarios still require broader acceptance.
+
+## Signed model-child resource evidence
+
+All recorded formula/table/inpainting children exit with status 0, confirmed process exit and confirmed temporary-directory cleanup. The service samples **child RSS every 100 ms** while the child runs. Values below are maximum successful samples; transient peaks between samples and separate system/GPU-service allocations are not included. They are not kernel lifetime peaks or complete device memory use. Counts in parentheses are actual successful RSS samples.
+
+| Architecture / format | Formula peak MiB (samples) | Table peak MiB (samples) | Erase peak MiB (samples) | Erase child runtime s |
+| --- | ---: | ---: | ---: | ---: |
+| arm64 ZIP | 360.188 (12) | 203.609 (13) | 1872.219 (150) | 16.295 |
+| arm64 DMG | 316.031 (9) | 228.375 (14) | 1482.062 (181) | 19.517 |
+| x86_64 ZIP | 287.012 (24) | 175.781 (23) | 965.914 (758) | 77.800 |
+| x86_64 DMG | 286.738 (17) | 177.543 (24) | 971.996 (698) | 71.637 |
+
+Configured caps remain formula/table **1 GiB / 120 seconds**, smart erase **2 GiB / ARM 150 seconds or Intel 300 seconds**. Those are limits, not observed peaks. The largest sampled erase value here is about 1,872 MiB on ARM; passing this fixture does not guarantee headroom for every input or machine. The table covers three inference helpers, not every process or a formula-render-helper RSS peak. Main-process lifecycle results above must not be substituted for these child measurements.
+
+## Streaming GIF: improvement and remaining uncertainty
+
+The published writer replaces the old multi-frame ImageIO destination with **one native still-frame encode at a time plus file-backed GIF89a assembly**. Native palettes/LZW payloads are preserved. The encoded frame buffer is capped at 8 MiB and final output at 64 MiB. Screen-recording export supports **opaque frames only**: actual transparent/fractional-alpha frames fail explicitly rather than being flattened or incorrectly composited. Alpha-capable storage with genuinely opaque pixels remains supported. This restriction does **not** change animated GIF/WebP pin decoding.
+
+On each architecture, ZIP runs one warm-up then **four measured exports** from an authored changing 640 × 360, 30-second, 12-FPS source, exporting 360 frames at 480 × 270. All output frames decode serially with ImageIO caching disabled, distinct thumbnail fingerprints and approximately 30-second playback. Fingerprints check diversity, not full fidelity. Cancellation at frame 36 is observed without publishing the destination or leaving partial files. A separate one-shot 1920 × 1080 / 12-frame export also passes; it is not a maximum-square-area, maximum-frame-count or plateau test. No live recording/audio or external download occurs in this fixture.
+
+Measurements cover the **main process only**, excluding AVFoundation services and GPU memory. Export-only peaks are sampled before validation with a 50 ms timer plus frame-progress boundaries, including single-frame ImageIO finalization. Successful export sample counts range from 692 to 978, with no missing RSS/physical-footprint samples in the measured four-export runs. These remain sampled maxima, not kernel peaks. The report separately records immediate/settled pre-validation readings, validator peaks and post-validation readings.
+
+| Architecture | Peak export RSS MiB | Peak export footprint MiB | Four-cycle combined settled RSS growth MiB | Combined footprint growth MiB |
+| --- | ---: | ---: | ---: | ---: |
+| arm64 | 195.031 | 133.159 | +49.000 | +49.094 |
+| x86_64 | 82.945 | 35.816 | +0.504 | +0.445 |
+
+The unchanged repeated-run regression envelopes are **384 MiB sampled peak growth, 96 MiB final settled growth and 32 MiB last-interval growth**; both architectures pass. Relative to their own post-warm-up baselines, export RSS peak growth improved from about 417.0 → 55.8 MiB on ARM and 392.0 → 7.48 MiB on Intel versus `c0adee4`. This is a fixture comparison, not a universal performance promise.
+
+**ARM still grows 49.0 MiB across four combined export/validation/cleanup cycles; it is not a plateau or a zero-leak result.** Intel's corresponding growth is 0.504 MiB. Settled combined readings include validation and cannot be attributed solely to the encoder. Separate export-only and decode-only attribution experiments are running in [diagnostic run 37458401335](https://github.com/dandibbert/picshot/actions/runs/37458401335); **no completed attribution result is recorded here**. Existing stage snapshots are not a substitute for them. Remaining ARM growth is open investigation despite the configured envelope passing. DMG reports explicitly mark this full GIF profile `not-run` because it is run from ZIP only.
+
+## Historical boundary
+
+| Commit / run | Result and how it applies |
+| --- | --- |
+| [c0adee4e26d52315b0fe5c154c1ccc3ec23cf49f](https://github.com/dandibbert/picshot/commit/c0adee4e26d52315b0fe5c154c1ccc3ec23cf49f), [run 37450349815](https://github.com/dandibbert/picshot/actions/runs/37450349815) | Both passed 551 ordinary tests (3 intentional skips), 39 selected critical and 12 genuine-model tests, plus revised UI. Installed ZIP then failed the old GIF memory envelope; DMG launch was not reached. Peaks were sampled before validation, establishing an export-path resource problem. The 6c808a5 profile passes, with residual growth disclosed above |
+| [ccb70f897df31232f604a8d25848d7d348b21dd9](https://github.com/dandibbert/picshot/commit/ccb70f897df31232f604a8d25848d7d348b21dd9), [run 37446248077](https://github.com/dandibbert/picshot/actions/runs/37446248077) | Both ordinary suites reported 544 tests, 3 intentional skips and 14 failures (2 unexpected); packaging/early UI success did not make it installer-ready |
+| [caf71931e5c622d7ee0d7d6d549a902c00a6658f](https://github.com/dandibbert/picshot/commit/caf71931e5c622d7ee0d7d6d549a902c00a6658f), [run 37429201431](https://github.com/dandibbert/picshot/actions/runs/37429201431) | Delivered 0.2 passed its then-complete pipeline: 184 ordinary tests (3 intentional skips), 12 genuine-model tests and both installed formats. Its exporter was byte-identical to c0adee4's old implementation, suggesting shared-path risk. The new stress test was not run against 0.2; do not report a demonstrated 0.2 failure |
+| [199566dd87af4f79ade76795bd21eb250e7e5ae7](https://github.com/dandibbert/picshot/commit/199566dd87af4f79ade76795bd21eb250e7e5ae7), [run 37427240555](https://github.com/dandibbert/picshot/actions/runs/37427240555) | ARM packaged erase output lost pixels after temporary cleanup; Intel produced correct pixels but exceeded the old 150-second cap. These were fixed before delivered 0.2 |
+| [104e42e181eabac60a1df9c81cc6d85424a60314](https://github.com/dandibbert/picshot/commit/104e42e181eabac60a1df9c81cc6d85424a60314), [run 37426021201](https://github.com/dandibbert/picshot/actions/runs/37426021201) | Native/real-model stages passed on both; smoke failed compiling the launcher before app launch. No accepted installer |
+| [0143e58d5a576a3def256267ac53cda5d5618e31](https://github.com/dandibbert/picshot/commit/0143e58d5a576a3def256267ac53cda5d5618e31), [run 37420240366](https://github.com/dandibbert/picshot/actions/runs/37420240366) | First delivered 0.1: 65 tests and both installed formats passed per architecture; later model features were absent |
+
+## Still requires real-device and full-scope acceptance
+
+User-TCC grant/deny/revoke/relaunch; real application capture; physical multi-monitor/mixed Retina/negative-origin/display-removal flows; complete capture → annotate → copy/export → pin → OCR → history paths; system/microphone audio sync and sustained recording; camera/effect features still absent from the published scope; long scrolling and prolonged resource use; broad multilingual/table/formula/inpainting quality; real Apple language download/translation; independent Office/export interoperability; failure/crash recovery and every remaining parity-row requirement.
+
+CI does not grant the user's OS permissions or modify permission databases. Packages are ad-hoc signed and **not notarized**; integrity checks do not establish publisher identity or Gatekeeper acceptance. Missing/Partial requirements remain in scope. No full-parity, zero-leak, universal latency or whole-device memory claim is made.
