@@ -40,6 +40,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
       - name: Test native modules
+        timeout-minutes: 8
         run: |
           mkdir -p dist
           set -o pipefail

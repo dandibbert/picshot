@@ -391,6 +391,12 @@ final class RecordingPauseTests: XCTestCase {
         let videoTrack = try XCTUnwrap(videoTracks.first)
         let videoFormats = try await videoTrack.load(.formatDescriptions)
         XCTAssertEqual(CMFormatDescriptionGetMediaSubType(try XCTUnwrap(videoFormats.first)), kCMVideoCodecType_H264)
+        let videoRange = try await videoTrack.load(.timeRange)
+        XCTAssertEqual(videoRange.start.seconds, 0, accuracy: 0.001)
+        XCTAssertEqual(videoRange.duration.seconds, 1.3, accuracy: 0.025,
+            "The video track itself must retain its final frame, independently of longer audio tracks")
+        XCTAssertEqual(videoRange.end.seconds, 1.3, accuracy: 0.025)
+        try checkStoredVideoTimeline(asset: asset, track: videoTrack, expectedDuration: 1.3)
         try decodeAndCheck(asset: asset, track: videoTrack, audio: false, expectedDuration: 1.3)
         for track in audioTracks {
             let formats = try await track.load(.formatDescriptions)
@@ -402,7 +408,7 @@ final class RecordingPauseTests: XCTestCase {
         let generator = AVAssetImageGenerator(asset: asset)
         generator.requestedTimeToleranceBefore = .zero
         generator.requestedTimeToleranceAfter = .zero
-        for (timestamp, expected) in [(0.1, Color.red), (0.6, Color.blue), (1.1, Color.green)] {
+        for (timestamp, expected) in [(0.1, Color.red), (0.6, Color.blue), (1.1, Color.green), (1.2, Color.green)] {
             let image = try await generator.image(at: time(timestamp)).image
             let color = try centerColor(image)
             switch expected {
@@ -414,10 +420,40 @@ final class RecordingPauseTests: XCTestCase {
         }
     }
 
+    /// Read the H.264 packet timing exactly as stored in MP4. Decoded pixel
+    /// buffers may have no duration, so they cannot establish the encoded end.
+    /// Never synthesize a last-frame duration from the expected frame rate here.
+    private func checkStoredVideoTimeline(asset: AVAsset, track: AVAssetTrack, expectedDuration: Double) throws {
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
+        reader.add(output)
+        XCTAssertTrue(reader.startReading())
+        var previousEnd = CMTime.zero
+        var samples = 0
+        while let sample = output.copyNextSampleBuffer() {
+            let timestamp = CMSampleBufferGetPresentationTimeStamp(sample)
+            let duration = CMSampleBufferGetDuration(sample)
+            XCTAssertTrue(timestamp.isNumeric)
+            XCTAssertTrue(duration.isNumeric, "Stored H.264 duration is unavailable at PTS \(timestamp.seconds)")
+            XCTAssertGreaterThan(duration.seconds, 0, "Stored final-frame duration must not be zero")
+            XCTAssertEqual(CMTimeCompare(timestamp, previousEnd), 0,
+                "Stored video packets must be adjacent; frame \(samples), PTS \(timestamp.seconds), prior end \(previousEnd.seconds)")
+            previousEnd = CMTimeAdd(timestamp, duration)
+            XCTAssertNotNil(CMSampleBufferGetDataBuffer(sample))
+            samples += CMSampleBufferGetNumSamples(sample)
+        }
+        XCTAssertEqual(reader.status, .completed, reader.error?.localizedDescription ?? "Stored packet read did not complete")
+        XCTAssertEqual(samples, 13)
+        XCTAssertEqual(previousEnd.seconds, expectedDuration, accuracy: 0.025,
+            "Stored H.264 sample timing must reach the full active duration")
+    }
+
     private func decodeAndCheck(asset: AVAsset, track: AVAssetTrack, audio: Bool, expectedDuration: Double) throws {
         let reader = try AVAssetReader(asset: asset)
-        let settings: [String: Any] = audio ? [AVFormatIDKey: kAudioFormatLinearPCM, AVLinearPCMIsFloatKey: true] :
-            [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
+        let settings: [String: Any] = audio ? [
+            AVFormatIDKey: kAudioFormatLinearPCM, AVLinearPCMIsFloatKey: true,
+            AVLinearPCMBitDepthKey: 32, AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsNonInterleaved: false
+        ] : [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: settings)
         reader.add(output)
         XCTAssertTrue(reader.startReading())
@@ -429,16 +465,28 @@ final class RecordingPauseTests: XCTestCase {
             if previous.isValid { XCTAssertGreaterThan(CMTimeCompare(timestamp, previous), 0) }
             XCTAssertGreaterThanOrEqual(timestamp.seconds, -0.03) // AAC encoder priming may precede zero.
             XCTAssertLessThan(timestamp.seconds, expectedDuration + 0.03)
-            let duration = CMSampleBufferGetDuration(sample)
-            end = max(end, timestamp.seconds + (duration.isNumeric ? duration.seconds : 0))
+            if audio {
+                let duration = CMSampleBufferGetDuration(sample)
+                XCTAssertTrue(duration.isNumeric)
+                XCTAssertGreaterThan(duration.seconds, 0)
+                end = max(end, timestamp.seconds + duration.seconds)
+            }
             previous = timestamp
             samples += 1
             if audio { XCTAssertNotNil(CMSampleBufferGetDataBuffer(sample)) }
             else { XCTAssertNotNil(CMSampleBufferGetImageBuffer(sample)) }
         }
         XCTAssertEqual(reader.status, .completed, reader.error?.localizedDescription ?? "Decode did not complete")
-        XCTAssertGreaterThan(samples, audio ? 20 : 10)
-        XCTAssertEqual(end, expectedDuration, accuracy: audio ? 0.06 : 0.025)
+        if audio {
+            XCTAssertGreaterThan(samples, 20)
+            XCTAssertEqual(end, expectedDuration, accuracy: 0.06)
+        } else {
+            // All 13 source frames must decode, including the final green frame
+            // whose presentation starts at 1.2s. Its real 0.1s extent is checked
+            // above through the stored packets and the video track's timeRange.
+            XCTAssertEqual(samples, 13)
+            XCTAssertEqual(CMTimeCompare(previous, CMTime(value: 12, timescale: 10)), 0)
+        }
     }
 
     private func append(_ sample: CMSampleBuffer, to writer: RecordingWriter, type: SCStreamOutputType) async throws {
