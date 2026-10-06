@@ -109,7 +109,7 @@ final class SmartEraseEditorModel: ObservableObject {
         painting = false
         let strokes = self.strokes
         begin { model, id in
-            model.status = "正在本机修复；较大的涂抹区域会缩放至模型的 800 × 800 上下文…"
+            model.status = "正在本机修复；较大的涂抹区域会缩放至模型的 800 × 800 上下文。 " + SmartEraseLimits.runtimeNotice
             do {
                 let directory = try await ModelPackService.shared.verifiedDirectory(for: manifest)
                 let image = model.image
@@ -209,6 +209,7 @@ private struct SmartEraseEditorView: View {
                 Link("模型来源", destination: SmartEraseModelPack.source).font(.system(size: 11))
                 Link("Apache-2.0", destination: SmartEraseModelPack.license).font(.system(size: 11))
             }.foregroundStyle(.secondary)
+            Text(SmartEraseLimits.runtimeNotice).font(.system(size: 11)).foregroundStyle(.secondary)
             Text("修复会生成推测内容，复杂文字与纹理可能失真。保密信息请使用不透明遮挡。").font(.system(size: 11)).foregroundStyle(.secondary)
         }.padding(16).onAppear { model.checkInstallation() }
     }
@@ -272,7 +273,9 @@ actor SmartEraseProcessService {
         }
         let result = try SmartEraseRaster.readImage(output)
         guard result.width == image.width, result.height == image.height else { throw SmartEraseError.invalidOutput }
-        return result
+        let original = try SmartEraseRaster(image: image)
+        let generated = try SmartEraseRaster(image: result)
+        return try original.applyingMaskedResult(generated, mask: mask).image()
     }
     private nonisolated static func verifiedHelper() throws -> URL {
         let bundle = Bundle.main.bundleURL.standardizedFileURL

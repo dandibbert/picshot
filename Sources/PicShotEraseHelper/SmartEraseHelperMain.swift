@@ -6,7 +6,11 @@ import PicShotEraseCore
 enum PicShotEraseHelper {
     static func main() {
         umask(0o077)
-        var cpu = rlimit(rlim_cur: 145, rlim_max: 150)
+        // RLIMIT_CPU counts aggregate CPU time across threads, not wall time.
+        // Scale it to the machine's logical CPUs so a legitimate parallel Intel
+        // prediction is not killed before its explicit 300-second wall budget.
+        let cpuSeconds = rlim_t(Int(SmartEraseLimits.seconds) * max(1, ProcessInfo.processInfo.activeProcessorCount))
+        var cpu = rlimit(rlim_cur: cpuSeconds, rlim_max: cpuSeconds + 5)
         _ = setrlimit(RLIMIT_CPU, &cpu)
         // Core ML compilation writes its intermediate weight file too.
         var file = rlimit(rlim_cur: 536_870_912, rlim_max: 536_870_912)

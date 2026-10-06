@@ -41,14 +41,20 @@ public struct SmartEraseRaster {
         let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
         guard values.isRegularFile == true, values.isSymbolicLink != true,
               let size = values.fileSize, size > 0, size <= SmartEraseLimits.imageBytes,
-              let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+              let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: true] as CFDictionary),
               CGImageSourceGetCount(source) == 1,
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
               let width = properties[kCGImagePropertyPixelWidth] as? Int,
               let height = properties[kCGImagePropertyPixelHeight] as? Int else { throw SmartEraseError.invalidInput }
         try SmartEraseMask.validateDimensions(width: width, height: height)
-        guard let image = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary) else { throw SmartEraseError.invalidInput }
-        return image
+        guard let image = CGImageSourceCreateImageAtIndex(source, 0,
+                [kCGImageSourceShouldCache: true, kCGImageSourceShouldCacheImmediately: true] as CFDictionary),
+              image.width == width, image.height == height else { throw SmartEraseError.invalidInput }
+        // ImageIO may retain a lazy file-backed provider even when immediate
+        // caching was requested. Rasterize while the source file is still alive
+        // and return a CGImage backed by our own immutable RGBA Data. The caller
+        // may now delete its private job directory without invalidating pixels.
+        return try SmartEraseRaster(image: image).image()
     }
     public static func png(_ image: CGImage) throws -> Data {
         let data = NSMutableData()
@@ -69,6 +75,24 @@ public struct SmartEraseRaster {
         let c = Double(rgba[(y1 * width + x0) * 4 + channel])
         let d = Double(rgba[(y1 * width + x1) * 4 + channel])
         return (a * (1 - dx) + b * dx) * (1 - dy) + (c * (1 - dx) + d * dx) * dy
+    }
+
+    /// Re-establish the original parent-process pixel contract after encoded
+    /// helper interchange. PNG may quantize premultiplied RGB at low alpha, so
+    /// never trust round-tripped bytes outside the mask. Masked RGB is generated
+    /// content, but original alpha is retained everywhere.
+    public func applyingMaskedResult(_ result: SmartEraseRaster, mask: Data) throws -> SmartEraseRaster {
+        guard result.width == width, result.height == height, mask.count == width * height else { throw SmartEraseError.invalidOutput }
+        var restored = self
+        for (index, value) in mask.enumerated() {
+            guard value == 0 || value == 255 else { throw SmartEraseError.invalidInput }
+            guard value > 0 else { continue }
+            let alpha = rgba[index * 4 + 3]
+            for channel in 0..<3 {
+                restored.rgba[index * 4 + channel] = min(alpha, result.rgba[index * 4 + channel])
+            }
+        }
+        return restored
     }
 
     public func compositing(prediction: SmartEraseRaster, mask: Data, crop: SmartEraseCrop) throws -> SmartEraseRaster {

@@ -10,14 +10,19 @@ extension CGImage {
         guard CGImageDestinationFinalize(destination) else { throw PicShotError.message("图片写入失败，请检查磁盘空间") }
     }
     static func read(url: URL, maxDimension: Int? = nil) -> CGImage? {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary) else { return nil }
+        // Own compressed bytes: callers may delete temporary source files or
+        // history retention may remove a file while its image is still displayed.
+        guard let values=try? url.resourceValues(forKeys:[.fileSizeKey,.isRegularFileKey]),
+              values.isRegularFile == true,let size=values.fileSize,size>0,size<=134_217_728,
+              let data=try? Data(contentsOf:url),
+              let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: true] as CFDictionary) else { return nil }
         if let dimension = maxDimension {
             return CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: dimension, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
         }
         if let properties=CGImageSourceCopyPropertiesAtIndex(source,0,nil) as? [CFString:Any],let width=properties[kCGImagePropertyPixelWidth] as? Int,let height=properties[kCGImagePropertyPixelHeight] as? Int {
             guard width>0,height>0,width<=100_000_000/height else{return nil}
         }
-        return CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
+        return CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCache: true, kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
     }
 }
 

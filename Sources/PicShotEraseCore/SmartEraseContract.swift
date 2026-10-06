@@ -4,7 +4,13 @@ public enum SmartEraseLimits {
     public static let dimension = 8_192
     public static let pixels = 16_000_000
     public static let imageBytes = 80_000_000
+    #if arch(x86_64)
+    public static let seconds: TimeInterval = 300
+    public static let runtimeNotice = "Intel CPU 修复可能需要几分钟，可随时取消；本次任务最长 300 秒。"
+    #else
     public static let seconds: TimeInterval = 150
+    public static let runtimeNotice = "可随时取消；本次任务最长 150 秒。"
+    #endif
     public static let residentBytes: UInt64 = 2_147_483_648
     public static let modelSide = 800
     public static let strokes = 512
@@ -24,7 +30,7 @@ public enum SmartEraseError: LocalizedError {
         case .busy: return "另一个智能消除任务尚未结束，请稍后再试。"
         case .unavailable: return "安装包缺少原生消除辅助程序，请安装完整应用。"
         case .signature: return "消除辅助程序签名或路径不符，已阻止启动。"
-        case .timeout: return "本次消除超过 150 秒限制，已停止。请缩小图片后再试。"
+        case .timeout: return "本次消除超过 \(Int(SmartEraseLimits.seconds)) 秒限制，已停止。请缩小图片后再试。"
         case .memory: return "消除进程超过 2 GiB 内存限制，已停止。"
         case .failed(let message): return "智能消除失败：\(message)"
         }

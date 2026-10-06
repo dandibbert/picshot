@@ -112,8 +112,7 @@ final class CaptureService {
             throw CaptureError.cancelled
         }
         guard status == 0,
-              let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+              let image = CGImage.read(url: url) else {
             throw CaptureError.failed("The system screenshot could not be decoded.")
         }
         return image

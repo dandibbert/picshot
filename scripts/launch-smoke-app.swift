@@ -31,7 +31,7 @@ NSWorkspace.shared.openApplication(at: appURL, configuration: configuration) { a
         callbackReceived = true
     }
 }
-let deadline = Date().addingTimeInterval(210)
+let deadline = Date().addingTimeInterval(600)
 while Date() < deadline {
     if callbackReceived {
         if let launchError {
@@ -46,6 +46,6 @@ while Date() < deadline {
     }
     RunLoop.current.run(until: Date().addingTimeInterval(0.1))
 }
-fputs("LaunchServices smoke app did not terminate within 210 seconds\n", stderr)
+fputs("LaunchServices smoke app did not terminate within 600 seconds\n", stderr)
 launched?.terminate()
 exit(1)

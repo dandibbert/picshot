@@ -1,6 +1,6 @@
 # Optional offline smart erase: implementation and validation gate
 
-Status: **real macOS ARM64 Core ML inference passed; optional smart erase is enabled**. The owner explicitly approved the selected author’s Google Drive large-file warning on 2026-10-06, and all three model files are pinned to the verified bytes below. Native evidence: commit `104e42e`, GitHub Actions run `37426021201`, ARM64 job `112145744179`. The fixture improved masked reconstruction MAE from `98.8802269` to `1.5883125`, changed `12,302` masked pixels, and passed exact unchanged-outside-mask and alpha assertions. That run passed 180 regular tests and 12 real-model tests, and packaged signed helpers. Intel real-model validation was still running when this record was written; do not treat the ARM64 result as an Intel pass. There is no replacement fill, blur, hosted inference, or Python runtime.
+Status: **real macOS ARM64 Core ML inference passed; optional smart erase is enabled**. The owner explicitly approved the selected author’s Google Drive large-file warning on 2026-10-06, and all three model files are pinned to the verified bytes below. Native evidence: commit `104e42e`, GitHub Actions run `37426021201`, ARM64 job `112145744179`. The fixture improved masked reconstruction MAE from `98.8802269` to `1.5883125`, changed `12,302` masked pixels, and passed exact unchanged-outside-mask and alpha assertions. That run passed 180 regular tests and 12 real-model tests, and packaged signed helpers. Intel’s real-engine quality/outside-mask checks also passed: an initial run took 100.3 s, and a busier run on commit `199566d`, run `37427240555`, job `112149577120` took 182.05 s and exceeded the old 150 s time budget. The product now uses a 300 s Intel budget, with the same 2 GiB RSS ceiling. The updated budget and corrected packaged PNG path still need their final native run. There is no replacement fill, blur, hosted inference, or Python runtime.
 
 ## Source and license verification (2026-10-06)
 
@@ -40,12 +40,12 @@ The independently authored `Jia-Liu/big-lama-coreml` archive at revision `5bc9fc
 - The editor paints capsules in original image coordinates, with 2...256 px brush diameter, undo per stroke, clear, original/result toggle and a single apply callback. Editing the mask invalidates the previous result
 - Mask painting retains vector strokes rather than full-resolution undo snapshots. Bounds: 512 strokes / 32,768 sampled points
 - A context square encloses the mask, normally at least 512 source pixels, plus 64 px context on each side where possible. Rectangular image edges are replicated, not stretched. Model masks are max-pooled so thin strokes survive downsampling, and include every marked bilinear input tap plus replicated edge padding to prevent marked content leaking into context
-- The model predicts real content in the marked region. Only marked RGB bytes are composited back. Original alpha and every unmarked canonical sRGB RGBA byte are retained. Large selections lose detail at 800×800; the UI tells the user to inspect before applying
+- The model predicts real content in the marked region. Only marked RGB bytes are composited back. Original alpha and every unmarked canonical sRGB RGBA byte are retained. The parent explicitly restores these original bytes after PNG/process interchange, so low-alpha PNG premultiplication quantization cannot alter unpainted pixels. Large selections lose detail at 800×800; the UI tells the user to inspect before applying
 - Smart erase is not confidential-data redaction. The UI directs users to opaque redaction for secrets
 - The optional download uses the shared `ModelPackService`: explicit user action, fixed per-file sizes and SHA-256, host-restricted HTTPS redirects, private staging, bounded streaming and cancellation. No startup download and no model loaded in the menu bar process
 - Files are copied into three fixed paths in a private `.mlpackage`, then reverified. No archive extraction, arbitrary model selection, downloaded executable code, dynamic Python or shell command
 - `PicShotEraseHelper` is a separate signed bundle-relative executable. The parent checks the outer bundle and nested helper signature plus symlink-free exact paths before launch. It passes exact arguments and a minimal environment, runs one erase job globally, and never invokes a shell
-- Parent bounds: 16 MP, 8,192 px per side, 80 MB image files, 150 s wall time and 2 GiB measured process RSS. These are not a guarantee of total GPU/system memory usage. Helper additionally has CPU/file rlimits
+- Parent bounds: 16 MP, 8,192 px per side, 80 MB image files, 150 s wall time on ARM64, 300 s on Intel x86_64, and 2 GiB measured process RSS on both. These are not a guarantee of total GPU/system memory usage. The UI explains that Intel CPU repair may take several minutes and can be cancelled. Helper additionally has file and aggregate-CPU rlimits; the latter scales by logical CPU count so parallel execution is governed by the documented wall budget rather than an accidental single-core CPU-time cutoff
 - Cancellation/Close sends SIGTERM and escalates to SIGKILL after one second if necessary. The parent waits for exit before deleting its private 0700 job directory / 0600 files. Core ML's temporary compiled package is removed on ordinary completion; process temp artifacts live under the same private job directory. The helper exits after one job. Its own 250 ms watchdog checks parent liveness and wall time and exits if either fails. It deliberately retains the job marker rather than deleting concurrently with Core ML writers. If the app crashes, private job files can remain until a later erase job triggers the constrained sweep. That sweep removes only hour-old, marked, owner-matching 0700 jobs whose parent and helper PIDs are both dead; unmarked paths and symlinks are never swept. Normal parent cleanup runs after the helper exits and can recover its own just-created job even if the marker is damaged
 
 ## Integration contract (owner edits)
@@ -68,7 +68,7 @@ Add `PicShotEraseCore` to `PicShot` dependencies. If shipping an earlier milesto
 
 ## Tests and exact completion gate
 
-Sources include unit tests for stroke rasterization, quick drag gaps, size/coordinate bounds, empty/full masks, thin-mask downsampling, non-square edge masks, alpha/orientation, exact outside-mask composition, pixel-buffer orientation, bilinear/replicated-padding mask support, strict helper arguments, private-job ownership and constrained stale cleanup.
+Sources include unit tests for stroke rasterization, quick drag gaps, size/coordinate bounds, empty/full masks, thin-mask downsampling, non-square edge masks, alpha/orientation, exact outside-mask composition, pixel-buffer orientation, bilinear/replicated-padding mask support, strict helper arguments, private-job ownership, constrained stale cleanup, and PNG decode lifetime after the complete source directory is deleted.
 
 Provision the fixed approved source with `python3 scripts/SmartErase-fetch-fixture.py` (developer/CI only, not bundled in the app). It fails on any access denial, unexpected redirect or hash mismatch with no alternate source.
 
@@ -77,7 +77,7 @@ The genuine-inference test is `SmartEraseEngineTests.testRealCoreMLRemovesMarked
 1. Same dimensions; every unpainted RGBA byte and all alpha values unchanged
 2. At least 10,000 masked pixels changed; at least six distinct reconstructed red-channel values (rejects an unchanged image or flat fill)
 3. Masked reconstruction error against the known clean texture improves by at least 50%
-4. Wall time is below the helper's 150-second bound
+4. Wall time is below the helper's architecture-specific 150-second ARM64 / 300-second Intel bound
 
 No exact generated pixels are assumed across GPU hardware. Without the environment variable it is explicitly **skipped**, not passed. The test uses the fully pinned candidate independently of the user-facing enablement flag, so future candidates can be tested while gated. CI needs a hard job timeout and must retain the native fixture result. Successful portable/unit checks alone are not evidence that smart erase works.
 
@@ -89,4 +89,10 @@ Passed locally: primary source/Apache license review; official TorchScript byte 
 
 Passed on native macOS ARM64 CI: Swift compilation, the real Core ML fixture and exact outside-mask/alpha checks described above. Commit `104e42e`, run `37426021201`, job `112145744179`: 180 regular tests and 12 real-model tests passed; helper packaging/signing passed. The local Linux workspace itself did not execute Swift/Core ML.
 
-Remaining at this checkpoint: Intel real-model result; packaged UI/process cancellation, application-Quit and repeated-run memory evidence. Do not claim zero leaks or completed full PixPin parity from the inference fixture alone.
+Remaining at this checkpoint: final native run with the 300-second Intel product budget and corrected PNG lifetime; signed packaged-helper success; packaged UI/process cancellation, application-Quit and repeated-run memory evidence. Do not claim zero leaks or completed full PixPin parity from the inference fixture alone.
+
+### Packaged PNG lifetime regression
+
+The first packaged-helper smoke on commit `199566d` (run `37427240555`, ARM64 job `112149577246`) exposed a PNG-backed decode/lifetime defect despite the direct-engine fixture passing: the packaged result was entirely transparent/black. The read path combined disabled source caching with an immediate-cache request and returned an ImageIO image across temporary-directory deletion, so lazy backing was the leading diagnosis. `SmartEraseRaster.readImage` now eagerly renders into owned RGBA data while the source exists and returns an independently backed CGImage; it also uses consistent cache flags and verifies decoded dimensions. A regression deletes the PNG and containing directory before repeated consumer draws. The corrected signed-app smoke must pass before claiming this end-to-end path works.
+
+The parent also restores its original canonical RGBA outside the mask and original alpha everywhere after decoding helper output. A partial-alpha PNG regression verifies that even corrupted round-trip outside bytes cannot alter the original; generated RGB inside the mask is still subject to the independent inpainting-quality fixture. This restoration cannot hide a black/blank generated region because masked reconstruction quality is checked separately.
