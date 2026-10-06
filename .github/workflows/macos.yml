@@ -23,12 +23,6 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
-      - name: Check annotation, GIF, recording durability and inference boundaries first
-        timeout-minutes: 8
-        run: |
-          mkdir -p dist
-          set -o pipefail
-          swift test --filter 'AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|GIFFrameExtractionTests|GIFStreamingWriterTests|GIFResourceSmokeTests|RecordingAndGIFTests|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' 2>&1 | tee dist/critical-tests.log
       - name: Package signed native app for early pixel review
         run: |
           mkdir -p dist
@@ -46,6 +40,12 @@ jobs:
           path: dist/evidence/ui/
           if-no-files-found: ignore
           retention-days: 14
+      - name: Check annotation, GIF, recording durability and inference boundaries
+        timeout-minutes: 8
+        run: |
+          mkdir -p dist
+          set -o pipefail
+          swift test --filter 'AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|GIFFrameExtractionTests|GIFStreamingWriterTests|GIFResourceSmokeTests|RecordingAndGIFTests|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' 2>&1 | tee dist/critical-tests.log
       - name: Recover actual abruptly terminated synthetic recording from installed app
         timeout-minutes: 4
         run: |

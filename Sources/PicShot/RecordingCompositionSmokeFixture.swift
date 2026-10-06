@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 import CoreImage
 import Foundation
+import Darwin
 import ImageIO
 import ScreenCaptureKit
 import UniformTypeIdentifiers
@@ -101,8 +102,11 @@ enum RecordingCompositionSmokeFixture {
             report["cameraSlotsAfterEachCleanup"] = 0
             report["witnessMovie"] = "recording-composition.mp4"
             report["witnessPNG"] = "recording-composition.png"
-            try files.removeItem(at: root)
-            try require(!files.fileExists(atPath: root.path), "Temporary recording directory was not removed")
+            report["phase"] = "owned-root-cleanup"
+            report["completedMeasuredCycles"] = runs.count
+            try write(report, to: reportURL)
+            report["rootCleanupDisposition"] = try removeOwnedFixtureDirectory(root)
+            try require(ownedDirectoryIsAbsent(root), "Temporary recording directory was not removed")
             report["temporaryDirectoryRemoved"] = true
             report["elapsedSeconds"] = ProcessInfo.processInfo.systemUptime - started
             let passed = resident.withinEnvelope == true && (footprint.withinEnvelope ?? true)
@@ -112,7 +116,7 @@ enum RecordingCompositionSmokeFixture {
             return report
         } catch {
             try? files.removeItem(at: root)
-            report["temporaryDirectoryRemoved"] = !files.fileExists(atPath: root.path)
+            report["temporaryDirectoryRemoved"] = ownedDirectoryIsAbsent(root)
             report["status"] = "failed"; report["error"] = error.localizedDescription
             report["elapsedSeconds"] = ProcessInfo.processInfo.systemUptime - started
             try? write(report, to: reportURL)
@@ -145,7 +149,8 @@ enum RecordingCompositionSmokeFixture {
         }
         report["releasedObjects"] = ["writer": true, "compositor": true, "state": true, "overlayController": true]
         report["liveTrackedObjectsAfterRelease"] = probe.liveObjectCount
-        try FileManager.default.removeItem(at: directory)
+        report["directoryCleanupDisposition"] = try removeOwnedFixtureDirectory(directory)
+        try require(ownedDirectoryIsAbsent(directory), "Cycle directory cleanup was not independently confirmed")
         report["temporaryFilesRemaining"] = 0
         try await Task.sleep(nanoseconds: 300_000_000)
         sampler.stop()
@@ -262,6 +267,16 @@ enum RecordingCompositionSmokeFixture {
         let formats = try await videoTracks[0].load(.formatDescriptions)
         try require(!formats.isEmpty && formats.allSatisfy { CMFormatDescriptionGetMediaSubType($0) == kCMVideoCodecType_H264 },
                     "Synthetic recording did not contain H.264 video")
+        let colorProperties: [[String: String]] = formats.map { format in
+            ["primaries": CMFormatDescriptionGetExtension(format, extensionKey: kCMFormatDescriptionExtension_ColorPrimaries) as? String ?? "missing",
+             "transfer": CMFormatDescriptionGetExtension(format, extensionKey: kCMFormatDescriptionExtension_TransferFunction) as? String ?? "missing",
+             "matrix": CMFormatDescriptionGetExtension(format, extensionKey: kCMFormatDescriptionExtension_YCbCrMatrix) as? String ?? "missing"]
+        }
+        try require(colorProperties.allSatisfy {
+            $0["primaries"] == (kCMFormatDescriptionColorPrimaries_ITU_R_709_2 as String) &&
+            $0["transfer"] == (kCMFormatDescriptionTransferFunction_sRGB as String) &&
+            $0["matrix"] == (kCMFormatDescriptionYCbCrMatrix_ITU_R_709_2 as String)
+        }, "Encoded MP4 color declarations differ from the compositor sRGB raster: \(colorProperties)")
         let duration = try await asset.load(.duration).seconds
         try require(abs(duration - profile.duration) < 0.02, "Pause removal or final MP4 duration differs")
         let stored = try storedTiming(asset: asset, track: videoTracks[0], profile: profile)
@@ -306,7 +321,7 @@ enum RecordingCompositionSmokeFixture {
         try require(reader.status == .completed && frames == profile.encodedFrames,
                     "Decoded MP4 did not finish with exactly seven frames: \(reader.error?.localizedDescription ?? "")")
         return ["decodedFrames": frames, "decodedPixelChecks": pixelChecks, "durationSeconds": duration, "videoCodec": "H.264",
-                "storedPacketTiming": stored, "witnessPNGBytes": pngBytes,
+                "storedPacketTiming": stored, "encodedColorProperties": colorProperties, "witnessPNGBytes": pngBytes,
                 "verifiedPhases": ["initial-camera-quadrants", "drag-resize-mirror", "camera-crop",
                     "live-pen", "live-eraser", "static-screen-updates", "pause-removal", "frozen-stop-cyan-camera"]]
     }
@@ -440,6 +455,28 @@ enum RecordingCompositionSmokeFixture {
         return bytes.prefix(3).map(Int.init)
     }
     private static func point(_ x: CGFloat, _ y: CGFloat, _ size: CGSize) -> CGPoint { CGPoint(x: x * size.width, y: y * size.height) }
+    /// Cleanup of this fixture's unique owned paths is idempotent, but a
+    /// missing descendant or inaccessible path is not proof the root is gone.
+    /// The independent lstat must report ENOENT for this exact entire directory.
+    static func removeOwnedFixtureDirectory(_ url: URL,
+        remover: (URL) throws -> Void = { try FileManager.default.removeItem(at: $0) }) throws -> String {
+        do { try remover(url) }
+        catch {
+            let error = error as NSError
+            let missing = (error.domain == NSCocoaErrorDomain && error.code == CocoaError.fileNoSuchFile.rawValue) ||
+                (error.domain == NSPOSIXErrorDomain && error.code == Int(ENOENT))
+            guard missing, ownedDirectoryIsAbsent(url) else { throw error }
+            return "already-absent-confirmed-by-lstat"
+        }
+        try require(ownedDirectoryIsAbsent(url), "Owned directory still exists after removal")
+        return "removed-and-absence-confirmed-by-lstat"
+    }
+
+    private static func ownedDirectoryIsAbsent(_ url: URL) -> Bool {
+        var information = stat()
+        return lstat(url.path, &information) != 0 && errno == ENOENT
+    }
+
     private static func fileBytes(_ url: URL) throws -> Int {
         guard let result = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize else { throw failure("Evidence file size unavailable") }
         return result

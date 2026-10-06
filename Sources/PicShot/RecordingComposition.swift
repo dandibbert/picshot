@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import CoreImage
 import CoreMedia
 import CoreVideo
@@ -100,6 +101,15 @@ final class RecordingCompositionState: @unchecked Sendable {
 /// One output pool with a hard three-surface allocation threshold. The caller
 /// drops a frame on encoder backpressure rather than growing a pixel queue.
 final class RecordingFrameCompositor {
+    /// Match the sRGB raster produced below. Without explicit primaries, an SD
+    /// H.264 track may be tagged SMPTE-C and turn pure green into visible red
+    /// after the decoder's color-managed conversion back to sRGB.
+    static let videoColorProperties: [String: String] = [
+        AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
+        AVVideoTransferFunctionKey: AVVideoTransferFunction_IEC_sRGB,
+        AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2
+    ]
+
     let state: RecordingCompositionState
     private let context = CIContext(options: [.cacheIntermediates: false])
     private let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
@@ -151,6 +161,16 @@ final class RecordingFrameCompositor {
         guard status == kCVReturnSuccess, let pixels = allocated else {
             throw RecordingError.failed("A recording overlay surface could not be allocated.")
         }
+        // Color conversion into an sRGB CGContext does not tag the new CV
+        // surface. Attach its actual output space before making the sample's
+        // format description, so VideoToolbox need not guess from dimensions.
+        CVBufferSetAttachment(pixels, kCVImageBufferCGColorSpaceKey, colorSpace, .shouldPropagate)
+        CVBufferSetAttachment(pixels, kCVImageBufferColorPrimariesKey,
+            kCVImageBufferColorPrimaries_ITU_R_709_2, .shouldPropagate)
+        CVBufferSetAttachment(pixels, kCVImageBufferTransferFunctionKey,
+            kCVImageBufferTransferFunction_sRGB, .shouldPropagate)
+        CVBufferSetAttachment(pixels, kCVImageBufferYCbCrMatrixKey,
+            kCVImageBufferYCbCrMatrix_ITU_R_709_2, .shouldPropagate)
         let extent = CGRect(origin: .zero, size: size)
         let sourceImage = CIImage(cvPixelBuffer: sourcePixels)
         let scale = CGAffineTransform(scaleX: size.width / sourceImage.extent.width, y: size.height / sourceImage.extent.height)

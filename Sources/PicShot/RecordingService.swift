@@ -721,7 +721,7 @@ final class RecordingWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchec
         do {
             writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
             let bitRate = min(16_000_000, max(1_000_000, Int(size.width * size.height * CGFloat(options.frameRate) * 0.08)))
-            video = AVAssetWriterInput(mediaType: .video, outputSettings: [
+            var videoSettings: [String: Any] = [
                 AVVideoCodecKey: AVVideoCodecType.h264,
                 AVVideoWidthKey: Int(size.width), AVVideoHeightKey: Int(size.height),
                 AVVideoCompressionPropertiesKey: [
@@ -731,7 +731,9 @@ final class RecordingWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchec
                     AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
                     AVVideoAllowFrameReorderingKey: false
                 ]
-            ])
+            ]
+            if compositor != nil { videoSettings[AVVideoColorPropertiesKey] = RecordingFrameCompositor.videoColorProperties }
+            video = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
             video.expectsMediaDataInRealTime = true
             systemAudio = options.capturesSystemAudio ? Self.audioInput(channels: 2) : nil
             // ScreenCaptureKit supplies native microphone samples. AVAssetWriter

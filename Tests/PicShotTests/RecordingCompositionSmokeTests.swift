@@ -64,6 +64,28 @@ final class RecordingCompositionSmokeTests: XCTestCase {
         }
     }
 
+    func testCleanupAcceptsMissingOwnedRootOnlyAfterExactAbsenceCheck() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("PicShot-Recording-Composition-Cleanup-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let child = root.appendingPathComponent("synthetic.txt")
+        try Data([1, 2, 3]).write(to: child)
+        // An ENOENT for some descendant must never count as root cleanup.
+        XCTAssertThrowsError(try RecordingCompositionSmokeFixture.removeOwnedFixtureDirectory(root, remover: { _ in
+            throw CocoaError(.fileNoSuchFile)
+        }))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: child.path))
+        XCTAssertEqual(try RecordingCompositionSmokeFixture.removeOwnedFixtureDirectory(root),
+                       "removed-and-absence-confirmed-by-lstat")
+        XCTAssertEqual(try RecordingCompositionSmokeFixture.removeOwnedFixtureDirectory(root),
+                       "already-absent-confirmed-by-lstat")
+        // Even with an absent root, an unrelated permissions/I/O failure is not
+        // silently reclassified as a successful FileManager removal.
+        XCTAssertThrowsError(try RecordingCompositionSmokeFixture.removeOwnedFixtureDirectory(root, remover: { _ in
+            throw CocoaError(.fileWriteNoPermission)
+        }))
+    }
+
     func testRejectsUnrecognizedProfileBeforeWritingOrCapturing() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PicShot-Composition-Invalid-" + UUID().uuidString)
         let invalid = RecordingCompositionSmokeFixture.Profile(name: "unbounded", width: 10_000, height: 10_000, measuredCycles: 200)

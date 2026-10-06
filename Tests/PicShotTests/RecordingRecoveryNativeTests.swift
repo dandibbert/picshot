@@ -7,7 +7,7 @@ final class RecordingRecoveryNativeTests: XCTestCase {
     func testActualWriterCancellationKeepsProtectedInodeAndRecoversDecodedAudioVideo() async throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let movie = try await RecordingRecoverySyntheticMovie.make(in: root)
-        try await waitForFragments(movie.url)
+        try await movie.waitForCompleteFragments()
         try movie.lease.protectBeforeCancellingWriter()
         let protected = try movie.lease.validatedSourceURL()
         XCTAssertEqual(protected.lastPathComponent, "recording-preserved.mp4")
@@ -112,23 +112,28 @@ final class RecordingRecoveryNativeTests: XCTestCase {
         model.close()
     }
 
+    func testLivePrefixInspectionObservesFileGrowthDespiteCachedURLResourceSize() throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        var url = root.appendingPathComponent("growing-structure.mp4")
+        let first = Data([0,0,0,8,102,116,121,112, 0,0,0,8,109,111,111,118, 0,0,0,9,109,100,97,116,1])
+        try first.write(to: url)
+        _ = try url.resourceValues(forKeys: [.fileSizeKey])
+        url.setTemporaryResourceValue(first.count, forKey: .fileSizeKey)
+        let second = Data([0,0,0,8,109,111,111,102, 0,0,0,9,109,100,97,116,2])
+        let file = try FileHandle(forWritingTo: url)
+        try file.seekToEnd(); try file.write(contentsOf: second); try file.close()
+        let prefix = try RecordingRecoverySyntheticMovie.prefix(at: url)
+        XCTAssertEqual(prefix.completeFragments, 2)
+        XCTAssertEqual(prefix.byteCount, Int64(first.count + second.count))
+    }
+
     private func interruptedSource(in root: URL) async throws -> URL {
         let movie = try await RecordingRecoverySyntheticMovie.make(in: root)
-        try await waitForFragments(movie.url)
+        try await movie.waitForCompleteFragments()
         try movie.lease.protectBeforeCancellingWriter()
         movie.writer.cancelWriting()
         let url = try movie.lease.validatedSourceURL(); movie.lease.closeLease()
         return url
-    }
-    private func waitForFragments(_ url: URL) async throws {
-        let deadline = ProcessInfo.processInfo.systemUptime + 10
-        while ProcessInfo.processInfo.systemUptime < deadline {
-            if let prefix = try? RecordingRecoverySyntheticMovie.prefix(at: url), prefix.completeFragments >= 3 {
-                try await Task.sleep(nanoseconds: 100_000_000); return
-            }
-            try await Task.sleep(nanoseconds: 50_000_000)
-        }
-        throw RecordingRecoveryError.noRecoverableMedia
     }
     private func directory() throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("PicShot-RecoveryNative-" + UUID().uuidString).resolvingSymlinksInPath()

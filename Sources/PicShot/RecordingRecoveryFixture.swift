@@ -167,14 +167,7 @@ enum RecordingRecoveryFixture {
         let movie = try await RecordingRecoverySyntheticMovie.make(in: root)
         // Wait for encoder output to contain multiple closed fragments before
         // announcing ready. Neither finishWriting nor cancelWriting is called.
-        let deadline = ProcessInfo.processInfo.systemUptime + 10
-        var fragments = 0
-        while ProcessInfo.processInfo.systemUptime < deadline {
-            if let prefix = try? RecordingRecoverySyntheticMovie.prefix(at: movie.url) { fragments = prefix.completeFragments }
-            if fragments >= 3 { break }
-            try await Task.sleep(nanoseconds: 50_000_000)
-        }
-        guard fragments >= 3 else { throw RecordingRecoveryError.noRecoverableMedia }
+        try await movie.waitForCompleteFragments()
         let ready = Ready(token: token, pid: ProcessInfo.processInfo.processIdentifier, frames: 60)
         try JSONEncoder().encode(ready).write(to: root.appendingPathComponent("fixture-ready.json"), options: .atomic)
         while true {
@@ -278,12 +271,77 @@ struct RecordingRecoverySyntheticMovie {
         }
         return Self(writer: writer, lease: lease, url: url)
     }
+    /// Read live size from the open descriptor. URL resource values may cache
+    /// an earlier size while AVAssetWriter is still extending the same file.
     static func prefix(at url: URL) throws -> RecordingRecoveryPrefix {
-        let size = Int64(try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)
         let file = try FileHandle(forReadingFrom: url); defer { try? file.close() }
-        return try RecordingRecoveryMP4.completePrefix(fileSize: size) { offset, count in
+        let size = try file.seekToEnd()
+        guard size <= UInt64(RecordingRecoveryJournal.maximumBytes) else { throw RecordingRecoveryError.limitExceeded }
+        return try RecordingRecoveryMP4.completePrefix(fileSize: Int64(size)) { offset, count in
             try file.seek(toOffset: UInt64(offset)); return try file.read(upToCount: count) ?? Data()
         }
+    }
+    func waitForCompleteFragments() async throws {
+        let deadline = ProcessInfo.processInfo.systemUptime + 10
+        var lastError = "No inspection yet"
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            try Task.checkCancellation()
+            do {
+                let prefix = try Self.prefix(at: url)
+                if prefix.completeFragments >= 3 {
+                    try await Task.sleep(nanoseconds: 100_000_000)
+                    print("Recording recovery fragment readiness: " + diagnostics())
+                    return
+                }
+                lastError = "Only \(prefix.completeFragments) complete fragment(s)"
+            } catch { lastError = String(describing: error) }
+            if writer.status == .failed || writer.status == .cancelled { break }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        throw RecordingRecoveryError.io("Synthetic fragment readiness failed (\(lastError)): " + diagnostics())
+    }
+    /// Bounded diagnostics preserve the actual writer/container evidence in the
+    /// CI log before test-owned media is cleaned up. Never used to repair data.
+    func diagnostics() -> String {
+        var report: [String: Any] = ["writerStatus": writer.status.rawValue,
+            "writerError": writer.error?.localizedDescription ?? "none",
+            "outputFileType": writer.outputFileType.rawValue,
+            "fragmentInterval": writer.movieFragmentInterval.seconds,
+            "initialFragmentInterval": writer.initialMovieFragmentInterval.seconds]
+        do {
+            let file = try FileHandle(forReadingFrom: url); defer { try? file.close() }
+            let size = try file.seekToEnd(); report["liveFileSize"] = size
+            var offset: UInt64 = 0, atoms: [String] = []
+            while offset + 8 <= size, atoms.count < 32 {
+                try file.seek(toOffset: offset)
+                let header = try file.read(upToCount: 16) ?? Data()
+                guard header.count >= 8 else { break }
+                let type = String(bytes: header[4..<8], encoding: .ascii) ?? "non-ascii"
+                var atomSize = header.prefix(4).reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+                if atomSize == 1, header.count >= 16 { atomSize = header[8..<16].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) } }
+                atoms.append("\(offset):\(type):\(atomSize)")
+                guard atomSize >= 8, atomSize <= size - offset else { break }
+                offset += atomSize
+            }
+            report["topLevelAtoms"] = atoms
+            try file.seek(toOffset: 0)
+            let prefix = try file.read(upToCount: 1_048_576) ?? Data()
+            report["headerHex"] = prefix.prefix(64).map { String(format: "%02x", $0) }.joined()
+            // Mere byte signatures are diagnostic only; never treat them as
+            // trusted atom boundaries or use them for recovery decisions.
+            for type in ["moov", "moof", "mdat"] {
+                let bytes = Data(type.utf8); var positions: [Int] = [], searchStart = 0
+                while searchStart < prefix.count, positions.count < 16,
+                      let range = prefix.range(of: bytes, in: searchStart..<prefix.count) {
+                    positions.append(range.lowerBound); searchStart = range.upperBound
+                }
+                report[type + "SignatureOffsets"] = positions
+            }
+        } catch { report["inspectionError"] = String(describing: error) }
+        guard JSONSerialization.isValidJSONObject(report),
+              let data = try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]),
+              let text = String(data: data, encoding: .utf8) else { return "Diagnostic serialization failed" }
+        return text
     }
     private static func frame(time: CMTime, index: Int) throws -> CMSampleBuffer {
         var buffer: CVPixelBuffer?

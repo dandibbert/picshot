@@ -6,6 +6,23 @@ import ScreenCaptureKit
 @testable import PicShot
 
 final class RecordingCompositionTests: XCTestCase {
+    func testCompositedSRGBPixelsDeclareTheirPrimariesTransferAndMatrix() throws {
+        let state = RecordingCompositionState(), size = CGSize(width: 160, height: 120)
+        state.setCanvasSize(size)
+        let green = NSColor(srgbRed: 0, green: 1, blue: 0, alpha: 1)
+        XCTAssertTrue(state.setAnnotations([RecordingOverlayFixtures.rectangle(
+            CGRect(x: 20, y: 20, width: 100, height: 80), color: green)]))
+        let compositor = try RecordingFrameCompositor(size: size, state: state)
+        let sample = try XCTUnwrap(compositor.composite(RecordingOverlayFixtures.sample(at: 100)))
+        let format = try XCTUnwrap(CMSampleBufferGetFormatDescription(sample))
+        RecordingOverlayFixtures.assertSRGB(format)
+        let rgb = try RecordingOverlayFixtures.color(sample, x: 70, y: 60)
+        XCTAssertLessThan(rgb.0, 10, "Pre-encode sRGB green: \(rgb)")
+        XCTAssertGreaterThan(rgb.1, 245, "Pre-encode sRGB green: \(rgb)")
+        XCTAssertLessThan(rgb.2, 10, "Pre-encode sRGB green: \(rgb)")
+        print("Recording pre-encode RGB=\(rgb); \(RecordingOverlayFixtures.colorMetadata(format))")
+    }
+
     func testCameraPlacementMirrorCropAndEllipseProduceActualPixels() throws {
         let size = CGSize(width: 160, height: 120), state = RecordingCompositionState(), token = UUID()
         state.setCanvasSize(size); state.setCameraSession(token)
@@ -151,6 +168,7 @@ final class RecordingCompositionTests: XCTestCase {
         let asset = AVURLAsset(url: saved)
         let tracks = try await asset.loadTracks(withMediaType: .video)
         let track = try XCTUnwrap(tracks.first)
+        for format in try await track.load(.formatDescriptions) { RecordingOverlayFixtures.assertSRGB(format) }
         let duration = try await asset.load(.duration)
         XCTAssertEqual(duration.seconds, 0.6, accuracy: 0.03)
         let reader = try AVAssetReader(asset: asset)
@@ -205,6 +223,8 @@ final class RecordingCompositionTests: XCTestCase {
         clock.set(100.2); _ = await writer.stopAccepting()
         let asset = AVURLAsset(url: try await writer.finish())
         let tracks = try await asset.loadTracks(withMediaType: .video)
+        let track = try XCTUnwrap(tracks.first)
+        for format in try await track.load(.formatDescriptions) { RecordingOverlayFixtures.assertSRGB(format) }
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderTrackOutput(track: try XCTUnwrap(tracks.first),
             outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
@@ -302,9 +322,12 @@ final class RecordingCompositionTests: XCTestCase {
     private func assertColor(_ sample: CMSampleBuffer, x: Int, y: Int, red: Bool = false,
                              green: Bool = false, blue: Bool = false, file: StaticString = #filePath, line: UInt = #line) throws {
         let result = try RecordingOverlayFixtures.color(sample, x: x, y: y)
-        for (value, on) in [(result.0, red), (result.1, green), (result.2, blue)] {
-            if on { XCTAssertGreaterThan(value, 170, file: file, line: line) }
-            else { XCTAssertLessThan(value, 65, file: file, line: line) }
+        let metadata = CMSampleBufferGetFormatDescription(sample).map { String(describing: RecordingOverlayFixtures.colorMetadata($0)) } ?? "no format"
+        let diagnostic = "pixel(\(x),\(y)), RGB=\(result), PTS=\(CMSampleBufferGetPresentationTimeStamp(sample).seconds), \(metadata)"
+        print("Recording decoded/source \(diagnostic)")
+        for (channel, value, on) in [("R", result.0, red), ("G", result.1, green), ("B", result.2, blue)] {
+            if on { XCTAssertGreaterThan(value, 170, "\(channel): \(diagnostic)", file: file, line: line) }
+            else { XCTAssertLessThan(value, 65, "\(channel): \(diagnostic)", file: file, line: line) }
         }
     }
 }
@@ -312,6 +335,24 @@ final class RecordingCompositionTests: XCTestCase {
 /// Original synthetic media fixtures. Coordinates are explicitly bottom-left,
 /// matching Core Image, the annotation model and the camera compositor.
 enum RecordingOverlayFixtures {
+    static func colorMetadata(_ format: CMFormatDescription) -> [String: String] {
+        var result: [String: String] = [:]
+        for (name, key) in [("primaries", kCMFormatDescriptionExtension_ColorPrimaries),
+                            ("transfer", kCMFormatDescriptionExtension_TransferFunction),
+                            ("matrix", kCMFormatDescriptionExtension_YCbCrMatrix)] {
+            result[name] = CMFormatDescriptionGetExtension(format, extensionKey: key) as? String ?? "missing"
+        }
+        return result
+    }
+
+    static func assertSRGB(_ format: CMFormatDescription, file: StaticString = #filePath, line: UInt = #line) {
+        let metadata = colorMetadata(format)
+        print("Recording color format \(metadata)")
+        XCTAssertEqual(metadata["primaries"], kCMFormatDescriptionColorPrimaries_ITU_R_709_2 as String, file: file, line: line)
+        XCTAssertEqual(metadata["transfer"], kCMFormatDescriptionTransferFunction_sRGB as String, file: file, line: line)
+        XCTAssertEqual(metadata["matrix"], kCMFormatDescriptionYCbCrMatrix_ITU_R_709_2 as String, file: file, line: line)
+    }
+
     static func pixels(width: Int, height: Int, color: NSColor) throws -> CVPixelBuffer {
         var buffer: CVPixelBuffer?
         let attributes = [kCVPixelBufferCGImageCompatibilityKey as String: true,
