@@ -6,7 +6,7 @@ export PICSHOT_SMOKE_FORMULA_MODEL_DIR="$PWD/.build/model-fixtures/formula"
 export PICSHOT_SMOKE_FORMULA_INPUT="$PWD/Tests/PicShotMLHelperTests/Fixtures/energy.png"
 export PICSHOT_SMOKE_TABLE_MODEL_DIR="$PWD/.build/model-fixtures/table"
 export PICSHOT_SMOKE_TABLE_INPUT="$PWD/Tests/PicShotTableEngineTests/Fixtures/merged-table.png"
-base="PicShot-0.2.0-macos-$(uname -m)"
+base="PicShot-0.3.0-macos-$(uname -m)"
 work=$(mktemp -d)
 mounted=false
 trap 'if [[ "$mounted" == true ]];then hdiutil detach "$work/mount" || true;fi;rm -rf "$work"' EXIT
@@ -35,6 +35,9 @@ assert r['resourceCycleCount']==40 and r['baselineRSSBytes']>0,r
 assert r['packagedModelEvidence']['formulaLaTeX'].replace(' ','')=='E=mc^{2}',r
 assert r['packagedModelEvidence']['tableRows']==4 and r['packagedModelEvidence']['tableColumns']==3,r
 assert r['finalRetainedAppControllersOrContent']==0,r
+assert r['packagedModelEvidence']['formulaRender']['pngBytes']>0,r
+assert r['packagedModelEvidence']['formulaRender']['pdfBytes']>0,r
+assert r['pinSessionEvidence']['status']=='passed',r
 assert r['packagedModelEvidence']['smartErase']['status']=='passed',r
 assert r['packagedModelEvidence']['smartErase']['outsideMaskByteMismatches']==0,r
 print(json.dumps(r,indent=2))

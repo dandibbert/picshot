@@ -95,6 +95,92 @@ public struct CaptureSelectionGeometry: Sendable {
             width <= maximumOutputPixels / height
     }
 
+    public var pixelsPerPointX: CGFloat { CGFloat(pixelWidth) / pointSize.width }
+    public var pixelsPerPointY: CGFloat { CGFloat(pixelHeight) / pointSize.height }
+
+    /// Pointer coordinates are display-local, top-left based. The outer right and
+    /// bottom edges refer to the last pixel, never one pixel beyond the source.
+    public func pixelCoordinate(at point: CGPoint) -> CapturePixelCoordinate? {
+        guard point.x.isFinite, point.y.isFinite else { return nil }
+        return CapturePixelCoordinate(
+            x: Int(max(0, min(CGFloat(pixelWidth - 1), floor(point.x * pixelsPerPointX)))),
+            y: Int(max(0, min(CGFloat(pixelHeight - 1), floor(point.y * pixelsPerPointY)))))
+    }
+
+    /// Exact pixel-center coverage, matching rectangle rasterization. This avoids
+    /// reporting an extra pixel for fractional point bounds on scaled displays.
+    public func rectanglePixelBounds(_ rectangle: CGRect) -> CGRect? {
+        guard rectangle.origin.x.isFinite, rectangle.origin.y.isFinite,
+              rectangle.width.isFinite, rectangle.height.isFinite else { return nil }
+        let rectangle = rectangle.standardized
+        let x0 = ceil(max(0, min(CGFloat(pixelWidth), rectangle.minX * pixelsPerPointX - 0.5)))
+        let x1 = ceil(max(0, min(CGFloat(pixelWidth), rectangle.maxX * pixelsPerPointX - 0.5)))
+        let y0 = ceil(max(0, min(CGFloat(pixelHeight), rectangle.minY * pixelsPerPointY - 0.5)))
+        let y1 = ceil(max(0, min(CGFloat(pixelHeight), rectangle.maxY * pixelsPerPointY - 0.5)))
+        guard x1 > x0, y1 > y0 else { return nil }
+        return CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0)
+    }
+
+    /// Snaps a rectangle to whole source pixels, then moves it, or moves its
+    /// bottom/right edges when resizing. Deltas are source pixels, not points.
+    /// Arithmetic is clamped before integer conversion, including extreme input.
+    public mutating func nudgeRectangle(at index: Int, deltaX: Int, deltaY: Int, resizing: Bool = false) throws {
+        let rectangle = try editablePixelRectangle(at: index)
+        var edited = rectangle
+        if resizing {
+            edited.size.width = max(minimumRectanglePixelWidth,
+                                    min(CGFloat(pixelWidth) - rectangle.minX, rectangle.width + CGFloat(deltaX)))
+            edited.size.height = max(minimumRectanglePixelHeight,
+                                     min(CGFloat(pixelHeight) - rectangle.minY, rectangle.height + CGFloat(deltaY)))
+        } else {
+            edited.origin.x = max(0, min(CGFloat(pixelWidth) - rectangle.width, rectangle.minX + CGFloat(deltaX)))
+            edited.origin.y = max(0, min(CGFloat(pixelHeight) - rectangle.height, rectangle.minY + CGFloat(deltaY)))
+        }
+        try replaceRectangle(at: index, pixelBounds: edited)
+    }
+
+    /// Applies exact dimensions. If necessary, moves the rectangle back inside
+    /// this display so the requested dimensions are preserved rather than clipped.
+    public mutating func setRectanglePixelSize(at index: Int, width: Int, height: Int) throws {
+        let rectangle = try editablePixelRectangle(at: index)
+        guard CGFloat(width) >= minimumRectanglePixelWidth, CGFloat(height) >= minimumRectanglePixelHeight,
+              width <= pixelWidth, height <= pixelHeight else { throw CaptureSelectionError.invalidShape }
+        try replaceRectangle(at: index, pixelBounds: CGRect(
+            x: min(rectangle.minX, CGFloat(pixelWidth - width)),
+            y: min(rectangle.minY, CGFloat(pixelHeight - height)), width: CGFloat(width), height: CGFloat(height)))
+    }
+
+    public mutating func removeOperation(at index: Int) throws {
+        guard !isCancelled else { throw CaptureSelectionError.cancelled }
+        guard operations.indices.contains(index) else { throw CaptureSelectionError.invalidShape }
+        operations.remove(at: index)
+    }
+
+    private var minimumRectanglePixelWidth: CGFloat { ceil(2 * pixelsPerPointX) }
+    private var minimumRectanglePixelHeight: CGFloat { ceil(2 * pixelsPerPointY) }
+
+    private func editablePixelRectangle(at index: Int) throws -> CGRect {
+        guard !isCancelled else { throw CaptureSelectionError.cancelled }
+        guard operations.indices.contains(index), case .rectangle(let rectangle) = operations[index].shape,
+              var pixelBounds = rectanglePixelBounds(rectangle) else {
+            throw CaptureSelectionError.invalidShape
+        }
+        // Fractional display scales can give a 2-point drag fewer than 2 points
+        // of pixel-center coverage. Let precision editing repair that tiny draft.
+        pixelBounds.size.width = max(minimumRectanglePixelWidth, pixelBounds.width)
+        pixelBounds.size.height = max(minimumRectanglePixelHeight, pixelBounds.height)
+        pixelBounds.origin.x = min(pixelBounds.minX, CGFloat(pixelWidth) - pixelBounds.width)
+        pixelBounds.origin.y = min(pixelBounds.minY, CGFloat(pixelHeight) - pixelBounds.height)
+        return pixelBounds
+    }
+
+    private mutating func replaceRectangle(at index: Int, pixelBounds: CGRect) throws {
+        let rectangle = CGRect(x: pixelBounds.minX / pixelsPerPointX, y: pixelBounds.minY / pixelsPerPointY,
+                               width: pixelBounds.width / pixelsPerPointX, height: pixelBounds.height / pixelsPerPointY)
+        // The edit does not change operation order, Boolean mode or complexity.
+        operations[index] = CaptureSelectionOperation(shape: .rectangle(rectangle), subtracts: operations[index].subtracts)
+    }
+
     public mutating func append(_ shape: CaptureSelectionShape, subtracts: Bool = false) throws {
         guard !isCancelled else { throw CaptureSelectionError.cancelled }
         guard operations.count < Self.maximumOperations else { throw CaptureSelectionError.complexityLimit }

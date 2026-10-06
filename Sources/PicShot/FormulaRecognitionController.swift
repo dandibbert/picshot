@@ -4,10 +4,12 @@ import Security
 import Darwin
 import PicShotFormulaCore
 import PicShotTableEngine
+import PicShotFormulaRenderCore
 
 @MainActor
 final class FormulaRecognitionController: NSWindowController, NSWindowDelegate {
     private let model: FormulaRecognitionModel
+    private var renderController: FormulaRenderController?
     init(image: CGImage) {
         model = FormulaRecognitionModel(image: image)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 740, height: 520),
@@ -17,11 +19,29 @@ final class FormulaRecognitionController: NSWindowController, NSWindowDelegate {
         window.minSize = NSSize(width: 600, height: 430)
         window.isReleasedWhenClosed = false
         window.delegate = self
-        window.contentView = NSHostingView(rootView: FormulaRecognitionView(model: model))
+        window.contentView = NSHostingView(rootView: FormulaRecognitionView(model: model, openRenderedPreview: { [weak self] in self?.openRenderedPreview() }))
         window.center()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) unavailable") }
-    func windowWillClose(_ notification: Notification) { model.cancel() }
+    func windowWillClose(_ notification: Notification) {
+        model.cancel()
+        let preview = renderController; renderController = nil
+        preview?.onClose = nil; preview?.close()
+    }
+    private func openRenderedPreview() {
+        guard !model.working, !model.latex.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              model.latex.utf8.count <= FormulaRenderLimits.latexBytes else { return }
+        if let preview = renderController {
+            // Clicking from this editor explicitly previews its current text.
+            preview.update(latex: model.latex)
+            preview.showWindow(nil); preview.window?.makeKeyAndOrderFront(nil)
+        } else {
+            let preview = FormulaRenderController(latex: model.latex)
+            preview.onClose = { [weak self] in self?.renderController = nil }
+            renderController = preview
+            preview.showWindow(nil); preview.window?.makeKeyAndOrderFront(nil)
+        }
+    }
 }
 
 @MainActor
@@ -122,6 +142,7 @@ final class FormulaRecognitionModel: ObservableObject {
 @MainActor
 private struct FormulaRecognitionView: View {
     @ObservedObject var model: FormulaRecognitionModel
+    let openRenderedPreview: () -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Image(decorative: model.image, scale: 1).resizable().scaledToFit()
@@ -141,6 +162,12 @@ private struct FormulaRecognitionView: View {
                 Spacer()
                 Button("复制 LaTeX") { model.copy() }.disabled(model.latex.isEmpty || model.working)
                 Button("导出 .tex…") { model.save() }.disabled(model.latex.isEmpty || model.working)
+            }
+            HStack {
+                Button("公式预览与更多导出…", action: openRenderedPreview)
+                    .disabled(model.working || model.latex.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.latex.utf8.count > FormulaRenderLimits.latexBytes)
+                Text("本机排版 · SVG / MathML / PNG / PDF · 无需下载模型")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
             }
             HStack {
                 Text("约 120 MB · MIT · 单公式识别 · 本机运行，无图片上传").font(.system(size: 11))

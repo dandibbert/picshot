@@ -225,6 +225,108 @@ final class CaptureSelectionGeometryTests: XCTestCase {
         XCTAssertEqual(geometry.operations.count, CaptureSelectionGeometry.maximumOperations)
     }
 
+    func testPointerPixelCoordinatesUseUnequalScalesAndClampDisplayEdges() throws {
+        let geometry = try CaptureSelectionGeometry(pointSize: CGSize(width: 100, height: 80), pixelWidth: 300, pixelHeight: 160)
+        XCTAssertEqual(geometry.pixelCoordinate(at: CGPoint(x: 7.25, y: 11.75)), CapturePixelCoordinate(x: 21, y: 23))
+        XCTAssertEqual(geometry.pixelCoordinate(at: CGPoint(x: -100, y: -50)), CapturePixelCoordinate(x: 0, y: 0))
+        XCTAssertEqual(geometry.pixelCoordinate(at: CGPoint(x: 100, y: 80)), CapturePixelCoordinate(x: 299, y: 159))
+        XCTAssertEqual(geometry.pixelCoordinate(at: CGPoint(x: 1e100, y: 1e100)), CapturePixelCoordinate(x: 299, y: 159))
+        XCTAssertNil(geometry.pixelCoordinate(at: CGPoint(x: CGFloat.nan, y: 2)))
+        XCTAssertNil(geometry.pixelCoordinate(at: CGPoint(x: 1, y: CGFloat.infinity)))
+    }
+
+    func testDimensionHUDMatchesActualFractionalRectangleCoverage() throws {
+        var geometry = try makeGeometry(size: 20, scale: 2)
+        let rectangle = CGRect(x: 1.4, y: 2.4, width: 2.2, height: 3.2)
+        try geometry.append(.rectangle(rectangle))
+        XCTAssertEqual(geometry.rectanglePixelBounds(rectangle), try geometry.rasterized().pixelBounds)
+        XCTAssertNil(geometry.rectanglePixelBounds(CGRect(x: 100, y: 100, width: 3, height: 3)))
+        XCTAssertNil(geometry.rectanglePixelBounds(CGRect(x: CGFloat.nan, y: 0, width: 3, height: 3)))
+    }
+
+    func testPixelNudgeMovesOnePixelOnEachIndependentAxis() throws {
+        var geometry = try CaptureSelectionGeometry(pointSize: CGSize(width: 100, height: 80), pixelWidth: 300, pixelHeight: 160)
+        try geometry.append(.rectangle(CGRect(x: 7, y: 11, width: 9, height: 5)))
+        try geometry.nudgeRectangle(at: 0, deltaX: 1, deltaY: -1)
+        XCTAssertEqual(try geometry.rasterized().pixelBounds, CGRect(x: 22, y: 21, width: 27, height: 10))
+        try geometry.nudgeRectangle(at: 0, deltaX: -10, deltaY: 10)
+        XCTAssertEqual(try geometry.rasterized().pixelBounds, CGRect(x: 12, y: 31, width: 27, height: 10))
+    }
+
+    func testPixelNudgeClampsWithoutOverflowAndDoesNotShrink() throws {
+        var geometry = try makeGeometry(size: 20, scale: 2)
+        try geometry.append(.rectangle(CGRect(x: 2, y: 3, width: 4, height: 5)))
+        try geometry.nudgeRectangle(at: 0, deltaX: Int.min, deltaY: Int.max)
+        XCTAssertEqual(try geometry.rasterized().pixelBounds, CGRect(x: 0, y: 30, width: 8, height: 10))
+        try geometry.nudgeRectangle(at: 0, deltaX: Int.max, deltaY: Int.min)
+        XCTAssertEqual(try geometry.rasterized().pixelBounds, CGRect(x: 32, y: 0, width: 8, height: 10))
+    }
+
+    func testPixelResizePreservesTopLeftAndHasRetinaMinimum() throws {
+        var geometry = try CaptureSelectionGeometry(pointSize: CGSize(width: 100, height: 80), pixelWidth: 300, pixelHeight: 160)
+        try geometry.append(.rectangle(CGRect(x: 7, y: 11, width: 9, height: 5)))
+        try geometry.nudgeRectangle(at: 0, deltaX: 1, deltaY: 1, resizing: true)
+        XCTAssertEqual(try geometry.rasterized().pixelBounds, CGRect(x: 21, y: 22, width: 28, height: 11))
+        try geometry.nudgeRectangle(at: 0, deltaX: Int.min, deltaY: Int.min, resizing: true)
+        XCTAssertEqual(try geometry.rasterized().pixelBounds, CGRect(x: 21, y: 22, width: 6, height: 4))
+        try geometry.nudgeRectangle(at: 0, deltaX: Int.max, deltaY: Int.max, resizing: true)
+        XCTAssertEqual(try geometry.rasterized().pixelBounds, CGRect(x: 21, y: 22, width: 279, height: 138))
+    }
+
+    func testNumericPixelDimensionsStayExactAndRepositionAtEdge() throws {
+        var geometry = try makeGeometry(size: 20, scale: 2)
+        try geometry.append(.rectangle(CGRect(x: 15, y: 15, width: 4, height: 4)))
+        try geometry.setRectanglePixelSize(at: 0, width: 13, height: 17)
+        XCTAssertEqual(try geometry.rasterized().pixelBounds, CGRect(x: 27, y: 23, width: 13, height: 17))
+        let before = geometry.operations
+        for dimensions in [(3, 4), (4, 3), (0, 4), (41, 4), (4, Int.max), (Int.min, 4)] {
+            XCTAssertThrowsError(try geometry.setRectanglePixelSize(at: 0, width: dimensions.0, height: dimensions.1))
+            XCTAssertEqual(geometry.operations, before)
+        }
+    }
+
+    func testPrecisionEditingCanRepairTinyFractionalScaleCoverage() throws {
+        var geometry = try CaptureSelectionGeometry(pointSize: CGSize(width: 100, height: 100), pixelWidth: 125, pixelHeight: 125)
+        try geometry.append(.rectangle(CGRect(x: 0.8, y: 0.8, width: 2, height: 2)))
+        XCTAssertThrowsError(try geometry.rasterized())
+        try geometry.setRectanglePixelSize(at: 0, width: 5, height: 7)
+        XCTAssertEqual(try geometry.rasterized().pixelBounds, CGRect(x: 1, y: 1, width: 5, height: 7))
+    }
+
+    func testEditingSpecificCutoutPreservesBooleanOrderAndOtherShapes() throws {
+        var geometry = try makeGeometry(size: 20, scale: 2)
+        try geometry.append(.rectangle(CGRect(x: 0, y: 0, width: 10, height: 10)))
+        try geometry.append(.rectangle(CGRect(x: 2, y: 2, width: 3, height: 3)), subtracts: true)
+        try geometry.append(.rectangle(CGRect(x: 15, y: 15, width: 4, height: 4)))
+        let before = geometry.operations
+        try geometry.nudgeRectangle(at: 1, deltaX: 1, deltaY: 1)
+        XCTAssertEqual(geometry.operations[0], before[0])
+        XCTAssertEqual(geometry.operations[2], before[2])
+        XCTAssertTrue(geometry.operations[1].subtracts)
+        XCTAssertEqual(alpha(try geometry.rasterized(), x: 4, y: 4), 255)
+        XCTAssertEqual(alpha(try geometry.rasterized(), x: 5, y: 5), 0)
+        try geometry.removeOperation(at: 1)
+        XCTAssertEqual(geometry.operations, [before[0], before[2]])
+    }
+
+    func testPixelEditingRejectsPolygonBadIndexAndCancellationWithoutMutation() throws {
+        var geometry = try makeGeometry(size: 20)
+        try geometry.append(.polygon([.zero, CGPoint(x: 5, y: 0), CGPoint(x: 0, y: 5)]))
+        let before = geometry.operations
+        XCTAssertThrowsError(try geometry.nudgeRectangle(at: 0, deltaX: 1, deltaY: 1))
+        XCTAssertThrowsError(try geometry.setRectanglePixelSize(at: 0, width: 5, height: 5))
+        XCTAssertThrowsError(try geometry.nudgeRectangle(at: -1, deltaX: 1, deltaY: 1))
+        XCTAssertThrowsError(try geometry.removeOperation(at: Int.max))
+        XCTAssertEqual(geometry.operations, before)
+        geometry.cancel()
+        XCTAssertThrowsError(try geometry.nudgeRectangle(at: 0, deltaX: 1, deltaY: 1)) {
+            XCTAssertEqual($0 as? CaptureSelectionError, .cancelled)
+        }
+        XCTAssertThrowsError(try geometry.removeOperation(at: 0)) {
+            XCTAssertEqual($0 as? CaptureSelectionError, .cancelled)
+        }
+    }
+
     private func makeGeometry(size: Int, scale: Int = 1) throws -> CaptureSelectionGeometry {
         try CaptureSelectionGeometry(pointSize: CGSize(width: size, height: size), pixelWidth: size * scale, pixelHeight: size * scale)
     }

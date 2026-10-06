@@ -1,0 +1,21 @@
+PicShot local formula renderer
+
+MathJax 3.2.2 (mathjax-full)
+Copyright (c) 2009-2022 The MathJax Consortium
+Distributed under the Apache License, Version 2.0.
+The complete license is included as FormulaRender-MathJax-LICENSE.txt.
+Official source: https://github.com/mathjax/MathJax-src/tree/3.2.2
+Exact npm source revision: ad8f5c21cb810236551da8c6512ba733e67357ee
+
+The FormulaRenderRuntime.js file is a minified bundle of the MathJax source
+and PicShot's FormulaRender-entry.js adapter. The source is not otherwise
+patched. Only the base and AMS TeX configurations and SVG TeX glyph paths
+are included. The font outline source files identify their license as
+Apache-2.0, e.g. ts/output/svg/fonts/tex/normal.ts at the pinned revision.
+
+PicShot adapter changes: local-only request validation, restricted packages,
+500 macro substitutions, bounded TeX buffers, strict outline extraction,
+self-contained SVG serialization and semantic MathML serialization.
+The build-time esbuild 0.25.12 tool is MIT-licensed, is not included in the
+runtime bundle and is not distributed as an executable in the app.
+Node, npm, a browser runtime and the npm dependency tree are not shipped.

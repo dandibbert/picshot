@@ -5,9 +5,10 @@ import Carbon
     private let change:()->Void
     private var bindings:[HotKeyBinding]
     private var counts:[NSTextField]=[]
+    private let restorePins=NSButton(checkboxWithTitle:"启动时恢复上次显示的贴图组（默认关闭）",target:nil,action:nil)
     init(onChange:@escaping()->Void){
         change=onChange;bindings=(UserDefaults.standard.data(forKey:"hotkeys").flatMap{try? JSONDecoder().decode([HotKeyBinding].self,from:$0)}) ?? HotKeyBinding.defaults
-        let w=NSWindow(contentRect:NSRect(x:0,y:0,width:500,height:470),styleMask:[.titled,.closable],backing:.buffered,defer:false);super.init(window:w);w.title="设置";w.isReleasedWhenClosed=false;w.center()
+        let w=NSWindow(contentRect:NSRect(x:0,y:0,width:500,height:560),styleMask:[.titled,.closable],backing:.buffered,defer:false);super.init(window:w);w.title="设置";w.isReleasedWhenClosed=false;w.center()
         var rows:[NSView]=[]
         let title=NSTextField(labelWithString:"全局快捷键");title.font = .boldSystemFont(ofSize:13);rows.append(title)
         for (i,name) in ["区域截图","剪贴板贴图","历史记录"].enumerated(){let label=NSTextField(labelWithString:name);label.widthAnchor.constraint(equalToConstant:135).isActive=true;let key=ShortcutButton(binding:bindings[i]);key.onChange={ [weak self] binding in self?.bindings[i]=binding };rows.append(NSStackView(views:[label,key]))}
@@ -16,15 +17,20 @@ import Carbon
         for (label,key,fallback) in [("最多天数","historyDays",30),("最多截图","historyCount",200),("最大磁盘 MB","historyMB",1024)]{let text=NSTextField(labelWithString:label);text.widthAnchor.constraint(equalToConstant:135).isActive=true;let value=UserDefaults.standard.integer(forKey:key);let field=NSTextField(string:String(value>0 ? value:fallback));field.widthAnchor.constraint(equalToConstant:100).isActive=true;counts.append(field);rows.append(NSStackView(views:[text,field]))}
         let note=NSTextField(wrappingLabelWithString:"超限的非收藏历史会被自动清理。快捷键冲突时请换一组组合键。录屏原文件存于电影/PicShot，不计入截图历史。")
         note.textColor = .secondaryLabelColor;note.font = .systemFont(ofSize:11);rows.append(note)
+        let pins=NSTextField(labelWithString:"贴图会话");pins.font = .boldSystemFont(ofSize:13);rows.append(pins)
+        restorePins.state=PinSessionStore.restoreOnLaunch ? .on:.off;rows.append(restorePins)
+        let pinNote=NSTextField(wrappingLabelWithString:"贴图自动保存在本机。关闭会归档到贴图历史，可重新打开或另行移除；隐藏、切换组和退出保留原显示状态。含归档最多 20 张、1 亿像素、512 MiB；最多同时显示 20 张。")
+        pinNote.textColor = .secondaryLabelColor;pinNote.font = .systemFont(ofSize:11);rows.append(pinNote)
         let save=NSButton(title:"保存",target:self,action:#selector(saveSettings));rows.append(save)
         let stack=NSStackView(views:rows);stack.orientation = .vertical;stack.alignment = .leading;stack.spacing=10;stack.translatesAutoresizingMaskIntoConstraints=false;w.contentView?.addSubview(stack)
-        NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo:w.contentView!.leadingAnchor,constant:24),stack.trailingAnchor.constraint(equalTo:w.contentView!.trailingAnchor,constant:-24),stack.topAnchor.constraint(equalTo:w.contentView!.topAnchor,constant:20)])
+        NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo:w.contentView!.leadingAnchor,constant:24),stack.trailingAnchor.constraint(equalTo:w.contentView!.trailingAnchor,constant:-24),stack.topAnchor.constraint(equalTo:w.contentView!.topAnchor,constant:20),stack.bottomAnchor.constraint(lessThanOrEqualTo:w.contentView!.bottomAnchor,constant:-20),note.widthAnchor.constraint(equalTo:stack.widthAnchor),pinNote.widthAnchor.constraint(equalTo:stack.widthAnchor)])
     }
     required init?(coder:NSCoder){fatalError()}
     @objc private func saveSettings(){
         let values=counts.map{$0.integerValue};guard values.allSatisfy({$0>0}),values[0]<=3650,values[1]<=10000,values[2]<=102400 else{showError(PicShotError.message("请填写有效的正数（最多 3650 天、10000 张、102400 MB）"));return}
         guard Set(bindings.map{"\($0.keyCode)-\($0.modifiers)"}).count == bindings.count else{showError(PicShotError.message("快捷键不能重复"));return}
         for (i,key) in ["historyDays","historyCount","historyMB"].enumerated(){UserDefaults.standard.set(values[i],forKey:key)}
+        PinSessionStore.restoreOnLaunch=restorePins.state == .on
         UserDefaults.standard.set(try? JSONEncoder().encode(bindings),forKey:"hotkeys");change();close()
     }
 }

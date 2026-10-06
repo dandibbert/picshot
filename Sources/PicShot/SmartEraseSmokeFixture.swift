@@ -69,6 +69,7 @@ enum SmartEraseSmokeFixture {
             "outsideMaskByteMismatches": outsideMismatches, "alphaMismatches": alphaMismatches,
             "newJobDirectoriesRemaining": leftOver.count, "seconds": elapsed,
             "configuredHelperRSSLimitBytes": SmartEraseLimits.residentBytes,
+            "configuredHelperWallLimitSeconds": SmartEraseLimits.seconds,
             "scope": "one successful production helper job; not a forced timeout, crash, cancellation or general leak test"
         ]
     }

@@ -1,0 +1,12 @@
+{
+  "name": "picshot-formula-render-assets",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Build-time only dependencies. Neither Node nor npm is shipped with PicShot.",
+  "scripts": {
+    "build": "node FormulaRender-build.mjs",
+    "test": "node --test FormulaRender-tests.mjs"
+  },
+  "dependencies": { "mathjax-full": "3.2.2" },
+  "devDependencies": { "esbuild": "0.25.12" }
+}

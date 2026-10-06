@@ -1,0 +1,16 @@
+{
+  "engine": "mathjax-full",
+  "version": "3.2.2",
+  "license": "Apache-2.0",
+  "source": "https://github.com/mathjax/MathJax-src/tree/3.2.2",
+  "sourceCommit": "ad8f5c21cb810236551da8c6512ba733e67357ee",
+  "tarball": "https://registry.npmjs.org/mathjax-full/-/mathjax-full-3.2.2.tgz",
+  "integrity": "sha512-+LfG9Fik+OuI8SLwsiR02IVdjcnRCy5MufYLi0C3TdMT56L/pjB0alMVGgoWJF8pN9Rc7FESycZB9BMNWIid5w==",
+  "packages": [
+    "base",
+    "ams"
+  ],
+  "font": "MathJax TeX SVG paths",
+  "bundler": "esbuild 0.25.12",
+  "bytes": 1655789
+}

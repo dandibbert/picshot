@@ -22,6 +22,6 @@ The `dist/` folder contains a `.app`, drag-to-Applications DMG, ZIP, checksums, 
 - The editor provides real flattened PNG/JPEG/TIFF/PDF outputs, solid redaction, blur and pixelation. Blur/pixelation are cosmetic; use opaque redaction for secrets
 - Pins float over apps; the menu restores click-through pins
 - Screen and microphone permissions are requested only when those user-started features need them
-- OCR/barcodes run locally. No network or analytics code is included
+- OCR/barcodes run locally. Images and text stay on the device; explicit optional-model and system-language downloads require network access, and no analytics code is included
 
 Screenshot history defaults to 200 items, 30 days or 1 GiB. Starred items are protected and still count toward quota; a full protected quota rejects new history rather than deleting favorites. Recordings have separate duration/file-size bounds. No claim of zero memory leaks is made.

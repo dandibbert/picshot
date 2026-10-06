@@ -2,6 +2,7 @@ import AppKit
 import CoreImage
 import ImageIO
 import UniformTypeIdentifiers
+import PicShotCore
 
 /// Pixel edits are independent from a pin's presentation zoom, opacity, and position.
 enum PinTransform: CaseIterable {
@@ -73,6 +74,9 @@ struct PinImageState {
     private(set) var isModified = false
 
     init(image: CGImage) { original = image; current = image }
+    init(original: CGImage, current: CGImage, isModified: Bool) {
+        self.original = original; self.current = current; self.isModified = isModified
+    }
 
     @discardableResult mutating func apply(_ transform: PinTransform) -> Bool {
         guard let rendered = PinImageRenderer.render(image: current, transform: transform) else { return false }
@@ -93,6 +97,9 @@ struct PinImageState {
     /// Original capture, kept compatible with the application's pin bookkeeping.
     let image: CGImage
     var onClose: (() -> Void)?
+    /// Invoked before accepting an edit. A persistence failure leaves the live image unchanged.
+    var onPixelChange: ((CGImage, Bool) throws -> Void)?
+    var onPresentationChange: ((PinPresentation) -> Void)?
     var currentImage: CGImage { state.current }
     private var state: PinImageState
     private let canvas = PinCanvas()
@@ -104,14 +111,19 @@ struct PinImageState {
     private var locked = false
     private var closed = false
     private var updatingLayout = false
+    private var applyingPresentation = false
     private var exportPanel: NSSavePanel?
     private let toolbarHeight: CGFloat = 36
 
-    init(image: CGImage) {
-        self.image = image
-        state = PinImageState(image: image)
-        let scale = min(1, 680 / CGFloat(max(image.width, image.height)))
-        let size = NSSize(width: max(344, CGFloat(image.width) * scale), height: max(120, CGFloat(image.height) * scale) + 36)
+    convenience init(image: CGImage) {
+        self.init(originalImage: image, currentImage: image, isModified: false)
+    }
+
+    init(originalImage: CGImage, currentImage: CGImage, isModified: Bool) {
+        image = originalImage
+        state = PinImageState(original: originalImage, current: currentImage, isModified: isModified)
+        let scale = min(1, 680 / CGFloat(max(currentImage.width, currentImage.height)))
+        let size = NSSize(width: max(344, CGFloat(currentImage.width) * scale), height: max(120, CGFloat(currentImage.height) * scale) + 36)
         let panel = NSPanel(contentRect: NSRect(origin: .zero, size: size),
                             styleMask: [.titled, .closable, .resizable, .utilityWindow], backing: .buffered, defer: false)
         super.init(window: panel)
@@ -125,7 +137,7 @@ struct PinImageState {
         scrollView.hasVerticalScroller = true; scrollView.hasHorizontalScroller = true
         scrollView.autohidesScrollers = true; scrollView.borderType = .noBorder
         scrollView.drawsBackground = false; scrollView.documentView = canvas
-        canvas.image = image
+        canvas.image = currentImage
         canvas.onCrop = { [weak self] rectangle in self?.applyCrop(rectangle) }
         canvas.onCancelCrop = { [weak self] in self?.setCropping(false) }
         canvas.onSelectionChanged = { [weak self] in self?.updateCropButton() }
@@ -193,7 +205,7 @@ struct PinImageState {
         }
         menu.addItem(.separator())
         for (title, action) in [("适合窗口", #selector(fitToWindow)), ("100% 像素尺寸", #selector(actualSize)),
-                                ("锁定位置与窗口大小", #selector(toggleLock)), ("鼠标穿透（菜单栏恢复所有贴图）", #selector(clickThrough)),
+                                ("锁定位置与窗口大小", #selector(toggleLock)), ("鼠标穿透（菜单栏恢复当前组）", #selector(clickThrough)),
                                 ("关闭贴图", #selector(closePin))] {
             menu.addItem(withTitle: title, action: action, keyEquivalent: "").target = self
         }
@@ -208,22 +220,40 @@ struct PinImageState {
     }
 
     @objc private func transformImage(_ sender: NSMenuItem) {
-        guard PinTransform.allCases.indices.contains(sender.tag), exportPanel == nil else { return }
-        guard state.apply(PinTransform.allCases[sender.tag]) else { reportRenderFailure(); return }
-        imageDidChange()
+        guard PinTransform.allCases.indices.contains(sender.tag) else { return }
+        do { try applyTransform(PinTransform.allCases[sender.tag]) } catch { showError(error) }
+    }
+    func applyTransform(_ transform: PinTransform) throws {
+        guard !closed, exportPanel == nil else { return }
+        var next = state
+        guard next.apply(transform) else { throw renderFailure }
+        try acceptImageState(next)
     }
     private func applyCrop(_ rectangle: CGRect) {
-        guard exportPanel == nil else { return }
-        guard state.crop(to: rectangle) else { reportRenderFailure(); return }
-        imageDidChange()
+        do { try cropImage(to: rectangle) } catch { showError(error) }
     }
-    @objc private func resetImage() { guard exportPanel == nil else { return }; state.reset(); imageDidChange() }
-    private func imageDidChange() {
+    func cropImage(to rectangle: CGRect) throws {
+        guard !closed, exportPanel == nil else { return }
+        var next = state
+        guard next.crop(to: rectangle) else { throw renderFailure }
+        try acceptImageState(next)
+    }
+    @objc private func resetImage() {
+        do { try restoreOriginalImage() } catch { showError(error) }
+    }
+    func restoreOriginalImage() throws {
+        guard !closed, exportPanel == nil, state.isModified else { return }
+        var next = state; next.reset()
+        try acceptImageState(next)
+    }
+    private func acceptImageState(_ next: PinImageState) throws {
+        try onPixelChange?(next.current, !next.isModified)
+        state = next
         setCropping(false); canvas.image = state.current
         updateLayout(); updateTitle()
     }
-    private func reportRenderFailure() {
-        showError(PicShotError.message("无法处理此图片。贴图变换最多支持 3200 万像素；也可能内存不足。原图和当前图片未改变。"))
+    private var renderFailure: Error {
+        PicShotError.message("无法处理此图片。贴图变换最多支持 3200 万像素；也可能内存不足。原图和当前图片未改变。")
     }
 
     @objc private func toggleCrop() {
@@ -261,34 +291,69 @@ struct PinImageState {
         }
     }
 
-    @objc private func changeOpacity(_ sender: NSSlider) { window?.alphaValue = sender.doubleValue }
+    @objc private func changeOpacity(_ sender: NSSlider) { window?.alphaValue = sender.doubleValue; presentationDidChange() }
     @objc private func changeZoom(_ sender: NSPopUpButton) {
         let scales: [CGFloat?] = [nil, 0.25, 0.5, 1, 2, 4]
         guard scales.indices.contains(sender.indexOfSelectedItem) else { return }
-        fixedZoom = scales[sender.indexOfSelectedItem]; updateLayout(); updateTitle()
+        fixedZoom = scales[sender.indexOfSelectedItem]; updateLayout(); updateTitle(); presentationDidChange()
     }
-    @objc private func fitToWindow() { fixedZoom = nil; zoomPicker.selectItem(at: 0); updateLayout(); updateTitle() }
-    @objc private func actualSize() { fixedZoom = 1; zoomPicker.selectItem(at: 3); updateLayout(); updateTitle() }
+    @objc private func fitToWindow() { fixedZoom = nil; zoomPicker.selectItem(at: 0); updateLayout(); updateTitle(); presentationDidChange() }
+    @objc private func actualSize() { fixedZoom = 1; zoomPicker.selectItem(at: 3); updateLayout(); updateTitle(); presentationDidChange() }
     @objc private func toggleLock() {
         locked.toggle(); window?.isMovable = !locked
         if locked { window?.styleMask.remove(.resizable) } else { window?.styleMask.insert(.resizable) }
-        updateTitle()
+        updateTitle(); presentationDidChange()
     }
-    @objc private func clickThrough() { setCropping(false); window?.ignoresMouseEvents = true }
+    @objc private func clickThrough() { setCropping(false); window?.ignoresMouseEvents = true; presentationDidChange() }
     @objc private func closePin() { close() }
 
-    /// Always leaves a way back from click-through, extreme opacity, or an offscreen pin.
-    func restore() {
-        guard !closed else { return }
-        window?.ignoresMouseEvents = false; window?.alphaValue = 1; opacity.doubleValue = 1
-        window?.center(); showWindow(nil); window?.orderFrontRegardless()
+    var presentation: PinPresentation {
+        PinPresentation(frame: PinWindowFrame(window?.frame ?? .zero), opacity: window?.alphaValue ?? 1,
+                        zoom: fixedZoom.map { Double($0) }, clickThrough: window?.ignoresMouseEvents ?? false,
+                        locked: locked).normalized()
     }
-    func windowDidResize(_ notification: Notification) { updateLayout(); updateTitle() }
+
+    /// Restoring metadata must not generate persistence events or rewrite image assets.
+    func applyPresentation(_ value: PinPresentation) {
+        guard !closed else { return }
+        applyingPresentation = true
+        defer { applyingPresentation = false }
+        let value = value.normalized()
+        // Set the frame before locking; NSWindow may enforce its content minimum size.
+        window?.setFrame(value.frame.rect, display: true)
+        window?.alphaValue = value.opacity; opacity.doubleValue = value.opacity
+        fixedZoom = value.zoom.map { CGFloat($0) }
+        let scales: [Double?] = [nil, 0.25, 0.5, 1, 2, 4]
+        zoomPicker.selectItem(at: scales.firstIndex(of: value.zoom) ?? 0)
+        locked = value.locked; window?.isMovable = !locked
+        if locked { window?.styleMask.remove(.resizable) } else { window?.styleMask.insert(.resizable) }
+        window?.ignoresMouseEvents = value.clickThrough
+        updateLayout(); updateTitle()
+    }
+    private func presentationDidChange() {
+        guard !closed, !applyingPresentation else { return }
+        onPresentationChange?(presentation)
+    }
+
+    /// Leaves a way back from click-through, extreme opacity, or a removed display.
+    /// Zoom and lock are preserved; only recovery restores opacity and mouse interaction.
+    func restore(screens: [CGRect]? = nil) {
+        guard !closed else { return }
+        let screens = screens ?? NSScreen.screens.map(\.visibleFrame)
+        var value = presentation.normalized(screens: screens.map { PinWindowFrame($0) })
+        value.clickThrough = false; value.opacity = 1
+        applyPresentation(value); presentationDidChange()
+        showWindow(nil); window?.orderFrontRegardless()
+    }
+    func windowDidMove(_ notification: Notification) { presentationDidChange() }
+    func windowDidResize(_ notification: Notification) { updateLayout(); updateTitle(); presentationDidChange() }
     func windowWillClose(_ notification: Notification) {
         guard !closed else { return }; closed = true
         exportPanel?.cancel(nil); exportPanel = nil
         canvas.onCrop = nil; canvas.onCancelCrop = nil; canvas.onSelectionChanged = nil
-        let completion = onClose; onClose = nil; completion?()
+        let completion = onClose
+        onClose = nil; onPixelChange = nil; onPresentationChange = nil
+        completion?()
         // AppKit can keep the last closed utility panel cached after this controller dies.
         // Pins are single-use: sever its view/image graph without changing ARC ownership.
         let closingWindow = notification.object as? NSWindow ?? window

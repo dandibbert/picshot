@@ -17,23 +17,39 @@ import Darwin
     var recordingController:RecordingPanelController?
     var status:NSStatusItem?
     var controllers:[NSWindowController]=[]
+    // Transient fallback only: smoke runs and unavailable/corrupt session storage.
     var pins:[PinController]=[]
+    var pinSession:PinSessionCoordinator?
+    var pinSessionLoadError:Error?
+    weak var pinGroupsController:PinGroupsController?
     var hotKeys:HotKeyService?
     var busy=false
     let smoke=ProcessInfo.processInfo.environment["PICSHOT_SMOKE_REPORT"]
     override init(){
         if ProcessInfo.processInfo.environment["PICSHOT_SMOKE_REPORT"] != nil {history=HistoryStore(directory:FileManager.default.temporaryDirectory.appendingPathComponent("PicShot-Smoke-\(UUID().uuidString)"))} else {history=HistoryStore()}
         super.init()
+        // Smoke must neither read nor write the user's saved session or preferences.
+        if smoke == nil {
+            do {pinSession=PinSessionCoordinator(store:try PinSessionStore());pinSession?.onError={showError($0)}}
+            catch {pinSessionLoadError=error}
+        }
     }
     func applicationDidFinishLaunching(_ notification:Notification){
         setupMenu();setupWindow()
         NotificationCenter.default.addObserver(self,selector:#selector(windowClosed(_:)),name:NSWindow.willCloseNotification,object:nil)
         if smoke == nil {setupStatus();hotKeys=HotKeyService();hotKeys?.onAction={ [weak self] action in switch action {case 0:self?.startCapture(.region);case 1:self?.pastePin();default:self?.showMain()}};refreshHotkeys()}
         showMain()
+        if smoke == nil {
+            do {try pinSession?.restoreOnLaunch(enabled:PinSessionStore.restoreOnLaunch,isSmoke:false)}catch{showError(error)}
+            if let pinSessionLoadError {showError(pinSessionLoadError)}
+        }
         if smoke != nil {DispatchQueue.main.asyncAfter(deadline:.now()+0.5){Task{await self.runSmoke()}}}
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender:NSApplication)->Bool {false}
-    func applicationWillTerminate(_ notification:Notification){hotKeys?.invalidate()}
+    func applicationWillTerminate(_ notification:Notification){
+        hotKeys?.invalidate()
+        do{try pinSession?.prepareForTermination()}catch{NSLog("Could not save pin presentation before exit: %@",error.localizedDescription)}
+    }
     func applicationShouldTerminate(_ sender:NSApplication)->NSApplication.TerminateReply {
         guard recorder.isRecording || recorder.isStopping else{return .terminateNow}
         let alert=NSAlert();alert.messageText="停止录屏并退出？";alert.informativeText="录屏会先保存到电影/PicShot，再退出。";alert.addButton(withTitle:"保存并退出");alert.addButton(withTitle:"继续录制")
@@ -51,11 +67,15 @@ import Darwin
         edit.addItem(withTitle:"撤销",action:Selector(("undo:")),keyEquivalent:"z");let redo=edit.addItem(withTitle:"重做",action:Selector(("redo:")),keyEquivalent:"Z");redo.keyEquivalentModifierMask=[.command,.shift]
         for (title,selector,key) in [("剪切","cut:","x"),("复制","copy:","c"),("粘贴","paste:","v"),("全选","selectAll:","a")] {edit.addItem(withTitle:title,action:Selector(selector),keyEquivalent:key)}
         let windowItem=NSMenuItem();menu.addItem(windowItem);let wm=NSMenu(title:"窗口");windowItem.submenu=wm;NSApp.windowsMenu=wm
-        wm.addItem(withTitle:"历史记录",action:#selector(showMain),keyEquivalent:"0").target=self;wm.addItem(withTitle:"恢复所有贴图",action:#selector(restorePins),keyEquivalent:"").target=self
+        wm.addItem(withTitle:"历史记录",action:#selector(showMain),keyEquivalent:"0").target=self;wm.addItem(withTitle:"贴图组与历史…",action:#selector(managePinGroups),keyEquivalent:"").target=self
+        wm.addItem(withTitle:"显示当前贴图组",action:#selector(showPins),keyEquivalent:"").target=self
+        wm.addItem(withTitle:"恢复当前贴图组",action:#selector(restorePins),keyEquivalent:"").target=self
+        wm.addItem(withTitle:"隐藏当前贴图组",action:#selector(hideCurrentPins),keyEquivalent:"").target=self
+        wm.addItem(withTitle:"隐藏所有贴图",action:#selector(hidePins),keyEquivalent:"").target=self
     }
     func setupStatus(){
         status=NSStatusBar.system.statusItem(withLength:NSStatusItem.squareLength);status?.button?.image=NSImage(systemSymbolName:"viewfinder",accessibilityDescription:"PicShot")
-        let m=NSMenu();for (t,s) in [("区域截图",#selector(region)),("窗口截图",#selector(windowCapture)),("全屏截图",#selector(full)),("滚动长截图…",#selector(scroll)),("录屏…",#selector(record)),("粘贴为贴图",#selector(pastePin)),("恢复所有贴图",#selector(restorePins)),("隐藏所有贴图",#selector(hidePins)),("历史记录",#selector(showMain)),("设置…",#selector(settings))]{m.addItem(withTitle:t,action:s,keyEquivalent:"").target=self};m.addItem(.separator());m.addItem(withTitle:"退出",action:#selector(NSApplication.terminate(_:)),keyEquivalent:"q");status?.menu=m
+        let m=NSMenu();for (t,s) in [("区域截图",#selector(region)),("窗口截图",#selector(windowCapture)),("全屏截图",#selector(full)),("滚动长截图…",#selector(scroll)),("录屏…",#selector(record)),("粘贴为贴图",#selector(pastePin)),("贴图组与历史…",#selector(managePinGroups)),("显示当前贴图组",#selector(showPins)),("恢复当前贴图组",#selector(restorePins)),("隐藏当前贴图组",#selector(hideCurrentPins)),("隐藏所有贴图",#selector(hidePins)),("历史记录",#selector(showMain)),("设置…",#selector(settings))]{m.addItem(withTitle:t,action:s,keyEquivalent:"").target=self};m.addItem(.separator());m.addItem(withTitle:"退出",action:#selector(NSApplication.terminate(_:)),keyEquivalent:"q");status?.menu=m
     }
     func setupWindow(){
         mainWindow=NSWindow(contentRect:NSRect(x:0,y:0,width:850,height:560),styleMask:[.titled,.closable,.miniaturizable,.resizable],backing:.buffered,defer:false);mainWindow.title="PicShot";mainWindow.isReleasedWhenClosed=false;mainWindow.minSize=NSSize(width:680,height:430);mainWindow.center();mainWindow.contentView=NSHostingView(rootView:LibraryView(store:history,app:self))
@@ -79,12 +99,35 @@ import Darwin
     func retain(_ controller:NSWindowController){controllers.append(controller)}
     @objc func windowClosed(_ n:Notification){guard let w=n.object as? NSWindow else{return};controllers.removeAll{$0.window === w};pins.removeAll{$0.window === w}}
     func pin(_ image:CGImage){
+        if let pinSession {do{try pinSession.add(image:image)}catch{showError(error)};return}
         let bytes=pins.reduce(0){$0+$1.image.bytesPerRow*$1.image.height}
         guard pins.count<20,bytes+image.bytesPerRow*image.height<400_000_000 else{showError(PicShotError.message("贴图已达到内存保护上限，请关闭一些贴图后重试"));return}
         let c=PinController(image:image);pins.append(c);c.showWindow(nil)
     }
-    @objc func restorePins(){pins.forEach{$0.restore()}}
-    @objc func hidePins(){pins.forEach{$0.window?.orderOut(nil)}}
+    @objc func showPins(){
+        do{try pinSession?.showCurrentGroup()}catch{showError(error)}
+        pins.forEach{$0.showWindow(nil)}
+    }
+    @objc func restorePins(){
+        do{try pinSession?.recoverCurrentGroup()}catch{showError(error)}
+        pins.forEach{$0.restore()}
+    }
+    @objc func hideCurrentPins(){
+        do{try pinSession?.hideCurrentGroup()}catch{showError(error)}
+        pins.forEach{$0.window?.orderOut(nil)}
+    }
+    @objc func hidePins(){
+        do{try pinSession?.hideAll()}catch{showError(error)}
+        pins.forEach{$0.window?.orderOut(nil)}
+    }
+    @objc func managePinGroups(){
+        guard let pinSession else{if let pinSessionLoadError{showError(pinSessionLoadError)};return}
+        if let pinGroupsController{pinGroupsController.showWindow(nil);NSApp.activate(ignoringOtherApps:true);return}
+        let controller=PinGroupsController(store:pinSession.store)
+        controller.onSessionChange={ [weak pinSession] in do{try pinSession?.reconcileVisiblePins()}catch{showError(error)}}
+        controller.onOpenPin={ [weak pinSession] id in do{try pinSession?.openPin(id:id)}catch{showError(error)}}
+        pinGroupsController=controller;retain(controller);controller.showWindow(nil);NSApp.activate(ignoringOtherApps:true)
+    }
     @objc func pastePin(){
         if let objects=NSPasteboard.general.readObjects(forClasses:[NSImage.self],options:nil),let image=objects.first as? NSImage,let cg=image.cgImage(forProposedRect:nil,context:nil,hints:nil){pin(cg)}
         else if let text=NSPasteboard.general.string(forType:.string){let c=TextResultController(text:text,title:"文字贴图",onTranslate:{[weak self] text in self?.translate(text)});c.window?.level = .floating;retain(c);c.showWindow(nil)}

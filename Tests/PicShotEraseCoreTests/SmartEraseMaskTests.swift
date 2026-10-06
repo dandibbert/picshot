@@ -52,4 +52,14 @@ final class SmartEraseMaskTests: XCTestCase {
         XCTAssertEqual(result[154 * 800 + 154], 0)
     }
 
+    func testProductTimeBudgetMatchesArchitectureAndErrorMessage() {
+        #if arch(x86_64)
+        XCTAssertEqual(SmartEraseLimits.seconds, 300)
+        #else
+        XCTAssertEqual(SmartEraseLimits.seconds, 150)
+        #endif
+        XCTAssertEqual(SmartEraseLimits.residentBytes, 2_147_483_648)
+        XCTAssertTrue(SmartEraseError.timeout.localizedDescription.contains(String(Int(SmartEraseLimits.seconds))))
+    }
+
 }

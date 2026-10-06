@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 swift build -c release
 bin=$(swift build -c release --show-bin-path)
-version=0.2.0
+version=0.3.0
 arch=$(uname -m)
 sha=$(git rev-parse HEAD)
 app=dist/PicShot.app
@@ -13,6 +13,10 @@ cp "$bin/PicShotMLHelper" "$app/Contents/Helpers/PicShotMLHelper"
 python3 scripts/bundle-runtime.py "$app"
 cp "$bin/PicShotEraseHelper" "$app/Contents/Helpers/PicShotEraseHelper"
 codesign --force --sign - --identifier local.picshot.erasehelper "$app/Contents/Helpers/PicShotEraseHelper"
+cp "$bin/PicShotFormulaRenderHelper" "$app/Contents/Helpers/PicShotFormulaRenderHelper"
+ditto "$bin/PicShot_PicShotFormulaRenderHelper.bundle" "$app/Contents/Resources/PicShot_PicShotFormulaRenderHelper.bundle"
+codesign --force --sign - --identifier local.picshot.formularenderhelper "$app/Contents/Helpers/PicShotFormulaRenderHelper"
+cp docs/FormulaRender.md "$app/Contents/Resources/"
 cp docs/SmartErase.md docs/SmartErase_CoreMLaMa_LICENSE.txt docs/SmartErase_LaMa_LICENSE.txt "$app/Contents/Resources/"
 cp docs/MODELS.md docs/ONNX_RUNTIME_LICENSE.txt docs/ONNX_RUNTIME_THIRD_PARTY_NOTICES.txt docs/TABLE_MODEL.md "$app/Contents/Resources/"
 swift scripts/build-icon.swift "$PWD/$app/Contents/Resources/PicShot.icns"
@@ -27,6 +31,10 @@ cat > "$app/Contents/Resources/build-info.json" <<JSON
 JSON
 codesign --force --deep --sign - --identifier local.picshot.app "$app"
 codesign --verify --deep --strict "$app"
+# Prove the installed helper can render after relocation while the original
+# SwiftPM build bundle is unavailable. The verifier restores it before returning.
+python3 scripts/FormulaRender-verify-packaged-runtime.py --app "$app" --build-bundle "$bin/PicShot_PicShotFormulaRenderHelper.bundle"
+codesign --verify --deep --strict "$app"
 base="PicShot-$version-macos-$arch"
 ditto -c -k --sequesterRsrc --keepParent "$app" "dist/$base.zip"
 staging=$(mktemp -d)
@@ -40,7 +48,8 @@ cat > "$staging/安装说明.txt" <<'TEXT'
 首次打开若被阻止，请确认来源后在系统设置 → 隐私与安全性中允许打开。
 点击截图或录屏后，按系统提示授予屏幕录制权限。应用不会自动上传截图。
 快捷键：⌃⌘A 区域截图；⌃⌘P 剪贴板贴图；⌃⌘H 历史记录。可在设置修改。
-录屏初版：MP4/GIF；最长 10 分钟，最多 1 GB；GIF 最多 30 秒。
+录屏：最长 10 分钟，最多 1 GB；可选择最多 30 秒的录制片段导出 GIF。
+MP4 修剪单独导出新副本，不覆盖原录制。
 TEXT
 hdiutil create -volname PicShot -srcfolder "$staging" -format UDZO -ov "dist/$base.dmg"
 hdiutil verify "dist/$base.dmg"

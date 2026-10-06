@@ -1,115 +1,4 @@
-# Optional offline table structure recognition
 
-## Scope and status
-
-`PicShotTableEngine` is separate from the structured table editor. It consumes a genuine SLANet-plus model output, decodes explicit HTML row/column spans, and matches locally recognized Apple Vision text to model cell geometry. It does not turn OCR rows or TSV into claimed model structure.
-
-The model is an **optional download**, not bundled weights. A short-lived native `PicShotMLHelper` runs one recognition job and exits; Apple Vision text recognition and ONNX inference use the local crop. The only network operation is an explicit model-pack download. Screenshots are not transmitted.
-
-Validation to date:
-
-- The original RapidAI download was independently fetched and verified, 7,758,305 bytes, SHA-256 below
-- ONNX Runtime 1.24.2 CPU reference inference on two authored fixtures passed: a 3 × 3 table (mean token confidence 0.9999926) and a 4 × 3 table with a three-column merged header (0.9999919)
-- A NumPy transcription of the native bilinear/Float32 preprocessing differed from OpenCV by at most one byte (under 0.8% of resized samples) on both fixtures; both real-model token sequences were unchanged
-- Full real output tensors and the authored input PNGs are included in `Tests/PicShotTableEngineTests/Fixtures`, allowing deterministic Swift decoder replay without weights or network
-- A third authored fixture exposes a **known accuracy failure**: its ground truth is three rows and a two-row merged label, but this model predicts four rows and `rowspan="3"` at 0.997 confidence. The input and actual output are retained as `known-failure-rowspan-*`; the adapter rejects this sample because a predicted cell extends beyond the allowed crop bounds; its regression test expects `invalidCellGeometry`, not a successful table
-- Native Swift compilation and the genuine native helper/Apple Vision merged-header fixture passed on arm64 and x86_64 in [run 37429201431](https://github.com/dandibbert/picshot/actions/runs/37429201431) at [caf71931e5c622d7ee0d7d6d549a902c00a6658f](https://github.com/dandibbert/picshot/commit/caf71931e5c622d7ee0d7d6d549a902c00a6658f), after original-source SHA-256-verified model provisioning. Both architectures passed the full workflow, including 184 ordinary tests with 3 intentional model skips and 12 selected actual-model tests with no skips/failures; those selected tests overlap the ordinary suite
-- Each installed ZIP/DMG copy on both architectures successfully launched through LaunchServices and called the signed table/formula/inpainting helpers. The table smoke result retained the expected 4-row, 3-column structure. The earlier package blockers are resolved for this commit
-- These are fixture-specific native and installed-app results, not broad table-quality or independent Excel/LibreOffice UI acceptance. The known rowspan failure remains a required rejection case. See [VERIFICATION.md](VERIFICATION.md) for exact jobs, hashes, historical failures and remaining limits
-
-## Pinned model and provenance
-
-- Upstream model: [PaddlePaddle SLANet_plus](https://huggingface.co/PaddlePaddle/SLANet_plus), published as Apache-2.0
-- ONNX packaging/export: [RapidAI RapidTable](https://github.com/RapidAI/RapidTable)
-- Primary model artifact: `https://www.modelscope.cn/models/RapidAI/RapidTable/resolve/v2.0.0/slanet-plus.onnx`
-- Filename: `slanet-plus.onnx`
-- Exact size: `7758305` bytes
-- SHA-256: `d57a942af6a2f57d6a4a0372573c696a2379bf5857c45e2ac69993f3b334514b`
-- Source revision: `22592283c1f9d7c5a014c96c4ecc57de0b3ebfce`
-- [Pinned model manifest](https://github.com/RapidAI/RapidTable/blob/22592283c1f9d7c5a014c96c4ecc57de0b3ebfce/rapid_table/default_models.yaml)
-- [Pinned preprocessing](https://github.com/RapidAI/RapidTable/blob/22592283c1f9d7c5a014c96c4ecc57de0b3ebfce/rapid_table/table_structure/pp_structure/pre_process.py)
-- [Pinned postprocessing](https://github.com/RapidAI/RapidTable/blob/22592283c1f9d7c5a014c96c4ecc57de0b3ebfce/rapid_table/table_structure/pp_structure/post_process.py)
-- [Pinned span placement and OCR matching](https://github.com/RapidAI/RapidTable/blob/22592283c1f9d7c5a014c96c4ecc57de0b3ebfce/rapid_table/table_matcher/main.py)
-
-The versioned download URL is additionally content-pinned by its mandatory SHA-256. A changed artifact must be rejected even if the server reuses the same filename/version. The upstream README's approximate 6.8 MB label differs from the verified byte size; use the exact size for model-pack verification and UI.
-
-Research download status: an initial restricted original-source request returned a tunnel 403. A public mirror with the same published digest was fetched for static metadata inspection, then excluded from execution when the access question was raised. The original ModelScope URL was subsequently retried through the supported explicit approval mechanism and succeeded with the expected hash. Both recorded inference fixtures were produced only from this separately retrieved, approved original-source file. A later approved HEAD returned HTTP 200, the same final URL, and the expected `X-Linked-Etag`; no redirect was observed. The application manifest uses the primary URL, not the mirror.
-
-## Tensor contract (inspected from the pinned ONNX)
-
-ONNX IR version 7, default opset 14. All three tensors are float32.
-
-| Role | Name | Shape |
-| --- | --- | --- |
-| Input | `x` | Dynamic `[N,3,H,W]`; this adapter uses `[1,3,488,488]` |
-| Cell quadrilaterals | `save_infer_model/scale_0.tmp_0` | `[1,S,8]` |
-| Structure probabilities | `save_infer_model/scale_1.tmp_0` | `[1,S,50]` |
-
-The model includes its autoregressive loop. No external decoder or tokenizer model is required. The second output is already normalized probabilities; the adapter verifies this and does not apply another softmax. Observed sequence lengths were 17 and 23, including special tokens. The decoder requires EOS and refuses truncated output.
-
-The model's `character` metadata contains exactly 48 newline-separated strings. Add `sos` at index 0 and `eos` at 49. Exact resulting vocabulary:
-
-- 1–9: `<thead>`, `</thead>`, `<tbody>`, `</tbody>`, `<tr>`, `</tr>`, `<td`, `>`, `</td>`
-- 10–28: ` colspan="2"` through ` colspan="20"`, inclusive; leading space is significant
-- 29–47: ` rowspan="2"` through ` rowspan="20"`, inclusive
-- 48: `<td></td>`
-
-There is no CTC duplicate collapse. A box is associated with its exact timestep's `<td` or `<td></td>` token; zero/invalid geometry is rejected instead of filtering boxes and shifting subsequent cell assignments.
-
-## Native preprocessing and geometry
-
-1. Rasterize the upright crop in sRGB, composite alpha over white, produce interleaved BGR bytes
-2. Preserve aspect ratio and resize the longest side to 488; shorter dimensions are truncated, as upstream does
-3. Half-pixel bilinear sampling; round resized byte values, normalize each BGR position with mean `[0.485,0.456,0.406]` and standard deviation `[0.229,0.224,0.225]` after dividing by 255
-4. Pad the bottom/right with **normalized zeros**, not normalized black/white pixels
-5. Transpose to NCHW
-
-The native bilinear byte rounding can differ from OpenCV's fixed-point implementation by one byte. Geometry, channel order, normalization and padding match the published pipeline. This small sampling difference must remain covered by native real-weight fixtures; do not claim bitwise OpenCV equivalence.
-
-SLANet-plus box decoding scales both axes by the **original crop's longest side**. This is the simplified equivalent of upstream width/height scaling followed by its padding-ratio correction. Scaling Y only by image height on a wide crop is incorrect. Quadrilateral envelopes are used for OCR overlap, consistent with RapidTable's matcher. Strongly rotated/deformed tables are outside the validated scope.
-
-## Failure and uncertainty behavior
-
-- Shape mismatches, nonfinite values, missing EOS, unknown/ill-formed tokens, repeated span attributes, overlapping cells, incomplete rectangular grids and spans extending beyond the final row fail explicitly
-- Every result carries a structural-review warning: high confidence does not prove the rows or merges are correct
-- Mean structure confidence below 0.60 fails; weaker accepted structures/cells carry a review warning
-- Apple Vision uses accurate local OCR; word boxes use top-left pixel coordinates and are matched by IoU, then corner distance
-- At least half of an OCR box must lie within a candidate cell; near ties, low-confidence OCR, and non-overlapping text are retained in `unmatchedOCR`
-- Multiline text is ordered top-to-bottom and left-to-right, retaining line breaks; input text remains `TableCellValue.text`, including leading `=` characters
-- Empty cells remain empty. No text, numbers, formulas, spans, or missing rows are guessed
-- A structure without matched text can be returned with an explicit warning, so the editor can preserve a genuine empty table rather than invent content
-- The editor must show warnings and the full unmatched text for review, rather than quietly discarding it
-
-## Tests and native CI
-
-Package targets:
-
-```swift
-.target(name: "PicShotTableEngine", dependencies: ["PicShotCore"]),
-.testTarget(name: "PicShotTableEngineTests", dependencies: ["PicShotTableEngine"], resources: [.process("Fixtures")])
-```
-
-`SLANetPlusTests` covers BGR normalization, normalized-zero padding, tensor validation, EOS, explicit spans, occupied-slot placement, geometry, OCR ambiguity, text ordering and lossless Codable transport. `RecordedModelOutputTests` replays the genuine model outputs, asserting 3 × 3 structure and a three-column merged header. `AppleImagePreprocessingTests` checks image orientation/channel order on macOS.
-
-To reproduce the native fixture validation, download and hash-verify the optional model from its pinned original source, build `PicShotMLHelper`, then set:
-
-```sh
-PICSHOT_TEST_ML_HELPER=/absolute/path/to/PicShotMLHelper \
-PICSHOT_TEST_TABLE_MODEL_DIR=/absolute/path/to/model-directory \
-swift test --filter RecordedModelOutputTests/testNativeHelperWithRealWeightsWhenConfigured
-```
-
-The test launches the native helper on the merged-table PNG, expects the actual rowspan/colspan-capable table result, and checks OCR for `Fruit`, `Apples`, and `12`. Missing paths cause an explicit skip, not a pass. Python/NumPy/OpenCV were used only to generate reference evidence; they are not application dependencies.
-
-## Attribution and license
-
-The port changes the Python/Numpy/OpenCV implementation into Swift and adds strict validation and uncertainty reporting. Original code notices are retained in the Swift source. RapidTable preprocessing/postprocessing author: SWHL (`liekkaskono@163.com`). Span placement/matching includes original PaddlePaddle copyright (2022); model preprocessing includes PaddlePaddle copyright (2020). RapidTable's pinned tree contains `LICENSE` and no `NOTICE` file.
-
-Distributors must include the Apache-2.0 license and these notices with the application/model pack. ONNX Runtime has its own MIT license and notices; its packaging is separate. Apple Vision is an OS framework. The authored fixture PNGs and recorded outputs were created for PicShot from synthetic text, with no user screenshot data.
-
-### Apache License, Version 2.0
-
-```text
                                  Apache License
                            Version 2.0, January 2004
                         http://www.apache.org/licenses/
@@ -298,7 +187,7 @@ Distributors must include the Apache-2.0 license and these notices with the appl
       same "printed page" as the copyright notice for easier
       identification within third-party archives.
 
-   Copyright 2025 RapidAI
+   Copyright [yyyy] [name of copyright owner]
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
@@ -311,5 +200,3 @@ Distributors must include the Apache-2.0 license and these notices with the appl
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
-
-```
