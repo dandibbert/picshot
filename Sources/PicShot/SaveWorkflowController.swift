@@ -19,6 +19,8 @@ final class SaveWorkflowPresenter {
     var onSettings: ((NSWindow?) -> Void)?
     var onPresent: ((SaveWorkflowController) -> Void)?
     var clipboardCopier: ((Data, String) -> Bool)?
+    /// Set only by isolated native fixtures; production does not log paths.
+    var directoryDiagnostic: ((SaveWorkflowDirectoryDiagnostic) -> Void)?
     init(defaults: UserDefaults = .standard, isSmoke: Bool = false) { self.defaults = defaults; self.isSmoke = isSmoke }
     func cancelAll() { for controller in controllers { controller.cancel() } }
     func canAdmit(inputBytes: Int) -> Bool {
@@ -53,7 +55,7 @@ final class SaveWorkflowPresenter {
         }
         do {
             let controller = try SaveWorkflowController(image: image, artifact: artifact, settings: settings, defaults: defaults,
-                copyAfterSaving: copy, quietAutomatic: automatic, reservedInputBytes: reservation, copier: clipboardCopier, onSaved: onSaved)
+                copyAfterSaving: copy, quietAutomatic: automatic, reservedInputBytes: reservation, copier: clipboardCopier, directoryDiagnostic: directoryDiagnostic, onSaved: onSaved)
             controllers.append(controller)
             controller.onClose = { [weak self, weak controller] in
                 guard let controller, controller.jobDrained else { return }; self?.controllers.removeAll { $0 === controller }
@@ -94,6 +96,7 @@ final class SaveWorkflowController: NSWindowController, NSWindowDelegate {
     private var artifact: ImageExportArtifact?
     private let copyAfterSaving: Bool
     private let copier: ((Data, String) -> Bool)?
+    private let directoryDiagnostic: ((SaveWorkflowDirectoryDiagnostic) -> Void)?
     private let token = ImageExportCancellation()
     private var input: ImageExportJobInput<ImageExportSnapshot>?
     private var saveInput: ImageExportJobInput<ImageExportArtifact>?
@@ -114,10 +117,11 @@ final class SaveWorkflowController: NSWindowController, NSWindowDelegate {
 
     init(image: CGImage?, artifact: ImageExportArtifact?, settings: SaveWorkflowSettings, defaults: UserDefaults,
          copyAfterSaving: Bool, quietAutomatic: Bool = false, reservedInputBytes: Int = 0,
-         copier: ((Data, String) -> Bool)? = nil, onSaved: ((SaveWorkflowResult) -> Void)? = nil) throws {
+         copier: ((Data, String) -> Bool)? = nil, directoryDiagnostic: ((SaveWorkflowDirectoryDiagnostic) -> Void)? = nil,
+         onSaved: ((SaveWorkflowResult) -> Void)? = nil) throws {
         guard (image != nil) != (artifact != nil) else { throw SaveWorkflowError.invalidArtifact }
         self.defaults = defaults; self.settings = settings; self.copyAfterSaving = copyAfterSaving
-        self.copier = copier; callback = onSaved; self.artifact = artifact
+        self.copier = copier; self.directoryDiagnostic = directoryDiagnostic; callback = onSaved; self.artifact = artifact
         self.quietAutomatic = quietAutomatic; self.reservedInputBytes = reservedInputBytes
         if let image { snapshot = try ImageExportSnapshot(image: image) }
         let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 460, height: 190), styleMask: [.titled, .closable], backing: .buffered, defer: false)
@@ -164,8 +168,7 @@ final class SaveWorkflowController: NSWindowController, NSWindowDelegate {
                 if self.settings.baseURL == nil {
                     guard let selected = await self.chooseFolder() else { throw CancellationError() }
                     try self.token.check()
-                    let approved = selected.standardizedFileURL.resolvingSymlinksInPath()
-                    try SaveWorkflowService.validateBaseDirectory(approved)
+                    let approved = try SaveWorkflowService.resolveApprovedDirectory(selected)
                     self.settings.baseURL = approved; try self.settings.save(to: self.defaults)
                 }
                 try self.token.check()
@@ -189,7 +192,7 @@ final class SaveWorkflowController: NSWindowController, NSWindowDelegate {
                         case .alertFirstButtonReturn: behavior = .keepBoth
                         case .alertSecondButtonReturn:
                             guard let choice = await self.chooseAnother(prepared, current: url) else { throw CancellationError() }
-                            selectedURL = choice.deletingLastPathComponent().standardizedFileURL.resolvingSymlinksInPath().appendingPathComponent(choice.lastPathComponent)
+                            selectedURL = try SaveWorkflowService.resolveApprovedDirectory(choice.deletingLastPathComponent()).appendingPathComponent(choice.lastPathComponent)
                             behavior = .ask
                         default: throw CancellationError()
                         }
@@ -223,13 +226,14 @@ final class SaveWorkflowController: NSWindowController, NSWindowDelegate {
     private func publish(_ artifact: ImageExportArtifact, context: SaveWorkflowContext,
                          behavior: SaveWorkflowCollisionBehavior?, selectedURL: URL?) async throws -> SaveWorkflowResult {
         let holder = ImageExportJobInput(artifact), settings = settings, token = token; saveInput = holder
+        let hooks = SaveWorkflowTestHooks(directoryFailure: directoryDiagnostic)
         return try await withCheckedThrowingContinuation { continuation in
             ImageExportService.queue.addOperation {
                 guard let artifact = holder.take() else { continuation.resume(throwing: CancellationError()); return }
                 do {
                     let result: SaveWorkflowResult
-                    if let selectedURL { result = try SaveWorkflowService.publish(artifact, to: selectedURL, collisionBehavior: behavior ?? .ask, cancellation: token) }
-                    else { result = try SaveWorkflowService.publish(artifact, settings: settings, context: context, collisionBehavior: behavior, cancellation: token) }
+                    if let selectedURL { result = try SaveWorkflowService.publish(artifact, to: selectedURL, collisionBehavior: behavior ?? .ask, cancellation: token, testHooks: hooks) }
+                    else { result = try SaveWorkflowService.publish(artifact, settings: settings, context: context, collisionBehavior: behavior, cancellation: token, testHooks: hooks) }
                     continuation.resume(returning: result)
                 } catch { continuation.resume(throwing: error) }
             }

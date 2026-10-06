@@ -37,6 +37,19 @@ struct SaveWorkflowResult {
 struct SaveWorkflowTestHooks {
     var beforeReadbackChunk: ((Int) -> Void)? = nil
     var beforeCollisionAttempt: ((Int) -> Void)? = nil
+    var directoryFailure: ((SaveWorkflowDirectoryDiagnostic) -> Void)? = nil
+}
+
+/// Opt-in fixture diagnostics. Never logs user paths or changes directory-open policy.
+struct SaveWorkflowDirectoryDiagnostic: Equatable {
+    let operation: String
+    let componentIndex: Int
+    let component: String
+    let errorNumber: Int32
+    let observedMode: UInt32?
+    var summary: String {
+        "\(operation) component[\(componentIndex)]=\(component) errno=\(errorNumber) mode=\(observedMode.map { String($0, radix: 8) } ?? "unavailable")"
+    }
 }
 
 enum SaveWorkflowService {
@@ -64,9 +77,32 @@ enum SaveWorkflowService {
     }
 
     /// Validate the explicitly chosen folder before storing it. Never creates a folder.
-    static func validateBaseDirectory(_ url: URL) throws {
-        let directories = try SaveWorkflowDirectoryChain(base: url, children: [], cancellation: ImageExportCancellation())
+    static func validateBaseDirectory(_ url: URL,
+                                      diagnostic: ((SaveWorkflowDirectoryDiagnostic) -> Void)? = nil) throws {
+        let directories = try SaveWorkflowDirectoryChain(base: url, children: [], cancellation: ImageExportCancellation(), diagnostic: diagnostic)
         directories.close()
+    }
+
+    /// Call only for an explicit folder-picker approval. This resolves the folder
+    /// the user selected once, then validates and returns its physical spelling.
+    /// Never call this while loading preferences or starting a later saved-path job:
+    /// subsequent saves must reject symlink substitution rather than silently follow it.
+    static func resolveApprovedDirectory(_ selected: URL,
+                                         diagnostic: ((SaveWorkflowDirectoryDiagnostic) -> Void)? = nil) throws -> URL {
+        try SaveWorkflowSettings.validateBaseURL(selected)
+        let pointer = selected.withUnsafeFileSystemRepresentation { path in
+            path.flatMap { Darwin.realpath($0, nil) }
+        }
+        guard let pointer else {
+            let failure = errno
+            diagnostic?(SaveWorkflowDirectoryDiagnostic(operation: "realpath", componentIndex: 0,
+                component: String(selected.lastPathComponent.prefix(80)), errorNumber: failure, observedMode: nil))
+            throw SaveWorkflowError.unsafeDirectory
+        }
+        defer { Darwin.free(pointer) }
+        let physical = URL(fileURLWithPath: String(cString: pointer), isDirectory: true)
+        try validateBaseDirectory(physical, diagnostic: diagnostic)
+        return physical
     }
 
     /// Exact picker-selected name. NSSavePanel's own Replace response never authorizes
@@ -103,7 +139,7 @@ enum SaveWorkflowService {
               !destination.filename.contains("/"), !destination.filename.contains("\u{0}"),
               destination.filename.utf8.count <= 255 else { throw ImageExportError.invalidDestination }
         let directories = try SaveWorkflowDirectoryChain(base: destination.baseURL, children: destination.relativeDirectories,
-                                                         cancellation: cancellation)
+                                                         cancellation: cancellation, diagnostic: testHooks?.directoryFailure)
         defer { directories.close() }
         try cancellation.check()
         // A private sibling directory protects the staging namespace from accidental
@@ -189,13 +225,22 @@ private final class SaveWorkflowDirectoryChain {
         let identity: SaveWorkflowFileIdentity
     }
     private var entries: [Entry] = []
+    private let diagnostic: ((SaveWorkflowDirectoryDiagnostic) -> Void)?
     var lastDescriptor: Int32 { entries.last!.descriptor }
-    init(base: URL, children: [String], cancellation: ImageExportCancellation) throws {
+    init(base: URL, children: [String], cancellation: ImageExportCancellation,
+         diagnostic: ((SaveWorkflowDirectoryDiagnostic) -> Void)? = nil) throws {
+        self.diagnostic = diagnostic
         try SaveWorkflowSettings.validateBaseURL(base)
         let root = Darwin.open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        guard root >= 0 else { throw SaveWorkflowError.unsafeDirectory }
+        guard root >= 0 else {
+            let failure = errno; report("open", parent: -1, name: "/", error: failure)
+            throw SaveWorkflowError.unsafeDirectory
+        }
         var rootStat = stat()
-        guard Darwin.fstat(root, &rootStat) == 0 else { Darwin.close(root); throw SaveWorkflowError.unsafeDirectory }
+        guard Darwin.fstat(root, &rootStat) == 0 else {
+            let failure = errno; report("fstat", parent: -1, name: "/", error: failure)
+            Darwin.close(root); throw SaveWorkflowError.unsafeDirectory
+        }
         entries.append(Entry(descriptor: root, parent: -1, name: "/", identity: SaveWorkflowFileIdentity(rootStat)))
         do {
             for component in base.pathComponents where component != "/" {
@@ -209,17 +254,39 @@ private final class SaveWorkflowDirectoryChain {
     }
     private func append(_ name: String, create: Bool) throws {
         guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\u{0}") else {
+            report("validate-component", parent: -1, name: name, error: EINVAL)
             throw SaveWorkflowError.unsafeDirectory
         }
         let parent = lastDescriptor
-        if create && Darwin.mkdirat(parent, name, mode_t(0o700)) != 0 && errno != EEXIST { throw SaveWorkflowError.writeFailed }
+        if create && Darwin.mkdirat(parent, name, mode_t(0o700)) != 0 && errno != EEXIST {
+            let failure = errno; report("mkdirat", parent: parent, name: name, error: failure)
+            throw SaveWorkflowError.writeFailed
+        }
         let descriptor = Darwin.openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        guard descriptor >= 0 else { throw SaveWorkflowError.unsafeDirectory }
+        guard descriptor >= 0 else {
+            let failure = errno; report("openat", parent: parent, name: name, error: failure)
+            throw SaveWorkflowError.unsafeDirectory
+        }
         var value = stat()
-        guard Darwin.fstat(descriptor, &value) == 0, (value.st_mode & S_IFMT) == S_IFDIR else {
+        guard Darwin.fstat(descriptor, &value) == 0 else {
+            let failure = errno; report("fstat", parent: parent, name: name, error: failure)
+            Darwin.close(descriptor); throw SaveWorkflowError.unsafeDirectory
+        }
+        guard (value.st_mode & S_IFMT) == S_IFDIR else {
+            report("validate-directory", parent: parent, name: name, error: ENOTDIR)
             Darwin.close(descriptor); throw SaveWorkflowError.unsafeDirectory
         }
         entries.append(Entry(descriptor: descriptor, parent: parent, name: name, identity: SaveWorkflowFileIdentity(value)))
+    }
+    private func report(_ operation: String, parent: Int32, name: String, error: Int32) {
+        guard let diagnostic else { return }
+        var observed = stat()
+        let mode = parent >= 0 && Darwin.fstatat(parent, name, &observed, AT_SYMLINK_NOFOLLOW) == 0
+            ? UInt32(observed.st_mode) : nil
+        // Component-only, bounded context is sufficient to distinguish a system
+        // alias from permission failure. No full selected-directory path is emitted.
+        diagnostic(SaveWorkflowDirectoryDiagnostic(operation: operation, componentIndex: entries.count,
+            component: String(name.prefix(80)), errorNumber: error, observedMode: mode))
     }
     func validate() throws {
         for entry in entries where entry.parent >= 0 {

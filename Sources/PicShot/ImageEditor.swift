@@ -882,6 +882,25 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     var dimensionLabelFrame: CGRect { status.frame }
     var floatingSurfaceIsDark: Bool { toolbar.isDarkSurface }
     var toolbarSymbolPointSize: CGFloat { EditorFloatingSurface.symbolPointSize }
+    /// Bounded, identifier/geometry-only diagnostics for native regression
+    /// fixtures. No screenshot pixels, annotation text or personal paths.
+    func nativeToolbarDiagnostics() -> [String: Any] {
+        func item(_ view: NSView) -> [String: Any] {
+            ["id": view.identifier?.rawValue ?? "", "class": String(describing: type(of: view)),
+             "hidden": view.isHidden, "hiddenAncestor": view.isHiddenOrHasHiddenAncestor,
+             "hasSuperview": view.superview != nil, "windowMatches": view.window === window,
+             "frame": NSStringFromRect(view.frame)]
+        }
+        return ["editorClosed": isClosed, "hasContentView": window?.contentView != nil,
+                "windowVisible": window?.isVisible ?? false, "windowFrame": window.map { NSStringFromRect($0.frame) } ?? "missing",
+                "frozenPresentationActive": presentation != nil, "toolbarFrame": NSStringFromRect(toolbar.frame),
+                "toolbarHasSuperview": toolbar.superview != nil,
+                "rootChildren": Array((window?.contentView?.subviews ?? []).prefix(12)).map(item),
+                "toolbarSubviews": Array(toolbar.subviews.prefix(48)).map(item),
+                "toolbarOwnedViews": Array(toolbar.views.prefix(48)).map(item),
+                "detachedViews": Array(toolbar.detachedViews.prefix(48)).map(item),
+                "rectangle": toolButtons[.rectangle].map(item) ?? ["missing": true]]
+    }
     var contextualPaletteFrame: CGRect { inspector.frame }
     var contextualPaletteVisible: Bool { !inspector.isHidden }
     var editorSelectionFrame: CGRect { workspace.selectionFrame }
@@ -1092,14 +1111,16 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         } else { toolbar.addArrangedSubview(iconButton("pin", title: "贴图", id: "editor.pin", action: #selector(pinResult))) }
         toolbar.addArrangedSubview(iconButton("arrow.down.to.line", title: "保存图片… · ⌘S", id: "editor.save", action: #selector(exportResult)))
         saveActions.pullsDown = true; saveActions.isBordered = false; saveActions.addItem(withTitle: "")
-        saveActions.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: "保存选项")
-        saveActions.imagePosition = .imageOnly; saveActions.identifier = .init("editor.saveActions"); saveActions.setAccessibilityLabel("保存选项")
+        saveActions.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: "保存选项")?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold))
+        (saveActions.cell as? NSPopUpButtonCell)?.arrowPosition = .noArrow
+        saveActions.imagePosition = .imageOnly; saveActions.contentTintColor = EditorFloatingSurface.ink
+        saveActions.identifier = .init("editor.saveActions"); saveActions.setAccessibilityLabel("保存选项")
         for (title, action) in [("快速保存 PNG", #selector(quickSaveResult)), ("保存 PNG 并复制", #selector(saveCopyResult)), ("保存与命名设置…", #selector(openSaveSettings))] {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: ""); item.target = self
             item.isEnabled = saveWorkflow != nil; saveActions.menu?.addItem(item)
         }
         saveActions.menu?.autoenablesItems = false; saveActions.translatesAutoresizingMaskIntoConstraints = false
-        saveActions.widthAnchor.constraint(equalToConstant: 16).isActive = true
+        saveActions.widthAnchor.constraint(equalToConstant: 14).isActive = true
         saveActions.heightAnchor.constraint(equalToConstant: 32).isActive = true; toolbar.addArrangedSubview(saveActions)
         if saveWorkflow != nil { canvas.menu = saveActions.menu?.copy() as? NSMenu }
 

@@ -22,25 +22,27 @@ assert r['matrixTier']=='input-preparation' and r['syntheticSource'] and not r['
 assert {x['format'] for x in r['inputs']}=={'png','jpg','bmp','pdf','webp','avif'},r
 PY
 run_cell() {
-  local mode="$1" format="$2" tier="$3"
+  local mode="$1" format="$2" tier="$3" profile="${4:-installed-768x576}" section="${5:-$2}"
+  export PICSHOT_IMAGE_BACKING_PROFILE="$profile"
   export PICSHOT_IMAGE_BACKING_MODE="$mode"
   unset PICSHOT_IMAGE_BACKING_FORMAT PICSHOT_IMAGE_BACKING_INPUT_DIRECTORY
   if [[ "$format" != common ]]; then export PICSHOT_IMAGE_BACKING_FORMAT="$format"; fi
-  if [[ "$mode" == preview-only || "$mode" == independent-decode-only ]]; then export PICSHOT_IMAGE_BACKING_INPUT_DIRECTORY="$input"; fi
-  local report="$root/$format/$mode/launch.json"
+  case "$mode" in preview-only|independent-decode-only|full-decode-fresh-data|full-decode-raster-reused-data|full-decode-raster-fresh-data|preview-remove-cache|preview-fresh-data) export PICSHOT_IMAGE_BACKING_INPUT_DIRECTORY="$input" ;; esac
+  local report="$root/$section/$mode/launch.json"
   mkdir -p "$(dirname "$report")"
   swift scripts/launch-smoke-app.swift "$app" "$report"
-  python3 - "$report" "$(git rev-parse HEAD)" "$app" "$mode" "$format" "$tier" "$input" <<'PY'
+  python3 - "$report" "$(git rev-parse HEAD)" "$app" "$mode" "$format" "$tier" "$input" "$profile" <<'PY'
 import json,pathlib,sys
 r=json.load(open(sys.argv[1]));assert r['status']=='observed',r
 assert r['sourceCommit']==sys.argv[2] and pathlib.Path(r['bundlePath']).resolve()==pathlib.Path(sys.argv[3]).resolve(),r
 assert (r['mode'],r['format'],r['matrixTier'])==tuple(sys.argv[4:7]),r
 assert r['diagnosticOnly'] and not r['captureStarted'] and not r['networkAttempted'],r
-assert r['profile']=='installed-768x576' and r['warmupCycles']==2 and r['measuredCycles']==12,r
-assert r['oneRGBAStorageBytes']==768*576*4 and len(r['warmups'])==2 and len(r['cycles'])==12,r
-assert r['completedWorkloadInvocations']==14 and r['helperInvocations']==0,r
+measured=48 if sys.argv[8]=='avif-long-768x576-48' else 12
+assert r['profile']==sys.argv[8] and r['warmupCycles']==2 and r['measuredCycles']==measured,r
+assert r['oneRGBAStorageBytes']==768*576*4 and len(r['warmups'])==2 and len(r['cycles'])==measured,r
+assert r['completedWorkloadInvocations']==measured+2 and r['helperInvocations']==0,r
 assert r['ownedTemporaryMediaFiles']==0 and r['activeControllersAfterAllCycles']==0 and r['queuedOrRunningJobsAfterAllCycles']==0,r
-if r['mode'] in ['preview-only','independent-decode-only']:
+if r['mode'] in ['preview-only','independent-decode-only','full-decode-fresh-data','full-decode-raster-reused-data','full-decode-raster-fresh-data','preview-remove-cache','preview-fresh-data']:
     manifest=json.load(open(pathlib.Path(sys.argv[7])/'image-backing-inputs.json'))
     entry=next(x for x in manifest['inputs'] if x['format']==r['format'])
     assert r['immutableInputUnchanged'] and r['immutableInputSHA256']==entry['sha256'],r
@@ -55,7 +57,7 @@ for c in r['warmups']+r['cycles']:
         # missing data or an RSS difference into a purgeability/leak conclusion.
         assert 'kernelReturn' in m['purgeable'],m
 for key in ['residentTrend','physicalFootprintTrend']:
-    assert r[key]['observationsComplete'] and len(r[key]['intervalGrowthBytes'])==12 and len(r[key]['lastThreeIntervalGrowthBytes'])==3,r[key]
+    assert r[key]['observationsComplete'] and len(r[key]['intervalGrowthBytes'])==measured and len(r[key]['lastThreeIntervalGrowthBytes'])==3,r[key]
 print(json.dumps({k:r[k] for k in ['sourceCommit','mode','format','matrixTier','warmupCycles','measuredCycles','residentTrend','physicalFootprintTrend','elapsedSeconds']},indent=2))
 PY
 }
@@ -73,11 +75,22 @@ for format in jpg bmp pdf; do
 done
 run_cell preview-only avif expanded-format-comparison
 run_cell independent-decode-only avif expanded-format-comparison
+# Six independent lifetime factors, plus a separately named longer AVIF window.
+run_cell full-decode-fresh-data webp cache-lifetime-comparison
+run_cell full-decode-raster-reused-data webp cache-lifetime-comparison
+run_cell full-decode-raster-fresh-data webp cache-lifetime-comparison
+run_cell preview-remove-cache png cache-lifetime-comparison
+run_cell preview-remove-cache webp cache-lifetime-comparison
+run_cell preview-fresh-data pdf cache-lifetime-comparison
+run_cell preview-only avif extended-avif-observation avif-long-768x576-48 extended-avif
+run_cell independent-decode-only avif extended-avif-observation avif-long-768x576-48 extended-avif
 python3 - "$root" <<'PY'
 import json,pathlib,sys
 root=pathlib.Path(sys.argv[1]);reports=[json.loads(p.read_text()) for p in root.glob('*/*/launch.json')]
-assert len(reports)==19 and sum(r['matrixTier']=='focused-control' for r in reports)==7
+assert len(reports)==27 and sum(r['matrixTier']=='focused-control' for r in reports)==7
 pids=[r['processIdentifier'] for r in reports]+[json.loads((root/'prepared/launch.json').read_text())['processIdentifier']]
-assert len(set(pids))==20,'Preparation and every cell need a fresh process'
-print('19 source, snapshot, raster, encoder and reader controls completed; raw memory accounting is not a no-leak verdict')
+assert len(set(pids))==28,'Preparation and every cell need a fresh process'
+assert sum(r['matrixTier']=='cache-lifetime-comparison' for r in reports)==6
+assert sum(r['matrixTier']=='extended-avif-observation' for r in reports)==2
+print('27 source, reader, lifetime and extended-AVIF controls completed; raw accounting is not a no-leak verdict')
 PY

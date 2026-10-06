@@ -7,7 +7,16 @@ import ImageIO
 /// decoder, controller, or resource-admission behavior is changed by this fixture.
 @MainActor
 enum ImageBackingAttributionFixture {
-    typealias Profile = CodecExportAttributionFixture.Profile
+    enum Profile: String, CaseIterable, Sendable {
+        case installed = "installed-768x576", quickTest = "unit-160x120"
+        case avifLong = "avif-long-768x576-48"
+        var width: Int { self == .quickTest ? 160 : 768 }
+        var height: Int { width * 3 / 4 }
+        var warmupCycles: Int { 2 }
+        var measuredCycles: Int { self == .avifLong ? 48 : self == .installed ? 12 : 3 }
+        var deadlineSeconds: TimeInterval { self == .quickTest ? 90 : 480 }
+        var inputProfile: Self { self == .avifLong ? .installed : self }
+    }
     enum Mode: String, CaseIterable, Sendable {
         case sourceCreate = "source-create"
         case snapshotOnly = "snapshot-only"
@@ -15,7 +24,19 @@ enum ImageBackingAttributionFixture {
         case nativeExport = "native-export"
         case previewOnly = "preview-only"
         case independentDecodeOnly = "independent-decode-only"
-        var isReader: Bool { self == .previewOnly || self == .independentDecodeOnly }
+        case fullDecodeFreshData = "full-decode-fresh-data"
+        case fullDecodeRasterReusedData = "full-decode-raster-reused-data"
+        case fullDecodeRasterFreshData = "full-decode-raster-fresh-data"
+        case previewRemoveCache = "preview-remove-cache"
+        case previewFreshData = "preview-fresh-data"
+        var isFullDecode: Bool {
+            self == .independentDecodeOnly || self == .fullDecodeFreshData ||
+            self == .fullDecodeRasterReusedData || self == .fullDecodeRasterFreshData
+        }
+        var usesFreshData: Bool { self == .fullDecodeFreshData || self == .fullDecodeRasterFreshData || self == .previewFreshData }
+        var rasterizesDecodedImage: Bool { self == .fullDecodeRasterReusedData || self == .fullDecodeRasterFreshData }
+        var isCacheLifetimeComparison: Bool { usesFreshData || rasterizesDecodedImage || self == .previewRemoveCache }
+        var isReader: Bool { self == .previewOnly || self == .previewRemoveCache || self == .previewFreshData || isFullDecode }
         var requiresFormat: Bool { self == .nativeExport || isReader }
     }
     struct Cell: Equatable {
@@ -29,6 +50,13 @@ enum ImageBackingAttributionFixture {
         Cell(mode: .rasterDigestOnly, format: nil), Cell(mode: .previewOnly, format: .webp),
         Cell(mode: .independentDecodeOnly, format: .webp), Cell(mode: .nativeExport, format: .png),
         Cell(mode: .previewOnly, format: .png)
+    ]
+    static let cacheLifetimeMatrix: [Cell] = [
+        Cell(mode: .fullDecodeFreshData, format: .webp),
+        Cell(mode: .fullDecodeRasterReusedData, format: .webp),
+        Cell(mode: .fullDecodeRasterFreshData, format: .webp),
+        Cell(mode: .previewRemoveCache, format: .png), Cell(mode: .previewRemoveCache, format: .webp),
+        Cell(mode: .previewFreshData, format: .pdf)
     ]
     static let inputManifestName = "image-backing-inputs.json"
     private static var invocationClaimed = false
@@ -53,17 +81,23 @@ enum ImageBackingAttributionFixture {
                                 profile: profile, inputDirectory: input)
     }
 
-    static func validateConfiguration(mode: Mode, format: ImageExportFormat?, inputDirectory: URL?) throws {
+    static func validateConfiguration(mode: Mode, format: ImageExportFormat?, inputDirectory: URL?, profile: Profile = .installed) throws {
         try require(mode.requiresFormat == (format != nil), "Only export/reader workloads take a format")
         if let format { try require(supportedFormats.contains(format), "Unsupported comparison format") }
         try require(mode.isReader == (inputDirectory != nil), "Only reader workloads require separately prepared inputs")
         if mode == .nativeExport { try require(format?.usesBundledCodec == false, "Native export control accepts PNG/JPEG/BMP/PDF only") }
+        if mode == .previewRemoveCache { try require(format != .pdf, "Source-local ImageIO cache removal does not apply to CGPDFDocument") }
+        if profile == .avifLong {
+            try require(format == .avif && (mode == .previewOnly || mode == .independentDecodeOnly),
+                        "The 48-cycle profile is only for reused-data AVIF preview/full decode")
+        }
         if let inputDirectory { try require(inputDirectory.isFileURL, "Input directory must be local") }
     }
 
     /// Inputs are intentionally authored in another process. Readers never create
     /// a synthetic source, snapshot, encoder, or helper in their measured process.
     static func prepareInputs(evidenceDirectory: URL, profile: Profile = .installed) async throws -> [String: Any] {
+        try require(profile != .avifLong, "The long AVIF profile reuses separately prepared installed-768x576 inputs")
         try claimInvocation()
         try require(evidenceDirectory.isFileURL, "Evidence directory must be local")
         let files = FileManager.default
@@ -99,7 +133,7 @@ enum ImageBackingAttributionFixture {
 
     static func verify(evidenceDirectory: URL, mode: Mode, format: ImageExportFormat? = nil,
                        profile: Profile = .installed, inputDirectory: URL? = nil) async throws -> [String: Any] {
-        try validateConfiguration(mode: mode, format: format, inputDirectory: inputDirectory)
+        try validateConfiguration(mode: mode, format: format, inputDirectory: inputDirectory, profile: profile)
         try require(evidenceDirectory.isFileURL, "Evidence directory must be local")
         try claimInvocation()
         _ = NSApplication.shared
@@ -110,8 +144,10 @@ enum ImageBackingAttributionFixture {
         let deadline = started + profile.deadlineSeconds
         var report: [String: Any] = [
             "status": "running", "diagnosticOnly": true, "mode": mode.rawValue,
-            "matrixTier": focusedMatrix.contains(Cell(mode: mode, format: format)) ? "focused-control" : "expanded-format-comparison",
+            "matrixTier": profile == .avifLong ? "extended-avif-observation" : mode.isCacheLifetimeComparison ? "cache-lifetime-comparison" : focusedMatrix.contains(Cell(mode: mode, format: format)) ? "focused-control" : "expanded-format-comparison",
             "format": format?.filenameExtension ?? "common", "profile": profile.rawValue,
+            "inputProfile": profile.inputProfile.rawValue,
+            "encodedInputPolicy": !mode.isReader ? "No encoded reader input" : mode.usesFreshData ? "Fresh bounded FileHandle read and hash per cycle; separately validated reference Data remains retained but is never decoded by this mode" : "One immutable Data value reused for every reader cycle",
             "sourceCommit": sourceCommit, "processIdentifier": Int(getpid()), "bundlePath": Bundle.main.bundlePath,
             "operatingSystem": ProcessInfo.processInfo.operatingSystemVersionString,
             "sourceWidth": profile.width, "sourceHeight": profile.height,
@@ -155,7 +191,9 @@ enum ImageBackingAttributionFixture {
             if let input {
                 report["inputPreparationProcessIdentifier"] = input.producerPID
                 report["immutableInputBytes"] = input.data.count; report["immutableInputSHA256"] = input.sha256
-                report["sameInputCachingLimit"] = "Same immutable Data retained; fresh ImageIO/PDF object per call. This isolates readers but does not test changing-file or changing-byte caches"
+                report["sameInputCachingLimit"] = mode.usesFreshData
+                    ? "Fresh Data buffers read from one unchanged pathname/inode/byte sequence; does not test different files or different encoded content"
+                    : "Same immutable Data retained; fresh ImageIO/PDF object per call. This isolates readers but does not test changing-file or changing-byte caches"
             }
             report["beforeWarmup"] = try object(try observed())
             for index in 1...profile.warmupCycles {
@@ -231,13 +269,22 @@ enum ImageBackingAttributionFixture {
 
     private static func perform(mode: Mode, format: ImageExportFormat?, profile: Profile,
                                 source: CGImage?, snapshot: ImageExportSnapshot?, input: ImageBackingInput?) throws -> ImageBackingWorkload {
-        func imageResult(_ image: CGImage, encodedBytes: Int? = nil) throws -> ImageBackingWorkload {
+        func imageResult(_ image: CGImage, encodedBytes: Int? = nil,
+                         cacheRemoval: ImageBackingCacheRemoval? = nil) throws -> ImageBackingWorkload {
             try require(image.width == profile.width && image.height == profile.height, "Unexpected image dimensions")
             let reading = try observed()
             withExtendedLifetime(image) { }
             return ImageBackingWorkload(operations: ImageBackingOperationCounts(mode: mode), width: image.width,
                 height: image.height, imageBytesPerRow: image.bytesPerRow, rasterBytes: nil, rasterSHA256: nil,
-                encodedBytes: encodedBytes, imageStrideStorageBytes: image.bytesPerRow * image.height, whilePayloadLive: reading)
+                encodedBytes: encodedBytes, imageStrideStorageBytes: image.bytesPerRow * image.height,
+                cacheRemoval: cacheRemoval, materialization: nil, whilePayloadLive: reading)
+        }
+        func readerData() throws -> Data {
+            guard let input else { throw failure("Missing immutable reader input") }
+            if !mode.usesFreshData { return input.data }
+            let data = try boundedRead(input.url)
+            try require(data.count == input.data.count && digest(data) == input.sha256, "Fresh reader bytes differ from prepared input")
+            return data
         }
         switch mode {
         case .sourceCreate:
@@ -254,20 +301,75 @@ enum ImageBackingAttributionFixture {
             withExtendedLifetime(raster) { }
             return ImageBackingWorkload(operations: ImageBackingOperationCounts(mode: mode), width: source.width,
                 height: source.height, imageBytesPerRow: nil, rasterBytes: raster.count, rasterSHA256: sha,
-                encodedBytes: nil, imageStrideStorageBytes: nil, whilePayloadLive: reading)
+                encodedBytes: nil, imageStrideStorageBytes: nil, cacheRemoval: nil, materialization: nil, whilePayloadLive: reading)
         case .nativeExport:
             guard let snapshot, let format else { throw failure("Missing native export inputs") }
             let artifact = try ImageExportService.encode(snapshot: snapshot, options: ImageExportOptions(format: format, quality: 0.81))
             let result = try imageResult(artifact.firstPreview, encodedBytes: artifact.byteCount)
             withExtendedLifetime(artifact) { }
             return result
-        case .previewOnly:
-            guard let input, let format else { throw failure("Missing immutable reader input") }
-            return try imageResult(ImageExportService.preview(data: input.data, format: format))
-        case .independentDecodeOnly:
-            guard let input, let format else { throw failure("Missing immutable reader input") }
-            return try imageResult(independentDecode(input.data, format: format, width: profile.width, height: profile.height))
+        case .previewOnly, .previewFreshData:
+            guard let format else { throw failure("Missing reader format") }
+            let data = try readerData()
+            let result = try imageResult(ImageExportService.preview(data: data, format: format))
+            withExtendedLifetime(data) { }
+            return result
+        case .previewRemoveCache:
+            guard let format else { throw failure("Missing reader format") }
+            let data = try readerData()
+            let result = try previewRemovingCache(data: data, format: format)
+            let observation = try imageResult(result.image, cacheRemoval: result.removal)
+            withExtendedLifetime((data, result)) { }
+            return observation
+        case .independentDecodeOnly, .fullDecodeFreshData, .fullDecodeRasterReusedData, .fullDecodeRasterFreshData:
+            guard let format else { throw failure("Missing reader format") }
+            let data = try readerData()
+            let image = try independentDecode(data, format: format, width: profile.width, height: profile.height)
+            if mode.rasterizesDecodedImage {
+                let beforeRaster = try observed()
+                let raster = try CodecExportResourceFixture.raster(image)
+                let sha = digest(raster)
+                let afterRaster = try observed()
+                withExtendedLifetime((data, image, raster)) { }
+                return ImageBackingWorkload(operations: ImageBackingOperationCounts(mode: mode), width: image.width,
+                    height: image.height, imageBytesPerRow: image.bytesPerRow, rasterBytes: raster.count, rasterSHA256: sha,
+                    encodedBytes: nil, imageStrideStorageBytes: image.bytesPerRow * image.height, cacheRemoval: nil,
+                    materialization: ImageBackingMaterialization(beforeRaster: beforeRaster, afterRaster: afterRaster),
+                    whilePayloadLive: afterRaster)
+            }
+            let result = try imageResult(image)
+            withExtendedLifetime((data, image)) { }
+            return result
         }
+    }
+
+    /// Diagnostic comparison only: identical bounded thumbnail options and
+    /// post-decode stride checks to production, followed by one source-local
+    /// public cache-removal call while the returned image is still alive.
+    /// The API returns Void; invocation is not proof of reclaimed memory.
+    /// https://developer.apple.com/documentation/imageio/cgimagesourceremovecacheatindex(_:_:)
+    static func previewRemovingCache(data: Data, format: ImageExportFormat,
+                                     limits: ImageExportLimits = .standard) throws -> ImageBackingCachePreview {
+        try limits.validate()
+        try require(format != .pdf && !data.isEmpty && data.count <= limits.maximumEncodedBytes,
+                    "Invalid bounded ImageIO cache-removal input")
+        let dimension = min(limits.previewDimension, Int(sqrt(Double(limits.maximumPreviewBytes / 4))))
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let image = CGImageSourceCreateThumbnailAtIndex(source, 0,
+                [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: dimension,
+                 kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceShouldCacheImmediately: true] as CFDictionary),
+              image.width > 0, image.height > 0, image.width <= dimension, image.height <= dimension,
+              image.bytesPerRow <= limits.maximumPreviewBytes / image.height else {
+            throw failure("Bounded cache-removal thumbnail failed its dimensions/stride limit")
+        }
+        let before = try observed()
+        CGImageSourceRemoveCacheAtIndex(source, 0)
+        let after = try observed()
+        withExtendedLifetime((source, image, data)) { }
+        return ImageBackingCachePreview(image: image,
+            removal: ImageBackingCacheRemoval(api: "CGImageSourceRemoveCacheAtIndex", index: 0, invocationCount: 1,
+                apiReturn: "void (no success, byte-count, or reclamation result)",
+                beforeSourceLocalRemoval: before, afterSourceLocalRemoval: after))
     }
 
     /// No raster hash/reference comparison here: those allocate another context
@@ -298,7 +400,7 @@ enum ImageBackingAttributionFixture {
         try autoreleasepool {
             guard let manifest = try JSONSerialization.jsonObject(with: boundedRead(directory.appendingPathComponent(inputManifestName))) as? [String: Any],
                   manifest["status"] as? String == "prepared", manifest["syntheticSource"] as? Bool == true,
-                  manifest["profile"] as? String == profile.rawValue, manifest["sourceCommit"] as? String == sourceCommit,
+                  manifest["profile"] as? String == profile.inputProfile.rawValue, manifest["sourceCommit"] as? String == sourceCommit,
                   manifest["sourceWidth"] as? Int == profile.width, manifest["sourceHeight"] as? Int == profile.height,
                   let pid = manifest["processIdentifier"] as? Int, pid != Int(getpid()),
                   let entries = manifest["inputs"] as? [[String: Any]],
@@ -343,6 +445,11 @@ enum ImageBackingAttributionFixture {
         case .nativeExport: return "Unchanged native ImageExportService.encode on one persistent snapshot; production metadata verification and production preview are included; no publication or independent validation"
         case .previewOnly: return "Unchanged ImageExportService.preview on separately prepared immutable Data; fresh reader/thumbnail or PDF render per call; no synthetic source or extra raster digest"
         case .independentDecodeOnly: return "Independent cache-immediate ImageIO full decode or full-page PDF render on separately prepared immutable Data; no source creation, production preview, or extra raster digest/reference comparison"
+        case .fullDecodeFreshData: return "Same full decode as independent-decode-only, but fresh bounded file-read Data and encoded-byte hash per cycle; no decoded raster digest/reference comparison"
+        case .fullDecodeRasterReusedData: return "Full decode from reused immutable Data, then existing fixture raster(context draw + Data copy) and SHA256 of decoded pixels; no synthetic reference creation or reference raster comparison"
+        case .fullDecodeRasterFreshData: return "Fresh bounded file-read Data and encoded hash per cycle, full decode, then fixture raster and SHA256 of decoded pixels; no synthetic reference creation or reference raster comparison"
+        case .previewRemoveCache: return "Diagnostic clone of production bounded ImageIO thumbnail options/limits, then one CGImageSourceRemoveCacheAtIndex(source,0) while source/image remain alive; not a production change or proof of freed memory; no extra raster validation in measured cycles"
+        case .previewFreshData: return "Unchanged production preview on fresh bounded file-read Data plus encoded-byte hash per cycle; PDF remains CGPDFDocument page rendering, without an ImageIO cache-removal call"
         }
     }
     private static func claimInvocation() throws {
@@ -369,13 +476,17 @@ enum ImageBackingAttributionFixture {
 
 struct ImageBackingOperationCounts: Encodable, Equatable {
     let syntheticSources: Int, snapshots: Int, rasterDigests: Int, nativeExports: Int, productionPreviews: Int, independentDecodes: Int
-    init(mode: ImageBackingAttributionFixture.Mode) {
+    let encodedFileReads: Int, boundedThumbnailCalls: Int, cacheRemovalCalls: Int
+    @MainActor init(mode: ImageBackingAttributionFixture.Mode) {
         syntheticSources = mode == .sourceCreate ? 1 : 0
         snapshots = mode == .snapshotOnly ? 1 : 0
-        rasterDigests = mode == .rasterDigestOnly ? 1 : 0
+        rasterDigests = mode == .rasterDigestOnly || mode.rasterizesDecodedImage ? 1 : 0
         nativeExports = mode == .nativeExport ? 1 : 0
-        productionPreviews = mode == .previewOnly || mode == .nativeExport ? 1 : 0
-        independentDecodes = mode == .independentDecodeOnly ? 1 : 0
+        productionPreviews = mode == .previewOnly || mode == .previewFreshData || mode == .nativeExport ? 1 : 0
+        independentDecodes = mode.isFullDecode ? 1 : 0
+        encodedFileReads = mode.usesFreshData ? 1 : 0
+        boundedThumbnailCalls = mode == .previewRemoveCache ? 1 : 0
+        cacheRemovalCalls = mode == .previewRemoveCache ? 1 : 0
     }
 }
 private struct ImageBackingInput { let url: URL; let data: Data; let sha256: String; let producerPID: Int }
@@ -384,7 +495,21 @@ private struct ImageBackingWorkload: Encodable {
     let width: Int, height: Int
     let imageBytesPerRow: Int?, rasterBytes: Int?, rasterSHA256: String?, encodedBytes: Int?
     let imageStrideStorageBytes: Int?
+    let cacheRemoval: ImageBackingCacheRemoval?
+    let materialization: ImageBackingMaterialization?
     let whilePayloadLive: ImageBackingMemoryReading
+}
+struct ImageBackingCachePreview { let image: CGImage; let removal: ImageBackingCacheRemoval }
+struct ImageBackingCacheRemoval: Encodable {
+    let api: String
+    let index: Int, invocationCount: Int
+    let apiReturn: String
+    let beforeSourceLocalRemoval: ImageBackingMemoryReading
+    let afterSourceLocalRemoval: ImageBackingMemoryReading
+}
+private struct ImageBackingMaterialization: Encodable {
+    let beforeRaster: ImageBackingMemoryReading
+    let afterRaster: ImageBackingMemoryReading
 }
 private struct ImageBackingCycle: Encodable {
     let index: Int

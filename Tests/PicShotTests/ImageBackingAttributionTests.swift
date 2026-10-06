@@ -9,7 +9,8 @@ final class ImageBackingAttributionTests: XCTestCase {
     func testFocusedMatrixIsSevenIsolatedControlsAndFormatExpansionIsExplicit() throws {
         XCTAssertEqual(ImageBackingAttributionFixture.focusedMatrix.count, 7)
         XCTAssertEqual(ImageBackingAttributionFixture.Mode.allCases.map(\.rawValue),
-            ["source-create", "snapshot-only", "raster-digest-only", "native-export", "preview-only", "independent-decode-only"])
+            ["source-create", "snapshot-only", "raster-digest-only", "native-export", "preview-only", "independent-decode-only",
+             "full-decode-fresh-data", "full-decode-raster-reused-data", "full-decode-raster-fresh-data", "preview-remove-cache", "preview-fresh-data"])
         XCTAssertEqual(ImageBackingAttributionFixture.supportedFormats.map(\.filenameExtension), ["png", "jpg", "bmp", "pdf", "webp", "avif"])
         let root = FileManager.default.temporaryDirectory
         for cell in ImageBackingAttributionFixture.focusedMatrix {
@@ -29,6 +30,56 @@ final class ImageBackingAttributionTests: XCTestCase {
         XCTAssertThrowsError(try ImageBackingAttributionFixture.validateConfiguration(mode: .nativeExport, format: .webp, inputDirectory: nil))
         XCTAssertThrowsError(try ImageBackingAttributionFixture.validateConfiguration(mode: .nativeExport, format: .png, inputDirectory: root))
         XCTAssertThrowsError(try ImageBackingAttributionFixture.validateConfiguration(mode: .independentDecodeOnly, format: .tiff, inputDirectory: root))
+    }
+
+    func testCacheLifetimeSelectorsAndLongAVIFProfileAreBounded() throws {
+        let root = FileManager.default.temporaryDirectory
+        XCTAssertEqual(ImageBackingAttributionFixture.cacheLifetimeMatrix.count, 6)
+        for cell in ImageBackingAttributionFixture.cacheLifetimeMatrix {
+            XCTAssertTrue(cell.mode.isReader)
+            XCTAssertTrue(cell.mode.isCacheLifetimeComparison)
+            XCTAssertNoThrow(try ImageBackingAttributionFixture.validateConfiguration(mode: cell.mode, format: cell.format, inputDirectory: root))
+        }
+        let profile = ImageBackingAttributionFixture.Profile.avifLong
+        XCTAssertEqual(profile.width, 768); XCTAssertEqual(profile.height, 576)
+        XCTAssertEqual(profile.warmupCycles, 2); XCTAssertEqual(profile.measuredCycles, 48)
+        XCTAssertEqual(profile.deadlineSeconds, 480)
+        XCTAssertEqual(profile.inputProfile, .installed)
+        for mode in [ImageBackingAttributionFixture.Mode.previewOnly, .independentDecodeOnly] {
+            XCTAssertNoThrow(try ImageBackingAttributionFixture.validateConfiguration(mode: mode, format: .avif, inputDirectory: root, profile: profile))
+            XCTAssertThrowsError(try ImageBackingAttributionFixture.validateConfiguration(mode: mode, format: .png, inputDirectory: root, profile: profile))
+        }
+        XCTAssertThrowsError(try ImageBackingAttributionFixture.validateConfiguration(mode: .fullDecodeFreshData, format: .avif, inputDirectory: root, profile: profile))
+        XCTAssertThrowsError(try ImageBackingAttributionFixture.validateConfiguration(mode: .previewRemoveCache, format: .pdf, inputDirectory: root))
+        XCTAssertEqual(ImageBackingAttributionFixture.Profile.installed.measuredCycles, 12)
+        XCTAssertEqual(ImageBackingAttributionFixture.Profile.quickTest.measuredCycles, 3)
+    }
+
+    /// Uses an image larger than the 4 MiB returned-preview budget. The candidate
+    /// still requests a bounded thumbnail; it never replaces this with full decode.
+    func testCacheRemovalPreservesRenderedPixelsAndLargeInputPreviewLimits() throws {
+        let source = try CodecExportResourceFixture.fixture(width: 1280, height: 960)
+        let artifact = try ImageExportService.encode(snapshot: ImageExportSnapshot(image: source), options: ImageExportOptions(format: .png))
+        for limits in [ImageExportLimits.standard,
+                       ImageExportLimits(maximumSourcePixels: 100_000_000, maximumEncodedBytes: 128 * 1_024 * 1_024,
+                                         maximumPages: 200, previewDimension: 1024, maximumPreviewBytes: 4096)] {
+            try autoreleasepool {
+                let expected = try ImageExportService.preview(data: artifact.data, format: .png, limits: limits)
+                let expectedPixels = try CodecExportResourceFixture.raster(expected)
+                let actual = try ImageBackingAttributionFixture.previewRemovingCache(data: artifact.data, format: .png, limits: limits)
+                XCTAssertEqual(actual.image.width, expected.width); XCTAssertEqual(actual.image.height, expected.height)
+                XCTAssertLessThanOrEqual(actual.image.width, limits.previewDimension)
+                XCTAssertLessThanOrEqual(actual.image.height, limits.previewDimension)
+                XCTAssertLessThanOrEqual(actual.image.bytesPerRow * actual.image.height, limits.maximumPreviewBytes)
+                XCTAssertLessThan(actual.image.width, source.width)
+                XCTAssertEqual(try CodecExportResourceFixture.raster(actual.image), expectedPixels)
+                XCTAssertEqual(actual.removal.api, "CGImageSourceRemoveCacheAtIndex")
+                XCTAssertEqual(actual.removal.index, 0); XCTAssertEqual(actual.removal.invocationCount, 1)
+                XCTAssertTrue(actual.removal.apiReturn.hasPrefix("void"))
+            }
+        }
+        XCTAssertThrowsError(try ImageBackingAttributionFixture.previewRemovingCache(data: artifact.data, format: .pdf))
+        XCTAssertThrowsError(try ImageBackingAttributionFixture.previewRemovingCache(data: Data(), format: .png))
     }
 
     func testMachFieldExtractionDistinguishesMissingFromReturnedZeroAndRetainsSignedLedgers() throws {
@@ -216,6 +267,70 @@ final class ImageBackingAttributionTests: XCTestCase {
             }
         }
         XCTAssertEqual(processIDs.count, 8)
+    }
+
+    /// Separate-process controls compare the encoded-Data lifetime and optional
+    /// decoded-pixel materialization without modifying the production decoder.
+    func testCacheLifetimeFreshProcessMatrixAndPostRemovalWebPPixels() async throws {
+        let app = try CodecProcessTestApplication.make()
+        defer { app.cleanup() }
+        let root = app.root.appendingPathComponent("cache-lifetime-evidence", isDirectory: true)
+        let preparationDirectory = root.appendingPathComponent("prepared", isDirectory: true)
+        let preparation = try await launch(app: app, directory: preparationDirectory, mode: "prepare-inputs")
+        let entries = try XCTUnwrap(preparation["inputs"] as? [[String: Any]])
+        // Pixel tests run here, outside every measured subprocess. Cache removal
+        // must leave its returned image renderable and identical to the baseline.
+        for format in [ImageExportFormat.png, .webp] {
+            let entry = try XCTUnwrap(entries.first { $0["format"] as? String == format.filenameExtension })
+            let filename = try XCTUnwrap(entry["filename"] as? String)
+            let data = try Data(contentsOf: preparationDirectory.appendingPathComponent(filename))
+            try autoreleasepool {
+                let expected = try ImageExportService.preview(data: data, format: format)
+                let expectedPixels = try CodecExportResourceFixture.raster(expected)
+                let actual = try ImageBackingAttributionFixture.previewRemovingCache(data: data, format: format)
+                XCTAssertEqual(try CodecExportResourceFixture.raster(actual.image), expectedPixels)
+            }
+        }
+        var processIDs = Set([try XCTUnwrap(preparation["processIdentifier"] as? Int)])
+        for cell in ImageBackingAttributionFixture.cacheLifetimeMatrix {
+            let directory = root.appendingPathComponent("\(cell.format!.filenameExtension)-\(cell.mode.rawValue)", isDirectory: true)
+            let report = try await launch(app: app, directory: directory, mode: cell.mode.rawValue,
+                format: cell.format!.filenameExtension, inputDirectory: preparationDirectory)
+            XCTAssertEqual(report["status"] as? String, "observed")
+            XCTAssertEqual(report["matrixTier"] as? String, "cache-lifetime-comparison")
+            XCTAssertTrue(processIDs.insert(try XCTUnwrap(report["processIdentifier"] as? Int)).inserted)
+            XCTAssertEqual(report["completedWorkloadInvocations"] as? Int, 5)
+            XCTAssertEqual(report["helperInvocations"] as? Int, 0)
+            XCTAssertEqual(report["immutableInputUnchanged"] as? Bool, true)
+            XCTAssertEqual(report["persistentSyntheticSourceCount"] as? Int, 0)
+            XCTAssertEqual(report["persistentSnapshotCount"] as? Int, 0)
+            let cycles = try XCTUnwrap(report["cycles"] as? [[String: Any]])
+            let warmups = try XCTUnwrap(report["warmups"] as? [[String: Any]])
+            XCTAssertEqual(cycles.count, 3); XCTAssertEqual(warmups.count, 2)
+            for cycle in warmups + cycles {
+                let workload = try XCTUnwrap(cycle["workload"] as? [String: Any])
+                let counts = try XCTUnwrap(workload["operations"] as? [String: Int])
+                XCTAssertEqual(counts["encodedFileReads"], cell.mode.usesFreshData ? 1 : 0)
+                XCTAssertEqual(counts["rasterDigests"], cell.mode.rasterizesDecodedImage ? 1 : 0)
+                XCTAssertEqual(counts["independentDecodes"], cell.mode.isFullDecode ? 1 : 0)
+                XCTAssertEqual(counts["cacheRemovalCalls"], cell.mode == .previewRemoveCache ? 1 : 0)
+                if cell.mode.rasterizesDecodedImage {
+                    XCTAssertEqual(workload["rasterBytes"] as? Int, 160 * 120 * 4)
+                    XCTAssertEqual((workload["rasterSHA256"] as? String)?.count, 64)
+                    let materialization = try XCTUnwrap(workload["materialization"] as? [String: Any])
+                    XCTAssertNotNil(materialization["beforeRaster"]); XCTAssertNotNil(materialization["afterRaster"])
+                } else { XCTAssertNil(workload["materialization"]) }
+                if cell.mode == .previewRemoveCache {
+                    let removal = try XCTUnwrap(workload["cacheRemoval"] as? [String: Any])
+                    XCTAssertEqual(removal["api"] as? String, "CGImageSourceRemoveCacheAtIndex")
+                    XCTAssertEqual(removal["invocationCount"] as? Int, 1)
+                    XCTAssertTrue((removal["apiReturn"] as? String)?.hasPrefix("void") == true)
+                    XCTAssertNotNil(removal["beforeSourceLocalRemoval"]); XCTAssertNotNil(removal["afterSourceLocalRemoval"])
+                    XCTAssertNil(removal["bytesFreed"])
+                } else { XCTAssertNil(workload["cacheRemoval"]) }
+            }
+        }
+        XCTAssertEqual(processIDs.count, 7)
     }
 
     private func launch(app: CodecProcessTestApplication, directory: URL, mode: String,

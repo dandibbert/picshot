@@ -8,6 +8,7 @@ import CoreText
 @MainActor
 enum CaptureUIPreviewFixture {
     static func verify(evidenceDirectory: URL) async throws -> [String: Any] {
+        let displaySetup = try await waitForDisplayGeometryQuiet()
         guard let screen = NSScreen.main, let displayID = screen.displayID else { throw failure("No WindowServer display for native UI evidence") }
         try FileManager.default.createDirectory(at: evidenceDirectory, withIntermediateDirectories: true)
         let previousAppearance = NSApp.appearance
@@ -174,6 +175,7 @@ enum CaptureUIPreviewFixture {
 
         return ["status": "passed", "scope": "Native AppKit editor/pin/text-result rendering on a labeled synthetic desktop; no screen pixels, TCC, OCR inference, network, or preference writes",
                 "syntheticDesktop": true, "screenCaptureAttempted": false, "ocrInferenceAttempted": false,
+                "displaySetup": displaySetup,
                 "displayPointWidth": points.width, "displayPointHeight": points.height,
                 "backingScale": screen.backingScaleFactor, "sourcePixelWidth": desktop.width, "sourcePixelHeight": desktop.height,
                 "rectangleGesture": true, "inlineCancel": true, "inlineCommit": true, "appearanceRestoredOnExit": true,
@@ -182,6 +184,50 @@ enum CaptureUIPreviewFixture {
                 "pinSpaceAnchoredEditing": true, "pinAnnotationCancelPreservedImageAndPresentation": true,
                 "ocrDarkAppearance": true,
                 "files": ["ui-capture-rectangle-light.png", "ui-capture-text-light.png", "ui-capture-rectangle-dark.png", "ui-capture-edge.png", "ui-pin-image-only.png", "ui-ocr-result.png", "ui-capture-resized.png", "ui-pin-annotation.png", "ui-ocr-result-dark.png"]]
+    }
+
+    /// Smoke launches are regular applications and may still be receiving Dock /
+    /// display-layout events. Establish bounded quiet BEFORE freezing geometry.
+    /// Once an editor exists its real display-change cancellation stays active;
+    /// this setup never retries or skips a failed control assertion.
+    static func waitForDisplayGeometryQuiet(quietInterval: TimeInterval = 0.4,
+                                           timeout: TimeInterval = 3) async throws -> [String: Any] {
+        let started = ProcessInfo.processInfo.systemUptime
+        let state = DisplaySetupState(started: started)
+        let observer = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated {
+                    state.notifications += 1; state.lastChange = ProcessInfo.processInfo.systemUptime
+                }
+            }
+        defer { NotificationCenter.default.removeObserver(observer) }
+        var previous = displayGeometrySignature()
+        var geometryChanges = 0, samples = 0
+        while true {
+            try Task.checkCancellation()
+            let geometry = displayGeometrySignature()
+            let now = ProcessInfo.processInfo.systemUptime
+            samples += 1
+            if geometry != previous { geometryChanges += 1; previous = geometry; state.lastChange = now }
+            if now - state.lastChange >= quietInterval {
+                return ["quietIntervalSeconds": quietInterval, "elapsedSeconds": now - started,
+                        "notifications": state.notifications, "geometryChanges": geometryChanges, "geometrySamples": samples]
+            }
+            guard now - started < timeout else {
+                throw failure("Display geometry did not settle before synthetic capture (notifications=\(state.notifications), geometryChanges=\(geometryChanges), samples=\(samples))")
+            }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+    }
+    private final class DisplaySetupState {
+        var lastChange: TimeInterval
+        var notifications = 0
+        init(started: TimeInterval) { lastChange = started }
+    }
+    private static func displayGeometrySignature() -> [String] {
+        NSScreen.screens.map {
+            "\($0.displayID ?? 0):\(NSStringFromRect($0.frame)):\(NSStringFromRect($0.visibleFrame)):\($0.backingScaleFactor)"
+        }.sorted()
     }
 
     private static func verifyBoundaryResize(_ editor: ImageEditorController, presentation: FrozenCapturePresentation,
@@ -313,7 +359,10 @@ enum CaptureUIPreviewFixture {
         guard let root else { return [] }; return [root] + root.subviews.flatMap { descendants($0) }
     }
     private static func button(_ id: String, in editor: ImageEditorController) throws -> NSButton {
-        try unwrap(descendants(editor.window?.contentView).first { $0.identifier?.rawValue == id } as? NSButton, "Missing native control \(id)")
+        if let control = descendants(editor.window?.contentView).first(where: { $0.identifier?.rawValue == id }) as? NSButton { return control }
+        let data = (try? JSONSerialization.data(withJSONObject: editor.nativeToolbarDiagnostics(), options: [.sortedKeys])) ?? Data()
+        let diagnostic = String(decoding: data.prefix(16_384), as: UTF8.self)
+        throw failure("Missing native control \(id); bounded native hierarchy: \(diagnostic)")
     }
     private static func click(_ id: String, in editor: ImageEditorController) throws { try button(id, in: editor).performClick(nil) }
     private static func mouse(_ canvas: ImageEditorCanvas, type: NSEvent.EventType, point: CGPoint) throws -> NSEvent {

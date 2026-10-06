@@ -61,8 +61,7 @@ final class SaveWorkflowSettingsView: NSView, NSTextFieldDelegate {
     }
     func applyFolderSelection(_ selected: URL?) throws {
         guard let selected else { return }
-        let approved = selected.standardizedFileURL.resolvingSymlinksInPath()
-        try SaveWorkflowService.validateBaseDirectory(approved); baseURL = approved; refreshPreview(); onChange?()
+        let approved = try SaveWorkflowService.resolveApprovedDirectory(selected); baseURL = approved; refreshPreview(); onChange?()
     }
     @objc private func changed() { refreshPreview(); onChange?() }
     func controlTextDidChange(_ notification: Notification) { changed() }

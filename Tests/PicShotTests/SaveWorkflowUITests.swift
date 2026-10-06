@@ -163,10 +163,24 @@ final class SaveWorkflowUITests: XCTestCase {
         XCTAssertEqual(report["status"] as? String, "passed")
         XCTAssertEqual((report["resourceCycles"] as? [[String: Any]])?.count, 10)
     }
+    func testFixtureCanonicalDirectoryPassesNoFollowAndRawAliasStillFails() throws {
+        let (defaults, name, root) = try isolated()
+        defer { defaults.removePersistentDomain(forName: name); try? FileManager.default.removeItem(at: root) }
+        try SaveWorkflowService.validateBaseDirectory(root)
+        try SaveWorkflowSettings(baseURL: root).save(to: defaults)
+        XCTAssertEqual(SaveWorkflowSettings.read(from: defaults).baseURL?.path, root.path)
+        let target = root.appendingPathComponent("real", isDirectory: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: false)
+        let alias = root.appendingPathComponent("alias", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: target)
+        XCTAssertThrowsError(try SaveWorkflowService.validateBaseDirectory(alias))
+        let canonical = try SaveWorkflowUIPreviewFixture.canonicalExistingDirectory(alias)
+        XCTAssertEqual(canonical.path, target.path)
+        try SaveWorkflowService.validateBaseDirectory(canonical)
+    }
     private func isolated() throws -> (UserDefaults, String, URL) {
         let name = "PicShot-SaveWorkflowUITests-" + UUID().uuidString
-        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(name)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        let root = try SaveWorkflowUIPreviewFixture.makeTemporaryRoot(name: name)
         return (try XCTUnwrap(UserDefaults(suiteName: name)), name, root)
     }
     private func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap { descendants($0) } }

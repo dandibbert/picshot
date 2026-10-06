@@ -1,5 +1,6 @@
 import AppKit
 import CryptoKit
+import Darwin
 import ImageIO
 import PicShotCore
 
@@ -11,21 +12,23 @@ enum SaveWorkflowUIPreviewFixture {
         _ = NSApplication.shared
         let files = FileManager.default
         try files.createDirectory(at: evidenceDirectory, withIntermediateDirectories: true)
-        let root = files.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("PicShot-Save-UI-" + UUID().uuidString)
-        try files.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        let root = try makeTemporaryRoot(name: "PicShot-Save-UI-" + UUID().uuidString)
         let suite = "PicShot-Save-UI-" + UUID().uuidString
         guard let defaults = UserDefaults(suiteName: suite) else { throw failure("Isolated defaults unavailable") }
         let originalAppearance = NSApp.appearance
         let board = NSPasteboard.withUniqueName()
         defer { defaults.removePersistentDomain(forName: suite); NSApp.appearance = originalAppearance; board.releaseGlobally(); try? files.removeItem(at: root) }
         var report: [String: Any] = ["status": "running", "source": "original synthetic rasters", "userPreferencesRead": false,
+            "nativeCanonicalTemporaryRoot": true,
             "generalPasteboardReadOrWritten": false, "liveScreenCaptured": false, "networkAttempted": false,
             "maximumSaveJobs": SaveWorkflowPresenter.maximumJobs,
             "estimatedRetainedInputBudgetBytes": SaveWorkflowPresenter.maximumRetainedInputBytes,
             "budgetScope": "estimated retained inputs/artifacts; encoded output is additionally bounded per job; not a total RSS quota",
             "clipboardScope": "exact saved PNG bytes in a private native pasteboard; no broad external-app paste compatibility claim",
             "snapshotScope": "cached owned native window content, composited using actual window geometry for the capture/child view; not a live desktop capture"]
+        let directoryTrace = SaveWorkflowDirectoryTrace()
         let presenter = SaveWorkflowPresenter(defaults: defaults)
+        presenter.directoryDiagnostic = { directoryTrace.record($0) }
         presenter.clipboardCopier = { data, type in board.clearContents(); return board.setData(data, forType: .init(type)) }
         defer { for controller in presenter.controllers { controller.cancel() } }
         do {
@@ -164,10 +167,42 @@ enum SaveWorkflowUIPreviewFixture {
             }
             report["resourceCycles"] = cycles; report["resourceInterpretation"] = "Two warmups and eight measured small real jobs; sampled parent values, no zero-leak assertion"
             try require(!presenter.canAdmit(inputBytes: SaveWorkflowPresenter.maximumRetainedInputBytes + 1), "Input byte admission is not enforced")
+            report["directoryFailures"] = directoryTrace.snapshot()
             report["status"] = "passed"
             report["files"] = ["ui-save-settings-light.png", "ui-save-settings-dark.png", "ui-save-edge-child.png", "ui-save-copy-failure.png", "save-workflow-ui.json"]
             try write(report, directory: evidenceDirectory); return report
-        } catch { report["status"] = "failed"; report["error"] = error.localizedDescription; try? write(report, directory: evidenceDirectory); throw error }
+        } catch { report["status"] = "failed"; report["directoryFailures"] = directoryTrace.snapshot(); report["error"] = error.localizedDescription; try? write(report, directory: evidenceDirectory); throw error }
+    }
+    /// Fixture-only ownership: create our private directory first, then obtain
+    /// the kernel-resolved spelling. Foundation path normalization can preserve
+    /// macOS /var aliases; the publication service correctly rejects them.
+    static func makeTemporaryRoot(name: String) throws -> URL {
+        let requested = FileManager.default.temporaryDirectory.appendingPathComponent(name, isDirectory: true)
+        try FileManager.default.createDirectory(at: requested, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        do { return try canonicalExistingDirectory(requested) }
+        catch { try? FileManager.default.removeItem(at: requested); throw error }
+    }
+    static func canonicalExistingDirectory(_ directory: URL) throws -> URL {
+        let pointer = directory.withUnsafeFileSystemRepresentation { path in
+            path.flatMap { Darwin.realpath($0, nil) }
+        }
+        guard let pointer else { throw failure("Synthetic directory realpath failed (errno=\(errno))") }
+        defer { Darwin.free(pointer) }
+        let canonical = URL(fileURLWithPath: String(cString: pointer), isDirectory: true)
+        do { try SaveWorkflowService.validateBaseDirectory(canonical) }
+        catch {
+            // Component indexes/types only: no host paths or personal filenames.
+            var probe = URL(fileURLWithPath: "/", isDirectory: true)
+            var components: [String] = []
+            for (index, name) in canonical.pathComponents.filter({ $0 != "/" }).prefix(64).enumerated() {
+                probe.appendPathComponent(name)
+                var value = stat()
+                let result = Darwin.lstat(probe.path, &value)
+                components.append("\(index):\(result == 0 ? Int(value.st_mode & S_IFMT) : -Int(errno))")
+            }
+            throw failure("Canonical synthetic directory failed no-follow validation; componentTypes=\(components.joined(separator: ",")); \(error.localizedDescription)")
+        }
+        return canonical
     }
     static func sourceImage(width: Int, height: Int) throws -> CGImage {
         guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
@@ -232,4 +267,16 @@ enum SaveWorkflowUIPreviewFixture {
     private static func unwrap<T>(_ value: T?, _ text: String) throws -> T { guard let value else { throw failure(text) }; return value }
     private static func require(_ value: Bool, _ text: String) throws { if !value { throw failure(text) } }
     private static func failure(_ text: String) -> Error { PicShotError.message("Save workflow UI: " + text) }
+}
+
+/// Bounded, thread-safe diagnostics from the real worker publication path.
+/// Only synthetic fixture paths are observed; normal presenters have no hook.
+private final class SaveWorkflowDirectoryTrace: @unchecked Sendable {
+    private let lock = NSLock()
+    private var failures: [String] = []
+    func record(_ value: SaveWorkflowDirectoryDiagnostic) {
+        lock.lock(); defer { lock.unlock() }
+        if failures.count < 16 { failures.append(String(value.summary.prefix(512))) }
+    }
+    func snapshot() -> [String] { lock.lock(); defer { lock.unlock() }; return failures }
 }

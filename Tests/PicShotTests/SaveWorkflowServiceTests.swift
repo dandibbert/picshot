@@ -76,6 +76,79 @@ final class SaveWorkflowServiceTests: XCTestCase {
             XCTAssertFalse(FileManager.default.fileExists(atPath: absent.path))
         }
     }
+    func testOptInDirectoryDiagnosticsReportComponentAndOriginalErrno() throws {
+        try withDirectory { directory in
+            var failures: [SaveWorkflowDirectoryDiagnostic] = []
+            try SaveWorkflowService.validateBaseDirectory(directory, diagnostic: { failures.append($0) })
+            XCTAssertTrue(failures.isEmpty)
+            let absent = directory.appendingPathComponent("missing-diagnostic-folder")
+            XCTAssertThrowsError(try SaveWorkflowService.validateBaseDirectory(absent, diagnostic: { failures.append($0) }))
+            let missing = try XCTUnwrap(failures.last)
+            XCTAssertEqual(missing.operation, "openat")
+            XCTAssertEqual(missing.component, "missing-diagnostic-folder")
+            XCTAssertEqual(missing.errorNumber, ENOENT)
+            XCTAssertNil(missing.observedMode)
+            let alias = directory.appendingPathComponent("diagnostic-alias")
+            try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: directory)
+            XCTAssertThrowsError(try SaveWorkflowService.validateBaseDirectory(alias, diagnostic: { failures.append($0) }))
+            let linked = try XCTUnwrap(failures.last)
+            XCTAssertEqual(linked.operation, "openat")
+            XCTAssertEqual(linked.component, "diagnostic-alias")
+            XCTAssertEqual(try XCTUnwrap(linked.observedMode) & UInt32(S_IFMT), UInt32(S_IFLNK))
+            XCTAssertNotEqual(linked.errorNumber, 0)
+            XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path), ["diagnostic-alias"])
+        }
+    }
+    func testActualPublicationReportsDirectoryErrnoWithoutChangingPolicy() throws {
+        try withDirectory { directory in
+            let alias = directory.appendingPathComponent("publish-alias")
+            try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: directory)
+            var failures: [SaveWorkflowDirectoryDiagnostic] = []
+            let hooks = SaveWorkflowTestHooks(directoryFailure: { failures.append($0) })
+            let settings = SaveWorkflowSettings(baseURL: alias, filenameTemplate: "capture")
+            XCTAssertThrowsError(try SaveWorkflowService.publish(makeArtifact(), settings: settings, context: context, testHooks: hooks))
+            let failure = try XCTUnwrap(failures.last)
+            XCTAssertEqual(failure.operation, "openat")
+            XCTAssertEqual(failure.component, "publish-alias")
+            XCTAssertEqual(try XCTUnwrap(failure.observedMode) & UInt32(S_IFMT), UInt32(S_IFLNK))
+            XCTAssertNotEqual(failure.errorNumber, 0)
+            XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path), ["publish-alias"])
+        }
+    }
+    func testExplicitApprovalRetainsPhysicalSpellingIfFoundationAbbreviatesPrivate() throws {
+        try withDirectory { directory in
+            let selected = directory.appendingPathComponent("picker-alias")
+            let actual = directory.appendingPathComponent("actual-folder")
+            try FileManager.default.createDirectory(at: actual, withIntermediateDirectories: false)
+            try FileManager.default.createSymbolicLink(at: selected, withDestinationURL: actual)
+            let approved = try SaveWorkflowService.resolveApprovedDirectory(selected)
+            XCTAssertEqual(approved.path, actual.path)
+            try SaveWorkflowService.validateBaseDirectory(approved)
+            let abbreviated = approved.resolvingSymlinksInPath()
+            // Apple documents this NSURL behavior; Swift/OS implementations may
+            // differ. In either case the approved URL retains POSIX's exact spelling.
+            if approved.path.hasPrefix("/private/"), abbreviated.path != approved.path {
+                XCTAssertEqual("/private" + abbreviated.path, approved.path)
+                XCTAssertThrowsError(try SaveWorkflowService.validateBaseDirectory(abbreviated))
+            }
+            let saved = try SaveWorkflowService.publish(makeArtifact(), settings: SaveWorkflowSettings(baseURL: approved), context: context)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: saved.savedURL.path))
+        }
+    }
+    func testSymlinkSubstitutionAfterExplicitApprovalStillFailsClosed() throws {
+        try withDirectory { directory in
+            let selected = directory.appendingPathComponent("approved"), moved = directory.appendingPathComponent("original-folder")
+            let outside = directory.appendingPathComponent("outside")
+            try FileManager.default.createDirectory(at: selected, withIntermediateDirectories: false)
+            try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: false)
+            let approved = try SaveWorkflowService.resolveApprovedDirectory(selected)
+            try FileManager.default.moveItem(at: selected, to: moved)
+            try FileManager.default.createSymbolicLink(at: selected, withDestinationURL: outside)
+            XCTAssertThrowsError(try SaveWorkflowService.publish(makeArtifact(), settings: SaveWorkflowSettings(baseURL: approved), context: context))
+            XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: outside.path), [])
+            XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: moved.path), [])
+        }
+    }
     func testSymlinkBaseAndSubfolderNeverEscapeApprovedRoot() throws {
         try withDirectory { directory in
             let real = directory.appendingPathComponent("real"), outside = directory.appendingPathComponent("outside")
@@ -284,8 +357,16 @@ final class SaveWorkflowServiceTests: XCTestCase {
         return try ImageExportService.encode(snapshot: ImageExportSnapshot(image: image, sourceURL: sourceURL), options: ImageExportOptions(format: format))
     }
     private func withDirectory(_ body: (URL) throws -> Void) throws {
-        let directory = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("PicShot-save-test-\(UUID().uuidString)")
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PicShot-save-test-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
-        defer { try? FileManager.default.removeItem(at: directory) }; try body(directory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // NSURL resolution may abbreviate /private/var back to the /var symlink.
+        // Resolve the already-created fixture using POSIX and retain the physical
+        // spelling; production's component-by-component no-follow policy stays intact.
+        let resolved = try XCTUnwrap(Darwin.realpath(directory.path, nil))
+        defer { Darwin.free(resolved) }
+        let physical = URL(fileURLWithPath: String(cString: resolved), isDirectory: true)
+        try SaveWorkflowService.validateBaseDirectory(physical)
+        try body(physical)
     }
 }
