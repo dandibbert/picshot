@@ -13,6 +13,7 @@ import Darwin
     let capture=CaptureService()
     let recorder=RecordingService()
     var mainWindow:NSWindow!
+    var recordingController:RecordingPanelController?
     var status:NSStatusItem?
     var controllers:[NSWindowController]=[]
     var pins:[PinController]=[]
@@ -32,6 +33,13 @@ import Darwin
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender:NSApplication)->Bool {false}
     func applicationWillTerminate(_ notification:Notification){hotKeys?.invalidate()}
+    func applicationShouldTerminate(_ sender:NSApplication)->NSApplication.TerminateReply {
+        guard recorder.isRecording || recorder.isStopping else{return .terminateNow}
+        let alert=NSAlert();alert.messageText="停止录屏并退出？";alert.informativeText="录屏会先保存到电影/PicShot，再退出。";alert.addButton(withTitle:"保存并退出");alert.addButton(withTitle:"继续录制")
+        guard alert.runModal() == .alertFirstButtonReturn else{return .terminateCancel}
+        Task {do{_ = try await recorder.stop();sender.reply(toApplicationShouldTerminate:true)}catch{showError(error);sender.reply(toApplicationShouldTerminate:false)}}
+        return .terminateLater
+    }
     func application(_ sender:NSApplication,openFile filename:String)->Bool{importURL(URL(fileURLWithPath:filename));return true}
     func setupMenu(){
         let menu=NSMenu();NSApp.mainMenu=menu
@@ -59,6 +67,7 @@ import Darwin
         guard !busy else{return};busy=true;mainWindow.orderOut(nil)
         Task {defer{busy=false};do{try await Task.sleep(nanoseconds:180_000_000);let image=try await capture.capture(mode:mode);try history.add(image);openEditor(image)}catch CaptureError.cancelled{}catch is CancellationError{}catch{showMain();showError(error)}}
     }
+    func startDisplayCapture(_ id:CGDirectDisplayID){guard !busy else{return};busy=true;mainWindow.orderOut(nil);Task{defer{busy=false};do{try await Task.sleep(nanoseconds:180_000_000);let img=try await capture.captureDisplay(displayID:id);try history.add(img);openEditor(img)}catch{showMain();showError(error)}}}
     func openEditor(_ image:CGImage){
         let c=ImageEditorController(image:image,onSave:{[weak self] img in do{try self?.history.add(img,title:"编辑")}catch{showError(error)}},onPin:{[weak self] img in self?.pin(img)},onOCR:{[weak self] img in self?.recognize(img)});retain(c);c.showWindow(nil);NSApp.activate(ignoringOtherApps:true)
     }
@@ -85,7 +94,7 @@ import Darwin
         if let image=CGImage.read(url:url){do{try history.add(image,title:url.deletingPathExtension().lastPathComponent);openEditor(image)}catch{showError(error)}}else{showError(PicShotError.message("无法读取图片。支持 PNG、JPEG、GIF、TIFF 等系统可解码格式；动态图片编辑当前首帧"))}
     }
     @objc func scroll(){let c=ScrollCaptureController{[weak self] image in do{try self?.history.add(image,title:"长截图");self?.openEditor(image)}catch{showError(error)}};retain(c);c.showWindow(nil)}
-    @objc func record(){let c=RecordingPanelController(service:recorder,capture:capture);retain(c);c.showWindow(nil);NSApp.activate(ignoringOtherApps:true)}
+    @objc func record(){if recordingController == nil{recordingController=RecordingPanelController(service:recorder,capture:capture)};recordingController?.showWindow(nil);NSApp.activate(ignoringOtherApps:true)}
     @objc func settings(){let c=SettingsController(onChange:{[weak self] in self?.refreshHotkeys();do{try self?.history.prune()}catch{showError(error)}});retain(c);c.showWindow(nil)}
     func refreshHotkeys(){let bindings=(UserDefaults.standard.data(forKey:"hotkeys").flatMap{try? JSONDecoder().decode([HotKeyBinding].self,from:$0)}) ?? HotKeyBinding.defaults;hotKeys?.register(bindings);if let failures=hotKeys?.failures,!failures.isEmpty{NSLog("Some shortcuts are unavailable: %@",failures.description)}}
     @objc func about(){let a=NSAlert();a.messageText="PicShot 0.1";a.informativeText="原生截图、标注与贴图工具\n图片与文字识别在本机处理\n\n当前为开发预览版。完整 PixPin 功能对照见仓库 docs/PARITY.md。\nmacOS 14+ · 未经 Apple 公证";a.runModal()}
@@ -98,7 +107,7 @@ struct LibraryView:View {
         VStack(spacing:0){
             HStack(spacing:8){
                 Button {app.region()} label:{Label("截图",systemImage:"viewfinder")}.keyboardShortcut("n").buttonStyle(.borderedProminent)
-                Menu {Button("窗口截图"){app.windowCapture()};Button("当前屏幕"){app.full()};ForEach(Array(NSScreen.screens.enumerated()),id:\.offset){ index,screen in Button("屏幕 \(index+1) · \(screen.localizedName)"){Task{do{let img=try await app.capture.captureDisplay(displayID:screen.displayID!);try app.history.add(img);app.openEditor(img)}catch{showError(error)}}}}} label:{Image(systemName:"chevron.down")}.frame(width:30)
+                Menu {Button("窗口截图"){app.windowCapture()};Button("当前屏幕"){app.full()};ForEach(Array(NSScreen.screens.enumerated()),id:\.offset){ index,screen in Button("屏幕 \(index+1) · \(screen.localizedName)"){if let id=screen.displayID{app.startDisplayCapture(id)}}}} label:{Image(systemName:"chevron.down")}.frame(width:30)
                 Button {app.scroll()} label:{Label("长截图",systemImage:"rectangle.expand.vertical")}
                 Button {app.record()} label:{Label("录屏",systemImage:"record.circle")}
                 Divider().frame(height:20)
@@ -110,7 +119,7 @@ struct LibraryView:View {
             Divider()
             HStack {Image(systemName:"clock").foregroundStyle(.secondary);Text("历史记录").fontWeight(.medium);Text("\(store.records.count)").foregroundStyle(.secondary);Spacer();Image(systemName:"magnifyingglass").foregroundStyle(.secondary);TextField("搜索名称或已识别文字",text:$store.query).textFieldStyle(.roundedBorder).frame(width:230)}.padding(.horizontal,18).padding(.vertical,12)
             if store.filtered.isEmpty {
-                VStack(spacing:12){Image(systemName:"viewfinder").font(.system(size:42,weight:.ultraLight)).foregroundStyle(.secondary);Text(store.query.isEmpty ? "截取一点，留下重点" : "没有匹配的截图").font(.title3);Text("⌘⇧3 区域截图 · Esc 取消\n截图后标注、复制或贴在屏幕上").font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)}.frame(maxWidth:.infinity,maxHeight:.infinity)
+                VStack(spacing:12){Image(systemName:"viewfinder").font(.system(size:42,weight:.ultraLight)).foregroundStyle(.secondary);Text(store.query.isEmpty ? "截取一点，留下重点" : "没有匹配的截图").font(.title3);Text("⌃⌘A 区域截图 · Esc 取消\n截图后标注、复制或贴在屏幕上").font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)}.frame(maxWidth:.infinity,maxHeight:.infinity)
             } else {
                 ScrollView {LazyVGrid(columns:[GridItem(.adaptive(minimum:170,maximum:250),spacing:14)],spacing:14){ForEach(store.filtered){record in
                     VStack(alignment:.leading,spacing:6){

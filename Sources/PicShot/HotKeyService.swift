@@ -4,7 +4,7 @@ import Carbon
 struct HotKeyBinding: Codable, Equatable {
     var keyCode: UInt32
     var modifiers: UInt32
-    static let defaults = [HotKeyBinding(keyCode: 20,modifiers: UInt32(cmdKey | shiftKey)), HotKeyBinding(keyCode: 23,modifiers: UInt32(cmdKey | shiftKey)), HotKeyBinding(keyCode: 21,modifiers: UInt32(cmdKey | shiftKey | optionKey))]
+    static let defaults = [HotKeyBinding(keyCode: 0,modifiers: UInt32(cmdKey | controlKey)), HotKeyBinding(keyCode: 35,modifiers: UInt32(cmdKey | controlKey)), HotKeyBinding(keyCode: 4,modifiers: UInt32(cmdKey | controlKey))]
 }
 @MainActor final class HotKeyService {
     private var refs: [EventHotKeyRef] = []

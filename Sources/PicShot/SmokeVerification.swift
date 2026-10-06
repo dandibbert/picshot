@@ -10,6 +10,7 @@ import Darwin
             let sample=ImageEditorRenderer.makeSampleImage()
             let record=try history.add(sample,title:"示例截图")
             try history.updateText("PicShot native screenshot fixture",id:record.id)
+            RunLoop.current.run(until:Date().addingTimeInterval(0.2))
             mainWindow.displayIfNeeded()
             try snapshot(mainWindow,to:directory.appendingPathComponent("history.png"))
             let editor=ImageEditorController(image:sample,onSave:{_ in},onPin:{_ in},onOCR:{_ in});editor.showWindow(nil)

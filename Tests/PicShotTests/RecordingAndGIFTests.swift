@@ -55,6 +55,46 @@ final class RecordingAndGIFTests: XCTestCase {
         XCTAssertNil(recorder.outputURL)
     }
 
+    func testRecordingPublicationOwnsOnlyItsStagingDirectory() throws {
+        let root = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let existing = root.appendingPathComponent("existing.mp4")
+        let existingData = Data("existing user recording".utf8)
+        try existingData.write(to: existing)
+        let staging = try RecordingFileStorage.makeStagingDirectory(in: root)
+        let source = staging.appendingPathComponent("recording.mp4")
+        let data = Data("new finalized recording".utf8)
+        try data.write(to: source)
+        let saved = try RecordingFileStorage.publish(from: source, in: root)
+        XCTAssertEqual(saved.deletingLastPathComponent().standardizedFileURL.path, root.standardizedFileURL.path)
+        XCTAssertEqual(saved.pathExtension, "mp4")
+        XCTAssertEqual(try Data(contentsOf: saved), data)
+        XCTAssertEqual(try Data(contentsOf: existing), existingData)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staging.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
+    }
+
+    func testRecordingPublicationRejectsUnownedParentWithoutDeletingAnything() throws {
+        let root = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("keep.mp4")
+        let data = Data("user movie".utf8)
+        try data.write(to: source)
+        XCTAssertThrowsError(try RecordingFileStorage.publish(from: source, in: root))
+        XCTAssertEqual(try Data(contentsOf: source), data)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.path))
+    }
+
+    func testRecordingPublicationFailurePreservesStagingForRecovery() throws {
+        let root = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let staging = try RecordingFileStorage.makeStagingDirectory(in: root)
+        let existing = staging.appendingPathComponent("recording.mp4")
+        try Data("recoverable recording".utf8).write(to: existing)
+        XCTAssertThrowsError(try RecordingFileStorage.publish(from: staging.appendingPathComponent("missing.mp4"), in: root))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: existing.path))
+    }
+
     func testGIFFrameLimitPreservesDuration() throws {
         let plan = try GIFFramePlan(duration: 5.23, options: GIFExportOptions(frameRate: 30, maximumFrames: 7))
         XCTAssertEqual(plan.frameCount, 7)

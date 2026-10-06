@@ -33,7 +33,7 @@ cat > "$staging/安装说明.txt" <<'TEXT'
 此包使用 ad-hoc 签名，未经 Developer ID 签名和 Apple 公证。
 首次打开若被阻止，请确认来源后在系统设置 → 隐私与安全性中允许打开。
 点击截图或录屏后，按系统提示授予屏幕录制权限。应用不会自动上传截图。
-快捷键：⌘⇧3 区域截图；⌘⇧5 剪贴板贴图；⌘⇧⌥4 历史记录。可在设置修改。
+快捷键：⌃⌘A 区域截图；⌃⌘P 剪贴板贴图；⌃⌘H 历史记录。可在设置修改。
 录屏初版：MP4/GIF；最长 10 分钟，最多 1 GB；GIF 最多 30 秒。
 TEXT
 hdiutil create -volname PicShot -srcfolder "$staging" -format UDZO -ov "dist/$base.dmg"

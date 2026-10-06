@@ -28,9 +28,13 @@ jobs:
           set -o pipefail
           swift test 2>&1 | tee dist/test.log
       - name: Package signed app, ZIP and DMG
-        run: bash scripts/package.sh 2>&1 | tee dist/package.log
+        run: |
+          set -o pipefail
+          bash scripts/package.sh 2>&1 | tee dist/package.log
       - name: Install and launch both formats, render native UI, measure repeated cycles
-        run: bash scripts/smoke.sh 2>&1 | tee dist/smoke.log
+        run: |
+          set -o pipefail
+          bash scripts/smoke.sh 2>&1 | tee dist/smoke.log
       - name: Upload verification evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

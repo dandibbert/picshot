@@ -31,7 +31,7 @@ struct ImageAnnotation {
     var id = UUID()
     var tool: ImageEditorTool
     var points: [CGPoint]
-    var color: CGColor = CGColor(red: 1, green: 0.23, blue: 0.24, alpha: 1)
+    var color: CGColor = CGColor(srgbRed: 1, green: 0.23, blue: 0.24, alpha: 1)
     var lineWidth: CGFloat = 4
     var text = ""
     var number = 1
@@ -64,11 +64,19 @@ struct ImageAnnotation {
 
 /// Produces only raster pixels. Exports never contain editable annotations or source-image layers.
 enum ImageEditorRenderer {
+    static let maximumRasterPixels = 100_000_000
     private static let filterContext = CIContext(options: [.cacheIntermediates: false])
+
+    static func allowsRasterSize(width: Int, height: Int) -> Bool {
+        guard width > 0, height > 0, width <= Int.max / 4 else { return false }
+        let product = width.multipliedReportingOverflow(by: height)
+        return !product.overflow && product.partialValue <= maximumRasterPixels
+    }
+
     private static func makeContext(width: Int, height: Int) -> CGContext? {
-        guard width > 0, height > 0 else { return nil }
+        guard allowsRasterSize(width: width, height: height) else { return nil }
         return CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
-                         space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue)
+                         space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue)
     }
 
     static func render(image: CGImage, annotations: [ImageAnnotation]) -> CGImage? {
@@ -153,21 +161,56 @@ enum ImageEditorRenderer {
 
     static func crop(image: CGImage, to requested: CGRect) -> CGImage? {
         let rect = requested.standardized.integral.intersection(CGRect(x: 0, y: 0, width: CGFloat(image.width), height: CGFloat(image.height)))
-        guard rect.width >= 1, rect.height >= 1 else { return nil }
-        return image.cropping(to: CGRect(x: rect.minX, y: CGFloat(image.height) - rect.maxY, width: rect.width, height: rect.height))
+        guard rect.width >= 1, rect.height >= 1,
+              let context = makeContext(width: Int(rect.width), height: Int(rect.height)) else { return nil }
+        // A CGImage subimage may retain the entire original backing store. Materialize
+        // the crop so history accounting reflects the bytes actually kept alive.
+        context.translateBy(x: -rect.minX, y: -rect.minY)
+        context.draw(image, in: CGRect(x: 0, y: 0, width: CGFloat(image.width), height: CGFloat(image.height)))
+        return context.makeImage()
     }
 
     static func makeSampleImage() -> CGImage {
         let context = makeContext(width: 960, height: 600)!
-        context.setFillColor(CGColor(red: 0.09, green: 0.12, blue: 0.20, alpha: 1))
+        context.setFillColor(CGColor(srgbRed: 0.09, green: 0.12, blue: 0.20, alpha: 1))
         context.fill(CGRect(x: 0, y: 0, width: 960, height: 600))
-        context.setFillColor(CGColor(red: 0.20, green: 0.72, blue: 0.95, alpha: 1))
+        context.setFillColor(CGColor(srgbRed: 0.20, green: 0.72, blue: 0.95, alpha: 1))
         context.fill(CGRect(x: 64, y: 92, width: 360, height: 300))
-        context.setFillColor(CGColor(red: 1, green: 0.67, blue: 0.25, alpha: 1))
+        context.setFillColor(CGColor(srgbRed: 1, green: 0.67, blue: 0.25, alpha: 1))
         context.fillEllipse(in: CGRect(x: 550, y: 180, width: 250, height: 250))
         drawText("PicShot", point: CGPoint(x: 64, y: 478), size: 54, color: CGColor(gray: 1, alpha: 1), context: context, bold: true)
         drawText("Capture. Annotate. Share.", point: CGPoint(x: 64, y: 432), size: 24, color: CGColor(gray: 0.85, alpha: 1), context: context)
         return context.makeImage()!
+    }
+}
+
+/// Estimates retained raster storage once per image identity, rather than once
+/// per annotation snapshot. The newest state is retained even if it alone is large.
+enum ImageEditorHistoryBudget {
+    static let maximumBytes = 256 * 1024 * 1024
+    static let maximumSnapshots = 100
+
+    static func retainedSuffixStart(images: [CGImage], maximumBytes: Int = ImageEditorHistoryBudget.maximumBytes,
+                                    maximumSnapshots: Int = ImageEditorHistoryBudget.maximumSnapshots) -> Int {
+        let budget = max(0, maximumBytes)
+        var identities = Set<ObjectIdentifier>()
+        var retainedBytes = 0
+        var start = images.count
+        for index in images.indices.reversed() {
+            let image = images[index]
+            let identity = ObjectIdentifier(image)
+            let product = image.bytesPerRow.multipliedReportingOverflow(by: image.height)
+            let bytes = identities.contains(identity) ? 0 : (product.overflow ? Int.max : product.partialValue)
+            if start < images.count {
+                if images.count - index > max(1, maximumSnapshots) { break }
+                if bytes > max(0, budget - retainedBytes) { break }
+            }
+            identities.insert(identity)
+            let sum = retainedBytes.addingReportingOverflow(bytes)
+            retainedBytes = sum.overflow ? Int.max : sum.partialValue
+            start = index
+        }
+        return start
     }
 }
 
@@ -433,8 +476,22 @@ final class ImageEditorController: NSWindowController {
     private var snapshot: Snapshot { Snapshot(image: canvas.image, annotations: canvas.annotations) }
     private func recordChange() {
         undoStates.append(snapshot)
-        if undoStates.count > 100 { undoStates.removeFirst() }
-        redoStates.removeAll(); updateStatus()
+        redoStates.removeAll()
+        trimHistory(preferUndo: true); updateStatus()
+    }
+    private func trimHistory(preferUndo: Bool) {
+        // Oldest entries are first in each stack. Protect the nearest state in
+        // the direction the user just created, preserving immediate undo/redo.
+        let first = preferUndo ? redoStates : undoStates
+        let second = preferUndo ? undoStates : redoStates
+        let count = ImageEditorHistoryBudget.retainedSuffixStart(images: (first + second).map(\.image))
+        let firstCount = min(count, first.count)
+        let secondCount = count - firstCount
+        if preferUndo {
+            redoStates.removeFirst(firstCount); undoStates.removeFirst(secondCount)
+        } else {
+            undoStates.removeFirst(firstCount); redoStates.removeFirst(secondCount)
+        }
     }
     private func restore(_ state: Snapshot) { canvas.setContent(image: state.image, annotations: state.annotations); updateStatus() }
     private func updateStatus() {
@@ -453,11 +510,11 @@ final class ImageEditorController: NSWindowController {
     @objc private func deleteAnnotation() { canvas.deleteSelection() }
     @objc private func undoEdit() {
         guard let state = undoStates.popLast() else { return }
-        redoStates.append(snapshot); restore(state)
+        redoStates.append(snapshot); trimHistory(preferUndo: false); restore(state)
     }
     @objc private func redoEdit() {
         guard let state = redoStates.popLast() else { return }
-        undoStates.append(snapshot); restore(state)
+        undoStates.append(snapshot); trimHistory(preferUndo: true); restore(state)
     }
     @objc private func applyCrop() {
         guard let rect = canvas.cropRect, let flattened = canvas.flattened(), let cropped = ImageEditorRenderer.crop(image: flattened, to: rect) else { return }

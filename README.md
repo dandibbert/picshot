@@ -17,7 +17,7 @@ The `dist/` folder contains a `.app`, drag-to-Applications DMG, ZIP, checksums, 
 ## Use
 
 - Menu bar → region/window/display capture, scrolling capture, recording, paste pin
-- Default configurable shortcuts: ⌘⇧3 region capture, ⌘⇧5 clipboard pin, ⌘⇧⌥4 history
+- Default configurable shortcuts: ⌃⌘A region capture, ⌃⌘P clipboard pin, ⌃⌘H history
 - Double-click a history item to annotate; right-click to pin, copy, OCR, star or trash
 - The editor provides real flattened PNG/JPEG/TIFF/PDF outputs, solid redaction, blur and pixelation. Blur/pixelation are cosmetic; use opaque redaction for secrets
 - Pins float over apps; the menu restores click-through pins

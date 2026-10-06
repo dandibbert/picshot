@@ -47,7 +47,8 @@ final class RecordingService: ObservableObject {
     @Published private(set) var isStopping = false
     @Published private(set) var elapsed: TimeInterval = 0
     @Published private(set) var error: String?
-    /// Also set on an automatic duration/size stop. The caller owns the returned file.
+    /// Durable file in Movies/PicShot; also set after an automatic duration/size stop.
+    /// Once finalized, a recording belongs to the user and cancel() never removes it.
     @Published private(set) var outputURL: URL?
 
     private var startingTask: Task<Void, Error>?
@@ -107,6 +108,7 @@ final class RecordingService: ObservableObject {
         }
         isRecording = false
         isStopping = true
+        elapsed = max(elapsed, ProcessInfo.processInfo.systemUptime - beganAt)
         timerTask?.cancel()
         timerTask = nil
         let task = Task { try await self.finish(stream: stream, sink: sink, id: id) }
@@ -128,10 +130,8 @@ final class RecordingService: ObservableObject {
         } else if stream != nil {
             _ = try? await stop()
         }
-        if let outputURL {
-            try? FileManager.default.removeItem(at: outputURL.deletingLastPathComponent())
-            self.outputURL = nil
-        }
+        // A successfully published output belongs to the user. Cancellation only
+        // discards the current unfinished session; it never removes saved movies.
     }
 
     private func begin(id: UUID, displayID: CGDirectDisplayID, region: CGRect?, options: RecordingOptions) async throws {
@@ -243,7 +243,15 @@ final class RecordingService: ObservableObject {
             }
             var url = try await sink.finish()
             if options.capturesSystemAudio && options.capturesMicrophone {
-                url = try await Self.mixAudio(in: url, maximumFileSize: options.maximumFileSize)
+                do { url = try await Self.mixAudio(in: url, maximumFileSize: options.maximumFileSize) }
+                catch {
+                    if Task.isCancelled || cancelRequested { throw CancellationError() }
+                    // Preserve the successful recording even if post-processing
+                    // fails. The original MP4 retains both separate audio tracks.
+                    self.error = "Recording saved with separate audio tracks; audio mixing failed: \(error.localizedDescription)"
+                    let partialMix = url.deletingLastPathComponent().appendingPathComponent("recording-mixed.mp4")
+                    try? FileManager.default.removeItem(at: partialMix)
+                }
             }
             if cancelRequested || Task.isCancelled {
                 await sink.discard()
@@ -251,8 +259,17 @@ final class RecordingService: ObservableObject {
             }
             let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
             guard size <= options.maximumFileSize else { throw RecordingError.sizeLimit }
-            outputURL = url
-            return url
+            do {
+                let savedURL = try RecordingFileStorage.publish(from: url)
+                outputURL = savedURL
+                return savedURL
+            } catch {
+                // Staging also lives in Movies/PicShot, so a rename failure must
+                // never delete the completed recording. Keep a recoverable file.
+                self.error = "Recording finished but could not be renamed. Your recording is safe at \(url.path). \(error.localizedDescription)"
+                outputURL = url
+                return url
+            }
         } catch {
             await sink.discard()
             if !(error is CancellationError) { self.error = error.localizedDescription }
@@ -315,6 +332,45 @@ final class RecordingService: ObservableObject {
     }
 }
 
+
+/// Stage on the output volume so promotion is a rename, never a partially visible
+/// cross-volume copy. Each session owns only its unique hidden staging directory.
+enum RecordingFileStorage {
+    static func outputDirectory() throws -> URL {
+        guard let movies = FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask).first else {
+            throw RecordingError.failed("The Movies folder could not be found.")
+        }
+        let directory = movies.appendingPathComponent("PicShot", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    static func makeStagingDirectory(in outputDirectory: URL? = nil) throws -> URL {
+        let root = try outputDirectory ?? Self.outputDirectory()
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let staging = root.appendingPathComponent(".recording-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: false)
+        return staging
+    }
+
+    static func publish(from source: URL, in outputDirectory: URL? = nil) throws -> URL {
+        let root = try outputDirectory ?? Self.outputDirectory()
+        let staging = source.deletingLastPathComponent()
+        guard staging.lastPathComponent.hasPrefix(".recording-"),
+              staging.deletingLastPathComponent().standardizedFileURL.path == root.standardizedFileURL.path else {
+            throw RecordingError.failed("The recording is outside its owned staging directory.")
+        }
+        let date = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+        let name = "PicShot-\(date)-\(UUID().uuidString.prefix(8)).mp4"
+        let destination = root.appendingPathComponent(name)
+        // The destination is a fresh name on the same volume. Existing user files
+        // are never overwritten; failed moves preserve the original for recovery.
+        try FileManager.default.moveItem(at: source, to: destination)
+        try? FileManager.default.removeItem(at: staging)
+        return destination
+    }
+}
+
 /// All writer, input, sample, and limit state is confined to `queue` after init.
 /// ScreenCaptureKit invokes sample callbacks on that same serial queue.
 private final class RecordingWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
@@ -340,13 +396,12 @@ private final class RecordingWriter: NSObject, SCStreamOutput, SCStreamDelegate,
     init(size: CGSize, options: RecordingOptions, requestStop: @escaping @Sendable (String?) -> Void) throws {
         self.options = options
         self.requestStop = requestStop
-        let recordingDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("PicShot-Recording-\(UUID().uuidString)", isDirectory: true)
+        let recordingDirectory = try RecordingFileStorage.makeStagingDirectory()
         directory = recordingDirectory
         url = recordingDirectory.appendingPathComponent("recording.mp4")
-        try FileManager.default.createDirectory(at: recordingDirectory, withIntermediateDirectories: true)
         do {
             writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
-            let bitRate = min(16_000_000, max(1_000_000, Int(size.width * size.height * Double(options.frameRate) * 0.08)))
+            let bitRate = min(16_000_000, max(1_000_000, Int(size.width * size.height * CGFloat(options.frameRate) * 0.08)))
             video = AVAssetWriterInput(mediaType: .video, outputSettings: [
                 AVVideoCodecKey: AVVideoCodecType.h264,
                 AVVideoWidthKey: Int(size.width), AVVideoHeightKey: Int(size.height),

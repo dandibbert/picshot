@@ -2,9 +2,11 @@ import AppKit
 import SwiftUI
 import ScreenCaptureKit
 
-@MainActor final class RecordingPanelController:NSWindowController {
-    init(service:RecordingService,capture:CaptureService){let w=NSWindow(contentRect:NSRect(x:0,y:0,width:420,height:310),styleMask:[.titled,.closable],backing:.buffered,defer:false);super.init(window:w);w.title="录屏";w.isReleasedWhenClosed=false;w.level = .floating;w.center();w.contentView=NSHostingView(rootView:RecordingPanel(service:service,capture:capture))}
+@MainActor final class RecordingPanelController:NSWindowController,NSWindowDelegate {
+    private let service:RecordingService
+    init(service:RecordingService,capture:CaptureService){self.service=service;let w=NSWindow(contentRect:NSRect(x:0,y:0,width:420,height:310),styleMask:[.titled,.closable],backing:.buffered,defer:false);super.init(window:w);w.delegate=self;w.title="录屏";w.isReleasedWhenClosed=false;w.level = .floating;w.center();w.contentView=NSHostingView(rootView:RecordingPanel(service:service,capture:capture))}
     required init?(coder:NSCoder){fatalError()}
+    func windowShouldClose(_ sender:NSWindow)->Bool {if service.isRecording || service.isStopping{let a=NSAlert();a.messageText="录屏仍在进行";a.informativeText="请先点击「停止并保存 MP4」，完成后再关闭窗口。";a.runModal();return false};return true}
 }
 struct RecordingPanel:View {
     @ObservedObject var service:RecordingService
@@ -37,12 +39,6 @@ struct RecordingPanel:View {
             Text("开发预览：暂不含暂停、摄像头画中画与录制中标注").font(.system(size:10)).foregroundStyle(.secondary)
         }.padding(20).frame(width:420,height:310).onChange(of:service.outputURL){ _,url in if let url {acceptOutput(url)} }.task {do{displays=try await service.availableDisplays();if !displays.contains(where:{$0.displayID==selected}){selected=displays.first?.displayID ?? CGMainDisplayID()}}catch{message=error.localizedDescription}}
     }
-    func acceptOutput(_ source:URL){
-        guard lastSource != source else{return}
-        do {let folder=FileManager.default.urls(for:.moviesDirectory,in:.userDomainMask)[0].appendingPathComponent("PicShot",isDirectory:true);try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true)
-            let name="PicShot-"+ISO8601DateFormatter().string(from:Date()).replacingOccurrences(of:":",with:"-")+"-"+UUID().uuidString.prefix(6)+".mp4"
-            let target=folder.appendingPathComponent(name);try FileManager.default.copyItem(at:source,to:target);output=target;lastSource=source;message="MP4 已保存在电影/PicShot"
-        }catch{output=source;message="录屏已完成但无法移入电影目录："+error.localizedDescription}
-    }
-    func exportGIF(_ source:URL){let p=NSSavePanel();p.allowedContentTypes=[.gif];p.nameFieldStringValue="录屏.gif";guard p.runModal() == .OK,let target=p.url else{return};working=true;message="正在导出最多 30 秒 GIF…";Task{defer{working=false};do{_ = try await GIFExporter.export(sourceURL:source,destinationURL:target);message="GIF 已导出"}catch{message=error.localizedDescription}}}
+    func acceptOutput(_ source:URL){guard lastSource != source else{return};lastSource=source;output=source;message="MP4 已保存在电影/PicShot"}
+    func exportGIF(_ source:URL){let p=NSSavePanel();p.allowedContentTypes=[.gif];p.nameFieldStringValue="录屏.gif";guard p.runModal() == .OK,let target=p.url else{return};working=true;message="正在导出最多 30 秒 GIF…";Task{defer{working=false};do{let temp=try await GIFExporter.export(sourceURL:source);defer{try? FileManager.default.removeItem(at:temp.deletingLastPathComponent())};if FileManager.default.fileExists(atPath:target.path){_ = try FileManager.default.replaceItemAt(target,withItemAt:temp)}else{try FileManager.default.moveItem(at:temp,to:target)};message="GIF 已导出"}catch{message=error.localizedDescription}}}
 }
