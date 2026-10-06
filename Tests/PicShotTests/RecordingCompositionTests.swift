@@ -6,7 +6,7 @@ import ScreenCaptureKit
 @testable import PicShot
 
 final class RecordingCompositionTests: XCTestCase {
-    func testCompositedSRGBPixelsDeclareTheirPrimariesTransferAndMatrix() throws {
+    func testCompositedRec709PixelsDeclareTheirPrimariesTransferAndMatrix() throws {
         let state = RecordingCompositionState(), size = CGSize(width: 160, height: 120)
         state.setCanvasSize(size)
         let green = NSColor(srgbRed: 0, green: 1, blue: 0, alpha: 1)
@@ -15,12 +15,80 @@ final class RecordingCompositionTests: XCTestCase {
         let compositor = try RecordingFrameCompositor(size: size, state: state)
         let sample = try XCTUnwrap(compositor.composite(RecordingOverlayFixtures.sample(at: 100)))
         let format = try XCTUnwrap(CMSampleBufferGetFormatDescription(sample))
-        RecordingOverlayFixtures.assertSRGB(format)
+        RecordingOverlayFixtures.assertRec709(format)
         let rgb = try RecordingOverlayFixtures.color(sample, x: 70, y: 60)
         XCTAssertLessThan(rgb.0, 10, "Pre-encode sRGB green: \(rgb)")
         XCTAssertGreaterThan(rgb.1, 245, "Pre-encode sRGB green: \(rgb)")
         XCTAssertLessThan(rgb.2, 10, "Pre-encode sRGB green: \(rgb)")
         print("Recording pre-encode RGB=\(rgb); \(RecordingOverlayFixtures.colorMetadata(format))")
+    }
+
+    /// Midtones distinguish a genuine sRGB -> Rec.709 conversion from merely
+    /// changing a transfer-function label. Exercise screen, camera and Quartz
+    /// annotation colors, then the no-overlay source pass-through in one movie.
+    func testSRGBGrayAndColorRampsRoundTripThroughRec709CompositionAndH264() async throws {
+        let colors: [[Int]] = [8, 24, 48, 80, 128, 176, 224].map { [$0, $0, $0] } +
+            [[48, 96, 176], [176, 80, 48], [64, 176, 112]]
+        let width = colors.count * 32, height = 192
+        let source = try RecordingOverlayFixtures.rampPixels(colors: colors, height: height)
+        let camera = try RecordingOverlayFixtures.rampPixels(colors: colors, height: 64)
+        let state = RecordingCompositionState(), token = UUID(), size = CGSize(width: width, height: height)
+        state.setCanvasSize(size); state.setCameraSession(token); state.receiveCamera(camera, token: token)
+        state.setLayout(RecordingCameraLayout(frame: CGRect(x: 0, y: 1.0 / 3, width: 1, height: 1.0 / 3), mirrored: false))
+        let marks = colors.enumerated().map { index, rgb in
+            RecordingOverlayFixtures.rectangle(CGRect(x: index * 32, y: 128, width: 32, height: 64),
+                color: NSColor(srgbRed: CGFloat(rgb[0]) / 255, green: CGFloat(rgb[1]) / 255,
+                               blue: CGFloat(rgb[2]) / 255, alpha: 1))
+        }
+        XCTAssertTrue(state.setAnnotations(marks))
+        let compositor = try RecordingFrameCompositor(size: size, state: state)
+        let initial = try RecordingOverlayFixtures.sample(at: 100, pixels: source)
+        let preEncoded = try XCTUnwrap(compositor.composite(initial))
+        RecordingOverlayFixtures.assertRec709(try XCTUnwrap(CMSampleBufferGetFormatDescription(preEncoded)))
+        for (column, expected) in colors.enumerated() {
+            for (layer, y) in [("screen", 32), ("camera", 96), ("annotation", 160)] {
+                let rgb = try RecordingOverlayFixtures.color(preEncoded, x: column * 32 + 16, y: y)
+                for (actual, wanted) in zip([rgb.0, rgb.1, rgb.2], expected) {
+                    XCTAssertLessThanOrEqual(abs(actual - wanted), 3,
+                        "Pre-encode \(layer) sRGB roundtrip \(expected) -> \(rgb)")
+                }
+            }
+        }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PicShot-Rec709-Ramp-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let clock = OverlayFixtureClock(100)
+        let writer = try RecordingWriter(size: size, options: RecordingOptions(frameRate: 10), outputDirectory: directory,
+            compositor: compositor, automaticallyRefreshOverlays: false, clock: { clock.now }) { _ in }
+        try await append(initial, writer: writer)
+        state.setCameraSession(nil); XCTAssertTrue(state.setAnnotations([]))
+        clock.set(100.1)
+        try await append(RecordingOverlayFixtures.sample(at: 100.1, pixels: source), writer: writer)
+        clock.set(100.2); _ = await writer.stopAccepting()
+        let asset = AVURLAsset(url: try await writer.finish())
+        let tracks = try await asset.loadTracks(withMediaType: .video)
+        let track = try XCTUnwrap(tracks.first)
+        for format in try await track.load(.formatDescriptions) { RecordingOverlayFixtures.assertRec709(format) }
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderTrackOutput(track: track,
+            outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
+        reader.add(output); XCTAssertTrue(reader.startReading())
+        var frame = 0
+        while let sample = output.copyNextSampleBuffer() {
+            guard CMSampleBufferGetNumSamples(sample) > 0 else { continue }
+            for (column, expected) in colors.enumerated() {
+                for y in [32, 96, 160] {
+                    let rgb = try RecordingOverlayFixtures.color(sample, x: column * 32 + 16, y: y)
+                    print("Recording ramp frame=\(frame) y=\(y) expected=\(expected) sRGB decoded=\(rgb)")
+                    for (actual, wanted) in zip([rgb.0, rgb.1, rgb.2], expected) {
+                        XCTAssertLessThanOrEqual(abs(actual - wanted), 12,
+                            "Encoded frame \(frame), y=\(y), sRGB \(expected) -> \(rgb)")
+                    }
+                }
+            }
+            frame += 1
+        }
+        XCTAssertEqual(frame, 2); XCTAssertEqual(reader.status, .completed)
     }
 
     func testCameraPlacementMirrorCropAndEllipseProduceActualPixels() throws {
@@ -168,7 +236,7 @@ final class RecordingCompositionTests: XCTestCase {
         let asset = AVURLAsset(url: saved)
         let tracks = try await asset.loadTracks(withMediaType: .video)
         let track = try XCTUnwrap(tracks.first)
-        for format in try await track.load(.formatDescriptions) { RecordingOverlayFixtures.assertSRGB(format) }
+        for format in try await track.load(.formatDescriptions) { RecordingOverlayFixtures.assertRec709(format) }
         let duration = try await asset.load(.duration)
         XCTAssertEqual(duration.seconds, 0.6, accuracy: 0.03)
         let reader = try AVAssetReader(asset: asset)
@@ -224,7 +292,7 @@ final class RecordingCompositionTests: XCTestCase {
         let asset = AVURLAsset(url: try await writer.finish())
         let tracks = try await asset.loadTracks(withMediaType: .video)
         let track = try XCTUnwrap(tracks.first)
-        for format in try await track.load(.formatDescriptions) { RecordingOverlayFixtures.assertSRGB(format) }
+        for format in try await track.load(.formatDescriptions) { RecordingOverlayFixtures.assertRec709(format) }
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderTrackOutput(track: try XCTUnwrap(tracks.first),
             outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
@@ -345,12 +413,32 @@ enum RecordingOverlayFixtures {
         return result
     }
 
-    static func assertSRGB(_ format: CMFormatDescription, file: StaticString = #filePath, line: UInt = #line) {
+    static func assertRec709(_ format: CMFormatDescription, file: StaticString = #filePath, line: UInt = #line) {
         let metadata = colorMetadata(format)
         print("Recording color format \(metadata)")
         XCTAssertEqual(metadata["primaries"], kCMFormatDescriptionColorPrimaries_ITU_R_709_2 as String, file: file, line: line)
-        XCTAssertEqual(metadata["transfer"], kCMFormatDescriptionTransferFunction_sRGB as String, file: file, line: line)
+        XCTAssertEqual(metadata["transfer"], kCMFormatDescriptionTransferFunction_ITU_R_709_2 as String, file: file, line: line)
         XCTAssertEqual(metadata["matrix"], kCMFormatDescriptionYCbCrMatrix_ITU_R_709_2 as String, file: file, line: line)
+    }
+
+    static func rampPixels(colors: [[Int]], height: Int) throws -> CVPixelBuffer {
+        let width = colors.count * 32
+        let result = try pixels(width: width, height: height, color: .black)
+        var image = CIImage.empty()
+        for (index, rgb) in colors.enumerated() {
+            let color = CGColor(srgbRed: CGFloat(rgb[0]) / 255, green: CGFloat(rgb[1]) / 255,
+                                blue: CGFloat(rgb[2]) / 255, alpha: 1)
+            let patch = CIImage(color: CIColor(cgColor: color)).cropped(to:
+                CGRect(x: index * 32, y: 0, width: 32, height: height))
+            image = patch.composited(over: image)
+        }
+        let srgb = CGColorSpace(name: CGColorSpace.sRGB)!
+        CIContext(options: [.useSoftwareRenderer: true]).render(image, to: result,
+            bounds: CGRect(x: 0, y: 0, width: width, height: height), colorSpace: srgb)
+        CVBufferSetAttachment(result, kCVImageBufferCGColorSpaceKey, srgb, .shouldPropagate)
+        CVBufferSetAttachment(result, kCVImageBufferColorPrimariesKey, kCVImageBufferColorPrimaries_ITU_R_709_2, .shouldPropagate)
+        CVBufferSetAttachment(result, kCVImageBufferTransferFunctionKey, kCVImageBufferTransferFunction_sRGB, .shouldPropagate)
+        return result
     }
 
     static func pixels(width: Int, height: Int, color: NSColor) throws -> CVPixelBuffer {
