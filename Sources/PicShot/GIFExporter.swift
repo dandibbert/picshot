@@ -1,8 +1,6 @@
 import AVFoundation
 import CoreGraphics
 import Foundation
-import ImageIO
-import UniformTypeIdentifiers
 
 struct GIFExportOptions: Equatable, Sendable {
     var frameRate: Double = 12
@@ -20,20 +18,23 @@ struct GIFExportOptions: Equatable, Sendable {
 }
 
 enum GIFExportError: LocalizedError {
-    case invalidOptions, noVideo, destinationExists, tooLarge, failed(String)
+    case invalidOptions, noVideo, destinationExists, tooLarge, unsupportedTransparency, failed(String)
     var errorDescription: String? {
         switch self {
         case .invalidOptions: return "Use 1–30 GIF FPS, a maximum dimension of 16–1920 pixels, up to 60 seconds, and up to 600 frames."
         case .noVideo: return "This file has no playable video frames."
         case .destinationExists: return "A file already exists at that destination. Choose a new filename."
-        case .tooLarge: return "The GIF exceeds 64 MB. Try fewer frames, a shorter clip, or smaller dimensions."
+        case .tooLarge: return "The GIF exceeds its output or single-frame size limit. Try fewer frames, a shorter clip, or smaller dimensions."
+        case .unsupportedTransparency: return "GIF export currently supports opaque video frames, such as screen recordings. Videos with transparent frames are not supported."
         case .failed(let message): return "Couldn’t export the GIF: \(message)"
         }
     }
 }
 
-/// Sequential, cancellable extraction; no video or frame array is loaded into RAM.
-/// The output consumer enforces a hard 64 MiB byte limit while ImageIO writes.
+/// Sequential, cancellable extraction and file-backed animation assembly.
+/// ImageIO receives one still frame at a time; no animated destination retains
+/// earlier rasters. The file sink enforces a hard 64 MiB output byte limit.
+/// Actual transparency is rejected explicitly; recorded screen MP4s are opaque.
 /// Long sources are trimmed to `maximumDuration`; a frame cap reduces sampling
 /// frequency while preserving the selected clip's playback duration.
 enum GIFExporter {
@@ -72,23 +73,8 @@ enum GIFExporter {
             if !completed, ownsDirectory { try? FileManager.default.removeItem(at: destination.deletingLastPathComponent()) }
         }
         let cancellation = GIFCancellation()
-        let sink = try GIFByteSink(url: partial, maximumBytes: maximumOutputBytes, cancellation: cancellation)
-        defer { sink.close() }
-        var callbacks = CGDataConsumerCallbacks(putBytes: { info, buffer, count in
-            guard let info else { return 0 }
-            return Unmanaged<GIFByteSink>.fromOpaque(info).takeUnretainedValue().write(buffer, count: count)
-        }, releaseConsumer: { info in
-            if let info { Unmanaged<GIFByteSink>.fromOpaque(info).release() }
-        })
-        let retainedSink = Unmanaged.passRetained(sink)
-        guard let consumer = CGDataConsumer(info: retainedSink.toOpaque(), cbks: &callbacks) else {
-            retainedSink.release()
-            throw GIFExportError.failed("The output file could not be opened.")
-        }
-        guard let imageDestination = CGImageDestinationCreateWithDataConsumer(consumer, UTType.gif.identifier as CFString, plan.frameCount, nil) else {
-            throw GIFExportError.failed("The GIF encoder is unavailable.")
-        }
-        CGImageDestinationSetProperties(imageDestination, [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFLoopCount: 0]] as CFDictionary)
+        let stream = try GIFStreamingWriter(url: partial, cancelled: { cancellation.isCancelled })
+        defer { stream.close() }
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         generator.maximumSize = CGSize(width: options.maximumDimension, height: options.maximumDimension)
@@ -96,35 +82,27 @@ enum GIFExporter {
         generator.requestedTimeToleranceBefore = tolerance
         generator.requestedTimeToleranceAfter = tolerance
         progress?(0)
-        try await withTaskCancellationHandler {
-            for index in 0..<plan.frameCount {
-                try Task.checkCancellation()
-                let time = CMTime(seconds: plan.time(for: index), preferredTimescale: 600)
-                let frame = try await generator.image(at: time)
-                try Task.checkCancellation()
-                autoreleasepool {
-                    let properties = [kCGImagePropertyGIFDictionary: [
-                        kCGImagePropertyGIFDelayTime: plan.delay(for: index),
-                        kCGImagePropertyGIFUnclampedDelayTime: plan.delay(for: index)
-                    ]] as CFDictionary
-                    CGImageDestinationAddImage(imageDestination, frame.image, properties)
+        do {
+            try await withTaskCancellationHandler {
+                for index in 0..<plan.frameCount {
+                    try Task.checkCancellation()
+                    let time = CMTime(seconds: plan.time(for: index), preferredTimescale: 600)
+                    let frame = try await generator.image(at: time)
+                    try Task.checkCancellation()
+                    try stream.append(image: frame.image, delay: plan.delay(for: index))
+                    progress?(Double(index + 1) / Double(plan.frameCount + 1))
                 }
-                if let error = sink.failure { throw error }
-                progress?(Double(index + 1) / Double(plan.frameCount + 1))
+                try Task.checkCancellation()
+                try stream.finish()
+                try Task.checkCancellation()
+            } onCancel: {
+                cancellation.cancel()
+                generator.cancelAllCGImageGeneration()
             }
-            try Task.checkCancellation()
-            guard CGImageDestinationFinalize(imageDestination) else {
-                if cancellation.isCancelled { throw CancellationError() }
-                throw sink.failure ?? GIFExportError.failed("The GIF could not be finalized.")
-            }
-            if let error = sink.failure { throw error }
-            try Task.checkCancellation()
-        } onCancel: {
-            cancellation.cancel()
-            generator.cancelAllCGImageGeneration()
+        } catch {
+            if Task.isCancelled || cancellation.isCancelled { throw CancellationError() }
+            throw error
         }
-        try sink.flush()
-        sink.close()
         try Task.checkCancellation()
         // FileManager.moveItem fails rather than overwriting a destination created
         // by another process while export was in progress.
@@ -163,38 +141,4 @@ private final class GIFCancellation: @unchecked Sendable {
     private var cancelled = false
     var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
     func cancel() { lock.lock(); cancelled = true; lock.unlock() }
-}
-
-private final class GIFByteSink {
-    private var handle: FileHandle?
-    private let maximumBytes: Int
-    private let cancellation: GIFCancellation
-    private var bytes = 0
-    private(set) var failure: Error?
-
-    init(url: URL, maximumBytes: Int, cancellation: GIFCancellation) throws {
-        self.maximumBytes = maximumBytes
-        self.cancellation = cancellation
-        guard FileManager.default.createFile(atPath: url.path, contents: nil) else {
-            throw GIFExportError.failed("The output file could not be created.")
-        }
-        handle = try FileHandle(forWritingTo: url)
-    }
-
-    func write(_ buffer: UnsafeRawPointer, count: Int) -> Int {
-        guard failure == nil, let handle else { return 0 }
-        if cancellation.isCancelled { failure = CancellationError(); return 0 }
-        guard count <= maximumBytes - bytes else { failure = GIFExportError.tooLarge; return 0 }
-        do {
-            // FileHandle consumes these bytes synchronously; ImageIO owns the buffer.
-            let data = Data(bytesNoCopy: UnsafeMutableRawPointer(mutating: buffer), count: count, deallocator: .none)
-            try handle.write(contentsOf: data)
-            bytes += count
-            return count
-        } catch { failure = error; return 0 }
-    }
-
-    func flush() throws { try handle?.synchronize() }
-    func close() { try? handle?.close(); handle = nil }
-    deinit { close() }
 }

@@ -22,12 +22,12 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
-      - name: Check synthetic recording and inference synchronization first
+      - name: Check GIF, recording and inference boundaries first
         timeout-minutes: 5
         run: |
           mkdir -p dist
           set -o pipefail
-          swift test --filter 'RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' 2>&1 | tee dist/critical-tests.log
+          swift test --filter 'GIFStreamingWriterTests|GIFResourceSmokeTests|RecordingAndGIFTests|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' 2>&1 | tee dist/critical-tests.log
       - name: Package signed native app for early pixel review
         run: |
           mkdir -p dist

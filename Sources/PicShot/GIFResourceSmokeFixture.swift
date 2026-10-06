@@ -24,6 +24,8 @@ enum GIFResourceSmokeFixture {
         /// Small integration test, deliberately identified separately in evidence.
         static let quickTest = Profile(name: "unit-test-short", width: 128, height: 72,
             frameCount: 24, outputDimension: 96, warmupCount: 1, measuredCount: 2, cancelAfterFrames: 4)
+        static let highResolution = Profile(name: "maximum-dimension-short", width: 1_920, height: 1_080,
+            frameCount: 12, outputDimension: 1_920, warmupCount: 0, measuredCount: 1, cancelAfterFrames: 1)
 
         var duration: Double { Double(frameCount) / Double(frameRate) }
         var options: GIFExportOptions {
@@ -56,8 +58,9 @@ enum GIFResourceSmokeFixture {
             "sourceDurationSeconds": profile.duration, "exportMaximumDimension": profile.outputDimension,
             "sampleIntervalSeconds": GIFResourceMemorySampler.interval,
             "memoryScope": "main process only; AVFoundation service/GPU memory is not included",
-            "peakScope": "export-only maximum successful RSS/physical-footprint samples, not kernel lifetime peaks; 50 ms timer plus frame-progress boundaries, including synchronous ImageIO finalization",
-            "resourceScope": "authored changing video, warm-up then serial GIF exports; ImageIO can retain internal buffers; sampled peaks and post-export growth are observational regression evidence, not a zero-leak claim or a maximum-size/sustained-recording test",
+            "peakScope": "export-only maximum successful RSS/physical-footprint samples, not kernel lifetime peaks; 50 ms timer plus frame-progress boundaries, including each synchronous single-frame ImageIO finalization",
+            "resourceScope": "authored changing video, warm-up then serial GIF exports; ImageIO encodes one still frame at a time into a streaming animation; sampled export/validation peaks and settled growth are observational regression evidence, not a zero-leak claim or a maximum-size/sustained-recording test",
+            "singleFrameEncodedByteLimit": GIFStreamingWriter.maximumEncodedFrameBytes,
             "sourceProvenance": "original deterministic tiled RGB animation generated in this fixture",
             "maximumSourceBytes": 16 * 1_024 * 1_024, "maximumOutputBytes": GIFExporter.maximumOutputBytes,
             "diskScope": "one source plus one output/partial at a time; source size is checked after synthesis, output has the production 64 MiB write limit; only JSON is retained",
@@ -107,6 +110,15 @@ enum GIFResourceSmokeFixture {
             report["cancellation"] = try await runExport(source: source, directory: directory, profile: profile,
                                                           plan: plan, cancelAfterFrames: profile.cancelAfterFrames)
             report["finalAfterCancellation"] = try object(GIFResourceMemoryReading.current())
+            try files.removeItem(at: source) // Keep only one synthetic source during the next phase.
+            var highResolutionPassed = true
+            if profile == .installedSmoke {
+                let high = try await verifyHighResolution(in: directory)
+                report["highResolution"] = high
+                highResolutionPassed = high["status"] as? String == "passed"
+            } else {
+                report["highResolution"] = ["status": "not-run", "reason": "short unit-test profile; full installed smoke owns the maximum-dimension case"]
+            }
             try files.removeItem(at: directory)
             try require(removalConfirmed(directory), "Synthetic media directory cleanup not confirmed")
             report["temporaryDirectoryRemoved"] = true
@@ -114,7 +126,7 @@ enum GIFResourceSmokeFixture {
             // Deliberately generous fixed smoke envelopes, not measured results
             // or production memory guarantees. Missing footprint is disclosed;
             // missing RSS is a failure, never silently reported as zero bytes.
-            let passed = rss.withinEnvelope == true && (footprint.withinEnvelope ?? true)
+            let passed = rss.withinEnvelope == true && (footprint.withinEnvelope ?? true) && highResolutionPassed
             report["status"] = passed ? "passed" : "failed"
             try write(report, to: reportURL)
             try require(passed, "GIF memory observations exceeded the bounded smoke envelope; see gif-resource.json")
@@ -144,8 +156,8 @@ enum GIFResourceSmokeFixture {
             try await GIFExporter.export(sourceURL: source, destinationURL: output, options: profile.options) { value in
                 sampler.sample()
                 if progress.record(value) {
-                    // Cancel the actual exporting task after completed AddImage
-                    // calls, rather than canceling before the first await.
+                    // Cancel after complete frame blocks have reached staging,
+                    // rather than canceling before the first await.
                     withUnsafeCurrentTask { task in
                         if let task { progress.didRequestCancellation(); task.cancel() }
                     }
@@ -163,10 +175,15 @@ enum GIFResourceSmokeFixture {
         try require(metrics.residentSampleCount > 0, "No valid RSS samples during export")
         try require(progress.isValid, "Export progress was missing, non-monotonic, or outside 0...1")
         var result: [String: Any] = ["memory": try object(metrics),
+            "immediatelyAfterExport": try object(GIFResourceMemoryReading.current()),
             "exportElapsedSeconds": ProcessInfo.processInfo.systemUptime - started,
             "progressCallbackCount": progress.callbackCount, "lastProgress": progress.lastValue,
             "framesSubmittedBeforeReturn": progress.framesSubmitted,
             "cancellationRequested": progress.cancellationRequested, "cancellationObserved": cancellationObserved]
+        // This observation precedes any decoder validation, so export unwind
+        // can be distinguished from ImageIO reader/compositing allocations.
+        try await Task.sleep(nanoseconds: 600_000_000)
+        result["settledBeforeValidation"] = try object(GIFResourceMemoryReading.current())
         if let cancelAfterFrames {
             try require(cancellationObserved && progress.framesSubmitted >= cancelAfterFrames &&
                         progress.framesSubmitted < plan.frameCount, "Cancellation did not interrupt an active export")
@@ -175,9 +192,15 @@ enum GIFResourceSmokeFixture {
             result["destinationAbsent"] = true
         } else {
             try require(progress.lastValue == 1, "Successful export did not finish progress")
-            // Validation is deliberately outside the export sampler. Cache-off
-            // sequential decoding cannot masquerade as encoder peak memory.
+            // Separate sampler: decoder/compositing allocations must never be
+            // attributed to encoder peaks. No-cache is a request, not a proof
+            // that ImageIO retains no internal animation/metadata structures.
+            let validationSampler = GIFResourceMemorySampler()
+            defer { validationSampler.stop() }
             result["output"] = try validate(output: output, profile: profile, plan: plan)
+            validationSampler.stop()
+            result["validationMemory"] = try object(validationSampler.snapshot())
+            result["immediatelyAfterValidation"] = try object(GIFResourceMemoryReading.current())
             try FileManager.default.removeItem(at: output)
         }
         let remaining = try FileManager.default.contentsOfDirectory(atPath: directory.path)
@@ -188,6 +211,32 @@ enum GIFResourceSmokeFixture {
         try await Task.sleep(nanoseconds: 600_000_000)
         result["settledAfterValidationAndCleanup"] = try object(GIFResourceMemoryReading.current())
         return result
+    }
+
+    private static func verifyHighResolution(in parent: URL) async throws -> [String: Any] {
+        let profile = Profile.highResolution
+        let directory = parent.appendingPathComponent("maximum-dimension", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = try await makeMovie(in: directory, profile: profile)
+        let bytes = try fileBytes(source)
+        try require(bytes > 0 && bytes <= 16 * 1_024 * 1_024, "High-resolution source exceeded its disk budget")
+        let baseline = GIFResourceMemoryReading.current()
+        let plan = try GIFFramePlan(duration: profile.duration, options: profile.options)
+        let run = try await runExport(source: source, directory: directory, profile: profile, plan: plan)
+        let final = GIFResourceMemoryReading.current()
+        let metrics = run["memory"] as? [String: Any] ?? [:]
+        let peakRSS = (metrics["peakResidentBytes"] as? NSNumber)?.uint64Value
+        let peakFootprint = (metrics["peakPhysicalFootprintBytes"] as? NSNumber)?.uint64Value
+        let rss = GIFResourceSingleExportAssessment(baseline: baseline.residentBytes, peak: peakRSS, settled: final.residentBytes)
+        let footprint = GIFResourceSingleExportAssessment(baseline: baseline.physicalFootprintBytes,
+            peak: peakFootprint, settled: final.physicalFootprintBytes)
+        return ["status": rss.withinEnvelope == true && (footprint.withinEnvelope ?? true) ? "passed" : "failed",
+            "profile": profile.name, "sourceWidth": profile.width, "sourceHeight": profile.height,
+            "sourceFrames": profile.frameCount, "sourceDurationSeconds": profile.duration, "sourceBytes": bytes,
+            "baseline": try object(baseline), "export": run, "residentAssessment": try object(rss),
+            "physicalFootprintAssessment": try object(footprint),
+            "scope": "one 12-frame export at the API maximum 1920-pixel dimension, independently decoded; no plateau claim, not maximum square area or maximum frame count"]
     }
 
     static func validate(output: URL, profile: Profile, plan: GIFFramePlan) throws -> [String: Any] {
@@ -407,6 +456,24 @@ struct GIFResourceAssessment: Encodable, Equatable, Sendable {
         settledRangeBytes = ends.max()! - ends.min()!; observationsComplete = true
         withinEnvelope = peak <= configuredPeakGrowthLimitBytes && final <= configuredFinalGrowthLimitBytes &&
             last <= configuredLastIntervalGrowthLimitBytes
+    }
+}
+
+struct GIFResourceSingleExportAssessment: Encodable, Equatable, Sendable {
+    let sampledPeakGrowthBytes: Int64?
+    let finalSettledGrowthBytes: Int64?
+    let withinEnvelope: Bool?
+    let configuredPeakGrowthLimitBytes: Int64 = 384 * 1_024 * 1_024
+    let configuredFinalGrowthLimitBytes: Int64 = 96 * 1_024 * 1_024
+    init(baseline: UInt64?, peak: UInt64?, settled: UInt64?) {
+        guard let baseline, let peak, let settled,
+              [baseline, peak, settled].allSatisfy({ $0 <= UInt64(Int64.max) }) else {
+            sampledPeakGrowthBytes = nil; finalSettledGrowthBytes = nil; withinEnvelope = nil; return
+        }
+        let peakGrowth = Int64(peak) - Int64(baseline)
+        let finalGrowth = Int64(settled) - Int64(baseline)
+        sampledPeakGrowthBytes = peakGrowth; finalSettledGrowthBytes = finalGrowth
+        withinEnvelope = peakGrowth <= configuredPeakGrowthLimitBytes && finalGrowth <= configuredFinalGrowthLimitBytes
     }
 }
 

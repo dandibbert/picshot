@@ -25,7 +25,7 @@ for format in zip dmg;do
   test "$(lipo -archs "$app/Contents/MacOS/PicShot")" = "$(uname -m)"
   mkdir -p "dist/evidence/$format"
   swift scripts/launch-smoke-app.swift "$app" "$PWD/dist/evidence/$format/launch.json"
-  python3 - "$PWD/dist/evidence/$format/launch.json" "$app" "$(git rev-parse HEAD)" <<'PY'
+  python3 - "$PWD/dist/evidence/$format/launch.json" "$app" "$(git rev-parse HEAD)" "$format" <<'PY'
 import json,sys,pathlib
 r=json.load(open(sys.argv[1]));assert r['status']=='passed',r
 assert r['mainWindowVisible'] and r['safeMode'] and not r['captureStarted'],r
@@ -41,6 +41,20 @@ assert r['packagedModelEvidence']['formulaRender']['pdfBytes']>0,r
 assert r['pinSessionEvidence']['status']=='passed',r
 assert r['packagedModelEvidence']['smartErase']['status']=='passed',r
 assert r['packagedModelEvidence']['smartErase']['outsideMaskByteMismatches']==0,r
+jobs=r['packagedModelEvidence']['processResources']
+assert jobs.get('activeJob') is None and len(jobs['lastJobs'])==3,jobs
+assert {j['kind'] for j in jobs['lastJobs']}=={'formula','table','smartErase'},jobs
+for job in jobs['lastJobs']:
+    assert job['outcome']=='succeeded' and job['childLaunched'] and job['childExitConfirmed'],job
+    assert job['temporaryDirectoryCleanup']=='confirmed',job
+    assert job.get('sampledPeakResidentBytes',0)>0 and job['residentSampleCount']>0,job
+gif=r['gifResourceEvidence']
+if sys.argv[4]=='zip':
+    assert gif['status']=='passed' and gif['profile']=='installed-30-second',gif
+    assert gif['measuredExportCount']==4 and gif['expectedOutputFrames']==360,gif
+    assert gif['highResolution']['status']=='passed',gif
+else:
+    assert gif['status']=='not-run',gif
 print(json.dumps(r,indent=2))
 PY
 done

@@ -20,6 +20,23 @@ final class GIFResourceSmokeTests: XCTestCase {
         XCTAssertEqual(try GIFFramePlan(duration: profile.duration, options: profile.options).frameCount, profile.frameCount)
     }
 
+    func testHighResolutionCaseKeepsMaximumDimensionAndExistingEnvelopes() throws {
+        let profile = GIFResourceSmokeFixture.Profile.highResolution
+        XCTAssertEqual(profile.width, 1_920)
+        XCTAssertEqual(profile.height, 1_080)
+        XCTAssertEqual(profile.frameCount, 12)
+        XCTAssertEqual(profile.outputDimension, 1_920)
+        XCTAssertEqual(profile.duration, 1)
+        XCTAssertNoThrow(try profile.options.validate())
+        let reading = GIFResourceSingleExportAssessment(baseline: 1_000, peak: 1_500, settled: 900)
+        XCTAssertEqual(reading.withinEnvelope, true)
+        XCTAssertEqual(reading.finalSettledGrowthBytes, -100)
+        XCTAssertEqual(reading.configuredPeakGrowthLimitBytes, 384 * 1_024 * 1_024)
+        XCTAssertEqual(reading.configuredFinalGrowthLimitBytes, 96 * 1_024 * 1_024)
+        XCTAssertNil(GIFResourceSingleExportAssessment(baseline: nil, peak: 1, settled: 1).withinEnvelope)
+        XCTAssertEqual(GIFResourceSingleExportAssessment(baseline: 0, peak: 500 * 1_024 * 1_024, settled: 0).withinEnvelope, false)
+    }
+
     func testMissingMemoryReadingsAreNotFabricatedAsZeroOrPassingEvidence() throws {
         var statistics = GIFResourceMemoryStatistics()
         statistics.record(.init(residentBytes: nil, physicalFootprintBytes: nil))
@@ -141,6 +158,10 @@ final class GIFResourceSmokeTests: XCTestCase {
             XCTAssertEqual(output["dimensions"] as? [String], ["96x54"])
             XCTAssertEqual(output["distinctDecodedThumbnailFingerprints"] as? Int, 24)
             XCTAssertEqual(run["partialFilesRemaining"] as? Int, 0)
+            XCTAssertNotNil(run["immediatelyAfterExport"] as? [String: Any])
+            XCTAssertNotNil(run["settledBeforeValidation"] as? [String: Any])
+            XCTAssertNotNil(run["immediatelyAfterValidation"] as? [String: Any])
+            XCTAssertNotNil(run["validationMemory"] as? [String: Any])
             let memory = try XCTUnwrap(run["memory"] as? [String: Any])
             XCTAssertGreaterThan(try XCTUnwrap(memory["residentSampleCount"] as? Int), 0)
             XCTAssertGreaterThan(try XCTUnwrap(memory["peakResidentBytes"] as? NSNumber).uint64Value, 0)

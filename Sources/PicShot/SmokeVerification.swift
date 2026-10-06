@@ -54,7 +54,9 @@ import PicShotFormulaRenderCore
             try renderedFormula.png.write(to:directory.appendingPathComponent("formula-render.png"))
             try renderedFormula.pdf.write(to:directory.appendingPathComponent("formula-render.pdf"))
             modelEvidence["formulaRender"]=["width":renderedFormula.width,"height":renderedFormula.height,"pngBytes":renderedFormula.png.count,"pdfBytes":renderedFormula.pdf.count,"mathMLBytes":renderedFormula.mathML.utf8.count,"svgBytes":renderedFormula.svg.utf8.count]
+            try JSONSerialization.data(withJSONObject:modelEvidence,options:[.prettyPrinted,.sortedKeys]).write(to:directory.appendingPathComponent("model-evidence.json"),options:.atomic)
             let pinSessionEvidence=try await PinSessionSmokeFixture.verify(evidenceDirectory:directory)
+            try JSONSerialization.data(withJSONObject:pinSessionEvidence,options:[.prettyPrinted,.sortedKeys]).write(to:directory.appendingPathComponent("pin-session.json"),options:.atomic)
             var gifResourceEvidence:[String:Any]=["status":"not-run","scope":"Full GIF resource fixture is run from the ZIP install only"]
             if env["PICSHOT_SMOKE_GIF_RESOURCES"] == "1" {gifResourceEvidence=try await GIFResourceSmokeFixture.verify(evidenceDirectory:directory)}
             let sample=ImageEditorRenderer.makeSampleImage()
