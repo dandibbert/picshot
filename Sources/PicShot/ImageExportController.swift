@@ -41,6 +41,7 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
     private var onSaved: ((URL) -> Void)?
     private var fittingWindow = false
     private var layoutVisibleFrame: CGRect?
+    private var windowFitTask: Task<Void, Never>?
     private(set) var latestArtifact: ImageExportArtifact?
     private(set) var previewPage = 0
     private(set) var isClosed = false
@@ -70,6 +71,7 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
             if let window = controller.window {
                 parent.beginSheet(window)
                 controller.fitWindow(to: parent.screen?.visibleFrame)
+                controller.scheduleWindowFit()
             }
             controller.requestPreview()
             return controller
@@ -148,28 +150,45 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
     /// preferred 620×550 content rectangle, shrinking it for the actual usable
     /// desktop, and clamp both standalone windows and attached sheets on screen.
     func fitWindow(to visibleFrame: CGRect? = nil) {
-        guard let window, !fittingWindow else { return }
+        guard let window, !isClosed, !fittingWindow else { return }
         fittingWindow = true; defer { fittingWindow = false }
         layoutVisibleFrame = visibleFrame
         let usable = visibleFrame ?? window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1024, height: 768)
-        let safe = usable.insetBy(dx: min(12, usable.width / 20), dy: min(12, usable.height / 20))
+        let inset: CGFloat = window.sheetParent == nil ? 12 : 20
+        let safe = usable.insetBy(dx: min(inset, usable.width / 20), dy: min(inset, usable.height / 20))
         let chrome = max(0, window.frame.height - window.contentRect(forFrameRect: window.frame).height)
         let size = CGSize(width: min(620, max(1, safe.width)), height: min(550, max(1, safe.height - chrome)))
         // A non-resizable sheet should not silently enlarge when a decoded
         // image is assigned, or when format/page/quality controls change.
         window.contentMinSize = size; window.contentMaxSize = size
-        window.setContentSize(size)
+        // Setting an unchanged content size can restart AppKit sheet placement.
+        if window.contentView?.bounds.size != size { window.setContentSize(size) }
+        window.contentView?.layoutSubtreeIfNeeded()
         var frame = window.frame
         frame.origin.x = max(safe.minX, min(frame.minX, safe.maxX - frame.width))
         frame.origin.y = max(safe.minY, min(frame.minY, safe.maxY - frame.height))
-        window.setFrame(frame, display: false)
-        window.contentView?.layoutSubtreeIfNeeded()
+        if window.frame != frame { window.setFrame(frame, display: false) }
     }
-    func windowDidChangeScreen(_ notification: Notification) { fitWindow() }
+    func windowDidChangeScreen(_ notification: Notification) { fitWindow(); scheduleWindowFit() }
     func windowDidMove(_ notification: Notification) {
-        // AppKit may reposition a sheet after beginSheet or when its small/edge
-        // parent moves. Reapply the same usable-screen constraint after that move.
-        fitWindow(to: layoutVisibleFrame)
+        guard !fittingWindow else { return }
+        if window?.sheetParent != nil { scheduleWindowFit() }
+        else { fitWindow(to: layoutVisibleFrame) }
+    }
+    private func scheduleWindowFit() {
+        guard !isClosed, windowFitTask == nil else { return }
+        // Sheet attachment/movement can overwrite a synchronous delegate fit.
+        // Coalesce to one bounded task and fit after AppKit's layout/animation;
+        // no polling loop, image retention, parent movement or delegate takeover.
+        windowFitTask = Task { @MainActor [weak self] in
+            await Task.yield()
+            for delay in [UInt64(0), 100_000_000, 300_000_000] {
+                if delay > 0 { do { try await Task.sleep(nanoseconds: delay) } catch { return } }
+                guard !Task.isCancelled, let self, !self.isClosed else { return }
+                self.fitWindow(to: self.parentWindow?.screen?.visibleFrame ?? self.layoutVisibleFrame)
+            }
+            self?.windowFitTask = nil
+        }
     }
 
     func requestPreview() {
@@ -359,6 +378,7 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
     func windowWillClose(_ notification: Notification) { cancellation.cancel(); finish() }
     private func finish() {
         guard !isClosed else { return }; isClosed = true
+        windowFitTask?.cancel(); windowFitTask = nil
         previewCancellation.cancel(); previewOperation?.cancel(); pageOperation?.cancel(); debounce?.cancel(); codecTask?.cancel(); codecTask = nil
         previewOperation = nil; pageOperation = nil; debounce = nil; snapshot = nil
         previewInput?.clear(); pageInput?.clear(); saveInput?.clear()

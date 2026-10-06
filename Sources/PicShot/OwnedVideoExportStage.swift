@@ -114,19 +114,22 @@ private final class OwnedExportDirectory: @unchecked Sendable {
     var device: dev_t { identity.device }
     private let parentFD: Int32
     private let descriptor: Int32
+    private let deletionQueue: Int32
     private let parentIdentity: Identity
     private let identity: Identity
     private let recognizes: @Sendable (String) -> Bool
     private let lock = NSLock()
     private var recorded: [String: FileIdentity] = [:]
     private var removed = false
+    private var deletionObserved = false
 
-    private init(url: URL, parentURL: URL, parentFD: Int32, descriptor: Int32,
+    private init(url: URL, parentURL: URL, parentFD: Int32, descriptor: Int32, deletionQueue: Int32,
                  parentIdentity: Identity, identity: Identity, recognizes: @escaping @Sendable (String) -> Bool) {
         self.url = url; self.parentURL = parentURL; self.parentFD = parentFD; self.descriptor = descriptor
+        self.deletionQueue = deletionQueue
         self.parentIdentity = parentIdentity; self.identity = identity; self.recognizes = recognizes
     }
-    deinit { Darwin.close(descriptor); Darwin.close(parentFD) }
+    deinit { Darwin.close(deletionQueue); Darwin.close(descriptor); Darwin.close(parentFD) }
 
     static func create(in parent: URL, prefix: String,
                        recognizes: @escaping @Sendable (String) -> Bool) throws -> OwnedExportDirectory {
@@ -150,8 +153,24 @@ private final class OwnedExportDirectory: @unchecked Sendable {
             // Do not remove an entry whose identity was never admitted.
             throw VideoTrimError.destinationChanged
         }
+        // Arm a vnode deletion witness before this directory can be handed to
+        // a child. Darwin NOTE_DELETE identifies deletion of this open vnode;
+        // NOTE_RENAME is a separate event. Directory link counts are not a
+        // portable deletion signal on APFS, and path lookup failure is not one.
+        let deletionQueue = Darwin.kqueue()
+        var change = kevent()
+        var registrationTimeout = timespec(tv_sec: 0, tv_nsec: 0)
+        change.ident = UInt(descriptor); change.filter = Int16(EVFILT_VNODE)
+        change.flags = UInt16(EV_ADD | EV_CLEAR); change.fflags = UInt32(NOTE_DELETE)
+        guard deletionQueue >= 0, fcntl(deletionQueue, F_SETFD, FD_CLOEXEC) == 0,
+              Darwin.kevent(deletionQueue, &change, 1, nil, 0, &registrationTimeout) == 0 else {
+            if deletionQueue >= 0 { Darwin.close(deletionQueue) }
+            Darwin.close(descriptor); Darwin.close(parentFD)
+            throw VideoTrimError.destinationChanged
+        }
         let result = Self(url: canonical.appendingPathComponent(name, isDirectory: true), parentURL: canonical,
-            parentFD: parentFD, descriptor: descriptor, parentIdentity: Identity(parentInfo), identity: Identity(info), recognizes: recognizes)
+            parentFD: parentFD, descriptor: descriptor, deletionQueue: deletionQueue,
+            parentIdentity: Identity(parentInfo), identity: Identity(info), recognizes: recognizes)
         guard result.validate() else { throw VideoTrimError.destinationChanged }
         return result
     }
@@ -214,11 +233,12 @@ private final class OwnedExportDirectory: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         if removed { return true }
         guard validateLocked() else {
-            // The helper may have removed its own private job on control EOF.
-            // An absent name is success only when our original open directory
-            // has also been unlinked, not when it was renamed elsewhere.
+            // Accept helper-owned EOF cleanup only with a NOTE_DELETE event
+            // for the exact original open directory and an absent old name.
+            // A renamed vnode, failed lookup, or replacement is not cleanup.
             var info = stat(), entry = stat()
-            if fstat(descriptor, &info) == 0, identity.matches(info), info.st_nlink == 0,
+            if fstat(descriptor, &info) == 0, identity.matches(info), info.st_mode & S_IFMT == S_IFDIR,
+               observedOriginalDeletion(),
                fstatat(parentFD, url.lastPathComponent, &entry, AT_SYMLINK_NOFOLLOW) != 0, errno == ENOENT {
                 removed = true; return true
             }
@@ -253,6 +273,21 @@ private final class OwnedExportDirectory: @unchecked Sendable {
         }
         guard validateLocked(), unlinkat(parentFD, url.lastPathComponent, AT_REMOVEDIR) == 0 else { return false }
         removed = true
+        return true
+    }
+
+    /// kqueue(2), EVFILT_VNODE/NOTE_DELETE: the file referenced by the watched
+    /// descriptor was unlinked. Poll without waiting; other events/errors fail
+    /// closed. Cache the witness so a temporarily substituted path cannot make
+    /// us lose proof when a later recovery retries the absent-name check.
+    private func observedOriginalDeletion() -> Bool {
+        if deletionObserved { return true }
+        var event = kevent()
+        var timeout = timespec(tv_sec: 0, tv_nsec: 0)
+        guard Darwin.kevent(deletionQueue, nil, 0, &event, 1, &timeout) == 1,
+              event.ident == UInt(descriptor), event.filter == Int16(EVFILT_VNODE),
+              event.flags & UInt16(EV_ERROR) == 0, event.fflags & UInt32(NOTE_DELETE) != 0 else { return false }
+        deletionObserved = true
         return true
     }
 

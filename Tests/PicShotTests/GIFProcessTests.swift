@@ -297,9 +297,12 @@ final class GIFProcessTests: XCTestCase {
         let source = try stubSource(in: root)
         for (name, createOutput) in [("fifo", "os.mkfifo('result.gif', 0o600)"),
                                      ("symlink", "os.symlink('source.mp4', 'result.gif')")] {
+            let marker = root.appendingPathComponent(name + "-job.txt")
             let service = try pythonService("""
             import os, sys, time
             sys.stdin.buffer.readline()
+            with open(sys.argv[1], 'x') as marker:
+                marker.write(os.getcwd())
             \(createOutput)
             print('{"version":1,"kind":"progress","fraction":0}', flush=True)
             print('{"version":1,"kind":"memory","residentBytes":1}', flush=True)
@@ -307,17 +310,55 @@ final class GIFProcessTests: XCTestCase {
             print('{"version":1,"kind":"progress","fraction":1}', flush=True)
             print('{"version":1,"kind":"result","outputBytes":14,"frameCount":1,"duration":1}', flush=True)
             time.sleep(0.15)
-            """)
+            """, arguments: [marker.path])
             let output = root.appendingPathComponent(name + ".gif")
             let error = try await exportFailure(service, source: source, destination: output)
-            guard case GIFExportProcessError.invalidProtocol = error else {
-                XCTFail("\(name) result should fail validation, got \(error)")
-                continue
+            let job = URL(fileURLWithPath: try String(contentsOf: marker, encoding: .utf8), isDirectory: true)
+            let artifact = job.appendingPathComponent("result.gif")
+            let expectedType = name == "fifo" ? mode_t(S_IFIFO) : mode_t(S_IFLNK)
+            do {
+                if case GIFExportProcessError.invalidProtocol = error { }
+                else { XCTFail("\(name) result should fail validation, got \(error)") }
+                let retained = await service.snapshot()
+                XCTAssertTrue(retained.active, "Unsafe artifacts must keep cleanup unconfirmed")
+                XCTAssertEqual(retained.lastJob?.childExitConfirmed, true)
+                XCTAssertEqual(retained.lastJob?.temporaryDirectoryRemoved, false)
+                guard retained.lastJob?.childExitConfirmed == true else {
+                    throw GIFProcessTestSupportError.failed("Fixture child exit was not confirmed")
+                }
+                var info = stat()
+                XCTAssertEqual(lstat(artifact.path, &info), 0)
+                XCTAssertEqual(info.st_mode & S_IFMT, expectedType)
+                XCTAssertFalse(FileManager.default.fileExists(atPath: output.path))
+                XCTAssertEqual(try Data(contentsOf: source), Data([0x01]))
+                XCTAssertEqual(try Data(contentsOf: job.appendingPathComponent("source.mp4")), Data([0x01]))
+                if let token = NativeExportAdmission.shared.acquire() {
+                    NativeExportAdmission.shared.release(token)
+                    XCTFail("Refused artifact cleanup must retain shared admission")
+                }
+                // This test created the malicious entry. Remove that exact
+                // entry without following it, then require real service cleanup
+                // and admission recovery before starting the next fixture.
+                guard lstat(artifact.path, &info) == 0, info.st_mode & S_IFMT == expectedType,
+                      Darwin.unlink(artifact.path) == 0 else {
+                    throw GIFProcessTestSupportError.failed("Could not remove fixture-owned malicious entry")
+                }
+                _ = try await finished(service, childLaunched: true)
+                XCTAssertFalse(FileManager.default.fileExists(atPath: output.path))
+                XCTAssertEqual(try Data(contentsOf: source), Data([0x01]))
+                try assertNoStaging(root)
+            } catch {
+                // A failed assertion/read must not poison later process tests.
+                // Never force-release the lease or clean a still-running job.
+                let retained = await service.snapshot()
+                var info = stat()
+                if retained.lastJob?.childExitConfirmed == true,
+                   lstat(artifact.path, &info) == 0, info.st_mode & S_IFMT == expectedType {
+                    _ = Darwin.unlink(artifact.path)
+                    _ = await service.snapshot()
+                }
+                throw error
             }
-            _ = try await finished(service, childLaunched: true)
-            XCTAssertFalse(FileManager.default.fileExists(atPath: output.path))
-            XCTAssertEqual(try Data(contentsOf: source), Data([0x01]))
-            try assertNoStaging(root)
         }
     }
 

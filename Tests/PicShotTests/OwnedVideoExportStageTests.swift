@@ -246,12 +246,53 @@ final class OwnedVideoExportStageTests: XCTestCase {
         let fixture = try makeFixture()
         let stage = try makeRecordedStage(in: fixture)
         let job = try stage.makeSiblingGIFJob(sourceURL: stage.clipURL, destinationURL: stage.gifURL)
+        let originalFD = Darwin.open(job.url.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard originalFD >= 0 else { throw VideoTrimError.destinationChanged }
+        defer { Darwin.close(originalFD) }
         try write(clipBytes, to: job.url.appendingPathComponent("source.mp4"))
         try job.recordSource()
         try FileManager.default.removeItem(at: job.url) // Simulate helper-owned EOF cleanup.
 
+        var afterRemoval = stat()
+        let statResult = fstat(originalFD, &afterRemoval)
+        // Retain native evidence without using the filesystem-specific link
+        // count to authorize cleanup. The owner requires its vnode delete event.
+        XCTAssertTrue(job.cleanup(), "deleted directory fstat=\(statResult), nlink=\(afterRemoval.st_nlink)")
         XCTAssertTrue(job.cleanup())
+        XCTAssertTrue(stage.cleanupIfOwned())
+        try assertProtectedFiles(fixture)
+    }
+
+    func testRenamedEmptyJobIsNotDeletionUntilTheOriginalVnodeIsRemoved() throws {
+        let fixture = try makeFixture()
+        let stage = try makeRecordedStage(in: fixture)
+        let job = try stage.makeSiblingGIFJob(sourceURL: stage.clipURL, destinationURL: stage.gifURL)
+        let moved = fixture.parent.appendingPathComponent("renamed-empty-job", isDirectory: true)
+        try FileManager.default.moveItem(at: job.url, to: moved)
+
+        XCTAssertFalse(job.cleanup(), "Neither an absent old name nor an empty renamed directory is proof of deletion")
+        XCTAssertTrue(exists(moved))
+        try FileManager.default.removeItem(at: moved) // Fixture now removes the original vnode.
         XCTAssertTrue(job.cleanup())
+        XCTAssertTrue(stage.cleanupIfOwned())
+        try assertProtectedFiles(fixture)
+    }
+
+    func testDeletionWitnessNeverAuthorizesRemovingASubstitutedJobPath() throws {
+        let fixture = try makeFixture()
+        let stage = try makeRecordedStage(in: fixture)
+        let job = try stage.makeSiblingGIFJob(sourceURL: stage.clipURL, destinationURL: stage.gifURL)
+        try FileManager.default.removeItem(at: job.url)
+        try makePrivateDirectory(job.url)
+        let replacement = job.url.appendingPathComponent("replacement-user-file")
+        let replacementBytes = Data("replacement must not be deleted".utf8)
+        try write(replacementBytes, to: replacement)
+
+        XCTAssertFalse(job.cleanup())
+        XCTAssertEqual(try Data(contentsOf: replacement), replacementBytes)
+        try FileManager.default.removeItem(at: replacement)
+        XCTAssertEqual(Darwin.rmdir(job.url.path), 0) // Remove only the fixture's empty replacement.
+        XCTAssertTrue(job.cleanup(), "Retain the original deletion witness across refused replacement cleanup")
         XCTAssertTrue(stage.cleanupIfOwned())
         try assertProtectedFiles(fixture)
     }

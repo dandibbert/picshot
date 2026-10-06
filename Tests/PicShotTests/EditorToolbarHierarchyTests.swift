@@ -26,7 +26,7 @@ final class EditorToolbarHierarchyTests: XCTestCase {
                 try XCTUnwrap(rectangle).performClick(nil)
                 XCTAssertEqual(editor.annotationCanvas.tool, .rectangle)
                 XCTAssertEqual((editor.saveActions.cell as? NSPopUpButtonCell)?.arrowPosition, .noArrow)
-                XCTAssertEqual(editor.saveActions.bounds.width, 14, accuracy: 0.5)
+                XCTAssertEqual(editor.saveActions.bounds.width, 19, accuracy: 0.5)
             }
             editor.close()
         }

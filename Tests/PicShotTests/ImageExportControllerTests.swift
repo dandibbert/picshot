@@ -331,6 +331,16 @@ final class ImageExportControllerTests: XCTestCase {
         XCTAssertEqual(layout["allControlsWithinVisibleFrame"] as? Bool, true)
         XCTAssertTrue(controller.window?.sheetParent === parent)
         XCTAssertLessThanOrEqual(try XCTUnwrap(controller.window?.contentView).bounds.height, 550)
+        // Moving an already attached parent must keep every actual action on
+        // screen too. The test never calls fitWindow to repair the sheet.
+        for origin in [CGPoint(x: screen.visibleFrame.minX + 10, y: screen.visibleFrame.minY + 10),
+                       CGPoint(x: screen.visibleFrame.maxX - 370, y: screen.visibleFrame.maxY - 230)] {
+            parent.setFrameOrigin(origin)
+            try await Task.sleep(nanoseconds: 550_000_000)
+            let moved = try ImageExportPreviewFixture.verifyLayout(controller)
+            XCTAssertEqual(moved["allControlsWithinVisibleFrame"] as? Bool, true)
+            XCTAssertTrue(controller.window?.sheetParent === parent)
+        }
     }
 
     private func until(_ condition: () -> Bool, _ message: String) async throws {

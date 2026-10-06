@@ -1120,7 +1120,9 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
             item.isEnabled = saveWorkflow != nil; saveActions.menu?.addItem(item)
         }
         saveActions.menu?.autoenablesItems = false; saveActions.translatesAutoresizingMaskIntoConstraints = false
-        saveActions.widthAnchor.constraint(equalToConstant: 14).isActive = true
+        // Native pull-down cells retain a 19 pt minimum even with noArrow.
+        // Match that geometry rather than imposing a conflicting 14 pt width.
+        saveActions.widthAnchor.constraint(equalToConstant: 19).isActive = true
         saveActions.heightAnchor.constraint(equalToConstant: 32).isActive = true; toolbar.addArrangedSubview(saveActions)
         if saveWorkflow != nil { canvas.menu = saveActions.menu?.copy() as? NSMenu }
 
