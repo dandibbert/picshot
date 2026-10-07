@@ -24,14 +24,21 @@ def finite_time(value):
     return value
 
 
-def process_timing(m, enabled):
+def process_timing(m, enabled, exit_strategy="wait-until-exit"):
+    latch = exit_strategy == "termination-latch"
+    assert m.get("exitObservationStrategy") == (exit_strategy if latch else None)
     if not enabled:
         assert 'timingInstrumentationVersion' not in m and 'childTimingTrace' not in m and 'parentTimingUptimes' not in m
         return
     assert m['timingInstrumentationVersion'] == 3
     parent = m['parentTimingUptimes']
     if not m['childLaunched']:
-        assert m['childTimingTraceStatus'] == 'notLaunched' and 'childTimingTrace' not in m and parent == {}
+        assert m['childTimingTraceStatus'] == 'notLaunched' and 'childTimingTrace' not in m
+        if latch and parent:
+            assert set(parent) == {'terminationHandlerInstalled'}
+            finite_time(parent['terminationHandlerInstalled'])
+            assert m['terminationHandlerCleared'] is True and m['terminationLatch']['callbackCount'] == 0
+        else: assert parent == {}
         return
     assert m['childTimingTraceStatus'] == 'complete' and 0 < m['stderrBytes'] <= 1024
     trace = m['childTimingTrace']
@@ -41,11 +48,27 @@ def process_timing(m, enabled):
     assert trace['terminalWriteSucceeded'] is True and trace['terminalWriteAttemptCount'] == 1
     child_times = [finite_time(trace[k]) for k in ['terminalWriteStartedUptimeSeconds', 'terminalWriteCompletedUptimeSeconds', 'runReturnedUptimeSeconds', 'framePreparedUptimeSeconds']]
     assert child_times == sorted(child_times)
-    assert set(parent) == {'terminalFrameReadReturned', 'terminalFrameDecodedAtReceipt', 'terminationObserved', 'waitUntilExitStarted', 'waitUntilExitCompleted'}
+    common_keys = {'terminalFrameReadReturned', 'terminalFrameDecodedAtReceipt', 'terminationObserved'}
+    if latch:
+        assert set(parent) == common_keys | {'terminationHandlerInstalled', 'terminationLatchWaitStarted', 'terminationLatchValidated', 'stdoutEOFObserved', 'stderrEOFObserved'}
+        observation = m['terminationLatch']
+        assert observation['callbackCount'] == 1 and observation['childPID'] == m['childPID']
+        assert observation['callbackObservedNotRunning'] is True and m['terminationHandlerCleared'] is True
+        assert observation['terminationStatus'] == m['terminationStatus'] and observation['terminationReason'] == 1
+        assert m['stdoutEOFConfirmed'] is True and m['stderrEOFConfirmed'] is True
+        entered = finite_time(observation['callbackEnteredUptimeSeconds']); published = finite_time(observation['callbackPublishedUptimeSeconds'])
+        assert parent['terminationHandlerInstalled'] <= m['boundaryUptimes']['processRunStarted'] <= entered <= published <= parent['terminationLatchValidated']
+        assert parent['terminationObserved'] <= parent['terminationLatchWaitStarted'] <= parent['terminationLatchValidated'] <= m['boundaryUptimes']['childExitConfirmed']
+        assert child_times[-1] <= entered
+        assert parent['stdoutEOFObserved'] <= m['boundaryUptimes']['cleanupFinished'] and parent['stderrEOFObserved'] <= m['boundaryUptimes']['cleanupFinished']
+    else:
+        assert set(parent) == common_keys | {'waitUntilExitStarted', 'waitUntilExitCompleted'}
+        assert 'terminationLatch' not in m and 'terminationHandlerCleared' not in m
     for value in parent.values(): finite_time(value)
     prepared = finite_time(m['terminal']['responsePreparedUptimeSeconds'])
     assert prepared <= child_times[0] and prepared <= parent['terminalFrameReadReturned'] <= parent['terminalFrameDecodedAtReceipt']
-    assert child_times[-1] <= parent['terminationObserved'] <= parent['waitUntilExitStarted'] <= parent['waitUntilExitCompleted'] <= m['boundaryUptimes']['childExitConfirmed']
+    assert child_times[-1] <= parent['terminationObserved']
+    if not latch: assert parent['terminationObserved'] <= parent['waitUntilExitStarted'] <= parent['waitUntilExitCompleted'] <= m['boundaryUptimes']['childExitConfirmed']
     # Parent may consume the terminal frame before the child write returns, or
     # drain it after exit. Do not invent a cross-process ordering between them.
 
@@ -78,8 +101,8 @@ def queue_timing(queue, enabled):
     assert math.isclose(delays[0], queue['maximumDelaySeconds'], rel_tol=1e-9, abs_tol=1e-9)
 
 
-def process(m, profile, reference_sha, pids, allow_cancel=False, timing_enabled=False):
-    process_timing(m, timing_enabled)
+def process(m, profile, reference_sha, pids, allow_cancel=False, timing_enabled=False, exit_strategy="wait-until-exit", allow_deadline=False):
+    process_timing(m, timing_enabled, exit_strategy)
     assert m['diagnosticProfile'] == profile and m['cleanupConfirmed'] and m['admissionReleased']
     assert m['stdoutBytes'] <= 131072 and m['stderrBytes'] <= 8192 and not m['stderrTruncated']
     if m.get('jobDirectory'): assert not Path(m['jobDirectory']).exists()
@@ -100,7 +123,7 @@ def process(m, profile, reference_sha, pids, allow_cancel=False, timing_enabled=
     actual_phases = [p['child']['phase'] for p in m['phases']]
     normal_prefix = ['beforePNGRead', 'imageCreated', 'rasterDrawn', 'afterContextRelease', 'outputClosed', 'afterDecodePool']
     if m['outcome'] == 'decoded': assert actual_phases == normal_prefix + ['complete']
-    elif m['outcome'] == 'cancelled-after-decode': assert actual_phases == normal_prefix[:4] + ['heldAfterDecode', 'failed']
+    elif m['outcome'] == 'cancelled-after-decode' or (allow_deadline and m['outcome'] == 'deadline-after-decode'): assert actual_phases == normal_prefix[:4] + ['heldAfterDecode', 'failed']
     else:
         # Ordinary UI cancellation can arrive during decode or just after a
         # successful child exit. Neither case may publish a stale UI artifact.
@@ -121,8 +144,8 @@ def process(m, profile, reference_sha, pids, allow_cancel=False, timing_enabled=
         assert terminal['rawBytes'] == 2359296 and terminal['rawSHA256'] == reference_sha
         assert set(('stagingFinished', 'childExitConfirmed', 'rawReadFinished', 'cleanupFinished')).issubset(m['boundaryUptimes'])
     else:
-        assert allow_cancel and m['outcome'] in ('cancelled', 'cancelled-after-decode')
-        if terminal['kind'] == 'error': assert terminal['error'] == 'cancelled' and m['terminationStatus'] == 1
+        assert allow_cancel and m['outcome'] in (('cancelled', 'cancelled-after-decode', 'deadline-after-decode') if allow_deadline else ('cancelled', 'cancelled-after-decode'))
+        if terminal['kind'] == 'error': assert terminal['error'] in (('cancelled', 'deadline') if allow_deadline else ('cancelled',)) and m['terminationStatus'] == 1
         else:
             assert m['outcome'] == 'cancelled' and terminal['kind'] == 'result' and m['terminationStatus'] == 0
             assert terminal['rawSHA256'] == reference_sha and terminal['rawBytes'] == 2359296
@@ -131,7 +154,8 @@ def process(m, profile, reference_sha, pids, allow_cancel=False, timing_enabled=
             assert ready['rawSHA256'] == reference_sha and not m['outputExistedBeforeCleanup']
 
 
-def validate(root, source, architecture, headless_only=False, timing_enabled=False):
+def validate(root, source, architecture, headless_only=False, timing_enabled=False, exit_strategy="wait-until-exit"):
+    assert exit_strategy in ("wait-until-exit", "termination-latch") and (exit_strategy == "wait-until-exit" or timing_enabled)
     summaries = []; parent_pids = set(); child_pids = set(); inputs = {}
     for profile, width, height in [('4k', 3840, 2160), ('5k', 5120, 2880)]:
         prepared = read(root/f'prepared-{profile}/image-decode-large-inputs.json')
@@ -147,7 +171,7 @@ def validate(root, source, architecture, headless_only=False, timing_enabled=Fal
             assert path.stat().st_size <= 8388608 and hashlib.sha256(path.read_bytes()).hexdigest() == prepared[key]
         for mode in ['production-control', 'isolated-decode']:
             r = read(root/f'{profile}-{mode}'/f'image-decode-large-{mode}.json')
-            base(r, source, architecture, profile, prepared, parent_pids, timing_enabled)
+            base(r, source, architecture, profile, prepared, parent_pids, timing_enabled, exit_strategy)
             assert r['mode'] == mode
             assert r['warmupCycles'] == 2 and r['measuredCycles'] == 12 and len(r['warmups']) == 2 and len(r['cycles']) == 12
             assert r['completedDraws'] == r['completedExactPixelChecks'] == 14
@@ -159,7 +183,7 @@ def validate(root, source, architecture, headless_only=False, timing_enabled=Fal
                     d = c['draw']; memory(d['beforeDraw']); memory(d['afterDraw'])
                     assert d['maximumDifference'] == 0 and d['validatedBytes'] == 2359296 and d['pixelsSHA256'] == prepared['rawSHA256']
                     assert 0 < c['timeToValidatedPixelsSeconds'] <= c['fullLifecycleSeconds'] <= c['observedCycleSeconds']
-                    if mode == 'isolated-decode': process(c['process'], profile, prepared['rawSHA256'], child_pids, timing_enabled=timing_enabled)
+                    if mode == 'isolated-decode': process(c['process'], profile, prepared['rawSHA256'], child_pids, timing_enabled=timing_enabled, exit_strategy=exit_strategy)
                     else: assert 'process' not in c
             assert r['helperInvocations'] == (14 if mode == 'isolated-decode' else 0)
             b, end = r['baselineAfterWarmup'], r['cycles'][-1]['settled']; memory(b); memory(end)
@@ -171,7 +195,7 @@ def validate(root, source, architecture, headless_only=False, timing_enabled=Fal
     if not headless_only:
         for mode in ['native-ui-control', 'native-ui-isolated']:
             r = read(root/f'5k-{mode}'/f'image-decode-large-{mode}.json'); prepared = inputs['5k']
-            base(r, source, architecture, '5k', prepared, parent_pids, timing_enabled)
+            base(r, source, architecture, '5k', prepared, parent_pids, timing_enabled, exit_strategy)
             assert r['mode'] == mode
             assert r['warmupCycles'] == 2 and r['measuredCycles'] == 4 and len(r['warmups']) == 2 and len(r['cycles']) == 4
             assert r['completedSuccessfulNativeDraws'] == r['exactSuccessfulPreviewValidations'] == 6 and r['actualNativeDrawCount'] >= 6
@@ -212,7 +236,7 @@ def validate(root, source, architecture, headless_only=False, timing_enabled=Fal
                 assert w['finishedUptimeSeconds'] >= w['startedUptimeSeconds']
                 if mode == 'native-ui-isolated':
                     assert 'process' in w
-                    process(w['process'], '5k', prepared['rawSHA256'], child_pids, allow_cancel=True, timing_enabled=timing_enabled)
+                    process(w['process'], '5k', prepared['rawSHA256'], child_pids, allow_cancel=True, timing_enabled=timing_enabled, exit_strategy=exit_strategy)
                 else: assert 'process' not in w
                 if w['outcome'] in ('completed', 'completed-after-cancel'): assert w['pixelsSHA256'] == prepared['rawSHA256']
             assert r['helperInvocations'] == sum(w.get('process', {}).get('childLaunched', False) for w in r['workers'])
@@ -228,10 +252,11 @@ def validate(root, source, architecture, headless_only=False, timing_enabled=Fal
         'responsivenessFlagTriggered': any(c['responsivenessFlagTriggered'] for c in summaries if c['mode'].startswith('native-ui')),
     }
     return {'status': 'observed', 'sourceCommit': source, 'architecture': architecture, 'headlessOnly': headless_only,
-        'cells': summaries, 'coverage': coverage, **({'timingInstrumentationVersion': 3} if timing_enabled else {}), 'parentLossVerified': False, 'interpretation': 'Exact bounded previews and native diagnostic UI observations only; no production remedy verdict'}
+        'cells': summaries, 'coverage': coverage, **({'timingInstrumentationVersion': 3} if timing_enabled else {}), **({'exitObservationStrategy': exit_strategy} if exit_strategy != 'wait-until-exit' else {}), 'parentLossVerified': False, 'interpretation': 'Exact bounded previews and native diagnostic UI observations only; no production remedy verdict'}
 
 
-def base(r, source, architecture, profile, prepared, pids, timing_enabled=False):
+def base(r, source, architecture, profile, prepared, pids, timing_enabled=False, exit_strategy="wait-until-exit"):
+    assert r.get("exitObservationStrategy") == (exit_strategy if exit_strategy != "wait-until-exit" else None)
     assert (r.get('timingInstrumentationVersion') == 3) if timing_enabled else ('timingInstrumentationVersion' not in r)
     assert r['protocol'] == 'image-decode-large-parent-v2' and r['status'] == 'observed'
     assert r['sourceCommit'] == source and r['architecture'] == architecture and r['profile'] == profile
@@ -253,10 +278,11 @@ def base(r, source, architecture, profile, prepared, pids, timing_enabled=False)
 
 
 if __name__ == '__main__':
-    if len(sys.argv) not in (4, 5, 6): raise SystemExit('Usage: check-image-decode-large-report.py ROOT SOURCE ARCH [--headless-only] [--timing-v3]')
+    if len(sys.argv) not in (4, 5, 6, 7): raise SystemExit('Usage: check-image-decode-large-report.py ROOT SOURCE ARCH [--headless-only] [--timing-v3] [--termination-latch]')
     flags = sys.argv[4:]
-    if len(flags) != len(set(flags)) or not set(flags).issubset({'--headless-only', '--timing-v3'}): raise SystemExit('Unknown or duplicate mode')
+    if len(flags) != len(set(flags)) or not set(flags).issubset({'--headless-only', '--timing-v3', '--termination-latch'}): raise SystemExit('Unknown or duplicate mode')
+    if '--termination-latch' in flags and '--timing-v3' not in flags: raise SystemExit('Latch requires explicit timing-v3')
     headless = '--headless-only' in flags
-    root = Path(sys.argv[1]); result = validate(root, sys.argv[2], sys.argv[3], headless, '--timing-v3' in flags)
+    root = Path(sys.argv[1]); result = validate(root, sys.argv[2], sys.argv[3], headless, '--timing-v3' in flags, 'termination-latch' if '--termination-latch' in flags else 'wait-until-exit')
     (root/('headless-comparison.json' if headless else 'comparison.json')).write_text(json.dumps(result, indent=2, sort_keys=True)+'\n')
     print(json.dumps(result, indent=2, sort_keys=True))

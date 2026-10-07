@@ -1,0 +1,11 @@
+# Intel synthetic GIF readiness observation
+
+At source `2754b779`, [job 112730667254](https://github.com/dandibbert/picshot/actions/runs/37602641265/job/112730667254) and its unchanged [retry 112745231096](https://github.com/dandibbert/picshot/actions/runs/37602641265/job/112745231096) each fail one of 134 selected tests: `CodecExportProcessTests.testSharedLeaseRejectsCodecWhileGIFChildRunsAndReleasesAfterConfirmedCancel`. The synthetic helper's progress callback was absent at the fixture's three-second observation boundary. Later busy rejection, actual exit, temporary cleanup and lease reacquisition assertions pass. This does not identify the delay's cause.
+
+The new test-only evidence keeps every original assertion, the three-second readiness check, five-second child wall limit, and 20-second synthetic sleep. It records bounded parent task/executable/callback times, poll wake gaps, actual final GIF metrics and three child milestones: interpreter ready, request read and progress written. Readiness is frozen before trace I/O. Throwing paths cancel and join the owned task before deleting its files. No production service or deadline changes.
+
+The trace uses an identity-checked private regular file in the test's owned directory, three records capped at 256 bytes, a 4096-byte file cap and at most two parent reads. Symlink, inode, owner and FIFO checks preserve the original 45-byte stdout protocol. The emitted JSON is limited to 16 KiB and contains no media contents, source paths, environment or raw child stderr.
+
+Missing milestones alone do not prove that Python never started; trace setup or cancellation may interrupt observation. Parent and child monotonic clocks are interpreted within their own process; Unix timestamps permit qualified correlation. Instrumentation adds some cost. Even a passing instrumented run cannot retroactively explain the earlier failures. Native results remain pending until the new source runs on Intel; Linux fixture checks only validate the trace mechanics.
+
+The diagnostic workflow can collect independent decoder timing after a native assertion failure, provided compilation and signed setup passed. The job remains failed and its observations do not establish installer acceptance or a production fix.

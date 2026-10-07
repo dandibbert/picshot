@@ -6,11 +6,15 @@ guard CommandLine.arguments.count == 5 || CommandLine.arguments.count == 6 else 
 }
 let args = CommandLine.arguments, app = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
 let mode = args[2], profile = args[3], evidence = URL(fileURLWithPath: args[4], isDirectory: true)
-let modes = ["prepare", "production-control", "isolated-decode", "native-ui-control", "native-ui-isolated"]
+let modes = ["prepare", "production-control", "isolated-decode", "native-ui-control", "native-ui-isolated", "cancel-after-decode", "timeout-after-decode"]
 let hasInputs = args.count == 6
 let timingSelector = ProcessInfo.processInfo.environment["PICSHOT_IMAGE_DECODE_LARGE_TIMING"]
 guard timingSelector == nil || timingSelector == "3" else { exit(64) }
-let outerDeadline: Double = mode == "prepare" ? 70 : mode.hasPrefix("native-ui") ? 140 : 200
+let exitSelector = ProcessInfo.processInfo.environment["PICSHOT_IMAGE_DECODE_LARGE_EXIT"]
+let probe = mode == "cancel-after-decode" || mode == "timeout-after-decode"
+guard exitSelector == nil || (exitSelector == "termination-latch" && timingSelector == "3"),
+      !probe || (exitSelector == "termination-latch" && profile == "5k") else { exit(64) }
+let outerDeadline: Double = probe ? 30 : mode == "prepare" ? 70 : mode.hasPrefix("native-ui") ? 140 : 200
 let files = FileManager.default, binary = app.appendingPathComponent("Contents/MacOS/PicShot")
 guard modes.contains(mode), ["4k", "5k"].contains(profile), hasInputs == (mode != "prepare"),
       args[1].hasPrefix("/"), args[4].hasPrefix("/"), (!hasInputs || args[5].hasPrefix("/")), app.pathExtension == "app",
@@ -28,6 +32,7 @@ process.standardInput = FileHandle.nullDevice; process.standardOutput = pipe; pr
 process.environment = ["HOME": NSHomeDirectory(), "TMPDIR": files.temporaryDirectory.path, "LANG": "en_US.UTF-8",
     "PICSHOT_SMOKE_TEST": "1", "PICSHOT_SMOKE_REPORT": launchReport.path,
     "PICSHOT_IMAGE_DECODE_LARGE_MODE": mode, "PICSHOT_IMAGE_DECODE_LARGE_PROFILE": profile]
+if let exitSelector { process.environment?["PICSHOT_IMAGE_DECODE_LARGE_EXIT"] = exitSelector }
 if let timingSelector { process.environment?["PICSHOT_IMAGE_DECODE_LARGE_TIMING"] = timingSelector }
 if hasInputs { process.environment?["PICSHOT_IMAGE_DECODE_LARGE_INPUT_DIRECTORY"] = args[5] }
 let start = ProcessInfo.processInfo.systemUptime
@@ -79,4 +84,5 @@ guard let report = try JSONSerialization.jsonObject(with: data) as? [String: Any
       report["status"] as? String == (mode == "prepare" ? "prepared" : "observed"), report["profile"] as? String == profile,
       (mode == "prepare" || report["mode"] as? String == mode), report["processIdentifier"] as? Int == Int(process.processIdentifier) else { exit(1) }
 if timingSelector == "3", mode != "prepare", report["timingInstrumentationVersion"] as? Int != 3 { exit(1) }
+if let exitSelector, mode != "prepare", report["exitObservationStrategy"] as? String != exitSelector { exit(1) }
 print(named.path)

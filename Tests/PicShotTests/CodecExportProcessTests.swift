@@ -66,20 +66,71 @@ final class CodecExportProcessTests: XCTestCase {
         let source = root.appendingPathComponent("source.mp4"); try Data([1]).write(to: source)
         let pythonURL = URL(fileURLWithPath: "/usr/bin/python3")
         guard FileManager.default.isExecutableFile(atPath: pythonURL.path) else { throw CodecProcessTestSupportError.failed("System python3 required for explicitly synthetic protocol test") }
-        let gif = GIFExportProcessService(configuration: .init(executable: { pythonURL }, arguments: ["-u", "-c", "import sys,time;sys.stdin.buffer.readline();print('{\"version\":1,\"kind\":\"progress\",\"fraction\":0}',flush=True);time.sleep(20)"], wallSeconds: 5))
+        let evidence = try CodecGIFReadinessEvidence(root: root)
+        var finalSnapshot: GIFExportProcessSnapshot?
+        defer { evidence.emit(finalSnapshot: finalSnapshot) }
+        let gif = GIFExportProcessService(configuration: .init(executable: {
+            evidence.record("executableClosureEntered")
+            return pythonURL
+        }, arguments: evidence.pythonArguments, wallSeconds: 5))
         let progress = GIFProcessTestProgress()
-        let task = Task { try await gif.export(sourceURL: source, destinationURL: root.appendingPathComponent("not-published.gif")) { progress.record($0) } }
-        let deadline = Date().addingTimeInterval(3)
-        while progress.values.isEmpty, Date() < deadline { try await Task.sleep(nanoseconds: 10_000_000) }
-        XCTAssertFalse(progress.values.isEmpty, "GIF helper never produced its start event")
-        let codec = try python("import sys;sys.exit(1)")
-        do { _ = try await codec.export(sourceURL: source, destinationURL: root.appendingPathComponent("blocked.webp"), options: .init(format: .webp)); XCTFail("Shared native lease admitted a second child") }
-        catch CodecExportProcessError.busy { }
-        task.cancel(); _ = try? await task.value
-        let state = await gif.snapshot()
-        XCTAssertFalse(state.active); XCTAssertEqual(state.lastJob?.temporaryDirectoryRemoved, true)
-        XCTAssertEqual(state.lastJob?.childExitConfirmed, true)
-        let token = try XCTUnwrap(NativeExportAdmission.shared.acquire()); NativeExportAdmission.shared.release(token)
+        evidence.record("beforeTaskCreation")
+        let task = Task {
+            evidence.record("exportTaskEntered")
+            defer { evidence.record("exportTaskFinished") }
+            do {
+                return try await gif.export(sourceURL: source, destinationURL: root.appendingPathComponent("not-published.gif")) {
+                    let callbackEntered = ProcessInfo.processInfo.systemUptime
+                    progress.record($0)
+                    evidence.record("progressStored", fraction: $0, callbackEnteredUptime: callbackEntered)
+                }
+            } catch {
+                evidence.record("exportTaskThrew", errorType: String(reflecting: type(of: error)))
+                throw error
+            }
+        }
+        var joined = false
+        do {
+            let deadline = Date().addingTimeInterval(3)
+            evidence.beginWait(deadline: deadline)
+            while progress.values.isEmpty, Date() < deadline {
+                try await Task.sleep(nanoseconds: 10_000_000)
+                evidence.recordWaitWake()
+            }
+            // Freeze the original assertion's observation before doing file I/O;
+            // a late callback during diagnostics cannot turn a failure into a pass.
+            let valuesAtReadinessCheck = progress.values
+            evidence.endWait(progressCount: valuesAtReadinessCheck.count)
+            XCTAssertFalse(valuesAtReadinessCheck.isEmpty, "GIF helper never produced its start event")
+            evidence.captureChildTrace(phase: "afterReadinessAssertion")
+            let codec = try python("import sys;sys.exit(1)")
+            evidence.record("beforeCodecAdmissionAttempt")
+            do { _ = try await codec.export(sourceURL: source, destinationURL: root.appendingPathComponent("blocked.webp"), options: .init(format: .webp)); XCTFail("Shared native lease admitted a second child") }
+            catch CodecExportProcessError.busy { evidence.record("codecRejectedBusy") }
+            evidence.record("beforeCancellation")
+            task.cancel(); _ = try? await task.value
+            joined = true
+            evidence.record("afterTaskJoin")
+            let state = await gif.snapshot()
+            finalSnapshot = state
+            evidence.captureChildTrace(phase: "afterTaskJoin")
+            XCTAssertFalse(state.active); XCTAssertEqual(state.lastJob?.temporaryDirectoryRemoved, true)
+            XCTAssertEqual(state.lastJob?.childExitConfirmed, true)
+            let token = try XCTUnwrap(NativeExportAdmission.shared.acquire()); NativeExportAdmission.shared.release(token)
+            evidence.record("leaseReacquiredAndReleased")
+        } catch {
+            // Task.sleep, codec setup/export, or XCTUnwrap can throw. Always join
+            // the owned GIF task before the root's existing cleanup removes files.
+            evidence.record("testThrew", errorType: String(reflecting: type(of: error)))
+            if !joined {
+                evidence.record("earlyErrorCancellation")
+                task.cancel(); _ = try? await task.value
+                evidence.record("afterEarlyErrorTaskJoin")
+                finalSnapshot = await gif.snapshot()
+                evidence.captureChildTrace(phase: "afterEarlyErrorTaskJoin")
+            }
+            throw error
+        }
     }
     func testStillInputByteAndPixelLimitsRejectBeforeNativeAllocation() async throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }

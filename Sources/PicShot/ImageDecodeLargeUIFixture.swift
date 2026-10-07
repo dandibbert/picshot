@@ -3,17 +3,18 @@ import PicShotCodecCore
 
 @MainActor
 enum ImageDecodeLargeUIFixture {
-    static func run(input: ImageDecodeLargeInput, isolated: Bool, directory: URL, timingEnabled: Bool = false) async throws -> [String: Any] {
+    static func run(input: ImageDecodeLargeInput, isolated: Bool, directory: URL, timingEnabled: Bool = false, exitStrategy: ImageDecodeExitStrategy = .waitUntilExit) async throws -> [String: Any] {
         guard input.profile == .fiveK else { throw ImageDecodeDiagnosticError.invalidInput }
         _ = NSApplication.shared
         let mode = isolated ? "native-ui-isolated" : "native-ui-control"
         let started = ProcessInfo.processInfo.systemUptime, deadline = started + 120
         let state = ImageDecodeUIState(), pulse = ImageDecodeMainQueueProbe(timingEnabled: timingEnabled), sampler = ImageDecodeMemorySampler()
         defer { pulse.stop(); sampler.stop() }
-        let adapter = try ImageDecodeLargeUIAdapter(input: input, isolated: isolated, deadline: deadline, state: state, timingEnabled: timingEnabled)
+        let adapter = try ImageDecodeLargeUIAdapter(input: input, isolated: isolated, deadline: deadline, state: state, timingEnabled: timingEnabled, exitStrategy: exitStrategy)
         defer { adapter.verifier.close() }
         var report = ImageDecodeLargeSupport.base(mode: mode, input: input)
         if timingEnabled { report["timingInstrumentationVersion"] = 3 }
+        if exitStrategy == .terminationLatch { report["exitObservationStrategy"] = exitStrategy.rawValue }
         report["warmupCycles"] = 2; report["measuredCycles"] = 4; report["maximumRequestGenerations"] = 16
         report["armDeadlineSeconds"] = 120; report["requiredOuterDeadlineSeconds"] = 140
         report["scope"] = "Real ImageExportController controls/scheduling and ImageExportPreviewView native drawing over prepared PNG via encoder injection; excludes full export encoding and saving"

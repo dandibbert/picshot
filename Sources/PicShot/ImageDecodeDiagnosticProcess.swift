@@ -2,6 +2,10 @@ import Foundation
 import Darwin
 import PicShotCodecCore
 
+enum ImageDecodeExitStrategy: String, Sendable {
+    case waitUntilExit = "wait-until-exit", terminationLatch = "termination-latch"
+}
+
 struct ImageDecodeChildPhase: Encodable, Sendable {
     let child: ImageDecodeDiagnosticEvent
     let parentAtReceipt: ImageDecodeMemoryReading
@@ -24,6 +28,11 @@ struct ImageDecodeProcessMetrics: Encodable, Sendable {
     var parentTimingUptimes: [String: Double]?
     var childTimingTrace: ImageDecodeTimingTrace?
     var childTimingTraceStatus: String?
+    var exitObservationStrategy: String?
+    var terminationLatch: ImageDecodeTerminationObservation?
+    var terminationLatchValidationError: String?
+    var terminationHandlerCleared: Bool?
+    var stdoutEOFConfirmed: Bool?, stderrEOFConfirmed: Bool?
     var signaturePhases: [CodecHelperValidationTiming] = []
     var diagnosticProfile: String?
     var boundaryUptimes: [String: Double] = [:]
@@ -38,13 +47,18 @@ final class ImageDecodeDiagnosticProcess: @unchecked Sendable {
     private let lock = NSLock(), mode: Mode
     private let profile: ImageDecodeDiagnosticProfile?
     private let timingEnabled: Bool
+    private let exitStrategy: ImageDecodeExitStrategy
     private let cancellationCheck: @Sendable () -> Bool
     private let observer: (@Sendable (String, Double) -> Void)?
     private var cancelled = false, metrics = ImageDecodeProcessMetrics()
     init(mode: Mode, profile: ImageDecodeDiagnosticProfile? = nil,
-         cancellationCheck: @escaping @Sendable () -> Bool = { false }, observer: (@Sendable (String, Double) -> Void)? = nil, timingEnabled: Bool = false) {
+         cancellationCheck: @escaping @Sendable () -> Bool = { false }, observer: (@Sendable (String, Double) -> Void)? = nil, timingEnabled: Bool = false, exitStrategy: ImageDecodeExitStrategy = .waitUntilExit) {
         self.mode = mode; self.profile = profile; self.cancellationCheck = cancellationCheck; self.observer = observer
-        self.timingEnabled = timingEnabled
+        self.timingEnabled = timingEnabled; self.exitStrategy = exitStrategy
+        if exitStrategy == .terminationLatch {
+            metrics.exitObservationStrategy = exitStrategy.rawValue; metrics.terminationHandlerCleared = false
+            metrics.stdoutEOFConfirmed = false; metrics.stderrEOFConfirmed = false
+        }
         if timingEnabled { metrics.timingInstrumentationVersion = 3; metrics.parentTimingUptimes = [:]; metrics.childTimingTraceStatus = "notLaunched" }
         metrics.diagnosticProfile = profile?.rawValue
     }
@@ -75,10 +89,11 @@ final class ImageDecodeDiagnosticProcess: @unchecked Sendable {
     }
     func run(png: Data, armDeadline: Double) throws -> Data? {
         let started = ProcessInfo.processInfo.systemUptime
-        guard !timingEnabled || profile != nil else { throw ImageDecodeDiagnosticError.invalidProtocol }
+        guard (!timingEnabled || profile != nil), (exitStrategy == .waitUntilExit || (timingEnabled && profile != nil)) else { throw ImageDecodeDiagnosticError.invalidProtocol }
         defer { update { $0.elapsedSeconds = ProcessInfo.processInfo.systemUptime - started } }
         guard let lease = NativeExportAdmission.shared.acquire() else { throw CodecExportProcessError.busy }
         var job: ImageDecodeDiagnosticJob?, process: Process?
+        var terminationLatch: ImageDecodeTerminationLatch?
         var stagingFailure: ImageDecodeDiagnosticCreationFailure?
         var exited = false, launched = false
         defer {
@@ -95,9 +110,14 @@ final class ImageDecodeDiagnosticProcess: @unchecked Sendable {
                 else if let job { NativeExportAdmission.shared.retainUntilRecovered(lease) { job.removeAfterExit() } }
                 boundary("cleanupFinished")
             } else if let process, let job {
+                let retainedTerminationLatch = terminationLatch
                 NativeExportAdmission.shared.retainUntilRecovered(lease) {
                     guard !process.isRunning else { return false }
-                    process.waitUntilExit(); return job.removeAfterExit()
+                    if let retainedTerminationLatch {
+                        guard (try? retainedTerminationLatch.validateCompletion(for: process)) != nil else { return false }
+                        process.terminationHandler = nil
+                    } else { process.waitUntilExit() }
+                    return job.removeAfterExit()
                 }
             }
         }
@@ -141,6 +161,19 @@ final class ImageDecodeDiagnosticProcess: @unchecked Sendable {
             child.currentDirectoryURL = files.directory
             child.environment = ["HOME": NSHomeDirectory(), "TMPDIR": files.directory.path, "LANG": "en_US.UTF-8"]
             child.standardInput = input; child.standardOutput = output; child.standardError = errors
+            if exitStrategy == .terminationLatch {
+                terminationLatch = try ImageDecodeTerminationLatch.install(on: child)
+                timing("terminationHandlerInstalled")
+                update { $0.terminationLatch = terminationLatch?.snapshot() }
+            }
+            defer {
+                if let terminationLatch {
+                    update { $0.terminationLatch = terminationLatch.snapshot() }
+                    if !launched || exited {
+                        child.terminationHandler = nil; update { $0.terminationHandlerCleared = true }
+                    }
+                }
+            }
             let inputFD = input.fileHandleForWriting.fileDescriptor
             for fd in [inputFD, output.fileHandleForReading.fileDescriptor, errors.fileHandleForReading.fileDescriptor] {
                 let flags = fcntl(fd, F_GETFL)
@@ -168,7 +201,14 @@ final class ImageDecodeDiagnosticProcess: @unchecked Sendable {
             func drain(_ fd: Int32, stderr: Bool) {
                 for _ in 0..<40 {
                     let n = Darwin.read(fd, &buffer, buffer.count)
-                    if n == 0 { if stderr { errClosed = true } else { outClosed = true }; return }
+                    if n == 0 {
+                        if stderr { errClosed = true } else { outClosed = true }
+                        if exitStrategy == .terminationLatch {
+                            update { if stderr { $0.stderrEOFConfirmed = true } else { $0.stdoutEOFConfirmed = true } }
+                            timing(stderr ? "stderrEOFObserved" : "stdoutEOFObserved")
+                        }
+                        return
+                    }
                     if n < 0 { if errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK { failure = failure ?? .invalidProtocol }; return }
                     let readReturned = timingEnabled ? ProcessInfo.processInfo.systemUptime : 0
                     if stderr {
@@ -241,9 +281,33 @@ final class ImageDecodeDiagnosticProcess: @unchecked Sendable {
                 if timingEnabled ? observedRunning() : child.isRunning { Thread.sleep(forTimeInterval: 0.005) }
             }
             timing("terminationObserved")
-            timing("waitUntilExitStarted")
-            child.waitUntilExit()
-            timing("waitUntilExitCompleted"); exited = true
+            if let terminationLatch {
+                timing("terminationLatchWaitStarted")
+                let confirmationDeadline = min(armDeadline, launchStart + ImageDecodeDiagnosticLimits.exitSeconds)
+                while terminationLatch.snapshot().callbackCount == 0 {
+                    // Keep consuming bounded pipes while awaiting callback publication.
+                    // Cancellation never skips confirmation or releases the owned lease.
+                    if !outClosed { drain(output.fileHandleForReading.fileDescriptor, stderr: false) }
+                    if !errClosed { drain(errors.fileHandleForReading.fileDescriptor, stderr: true) }
+                    if terminationLatch.snapshot().callbackCount > 0 { break }
+                    guard ProcessInfo.processInfo.systemUptime < confirmationDeadline else { throw ImageDecodeDiagnosticError.exitUnconfirmed }
+                    Thread.sleep(forTimeInterval: 0.005)
+                }
+                let observation: ImageDecodeTerminationObservation
+                do { observation = try terminationLatch.validateCompletion(for: child) }
+                catch {
+                    update { $0.terminationLatchValidationError = String(describing: error) }
+                    throw ImageDecodeDiagnosticError.invalidProtocol
+                }
+                guard let publication = observation.callbackPublishedUptimeSeconds, publication <= confirmationDeadline else { throw ImageDecodeDiagnosticError.exitUnconfirmed }
+                update { $0.terminationLatch = observation }
+                timing("terminationLatchValidated")
+            } else {
+                timing("waitUntilExitStarted")
+                child.waitUntilExit()
+                timing("waitUntilExitCompleted")
+            }
+            exited = true
             boundary("childExitConfirmed")
             update { $0.exitConfirmed = true; $0.terminationStatus = child.terminationStatus; $0.terminationReason = child.terminationReason == .exit ? "exit" : "uncaughtSignal"
                 $0.launchThroughExitSeconds = ProcessInfo.processInfo.systemUptime - launchStart; $0.lastStage = "pipeDrain" }

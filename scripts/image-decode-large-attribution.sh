@@ -1,19 +1,25 @@
 #!/bin/bash
 # Explicit standalone diagnostic. No default release hook or installer.
 set -euo pipefail
-if [[ $# -ne 3 || ( "$1" != --compare && "$1" != --timing-v3 ) ]]; then
-  echo 'Usage: image-decode-large-attribution.sh {--compare|--timing-v3} /absolute/PicShot.app /absolute/new-evidence-directory' >&2
+if [[ $# -ne 3 || ( "$1" != --compare && "$1" != --timing-v3 && "$1" != --termination-latch ) ]]; then
+  echo 'Usage: image-decode-large-attribution.sh {--compare|--timing-v3|--termination-latch} /absolute/PicShot.app /absolute/new-evidence-directory' >&2
   exit 64
 fi
 cd "$(dirname "$0")/.."
 app="$2"; root="$3"
-if [[ "$1" == --timing-v3 ]]; then
+unset PICSHOT_IMAGE_DECODE_LARGE_EXIT
+if [[ "$1" == --termination-latch ]]; then
+  export PICSHOT_IMAGE_DECODE_LARGE_TIMING=3
+  export PICSHOT_IMAGE_DECODE_LARGE_EXIT=termination-latch
+elif [[ "$1" == --timing-v3 ]]; then
   export PICSHOT_IMAGE_DECODE_LARGE_TIMING=3
 else
   unset PICSHOT_IMAGE_DECODE_LARGE_TIMING
 fi
 check_report() {
-  if [[ "${PICSHOT_IMAGE_DECODE_LARGE_TIMING:-}" == 3 ]]; then
+  if [[ "${PICSHOT_IMAGE_DECODE_LARGE_EXIT:-}" == termination-latch ]]; then
+    python3 scripts/check-image-decode-large-report.py "$@" --timing-v3 --termination-latch
+  elif [[ "${PICSHOT_IMAGE_DECODE_LARGE_TIMING:-}" == 3 ]]; then
     python3 scripts/check-image-decode-large-report.py "$@" --timing-v3
   else
     python3 scripts/check-image-decode-large-report.py "$@"

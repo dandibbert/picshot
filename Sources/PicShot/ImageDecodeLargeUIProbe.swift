@@ -116,9 +116,10 @@ final class ImageDecodeLargeUIRasterVerifier: @unchecked Sendable {
 final class ImageDecodeLargeUIAdapter: @unchecked Sendable {
     let input: ImageDecodeLargeInput, isolated: Bool, deadline: Double
     let timingEnabled: Bool
+    let exitStrategy: ImageDecodeExitStrategy
     let state: ImageDecodeUIState, providers: ImageDrawAllocationTracker, verifier: ImageDecodeLargeUIRasterVerifier
-    init(input: ImageDecodeLargeInput, isolated: Bool, deadline: Double, state: ImageDecodeUIState, timingEnabled: Bool = false) throws {
-        self.input = input; self.isolated = isolated; self.deadline = deadline; self.state = state; self.timingEnabled = timingEnabled
+    init(input: ImageDecodeLargeInput, isolated: Bool, deadline: Double, state: ImageDecodeUIState, timingEnabled: Bool = false, exitStrategy: ImageDecodeExitStrategy = .waitUntilExit) throws {
+        self.input = input; self.isolated = isolated; self.deadline = deadline; self.state = state; self.timingEnabled = timingEnabled; self.exitStrategy = exitStrategy
         providers = .init(maximumAllocations: 16, allocationBytes: input.profile.rasterBytes)
         verifier = try .init(profile: input.profile)
     }
@@ -137,7 +138,7 @@ final class ImageDecodeLargeUIAdapter: @unchecked Sendable {
             let image: CGImage
             if isolated {
                 let child = ImageDecodeDiagnosticProcess(mode: scenario == .closeDecoded ? .holdForCancellation : .decode, profile: input.profile,
-                    cancellationCheck: { token.isCancelled }, observer: { [state] name, time in state.stage(index, name, time) }, timingEnabled: timingEnabled)
+                    cancellationCheck: { token.isCancelled }, observer: { [state] name, time in state.stage(index, name, time) }, timingEnabled: timingEnabled, exitStrategy: exitStrategy)
                 process = child
                 let raw = try child.run(png: input.png, armDeadline: deadline), metrics = child.snapshot()
                 guard metrics.cleanupConfirmed, metrics.admissionReleased, !metrics.childLaunched || metrics.exitConfirmed else { throw ImageDecodeDiagnosticError.exitUnconfirmed }
