@@ -68,6 +68,15 @@ extension ScrollImageIO {
                 : CGRect(x: strip.outputStart, y: 0, width: strip.block.length, height: layout.height)
             let clipped = stripRect.intersection(request.outputRect)
             guard !clipped.isNull, !clipped.isEmpty else { continue }
+            let pixels = ScrollPreviewGeometry.sampledPixelRange(
+                strip.outputStart..<(strip.outputStart + strip.block.length),
+                requestStart: Int(axis == .vertical ? request.outputRect.minY : request.outputRect.minX),
+                requestLength: Int(axis == .vertical ? request.outputRect.height : request.outputRect.width),
+                pixelLength: axis == .vertical ? request.pixelHeight : request.pixelWidth)
+            guard !pixels.isEmpty else { continue }
+            let pixelClip = axis == .vertical
+                ? CGRect(x: 0, y: request.pixelHeight - pixels.upperBound, width: request.pixelWidth, height: pixels.count)
+                : CGRect(x: pixels.lowerBound, y: 0, width: pixels.count, height: request.pixelHeight)
             guard let source = sources.first(where: { $0.id == strip.block.sourceID }) else {
                 throw ScrollSequenceImageError.missingSource
             }
@@ -99,7 +108,7 @@ extension ScrollImageIO {
                     ? CGRect(x: 0, y: origin, width: source.width, height: source.height)
                     : CGRect(x: origin, y: 0, width: source.width, height: source.height)
                 context.saveGState()
-                context.clip(to: destination(clipped))
+                context.clip(to: pixelClip)
                 context.draw(image, in: destination(sourceRect))
                 context.restoreGState()
             }

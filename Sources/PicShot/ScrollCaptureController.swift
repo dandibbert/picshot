@@ -166,15 +166,22 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 10
+        stack.distribution = .fill
+        // Give remaining inspector space to the preview. Tool rows keep their natural
+        // heights, and expanded trimming controls reclaim space from the preview.
+        for row in stack.arrangedSubviews where row !== preview {
+            row.setContentHuggingPriority(.required, for: .vertical)
+        }
+        preview.setContentHuggingPriority(.defaultLow, for: .vertical)
         stack.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(stack)
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
             stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
             stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
-            stack.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -20),
+            stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20),
             preview.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            preview.heightAnchor.constraint(equalToConstant: 230),
+            preview.heightAnchor.constraint(greaterThanOrEqualToConstant: 230),
             explanation.widthAnchor.constraint(equalTo: stack.widthAnchor),
             status.widthAnchor.constraint(equalTo: stack.widthAnchor)
         ])

@@ -53,6 +53,24 @@ public enum ScrollPreviewGeometry {
         return Int(min(CGFloat(length - 1), max(0, floor(fraction * CGFloat(length)))))
     }
 
+    /// Integer destination pixels whose centers lie in the half-open output band.
+    /// Shared edges get the same integer boundary on both sides, including exact ties.
+    /// This avoids CoreGraphics independently rounding adjacent fractional clip edges.
+    public static func sampledPixelRange(_ range: Range<Int>, requestStart: Int,
+                                         requestLength: Int, pixelLength: Int) -> Range<Int> {
+        guard requestLength > 0, requestLength <= ScrollCaptureSequence.maximumOutputDimension,
+              pixelLength > 0, pixelLength <= ScrollPreviewTileRequest.maximumTileDimension,
+              requestStart >= 0, requestStart <= ScrollCaptureSequence.maximumOutputDimension - requestLength else { return 0..<0 }
+        func boundary(_ coordinate: Int) -> Int {
+            let clipped = min(requestStart + requestLength, max(requestStart, coordinate))
+            let delta = clipped - requestStart
+            // ceil(delta * pixelLength / requestLength - 0.5), evaluated as exact
+            // bounded integer arithmetic: products <= 67,108,864; numerator <= 67,141,631.
+            return (2 * delta * pixelLength + requestLength - 1) / (2 * requestLength)
+        }
+        return boundary(range.lowerBound)..<boundary(range.upperBound)
+    }
+
     public static func bandRect(_ range: Range<Int>, imageRect: CGRect, length: Int, axis: ScrollAxis) -> CGRect {
         guard length > 0 else { return .zero }
         let scale = (axis == .vertical ? imageRect.height : imageRect.width) / CGFloat(length)
@@ -80,6 +98,7 @@ public struct ScrollPreviewTileRequest: Sendable, Equatable {
     public init(outputSize: CGSize, visibleRect: CGRect, displayScale: CGFloat) throws {
         guard outputSize.width.isFinite, outputSize.height.isFinite,
               outputSize.width > 0, outputSize.height > 0,
+              outputSize.width.rounded() == outputSize.width, outputSize.height.rounded() == outputSize.height,
               outputSize.width <= CGFloat(ScrollCaptureSequence.maximumOutputDimension),
               outputSize.height <= CGFloat(ScrollCaptureSequence.maximumOutputDimension),
               visibleRect.origin.x.isFinite, visibleRect.origin.y.isFinite,

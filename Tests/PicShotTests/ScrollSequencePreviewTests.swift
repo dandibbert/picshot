@@ -92,7 +92,8 @@ final class ScrollSequencePreviewTests: XCTestCase {
                     let actualBytes = try pixels(actual), expectedBytes = try pixels(expected)
                     XCTAssertEqual(actualBytes.count, expectedBytes.count)
                     let mismatch = actualBytes.indices.first { actualBytes[$0] != expectedBytes[$0] }
-                    XCTAssertNil(mismatch, "\(axis.rawValue), start \(start), scale \(sampleScale), first differing byte \(mismatch ?? -1)")
+                    let channelValues = mismatch.map { "actual \(actualBytes[$0]), expected \(expectedBytes[$0])" } ?? "equal"
+                    XCTAssertNil(mismatch, "\(axis.rawValue), start \(start), scale \(sampleScale), first differing byte \(mismatch ?? -1), \(channelValues)")
                     XCTAssertLessThanOrEqual(actual.width * actual.height, ScrollPreviewTileRequest.maximumTilePixels)
                 }
             }
@@ -127,15 +128,25 @@ final class ScrollSequencePreviewTests: XCTestCase {
         for axis in ScrollAxis.allCases {
             let fixture = try fixture(axis)
             defer { try? FileManager.default.removeItem(at: fixture.root) }
+            traceOwnedWindow("creating", axis: axis)
             let window = NSWindow(contentRect: CGRect(x: -400, y: 10, width: 380, height: 230),
                                   styleMask: [.titled], backing: .buffered, defer: false)
-            defer { window.close() }
+            // ARC owns this raw window, as it does the controller-owned windows.
+            // AppKit must not send its legacy release-on-close in addition to ARC.
+            window.isReleasedWhenClosed = false
             let preview = ScrollSequencePreview(frame: CGRect(x: 0, y: 0, width: 380, height: 230))
             window.contentView = preview
+            defer {
+                window.close()
+                // Access after Close verifies the owner retains a live native window.
+                XCTAssertTrue(window.contentView === preview)
+                traceOwnedWindow("closed with ARC owner alive", axis: axis)
+            }
             let thumbnail = try ScrollImageIO.sequenceThumbnail(fixture.sources, layout: fixture.layout, axis: axis)
             preview.image = NSImage(cgImage: thumbnail, size: NSSize(width: thumbnail.width, height: thumbnail.height))
             let latest = fixture.sequence.viewportOffset..<(fixture.sequence.viewportOffset + 400)
             preview.updateProjection(layout: fixture.layout, axis: axis, sources: fixture.sources, viewport: latest)
+            traceOwnedWindow("configured", axis: axis)
             for appearance in [NSAppearance.Name.aqua, .darkAqua] {
                 window.appearance = NSAppearance(named: appearance)
                 let beginning = try button("beginning", in: preview); beginning.performClick(nil)
@@ -158,6 +169,7 @@ final class ScrollSequencePreviewTests: XCTestCase {
                     preview.cacheDisplay(in: preview.bounds, to: bitmap)
                     XCTAssertGreaterThan(bitmap.pixelsWide, 0)
                 } else { XCTFail("Cannot render owned preview view") }
+                traceOwnedWindow("rendered " + appearance.rawValue, axis: axis)
             }
             preview.showFit(); preview.allowsSelection = true
             let first = fixture.layout.strips[0]
@@ -186,7 +198,13 @@ final class ScrollSequencePreviewTests: XCTestCase {
             XCTAssertEqual(preview.snapshotForVerification["sourceReferences"] as? Int, 0)
             XCTAssertEqual(preview.snapshotForVerification["activeJobs"] as? Int, 0)
             XCTAssertEqual(preview.snapshotForVerification["cachedTiles"] as? Int, 0)
+            traceOwnedWindow("selection and cancellation drained", axis: axis)
         }
+    }
+    private func traceOwnedWindow(_ phase: String, axis: ScrollAxis) {
+        // Immediate phase evidence survives a native process crash without changing
+        // window ownership or skipping any interaction/appearance/cleanup assertions.
+        try? FileHandle.standardError.write(contentsOf: Data("scroll-preview-owned \(axis.rawValue): \(phase)\n".utf8))
     }
     private func button(_ name: String, in view: NSView) throws -> NSButton {
         func descendants(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + descendants($0) } }

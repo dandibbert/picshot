@@ -74,6 +74,41 @@ final class ScrollPreviewGeometryTests: XCTestCase {
             visibleRect: CGRect(x: 0, y: 0, width: 50, height: 300), displayScale: 1))
     }
 
+    func testSharedPixelCenterOwnershipMatchesIndependentRationalOracle() {
+        // These are the compact boundaries produced by the deleted-band/block fixture.
+        let boundaries = [0, 187, 324, 624, 683, 782, 1_085, 1_318, 1_618]
+        for start in [0, 50, 187, 487, 620, 946, 1_318] {
+            for pixels in [1, 55, 92, 137, 172, 206, 274, 1_024] {
+                let length = 274
+                var owners = [Int](repeating: 0, count: pixels)
+                for index in 0..<(boundaries.count - 1) {
+                    let band = boundaries[index]..<boundaries[index + 1]
+                    let actual = ScrollPreviewGeometry.sampledPixelRange(band,
+                        requestStart: start, requestLength: length, pixelLength: pixels)
+                    // Enumerate pixel centers as rational document coordinates, without
+                    // rounding a clip edge or using the production boundary calculation.
+                    let expected = (0..<pixels).filter { pixel in
+                        let numerator = (2 * pixel + 1) * length + 2 * pixels * start
+                        return numerator >= band.lowerBound * 2 * pixels && numerator < band.upperBound * 2 * pixels
+                    }
+                    XCTAssertEqual(Array(actual), expected, "start \(start), pixels \(pixels), band \(band)")
+                    for pixel in actual { owners[pixel] += 1 }
+                }
+                XCTAssertTrue(owners.allSatisfy { $0 == 1 }, "Every tile pixel has exactly one strip owner")
+            }
+        }
+        // The four native failures are these same two boundaries on the two axes.
+        XCTAssertEqual(ScrollPreviewGeometry.sampledPixelRange(0..<187, requestStart: 0, requestLength: 274, pixelLength: 92), 0..<63)
+        XCTAssertEqual(ScrollPreviewGeometry.sampledPixelRange(624..<683, requestStart: 620, requestLength: 274, pixelLength: 172), 3..<40)
+        // At an exact center tie, the half-open band beginning there owns that pixel.
+        XCTAssertEqual(ScrollPreviewGeometry.sampledPixelRange(0..<3, requestStart: 0, requestLength: 6, pixelLength: 3), 0..<1)
+        XCTAssertEqual(ScrollPreviewGeometry.sampledPixelRange(3..<6, requestStart: 0, requestLength: 6, pixelLength: 3), 1..<3)
+        XCTAssertEqual(ScrollPreviewGeometry.sampledPixelRange(Int.min..<Int.max, requestStart: 0, requestLength: 32_768, pixelLength: 1_024), 0..<1_024)
+        XCTAssertTrue(ScrollPreviewGeometry.sampledPixelRange(0..<100, requestStart: Int.max, requestLength: 10, pixelLength: 1).isEmpty)
+        XCTAssertThrowsError(try ScrollPreviewTileRequest(outputSize: CGSize(width: 100.5, height: 1_600),
+            visibleRect: CGRect(x: 0, y: 0, width: 50, height: 300), displayScale: 1))
+    }
+
     func testCenterClampsAtBothEdgesAndFitCentersCrossAxis() {
         let output = CGSize(width: 100, height: 2_000), viewport = CGRect(x: 5, y: 29, width: 250, height: 150)
         XCTAssertEqual(ScrollPreviewGeometry.clampedCenter(CGPoint(x: -900, y: -900), output: output, viewport: viewport, scale: 0.5), CGPoint(x: 50, y: 150))
