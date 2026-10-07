@@ -31,7 +31,7 @@ FREEHAND_PENCIL = {
 }
 FREEHAND_HIGHLIGHTER = {
     'nativeControlsReachable', 'freehandAndRectangleReachable', 'blendChangesDarkPixels',
-    'selectedBlendUndoRedoExact', 'rectangleHidesStrokeOnlyControls',
+    'selectedBlendUndoRedoExact', 'smoothedReversalRetainsInkAndBlend', 'rectangleHidesStrokeOnlyControls',
 }
 POINT_CHECKS = {'boundedDuringGesture', 'endpointsPreserved', 'simplificationDisclosed', 'singleUndoState'}
 LINE_CHECKS = {

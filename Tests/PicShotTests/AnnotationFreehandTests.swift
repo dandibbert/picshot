@@ -113,6 +113,60 @@ final class AnnotationFreehandTests: XCTestCase {
         assertPixel(try pixel(render(black, [mark]), x: 70, y: 60), near: [41, 41, 0, 255])
     }
 
+    func testSmoothedReversalRetainsAnalyticTurnAcrossAxesAndDirections() throws {
+        let vectors = [CGPoint(x: 160, y: 0), CGPoint(x: 0, y: 160), CGPoint(x: 120, y: 120), CGPoint(x: -120, y: 0)]
+        for vector in vectors {
+            let start = CGPoint(x: 140, y: 40)
+            let end = CGPoint(x: start.x + vector.x, y: start.y + vector.y)
+            var mark = ImageAnnotation(tool: .highlighter, points: [start, end, start], color: yellow, lineWidth: 12)
+            mark.highlighterMode = .freehand; mark.freehandSmoothing = true
+            let turn = CGPoint(x: start.x + vector.x * 0.75, y: start.y + vector.y * 0.75)
+            let beyondMidpoint = CGPoint(x: start.x + vector.x * 0.625, y: start.y + vector.y * 0.625)
+            XCTAssertEqual(mark.freehandPath.currentPoint, start)
+            XCTAssertTrue(mark.freehandInkPath().contains(turn), "The returning smoothed segment must retain its analytic extremum")
+            XCTAssertTrue(mark.hitTest(beyondMidpoint, tolerance: 0), "Visible returning ink must remain selectable")
+            let rendered = try render(base(), [mark])
+            XCTAssertNotEqual(try pixel(rendered, x: Int(beyondMidpoint.x), y: Int(beyondMidpoint.y)), [255, 255, 255, 255])
+            var reverse = mark; reverse.points.reverse()
+            XCTAssertEqual(try bytes(rendered), try bytes(render(base(), [reverse])))
+        }
+    }
+
+    func testSmoothedReversalDarkPixelsBlendOnceAndPreserveOutside() throws {
+        let black = try base(color: CGColor(gray: 0, alpha: 1))
+        var mark = ImageAnnotation(tool: .highlighter,
+            points: [CGPoint(x: 20, y: 60), CGPoint(x: 120, y: 60), CGPoint(x: 20, y: 60)], color: yellow, lineWidth: 20)
+        mark.highlighterMode = .freehand; mark.freehandSmoothing = true
+        mark.highlighterBlend = .multiply
+        let multiply = try render(black, [mark])
+        mark.highlighterBlend = .translucent
+        let normal = try render(black, [mark])
+        // x=85 lies beyond the curve's coincident endpoints (x=70), before its
+        // analytic turn at x=95. Formerly the stroked outline omitted this ink.
+        XCTAssertEqual(try pixel(multiply, x: 85, y: 60), [0, 0, 0, 255])
+        assertPixel(try pixel(normal, x: 85, y: 60), near: [82, 82, 0, 255])
+        assertPixel(try pixel(normal, x: 50, y: 60), near: [82, 82, 0, 255])
+        XCTAssertEqual(try pixel(normal, x: 85, y: 90), [0, 0, 0, 255])
+        XCTAssertNotEqual(try bytes(multiply), try bytes(normal))
+        mark.opacity = 0.5
+        assertPixel(try pixel(render(black, [mark]), x: 85, y: 60), near: [41, 41, 0, 255])
+    }
+
+    func testUnequalCollinearReturnUsesQuadraticExtremumAndNotControlPoint() throws {
+        var mark = ImageAnnotation(tool: .freehand,
+            points: [CGPoint(x: 20, y: 60), CGPoint(x: 120, y: 60), CGPoint(x: 40, y: 60)], lineWidth: 4)
+        mark.freehandSmoothing = true
+        // Quadratic from 70 via 120 to 80 has derivative zero at t=5/9.
+        XCTAssertEqual(mark.freehandPath.boundingBoxOfPath.maxX, 880.0 / 9.0, accuracy: 0.000001)
+        XCTAssertEqual(mark.freehandPath.currentPoint, CGPoint(x: 40, y: 60))
+        XCTAssertTrue(mark.hitTest(CGPoint(x: 95, y: 60), tolerance: 0))
+        XCTAssertFalse(mark.hitTest(CGPoint(x: 120, y: 60), tolerance: 0))
+        let image = try render(base(), [mark])
+        var reversed = mark; reversed.points.reverse()
+        let a = try bytes(image), b = try bytes(render(base(), [reversed]))
+        XCTAssertLessThanOrEqual(zip(a, b).map { abs(Int($0.0) - Int($0.1)) }.max() ?? 0, 2)
+    }
+
     func testSinglePointTinyMarksAndFreehandHitTestingUseVisibleInk() throws {
         for tool in [ImageEditorTool.freehand, .highlighter] {
             var dot = ImageAnnotation(tool: tool, points: [CGPoint(x: 50, y: 50)], color: yellow, lineWidth: 12)

@@ -57,12 +57,38 @@ enum AnnotationFreehandGeometry {
             if end > start + 1 {
                 path.addLine(to: midpoint(points[start], points[start + 1]))
                 for index in (start + 1)..<end {
-                    path.addQuadCurve(to: midpoint(points[index], points[index + 1]), control: points[index])
+                    appendQuadratic(to: path, end: midpoint(points[index], points[index + 1]), control: points[index])
                 }
             }
             path.addLine(to: points[end]); start = end
         }
         return path
+    }
+
+    /// Core Graphics can discard a collinear quadratic that doubles back, notably
+    /// one whose endpoints coincide. Its exact locus is two straight segments at
+    /// the derivative's zero, so preserve that turn explicitly before stroking.
+    /// Ordinary curves and the smoothed curve's endpoints/hull stay unchanged.
+    private static func appendQuadratic(to path: CGMutablePath, end: CGPoint, control: CGPoint) {
+        let start = path.currentPoint
+        let a = CGPoint(x: control.x - start.x, y: control.y - start.y)
+        let b = CGPoint(x: end.x - control.x, y: end.y - control.y)
+        let cross = a.x * b.y - a.y * b.x
+        let dot = a.x * b.x + a.y * b.y
+        let scale = hypot(a.x, a.y) * hypot(b.x, b.y)
+        if scale.isFinite, scale > 0, dot < 0, abs(cross) <= scale * 1e-12 {
+            let divisor = abs(a.x - b.x) >= abs(a.y - b.y) ? a.x - b.x : a.y - b.y
+            let numerator = abs(a.x - b.x) >= abs(a.y - b.y) ? a.x : a.y
+            let t = numerator / divisor
+            if t.isFinite, t > 0, t < 1 {
+                let oneMinusT = 1 - t
+                let turn = CGPoint(x: oneMinusT * oneMinusT * start.x + 2 * oneMinusT * t * control.x + t * t * end.x,
+                                   y: oneMinusT * oneMinusT * start.y + 2 * oneMinusT * t * control.y + t * t * end.y)
+                path.addLine(to: turn); path.addLine(to: end)
+                return
+            }
+        }
+        path.addQuadCurve(to: end, control: control)
     }
 }
 

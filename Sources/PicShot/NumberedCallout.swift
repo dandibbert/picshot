@@ -174,8 +174,17 @@ final class NumberedCalloutCommentSession: NSObject, NSTextViewDelegate {
         if box.input.string != bounded { box.input.string = bounded }
     }
     func close() {
+        // End native editing while undoManager(for:) still returns this session's
+        // manager. Detaching the delegate first lets teardown fall back to the
+        // window's undo manager, and removing actions alone does not end typing.
+        if let window = box.window, window.firstResponder === box.input {
+            window.makeFirstResponder(nil)
+        }
+        box.input.breakUndoCoalescing()
+        box.input.allowsUndo = false
+        inputUndoManager.removeAllActions()
         box.input.delegate = nil; box.input.onAccept = nil; box.input.onCancel = nil
-        box.onAccept = nil; box.onCancel = nil; inputUndoManager.removeAllActions()
+        box.onAccept = nil; box.onCancel = nil
         box.removeFromSuperview()
     }
 }

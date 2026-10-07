@@ -102,6 +102,66 @@ final class NumberedCalloutInteractionTests: XCTestCase {
     }
 
     @MainActor
+    func testTypedCommentCloseReleasesInputWithWindowAndUndoManagersStillOwned() async throws {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 400, height: 200),
+                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let content = NSView(frame: CGRect(x: 0, y: 0, width: 400, height: 200))
+        window.contentView = content; window.makeKeyAndOrderFront(nil)
+        let windowUndo = try XCTUnwrap(window.undoManager), sentinel = NSObject()
+        var unrelatedUndoPerformed = false
+        windowUndo.groupsByEvent = false
+        windowUndo.beginUndoGrouping()
+        windowUndo.registerUndo(withTarget: sentinel) { _ in unrelatedUndoPerformed = true }
+        windowUndo.endUndoGrouping()
+        defer { windowUndo.removeAllActions() }
+        var localUndo: UndoManager?
+        weak var weakInput: InlineAnnotationTextView?
+        weak var weakSession: NumberedCalloutCommentSession?
+        try autoreleasepool {
+            let session = NumberedCalloutCommentSession(annotation: ImageAnnotation(tool: .number, points: [.zero]),
+                frame: CGRect(x: 10, y: 10, width: 250, height: 100), zoom: 1)
+            weakSession = session; weakInput = session.box.input
+            content.addSubview(session.box); session.box.layoutSubtreeIfNeeded()
+            XCTAssertTrue(window.makeFirstResponder(session.box.input))
+            localUndo = try XCTUnwrap(session.box.input.undoManager)
+            XCTAssertFalse(localUndo === windowUndo)
+            session.box.input.insertText("Uncommitted 中 👩🏽‍💻", replacementRange: NSRange(location: 0, length: 0))
+            XCTAssertTrue(localUndo?.canUndo == true)
+            // No acceptance, cancellation command or explicit coalescing break
+            // precedes close: this is the active-typing teardown path.
+            session.close(); session.close()
+            XCTAssertFalse(window.firstResponder === session.box.input)
+            XCTAssertNil(session.box.input.delegate); XCTAssertNil(session.box.superview)
+            XCTAssertFalse(localUndo?.canUndo == true); XCTAssertFalse(localUndo?.canRedo == true)
+            XCTAssertTrue(windowUndo.canUndo, "Closing a comment must preserve unrelated window undo")
+        }
+        try await Task.sleep(nanoseconds: 10_000_000)
+        XCTAssertNil(weakSession); XCTAssertNil(weakInput)
+        XCTAssertNotNil(localUndo, "Keep the local manager alive to detect retained text undo targets")
+        windowUndo.undo(); XCTAssertTrue(unrelatedUndoPerformed)
+    }
+
+    @MainActor
+    func testTypedCommentCloseReleasesFrozenAndNormalEditorsRepeatedly() async throws {
+        _ = NSApplication.shared
+        guard let screen = NSScreen.main, let displayID = screen.displayID,
+              screen.frame.width >= 760, screen.frame.height >= 600 else {
+            throw XCTSkip("Owned-window callout close fixture needs a 760 × 600 WindowServer display")
+        }
+        let frame = CGRect(origin: screen.frame.origin, size: CGSize(width: min(960, screen.frame.width), height: 600))
+        let capture = try CapturedImage.frozenRegion(image: ImageEditorRenderer.makeSampleImage(), displayID: displayID,
+            displayFrame: frame, selection: CGRect(x: 30, y: 80, width: frame.width - 60, height: 430))
+        for frozen in [false, true] {
+            for _ in 0..<3 {
+                try await NumberedCalloutAcceptanceFixture.verifyUncommittedCommentClose(capture, frozenPresentation: frozen)
+            }
+        }
+    }
+
+    @MainActor
     private func mouse(_ canvas: ImageEditorCanvas, _ type: NSEvent.EventType, _ point: CGPoint) throws -> NSEvent {
         try XCTUnwrap(NSEvent.mouseEvent(with: type, location: canvas.convert(CGPoint(x: point.x * canvas.zoom, y: point.y * canvas.displayScaleY), to: nil),
             modifierFlags: [], timestamp: 0, windowNumber: canvas.window?.windowNumber ?? 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))

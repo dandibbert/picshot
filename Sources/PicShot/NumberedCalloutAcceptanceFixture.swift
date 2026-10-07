@@ -71,14 +71,7 @@ enum NumberedCalloutAcceptanceFixture {
             }
             evidence.checks["allFourEdgePalettesVisibleAndImageAnchored"] = true
             for _ in 0..<6 {
-                try await withEditor(captured) { editor in
-                    let canvas = editor.annotationCanvas
-                    try choose(.number, editor); try click(canvas, CGPoint(x: 50, y: 50))
-                    try press("annotation.numberComment", editor)
-                    let input = try unwrap(canvas.activeNumberCommentInput, "Repeated cycle did not open comment editor")
-                    input.insertText("中 English 👩🏽‍💻", replacementRange: NSRange(location: 0, length: 0))
-                    // Closing with uncommitted text must discard and remove the native input.
-                }
+                try await verifyUncommittedCommentClose(captured)
                 evidence.closedControllerCount += 1; evidence.releasedControllerCount += 1
             }
             try require(try digest(source) == originalDigest, "Fixture changed original pixels")
@@ -121,7 +114,45 @@ enum NumberedCalloutAcceptanceFixture {
                     "Owned comment input or cached raster survived close")
         editor = nil
         try await Task.sleep(nanoseconds: 10_000_000)
-        try require(weakEditor == nil && weakInput == nil, "Owned controller or input remained retained")
+        try require(weakEditor == nil, "Owned controller remained retained")
+        try require(weakInput == nil, "Owned comment input remained retained")
+    }
+
+    /// This lifecycle is synchronous until the release check. Drain its native
+    /// autoreleases and end every strong local's scope before inspecting weak
+    /// ownership, rather than depending on the installed app's event-loop pool.
+    static func verifyUncommittedCommentClose(_ capture: CapturedImage, frozenPresentation: Bool = true) async throws {
+        weak var weakEditor: ImageEditorController?
+        weak var weakInput: InlineAnnotationTextView?
+        try autoreleasepool {
+            let editor = ImageEditorController(image: capture.image, presentation: frozenPresentation ? capture.presentation : nil,
+                onSave: { _ in }, onPin: { _ in }, onOCR: { _ in }, onApply: { _ in false }, copyAction: { _ in })
+            weakEditor = editor
+            defer { editor.close() }
+            editor.window?.appearance = NSAppearance(named: .aqua)
+            editor.showWindow(nil); editor.window?.makeKeyAndOrderFront(nil)
+            let canvas = editor.annotationCanvas
+            try choose(.number, editor); try click(canvas, CGPoint(x: 50, y: 50))
+            try press("annotation.numberComment", editor)
+            let input = try unwrap(canvas.activeNumberCommentInput, "Repeated cycle did not open comment editor")
+            weakInput = input
+            let manager = try unwrap(input.undoManager, "Repeated cycle has no comment undo manager")
+            try require(editor.window?.firstResponder === input, "Repeated comment input did not become first responder")
+            input.insertText("中 English 👩🏽‍💻", replacementRange: NSRange(location: 0, length: 0))
+            try require(input.string == "中 English 👩🏽‍💻" && canvas.annotations[0].numberComment.isEmpty,
+                        "Repeated cycle did not leave uncommitted text")
+            editor.close()
+            try require(editor.isClosed && editor.window?.contentView == nil && editor.window?.delegate == nil,
+                        "Owned window did not detach on close")
+            try require(canvas.activeNumberCommentInput == nil && canvas.retainedPresentationRaster == nil,
+                        "Owned comment input or cached raster survived close")
+            try require(canvas.annotations[0].numberComment.isEmpty && input.delegate == nil
+                        && editor.window?.firstResponder !== input && !manager.canUndo && !manager.canRedo,
+                        "Close did not discard comment editing and its local undo history")
+        }
+        try await Task.sleep(nanoseconds: 10_000_000)
+        try require(weakEditor == nil, "Repeated cycle controller remained retained after scoped close")
+        try require(weakInput == nil, "Repeated cycle comment input remained retained after scoped close")
     }
 
     private static func exercise(_ editor: ImageEditorController, directory: URL,

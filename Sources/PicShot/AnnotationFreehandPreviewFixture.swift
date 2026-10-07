@@ -192,6 +192,11 @@ enum AnnotationFreehandPreviewFixture {
         // an unchanged raster into a successful blend check or alter production drawing.
         guard multiply != translucent else { throw failure("Blend control did not change dark background pixels") }
         guard selectionMatches, modelModesMatch else { throw failure("Blend control did not edit the expected selected highlighter model") }
+        let returningInk = CGPoint(x: CGFloat(canvas.image.width) * 0.625, y: y)
+        guard mark.freehandInkPath().contains(returningInk),
+              try pixel(multiplyImage, returningInk) != pixel(translucentImage, returningInk) else {
+            throw failure("Smoothed returning ink lost coverage or blend pixels past its coincident quadratic endpoints")
+        }
         try undo(canvas); guard try digest(raster(canvas)) == multiply else { throw failure("Blend undo changed pixels") }
         try undo(canvas, redo: true); guard try digest(raster(canvas)) == translucent else { throw failure("Blend redo changed pixels") }
         try choose(.highlighter, editor)
@@ -204,7 +209,7 @@ enum AnnotationFreehandPreviewFixture {
         try picker("annotation.highlighterMode", title: AnnotationHighlighterMode.freehand.title, editor)
         try await snapshot(editor, filename: "ui-annotation-highlighter-dark.png", controls: ["annotation.highlighterMode", "annotation.highlighterBlend", "annotation.pencilSmoothing", "annotation.pencilConstraint"], directory: directory)
         return ["nativeControlsReachable": true, "freehandAndRectangleReachable": true, "blendChangesDarkPixels": true,
-                "selectedBlendUndoRedoExact": true, "rectangleHidesStrokeOnlyControls": true]
+                "selectedBlendUndoRedoExact": true, "smoothedReversalRetainsInkAndBlend": true, "rectangleHidesStrokeOnlyControls": true]
     }
 
     /// Failure-only, bounded evidence: two existing <=4MP rasters, 8 pixel probes,
