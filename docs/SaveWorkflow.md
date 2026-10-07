@@ -2,16 +2,16 @@
 
 ## Version boundary
 
-This guide describes candidate **0.9 e4e41ba30b0c0d2bfff9cfe14fcf70eeeb0fcf4d**, with final native/package acceptance pending. The latest accepted installers remain 0.8. Earlier 14c early UI success does not erase its focused failures or transfer a pass to corrected code. See [VERIFICATION.md](VERIFICATION.md).
+This guide describes **ARM 0.9 b44c1fb0ecc71fbe652ed3c74e377e8f3ea8ba27**, whose full native/model and both installed-format gates pass. Intel 0.9 remains pending; its available 0.8 does not acquire the new behavior by documentation alone. Earlier candidate failures remain historical in [VERIFICATION.md](VERIFICATION.md).
 
 ## Entry points
 
 - **Settings → Save and Naming (保存与命名)** configures the base folder, subfolder/filename templates, collisions and optional automatic copies. Use **Save Settings (保存设置)** to commit; previews are drafts until then
 - Editor save-options chevron/overflow: **Quick Save PNG (快速保存 PNG)**, **Save PNG and Copy (保存 PNG 并复制)** and the settings page
-- Export sheet: **Quick Save** and **Save and Copy**, preserving the already prepared current format and bytes. Current/original pin export sheets share this route; the pin action determines which image is supplied
+- Export panel: **Quick Save** and **Save and Copy**, preserving the already prepared current format and bytes. Current/original pin export panels share this route; the pin action determines which image is supplied
 - Manual quick-save asks for a folder if none is configured. Confirming it records its physical path. Automatic saving requires a configured folder
 
-Editor quick-save and automatic copies write flattened PNG. Export-sheet quick-save preserves the selected encoder format, including JPEG/TIFF/BMP/PDF/WebP/AVIF. Editable annotation objects and intermediate previews are not saved.
+Editor quick-save and automatic copies write flattened PNG. Export-panel quick-save preserves the selected encoder format, including JPEG/TIFF/BMP/PDF/WebP/AVIF. Editable annotation objects and intermediate previews are not saved.
 
 ## Names and folders
 
@@ -29,7 +29,7 @@ Capture acquisition, history opening, preview updates, ongoing edits, cancellati
 
 Choose **Ask** or **Keep Both**. Ask offers Keep Both, Choose Another Name or Cancel. Keep Both tries numbered suffixes with exclusive creation. Existing files are never replaced by this workflow, even when an OS filename panel presents an intermediate replacement question.
 
-An explicitly selected folder is resolved once to its physical path. Later jobs validate descriptor-relative components and identities rather than silently follow substituted paths. Candidate publication protects sources, occupied destinations and link aliases, checks private staged bytes and publishes exclusively. Unknown/replaced entries are not recursively deleted. These are source safeguards awaiting final acceptance, not a universal filesystem-race guarantee.
+An explicitly selected folder is resolved once to its physical path. Later jobs validate descriptor-relative components and identities rather than silently follow substituted paths. Publication protects sources, occupied destinations and link aliases, checks private staged bytes and publishes exclusively. Unknown/replaced entries are not recursively deleted. Native tests and installed ARM fixtures exercise these safeguards; they are not a universal filesystem-race guarantee.
 
 ## Save and Copy
 
@@ -49,6 +49,6 @@ Only finalized flattened pixels or the prepared encoded artifact enter this work
 
 Cancellation clears queued work where possible; a synchronous native call may finish before resources drain. Cancellation after publication leaves the saved file intact. These limits are not a total-RSS ceiling, sustained-use result or zero-leak claim.
 
-## Acceptance still needed
+## Acceptance boundary
 
-Final-source tests, native settings/toolbar/preview and both installed formats must pass, including repeated invocation, picker/collision cancellation, copy failure, queued cancellation and owned cleanup. Real target-app paste, physical workflows and broad filesystems remain separate from synthetic fixtures. This guide does not claim 0.9 release readiness.
+ARM final-source tests and both installed formats pass native settings/toolbar/owned-panel, invocation, picker/collision cancellation, copy failure, queued cancellation and owned cleanup checks. The export panel follows its parent while holding frozen bytes; parent closure cancels/detaches it. Real target-app paste, physical workflows, broad filesystems and sustained resources remain separate from synthetic fixtures. Intel requires its own completed 0.9 pipeline. See [VERIFICATION.md](VERIFICATION.md) for exact counts, bytes and resource observations.
