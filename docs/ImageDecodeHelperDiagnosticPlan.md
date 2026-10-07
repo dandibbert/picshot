@@ -1,6 +1,6 @@
 # Bounded signed helper decoding diagnostic plan
 
-Design proposal, 2026-10-07. **Not implemented or executed.** The [completed ARM64 and Intel draw comparison](ImageRasterMaterialization59.md) makes an end-to-end process-isolation control useful: ImageIO drawing accumulated volatile backing in the long-lived app, whereas drawing already-decoded owned RGBA did not. The question is whether moving actual PNG decoding into one short-lived signed child per cycle avoids parent accumulation at an acceptable, explicitly measured process and transport cost.
+Design proposal, 2026-10-07. An opt-in [diagnostic prototype](ImageDecodeHelperDiagnostic.md) is now authored; **native compilation and execution remain pending**. The [completed ARM64 and Intel draw comparison](ImageRasterMaterialization59.md) makes an end-to-end process-isolation control useful: ImageIO drawing accumulated volatile backing in the long-lived app, whereas drawing already-decoded owned RGBA did not. The question is whether moving actual PNG decoding into one short-lived signed child per cycle avoids parent accumulation at an acceptable, explicitly measured process and transport cost.
 
 ## Smallest initial matrix
 
@@ -52,3 +52,7 @@ Record parent and child peaks separately, with sample counts, timestamps and any
 Start full-lifecycle timing before signature validation/input staging; stop after child exit, pipe drainage/protocol validation, raw read/hash/copy, actual parent drawing/pixel validation, pool exit and owned-file cleanup. Report time to validated pixels separately. Include subprocess startup, child decode, raw write, IPC/read/copy and cleanup subphases; label deliberate settle waits separately. Give the production control the same full-lifecycle timing boundary, because the earlier draw timing stopped inside its image operation before pool cleanup.
 
 The desired evidence is exact pixels, confirmed sequential child exits/cleanup, complete child and parent accounting, and a parent late-cycle trend without the previous volatile slope. Even if observed, that establishes a bounded isolation candidate only. Lower parent retention can coexist with higher concurrent peak, file-cache use, launch latency or CPU cost. Large-image preview limits, AppKit display, cancellation under real UI workloads and end-to-end export behavior require later validation before any production recommendation.
+
+## Prototype limits found in review
+
+The first authored prototype does not yet satisfy two parts of this plan: abrupt parent-loss/orphan cleanup is unverified and can strand a private job if the parent dies before startup or before a hard-backstop exit; and separate parent memory boundaries after staging, exit and raw read/cleanup are absent. Its four-cell comparison covers normal sequential decoding and cooperative post-decode cancellation/deadline with a live parent. Aggregate retention and full-lifecycle timing can be measured, but neither blanket parent-loss cleanup nor per-transport-phase memory attribution may be claimed.

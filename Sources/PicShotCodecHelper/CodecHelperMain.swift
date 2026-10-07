@@ -4,7 +4,11 @@ import PicShotCodecCore
 
 @main
 enum PicShotCodecHelper {
-    static func main() { exit(run(arguments: Array(CommandLine.arguments.dropFirst()))) }
+    static func main() {
+        let arguments = Array(CommandLine.arguments.dropFirst())
+        if arguments == [ImageDecodeDiagnosticLimits.argument] { exit(ImageDecodeDiagnostic.run()) }
+        exit(run(arguments: arguments))
+    }
 
     /// The parent starts one signed, bundle-relative helper per request. No
     /// NSApplication, capture controller, model, network or login is initialized.

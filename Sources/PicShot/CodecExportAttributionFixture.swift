@@ -27,6 +27,9 @@ enum CodecExportAttributionFixture {
     /// The launcher must use a new process for preparation and every matrix cell.
     static func runIfRequested(evidenceDirectory: URL,
                               environment: [String: String] = ProcessInfo.processInfo.environment) async throws -> [String: Any]? {
+        if let report = try await ImageDecodeHelperAttributionFixture.runIfRequested(evidenceDirectory: evidenceDirectory, environment: environment) {
+            return report
+        }
         if let report = try await ImageRasterMaterializationFixture.runIfRequested(evidenceDirectory: evidenceDirectory, environment: environment) {
             return report
         }
