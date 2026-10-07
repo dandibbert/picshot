@@ -119,7 +119,12 @@ import PicShotFormulaRenderCore
         let nativeImageView: NSImageView?
         if let view = pin.window?.contentView { nativeImageView = descendant(NSImageView.self, in: view) } else { nativeImageView = nil }
         let viewImage = nativeImageView?.image
-        let pointSizedReconstruction = viewImage?.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        // Reproduce the old extraction on a separate image, never mutate/cache a
+        // point-sized representation into the production view being verified.
+        let comparisonImage = pin.displayedLaTeXRaster.map { NSImage(cgImage: $0, size: viewImage?.size ?? .zero) }
+        let untouchedComparisonPixels = comparisonImage?.representations.prefix(8).map { ["width": $0.pixelsWide, "height": $0.pixelsHigh] } ?? []
+        let pointSizedReconstruction = comparisonImage?.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        let sourceRepresentation = viewImage?.representations.compactMap { $0 as? NSBitmapImageRep }.first
         var displayEvidence: [String: Any] = [
             "sourceCommit": Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String ?? "unknown",
             "bundlePath": Bundle.main.bundlePath,
@@ -127,7 +132,8 @@ import PicShotFormulaRenderCore
             "expectedPixelWidth": rendered.width, "expectedPixelHeight": rendered.height,
             "actualPixelWidth": pin.displayedLaTeXRaster?.width as Any? ?? NSNull(),
             "actualPixelHeight": pin.displayedLaTeXRaster?.height as Any? ?? NSNull(),
-            "renderScale": original.scale,
+            "renderScale": original.scale, "freshConvenienceRepresentationPixels": untouchedComparisonPixels,
+            "rasterOwnership": "One authoritative CGImage plus one explicit NSBitmapImageRep; shared backing is not assumed",
             "pointSizedExtractionWidth": pointSizedReconstruction?.width as Any? ?? NSNull(),
             "pointSizedExtractionHeight": pointSizedReconstruction?.height as Any? ?? NSNull(),
             "representationPixels": viewImage?.representations.prefix(8).map { ["width": $0.pixelsWide, "height": $0.pixelsHigh] } ?? []
@@ -137,6 +143,8 @@ import PicShotFormulaRenderCore
             .write(to: evidenceDirectory.appendingPathComponent("latex-initial-display.json"), options: .atomic)
         try require(pin.window?.isVisible == true, "Managed formula window was not visible; see latex-initial-display.json")
         try require(viewImage != nil, "Managed formula view had no image; see latex-initial-display.json")
+        try require(sourceRepresentation?.pixelsWide == rendered.width && sourceRepresentation?.pixelsHigh == rendered.height,
+                    "Native view did not retain the full-resolution formula representation; see latex-initial-display.json")
         try require(pin.displayedLaTeXRaster?.width == rendered.width && pin.displayedLaTeXRaster?.height == rendered.height,
                     "Validated formula raster dimensions changed; see latex-initial-display.json")
         try snapshot(pin.window?.contentView, to: evidenceDirectory.appendingPathComponent("latex-managed-pin.png"))
@@ -189,7 +197,7 @@ import PicShotFormulaRenderCore
             try bytes.write(to: evidenceDirectory.appendingPathComponent("latex-pin-export." + format.fileExtension), options: .atomic)
         }
         pin.dismissLaTeXEditor()
-        let chooserEvidence = try await verifySaveChooser(pin)
+        let chooserEvidence = try await verifySaveChooser(pin, evidenceDirectory: evidenceDirectory)
         let stableFiles = store.entry(id: id)?.assetFilenames
         // Retaining this old model intentionally proves close clears its owned content/history.
         try coordinator.hideCurrentGroup()
@@ -246,7 +254,7 @@ import PicShotFormulaRenderCore
         return result
     }
     /// Real remote-backed NSSavePanel geometry, not fabricated/cached panel pixels.
-    private static func verifySaveChooser(_ pin: RichPinController) async throws -> [String: Any] {
+    private static func verifySaveChooser(_ pin: RichPinController, evidenceDirectory: URL) async throws -> [String: Any] {
         guard let window = pin.window, let visible = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame else {
             throw failure("Save chooser placement requires a real screen")
         }
@@ -254,7 +262,18 @@ import PicShotFormulaRenderCore
         var value = pin.presentation; value.frame = PinWindowFrame(compactFrame)
         pin.applyPresentation(value); pin.onPresentationChange?(pin.presentation)
         let before = window.frame
-        try require(before == compactFrame, "Native pin did not accept the explicit compact edge fixture frame")
+        let content = window.contentView
+        let sizing: [String: Any] = [
+            "sourceCommit": Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String ?? "unknown",
+            "stage": "compact-pin-before-chooser", "requested": frameObject(compactFrame), "actual": frameObject(before),
+            "screenVisibleFrame": frameObject(visible), "backingScaleFactor": Double(window.backingScaleFactor),
+            "contentMinSize": sizeObject(window.contentMinSize), "windowMinSize": sizeObject(window.minSize),
+            "contentFittingSize": content.map { sizeObject($0.fittingSize) } as Any? ?? NSNull(),
+            "nativeImageIntrinsicSize": content.flatMap { descendant(NSImageView.self, in: $0) }.map { sizeObject($0.intrinsicContentSize) } as Any? ?? NSNull()
+        ]
+        try JSONSerialization.data(withJSONObject: sizing, options: [.prettyPrinted, .sortedKeys])
+            .write(to: evidenceDirectory.appendingPathComponent("latex-compact-pin-geometry.json"), options: .atomic)
+        try require(before == compactFrame, "Native pin did not accept explicit 180x72 edge frame; see latex-compact-pin-geometry.json")
         pin.beginLaTeXSave(.latex)
         defer { pin.dismissLaTeXEditor() }
         guard let panel = pin.latexSavePanel else { throw failure("Formula Save chooser missing") }
@@ -286,6 +305,10 @@ import PicShotFormulaRenderCore
                 "screenVisibleFrame": rect(visible), "chooserWasVisible": true, "ownedSheetVerified": true,
                 "fullyOnScreen": true, "pinFrameUnchanged": true, "cancelledWithoutOrphanSheet": true]
     }
+    private static func frameObject(_ frame: NSRect) -> [String: Double] {
+        ["x": Double(frame.minX), "y": Double(frame.minY), "width": Double(frame.width), "height": Double(frame.height)]
+    }
+    private static func sizeObject(_ size: NSSize) -> [String: Double] { ["width": Double(size.width), "height": Double(size.height)] }
     private static func observedMemory() throws -> GIFResourceMemoryReading {
         let reading = GIFResourceMemoryReading.current()
         guard let rss = reading.residentBytes, let footprint = reading.physicalFootprintBytes,

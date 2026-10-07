@@ -1,7 +1,7 @@
 import Foundation
 
 public enum PinGroupTransformError: LocalizedError, Equatable {
-    case invalidSelection, unavailablePin, stalePresentation, invalidGeometry, windowConstraint
+    case invalidSelection, unavailablePin, stalePresentation, invalidGeometry, windowConstraint, unrepresentableAlignment
     public var errorDescription: String? {
         switch self {
         case .invalidSelection: return "请选择同组内 2 至 20 个正在显示的贴图。"
@@ -9,6 +9,7 @@ public enum PinGroupTransformError: LocalizedError, Equatable {
         case .stalePresentation: return "所选贴图已更改，请重新选择后重试；本次未移动任何贴图。"
         case .invalidGeometry: return "请输入有效的位移和比例；缩放为 25% 至 400%，窗口不能小于最小尺寸。"
         case .windowConstraint: return "系统无法应用此窗口尺寸，已恢复全部原位置。"
+        case .unrepresentableAlignment: return "当前窗口尺寸无法在这些屏幕的像素网格上精确对齐；请调整窗口尺寸后重试。本次未移动或缩放任何贴图。"
         }
     }
 }
@@ -91,6 +92,26 @@ public struct PinGroupTransformPlan: Equatable, Sendable {
             after.frame = frame
             return PinGroupPresentationChange(id: entry.id, before: entry.presentation, after: after)
         }
+    }
+
+    /// Quantize only newly proposed frames before native application. Original snapshots
+    /// remain exact for stale checks, rollback and undo; all other metadata is untouched.
+    /// Replaying this plan must use its recorded frames without quantizing them again.
+    public func canonicalizingTargetFrames(_ canonicalize: (PinWindowFrame) throws -> PinWindowFrame) throws -> Self {
+        guard !isNoOp else { return self }
+        let canonicalChanges = try changes.map { change -> PinGroupPresentationChange in
+            var after = change.after
+            after.frame = try canonicalize(after.frame)
+            guard after.frame.isValid, after.frame.width >= 32, after.frame.height >= 24 else {
+                throw PinGroupTransformError.invalidGeometry
+            }
+            return PinGroupPresentationChange(id: change.id, before: change.before, after: after)
+        }
+        return Self(groupID: groupID, changes: canonicalChanges)
+    }
+
+    private init(groupID: UUID, changes: [PinGroupPresentationChange]) {
+        self.groupID = groupID; self.changes = changes
     }
 
     /// Optimistic, all-or-nothing metadata transaction. No stale member is skipped.

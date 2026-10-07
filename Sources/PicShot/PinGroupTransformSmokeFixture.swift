@@ -88,11 +88,13 @@ import PicShotCore
                 "rssAvailable": true, "lastFiveCyclesGrowthBytes": Int64(rss[19]) - Int64(rss[14]),
                 "rssIsObservational": true, "captureStarted": false, "userDefaultsChanged": false,
                 "desktopVisibilityPreferencesIsolated": true, "userPreferenceReadScope": "Existing manager restore-on-launch toggle reads its saved value; fixture does not change it. Desktop-visibility service is isolated",
+                "alignmentCenterResidualsScreenPoints": setup.alignmentResiduals,
+                "alignmentPolicy": "Sizes unchanged; edge anchors exact when representable; center origins follow the destination pixel grid and signed center residuals are reported",
                 "resourceEvidence": resource,
                 "boundary": "Real native controls/events and synthetic temporary pins; not a zero-leak claim or user capture test"]
     }
     private static func exerciseControls(session: PinSessionCoordinator, store: PinSessionStore, directory: URL,
-                                         evidenceDirectory: URL) async throws -> (selected: Set<UUID>, assetHashes: [String: String]) {
+                                         evidenceDirectory: URL) async throws -> (selected: Set<UUID>, assetHashes: [String: String], alignmentResiduals: [String: [String: Double]]) {
         let sample = ImageEditorRenderer.makeSampleImage()
         let a = try session.add(image: sample, title: "组合 A · 图片")
         let b = try session.add(image: sample, title: "组合 B · 旋转 / 200%")
@@ -145,6 +147,8 @@ import PicShotCore
         try control(NSTextField.self, "pin-group-dy", in: editor.window?.contentView).stringValue = "-15"
         try control(NSTextField.self, "pin-group-scale", in: editor.window?.contentView).stringValue = "125"
         try snapshot(try window(editor), to: evidenceDirectory.appendingPathComponent("pin-group-transform.png"))
+        let appliedPlan = try session.groupTransforms.plannedTransform(index: original, selectedIDs: selected,
+                                                                      transform: .moveAndScale(dx: 25, dy: -15, scale: 1.25))
         try control(NSButton.self, "pin-group-apply", in: editor.window?.contentView).performClick(nil)
         if session.groupTransforms.editor != nil {
             var diagnostic: [String: Any] = ["status": "failed", "applyOutcome": editor.applyOutcome,
@@ -164,6 +168,11 @@ import PicShotCore
             throw failure("Apply outcome=\(editor.applyOutcome), code=\(code): \(detail); see pin-group-apply-failure.json for pre-rollback geometry")
         }
         let changed = store.index
+        try require(changed == appliedPlan.applying(to: original), "Native move/scale differs from its canonical target plan")
+        for change in appliedPlan.changes {
+            let actual = session.liveControllers[change.id]?.presentation ?? session.richControllers[change.id]?.presentation
+            try require(actual == change.after, "Applied live frame differs from committed canonical target")
+        }
         try require(changed != original && changed.entry(id: sentinel) == original.entry(id: sentinel), "Group transform moved sentinel or made no change")
         try require(try assets(in: directory) == assetHashes, "Move/scale rewrote raster or source assets")
         try await settle()
@@ -174,16 +183,23 @@ import PicShotCore
         try require(store.index == changed, "One native Redo did not restore all three")
         try await settle()
         let align = try control(NSPopUpButton.self, "pin-group-align", in: content)
+        var alignmentResiduals: [String: [String: Double]] = [:]
         for (index, alignment) in PinGroupAlignment.allCases.enumerated() {
-            let plan = try PinGroupTransformPlan(index: store.index, selectedIDs: selected, transform: .align(alignment))
+            let plan = try session.groupTransforms.plannedTransform(index: store.index, selectedIDs: selected, transform: .align(alignment))
             let expected = try plan.applying(to: store.index)
+            let residuals = PinGroupBackingGeometry.centerAlignmentResiduals(plan, alignment: alignment)
+            if !residuals.isEmpty { alignmentResiduals[alignment.rawValue] = Dictionary(uniqueKeysWithValues: residuals.map { ($0.key.uuidString, $0.value) }) }
+            for change in plan.changes {
+                try require(change.after.frame.width == change.before.frame.width && change.after.frame.height == change.before.frame.height,
+                            "Alignment changed a member's dimensions")
+            }
             align.selectItem(at: index + 1)
             try require(align.sendAction(align.action, to: align.target), "Alignment control did not dispatch")
             try require(store.index == expected, "Native alignment result differs: " + alignment.rawValue)
             try require(store.entry(id: sentinel) == original.entry(id: sentinel), "Alignment moved sentinel")
             try await settle()
         }
-        return (selected, assetHashes)
+        return (selected, assetHashes, alignmentResiduals)
     }
     private static func contextSelection(_ session: PinSessionCoordinator, id: UUID) throws {
         try autoreleasepool {

@@ -78,6 +78,56 @@ final class PinGroupTransformTests: XCTestCase {
         var invalid = index; invalid.entries[1].presentation.frame.x = .nan
         XCTAssertThrowsError(try PinGroupTransformPlan(index: invalid, selectedIDs: ids, transform: .align(.left)))
     }
+    func testCanonicalTargetsPreserveExactSourcesMetadataSentinelAndReplay() throws {
+        var index = fixture()
+        // A non-grid source must never be rounded into agreement with a stale store.
+        index.entries[0].presentation.frame.x += 0.125
+        let proposed = try PinGroupTransformPlan(index: index, selectedIDs: selection(index),
+                                                transform: .moveAndScale(dx: 0.375, dy: -0.625, scale: 1.25))
+        var calls = 0
+        let plan = try proposed.canonicalizingTargetFrames { frame in
+            calls += 1
+            let x = frame.x.rounded(), y = frame.y.rounded()
+            return PinWindowFrame(x: x, y: y, width: (frame.x + frame.width).rounded() - x,
+                                  height: (frame.y + frame.height).rounded() - y)
+        }
+        XCTAssertEqual(calls, 3); XCTAssertEqual(plan.groupID, proposed.groupID); XCTAssertEqual(plan.ids, proposed.ids)
+        XCTAssertNotEqual(plan, proposed)
+        for (canonical, raw) in zip(plan.changes, proposed.changes) {
+            XCTAssertEqual(canonical.before, raw.before)
+            var restoredFrame = canonical.after; restoredFrame.frame = raw.after.frame
+            XCTAssertEqual(restoredFrame, raw.after, "Only proposed frame geometry may change")
+        }
+        let committed = try plan.applying(to: index)
+        XCTAssertEqual(committed.entries[3], index.entries[3])
+        XCTAssertEqual(try plan.applying(to: committed, forward: false), index)
+        XCTAssertEqual(try plan.applying(to: plan.applying(to: committed, forward: false)), committed)
+        var staleSource = index; staleSource.entries[0].presentation.frame.x += 0.001
+        XCTAssertThrowsError(try plan.applying(to: staleSource)) { XCTAssertEqual($0 as? PinGroupTransformError, .stalePresentation) }
+        var staleTarget = committed; staleTarget.entries[0].presentation.frame.y += 0.001
+        XCTAssertThrowsError(try plan.applying(to: staleTarget, forward: false)) { XCTAssertEqual($0 as? PinGroupTransformError, .stalePresentation) }
+        var history = PinGroupTransformHistory(); history.record(plan)
+        XCTAssertEqual(history.undoPlans, [plan]); history.didUndo()
+        XCTAssertEqual(history.redoPlans, [plan]); history.didRedo()
+        XCTAssertEqual(history.undoPlans, [plan])
+    }
+    func testTargetCanonicalizationRejectsInvalidGeometryAndLeavesNoOpSourcesExact() throws {
+        var index = fixture(); index.entries[0].presentation.frame.x += 0.125
+        let noOp = try PinGroupTransformPlan(index: index, selectedIDs: selection(index), transform: .moveAndScale(dx: 0, dy: 0, scale: 1))
+        XCTAssertEqual(try noOp.canonicalizingTargetFrames { _ in
+            XCTFail("An unchanged source is not a proposed target"); throw PinGroupTransformError.invalidGeometry
+        }, noOp)
+        let proposed = try PinGroupTransformPlan(index: index, selectedIDs: selection(index), transform: .align(.left))
+        for frame in [PinWindowFrame(x: .nan), PinWindowFrame(y: .infinity), PinWindowFrame(width: 31), PinWindowFrame(height: 23)] {
+            XCTAssertThrowsError(try proposed.canonicalizingTargetFrames { _ in frame }) {
+                XCTAssertEqual($0 as? PinGroupTransformError, .invalidGeometry)
+            }
+        }
+        XCTAssertThrowsError(try proposed.canonicalizingTargetFrames { _ in throw PinGroupTransformError.windowConstraint }) {
+            XCTAssertEqual($0 as? PinGroupTransformError, .windowConstraint)
+        }
+        XCTAssertEqual(try proposed.applying(to: index, forward: true).entries[3], index.entries[3])
+    }
     func testHistoryIsBoundedAtomicAndContainsOnlyValueSnapshots() throws {
         var index = fixture(), history = PinGroupTransformHistory()
         let ids = selection(index)

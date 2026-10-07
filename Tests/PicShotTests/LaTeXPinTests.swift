@@ -33,6 +33,65 @@ final class LaTeXPinTests: XCTestCase {
         }
     }
 
+    @MainActor func testLargeFormulaCanUseExactCompactViewportWithFullResolutionRepresentation() throws {
+        _ = NSApplication.shared
+        let request = FormulaRenderRequest(latex: "x", scale: 2)
+        let prepared = try PreparedRichPin(formula: request, result: Self.result(request, width: 489, height: 223))
+        let pin = try RichPinController(asset: prepared.asset, data: prepared.data, title: "Compact", renderedImage: prepared.poster)
+        defer { pin.close() }
+        let window = try XCTUnwrap(pin.window)
+        var value = pin.presentation; value.frame = PinWindowFrame(x: 80, y: 80, width: 180, height: 72)
+        pin.applyPresentation(value); window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertEqual(window.frame, value.frame.rect, "Natural bitmap size must not force a larger pin viewport")
+        let view = try XCTUnwrap(imageView(in: window.contentView))
+        XCTAssertEqual(view.intrinsicContentSize.width, NSView.noIntrinsicMetric)
+        XCTAssertEqual(view.intrinsicContentSize.height, NSView.noIntrinsicMetric)
+        let image = try XCTUnwrap(view.image)
+        let rep = try XCTUnwrap(image.representations.compactMap { $0 as? NSBitmapImageRep }.first)
+        XCTAssertEqual(rep.pixelsWide, 489); XCTAssertEqual(rep.pixelsHigh, 223)
+        XCTAssertEqual(image.size, NSSize(width: 244.5, height: 111.5))
+        XCTAssertEqual(rep.size, image.size)
+        XCTAssertTrue(pin.displayedLaTeXRaster === prepared.poster)
+    }
+
+    @MainActor func testNativeScaledDrawingUsesFullSourceBitmapWithoutReplacingIt() throws {
+        _ = NSApplication.shared
+        let context = try XCTUnwrap(CGContext(data: nil, width: 96, height: 48, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(CGColor(srgbRed: 1, green: 0, blue: 0, alpha: 1)); context.fill(CGRect(x: 0, y: 0, width: 48, height: 48))
+        context.setFillColor(CGColor(srgbRed: 0, green: 0, blue: 1, alpha: 1)); context.fill(CGRect(x: 48, y: 0, width: 48, height: 48))
+        let raster = try XCTUnwrap(context.makeImage())
+        let png = try XCTUnwrap(NSBitmapImageRep(cgImage: raster).representation(using: .png, properties: [:]))
+        let request = FormulaRenderRequest(latex: "x", scale: 3)
+        let result = FormulaRenderResult(latex: "x", svg: "<svg />", mathML: "<math ><mi>x</mi></math>", png: png,
+            pdf: Data("%PDF-scaled-drawing-fixture".utf8), width: 96, height: 48, pointWidth: 32, pointHeight: 16)
+        let prepared = try PreparedRichPin(formula: request, result: result)
+        let pin = try RichPinController(asset: prepared.asset, data: prepared.data, title: "Drawing", renderedImage: prepared.poster)
+        defer { pin.close() }
+        let image = try XCTUnwrap(imageView(in: pin.window?.contentView)?.image)
+        let source = try XCTUnwrap(image.representations.compactMap { $0 as? NSBitmapImageRep }.first)
+        let target = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 16, pixelsHigh: 8,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 64, bitsPerPixel: 32))
+        let graphics = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: target))
+        NSGraphicsContext.saveGraphicsState(); defer { NSGraphicsContext.restoreGraphicsState() }
+        NSGraphicsContext.current = graphics
+        image.draw(in: NSRect(x: 0, y: 0, width: 16, height: 8), from: .zero, operation: .copy, fraction: 1)
+        graphics.flushGraphics()
+        let left = try XCTUnwrap(target.colorAt(x: 2, y: 4)?.usingColorSpace(.deviceRGB))
+        let right = try XCTUnwrap(target.colorAt(x: 13, y: 4)?.usingColorSpace(.deviceRGB))
+        XCTAssertGreaterThan(left.redComponent, 0.9); XCTAssertLessThan(left.blueComponent, 0.1)
+        XCTAssertGreaterThan(right.blueComponent, 0.9); XCTAssertLessThan(right.redComponent, 0.1)
+        XCTAssertEqual(source.pixelsWide, 96); XCTAssertEqual(source.pixelsHigh, 48)
+        XCTAssertTrue(image.representations.contains { $0 === source })
+        XCTAssertTrue(pin.displayedLaTeXRaster === prepared.poster)
+    }
+
+    @MainActor private func imageView(in view: NSView?) -> NSImageView? {
+        guard let view else { return nil }
+        if let image = view as? NSImageView { return image }
+        return view.subviews.compactMap { imageView(in: $0) }.first
+    }
+
     @MainActor func testAtomicSourceRasterReplacementAndRestore() throws {
         let directory = temporary(); defer { try? FileManager.default.removeItem(at: directory) }
         let store = try PinSessionStore(directory: directory)
@@ -253,13 +312,13 @@ final class LaTeXPinTests: XCTestCase {
         return try PreparedRichPin(formula: request, result: Self.result(request, width: width))
     }
     /// UI/storage stub only. The native smoke fixture uses actual signed MathJax output.
-    private static func result(_ request: FormulaRenderRequest, width: Int = 2) -> FormulaRenderResult {
-        let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: 2, bitsPerSample: 8, samplesPerPixel: 4,
+    private static func result(_ request: FormulaRenderRequest, width: Int = 2, height: Int = 2) -> FormulaRenderResult {
+        let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height, bitsPerSample: 8, samplesPerPixel: 4,
                                       hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: width * 4, bitsPerPixel: 32)!
         let png = bitmap.representation(using: .png, properties: [:])!
         return FormulaRenderResult(latex: request.latex, svg: "<svg />", mathML: "<math ><mi>\(request.latex)</mi></math>", png: png,
-                                   pdf: Data("%PDF-stub".utf8), width: width, height: 2,
-                                   pointWidth: Double(width) / Double(request.scale), pointHeight: 2 / Double(request.scale))
+                                   pdf: Data("%PDF-stub".utf8), width: width, height: height,
+                                   pointWidth: Double(width) / Double(request.scale), pointHeight: Double(height) / Double(request.scale))
     }
 }
 

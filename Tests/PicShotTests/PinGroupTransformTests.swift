@@ -14,8 +14,13 @@ final class PinGroupNativeTransformTests: XCTestCase {
         var commits = 0
         let subscription = f.store.$index.dropFirst().sink { _ in commits += 1 }; defer { subscription.cancel() }
         try f.session.groupTransforms.setSelection(Set(f.ids.prefix(3)))
-        try f.session.groupTransforms.transform(.moveAndScale(dx: -40, dy: 35, scale: 1.25))
+        let transform = PinGroupTransform.moveAndScale(dx: -40.375, dy: 35.625, scale: 1.25)
+        let plan = try f.session.groupTransforms.plannedTransform(index: before, selectedIDs: Set(f.ids.prefix(3)), transform: transform)
+        try f.session.groupTransforms.transform(transform)
         let changed = f.store.index
+        XCTAssertEqual(changed, try plan.applying(to: before))
+        XCTAssertEqual(f.session.groupTransforms.history.undoPlans, [plan])
+        for change in plan.changes { XCTAssertEqual(presentation(f.session, change.id), change.after) }
         XCTAssertEqual(commits, 1, "One group operation must publish one atomic manifest")
         XCTAssertEqual(changed.entries.first { $0.id == f.ids[3] }, before.entries.first { $0.id == f.ids[3] })
         XCTAssertTrue(f.session.liveControllers[f.ids[0]]?.currentImage === raster)
@@ -27,6 +32,169 @@ final class PinGroupNativeTransformTests: XCTestCase {
         for id in f.ids { XCTAssertEqual(presentation(f.session, id), before.entry(id: id)?.presentation) }
         try f.session.groupTransforms.redo(); XCTAssertEqual(f.store.index, changed)
         XCTAssertEqual(commits, 3)
+    }
+    @MainActor func testBackingGridQuantizationAtOneAndTwoTimesWithNegativeOrigins() {
+        let origin = NSPoint(x: -1440, y: -900)
+        let proposed = NSRect(x: -1300.375, y: -740.625, width: 200.375, height: 100.25)
+        let expected = [NSRect(x: -1300, y: -741, width: 200, height: 101),
+                        NSRect(x: -1300.5, y: -740.5, width: 200.5, height: 100)]
+        for (index, scale) in [CGFloat(1), CGFloat(2)].enumerated() {
+            let toBacking: (NSRect) -> NSRect = {
+                NSRect(x: ($0.minX - origin.x) * scale, y: ($0.minY - origin.y) * scale,
+                       width: $0.width * scale, height: $0.height * scale)
+            }
+            let fromBacking: (NSRect) -> NSRect = {
+                NSRect(x: $0.minX / scale + origin.x, y: $0.minY / scale + origin.y,
+                       width: $0.width / scale, height: $0.height / scale)
+            }
+            let actual = PinGroupBackingGeometry.alignedFrame(proposed, toBacking: toBacking, fromBacking: fromBacking)
+            XCTAssertEqual(actual, expected[index], "Exact expected geometry on the \(scale)× destination grid")
+            XCTAssertEqual(PinGroupBackingGeometry.alignedFrame(actual, toBacking: toBacking, fromBacking: fromBacking), actual)
+            let pixels = toBacking(actual)
+            for edge in [pixels.minX, pixels.minY, pixels.maxX, pixels.maxY] { XCTAssertEqual(edge, edge.rounded()) }
+        }
+    }
+    @MainActor func testDestinationScreenUsesProposedOverlapAndNearestOffscreenDisplay() throws {
+        let screens = [NSRect(x: -1440, y: -300, width: 1440, height: 900), NSRect(x: 0, y: 0, width: 1920, height: 1080)]
+        let cases: [(NSRect, Int)] = [
+            (NSRect(x: -1400, y: -250, width: 200, height: 100), 0),
+            (NSRect(x: 1400, y: 100, width: 200, height: 100), 1),
+            (NSRect(x: -60, y: 100, width: 200, height: 100), 1),
+            (NSRect(x: -160, y: 100, width: 200, height: 100), 0),
+            (NSRect(x: -1800, y: -1000, width: 200, height: 100), 0),
+            (NSRect(x: 1400, y: 1400, width: 200, height: 100), 1)
+        ]
+        for (frame, expected) in cases {
+            XCTAssertEqual(PinGroupBackingGeometry.destinationScreenIndex(for: frame, screenFrames: screens), expected)
+        }
+        // A proposal moving between adjacent 2× and 1× displays must use its
+        // destination's grid, regardless of the source window's backing scale.
+        let targets = [NSRect(x: -120.375, y: 100.625, width: 80.25, height: 80.375),
+                       NSRect(x: 10.375, y: 100.625, width: 80.25, height: 80.375)]
+        let expected = [NSRect(x: -120.5, y: 100.5, width: 80.5, height: 80.5),
+                        NSRect(x: 10, y: 101, width: 81, height: 80)]
+        let scales: [CGFloat] = [2, 1]
+        for (index, target) in targets.enumerated() {
+            let destination = try XCTUnwrap(PinGroupBackingGeometry.destinationScreenIndex(for: target, screenFrames: screens))
+            XCTAssertEqual(destination, index)
+            let screen = screens[destination], scale = scales[destination]
+            let actual = PinGroupBackingGeometry.alignedFrame(target, toBacking: {
+                NSRect(x: ($0.minX - screen.minX) * scale, y: ($0.minY - screen.minY) * scale,
+                       width: $0.width * scale, height: $0.height * scale)
+            }, fromBacking: {
+                NSRect(x: $0.minX / scale + screen.minX, y: $0.minY / scale + screen.minY,
+                       width: $0.width / scale, height: $0.height / scale)
+            })
+            XCTAssertEqual(actual, expected[index])
+        }
+        XCTAssertNil(PinGroupBackingGeometry.destinationScreenIndex(for: .zero, screenFrames: []))
+        XCTAssertThrowsError(try PinGroupBackingGeometry.canonicalFrame(PinWindowFrame(), screens: [])) {
+            XCTAssertEqual($0 as? PinGroupTransformError, .windowConstraint)
+        }
+    }
+    @MainActor func testMixedScaleSeamRechecksDestinationWithoutAccumulatingRounding() throws {
+        let screens = [NSRect(x: -1440, y: -300, width: 1440, height: 900), NSRect(x: 0, y: 0, width: 1920, height: 1080)]
+        let scales: [CGFloat] = [1, 2]
+        let proposed = PinWindowFrame(x: -100.1, y: 100.375, width: 200.3, height: 100.25)
+        var destinations: [Int] = []
+        let result = try PinGroupBackingGeometry.canonicalFrame(proposed, screenFrames: screens) { index, frame in
+            destinations.append(index)
+            XCTAssertEqual(frame, proposed.rect, "Always align the original proposal")
+            let screen = screens[index], scale = scales[index]
+            return PinGroupBackingGeometry.alignedFrame(frame, toBacking: {
+                NSRect(x: ($0.minX - screen.minX) * scale, y: ($0.minY - screen.minY) * scale,
+                       width: $0.width * scale, height: $0.height * scale)
+            }, fromBacking: {
+                NSRect(x: $0.minX / scale + screen.minX, y: $0.minY / scale + screen.minY,
+                       width: $0.width / scale, height: $0.height / scale)
+            })
+        }
+        XCTAssertEqual(destinations, [1, 0], "2× rounding creates a tie that selects the first, 1× display")
+        XCTAssertEqual(result, PinWindowFrame(x: -100, y: 100, width: 200, height: 101))
+        var calls = 0
+        XCTAssertThrowsError(try PinGroupBackingGeometry.canonicalFrame(proposed, screenFrames: screens) { index, _ in
+            calls += 1
+            return NSRect(x: index == 0 ? 100 : -200, y: 100, width: 100, height: 100)
+        }) { XCTAssertEqual($0 as? PinGroupTransformError, .windowConstraint) }
+        XCTAssertEqual(calls, 2, "An unstable destination is bounded and rejects before mutation")
+    }
+    @MainActor func testAlignmentPreservesDimensionsAndUsesOneExactMixedScaleAnchor() throws {
+        let screens = [NSRect(x: -1440, y: -300, width: 1440, height: 900), NSRect(x: 0, y: 0, width: 1920, height: 1080)]
+        let scales: [CGFloat] = [2, 1]
+        func align(_ index: Int, _ frame: NSRect) -> NSRect {
+            let screen = screens[index], scale = scales[index]
+            return PinGroupBackingGeometry.alignedFrame(frame, toBacking: {
+                NSRect(x: ($0.minX - screen.minX) * scale, y: ($0.minY - screen.minY) * scale,
+                       width: $0.width * scale, height: $0.height * scale)
+            }, fromBacking: {
+                NSRect(x: $0.minX / scale + screen.minX, y: $0.minY / scale + screen.minY,
+                       width: $0.width / scale, height: $0.height / scale)
+            })
+        }
+        func index(_ frames: [PinWindowFrame]) -> PinSessionIndex {
+            PinSessionIndex(entries: frames.map { frame in
+                var entry = PinSessionEntry(original: PinRasterAsset(filename: UUID().uuidString + ".png", width: 32, height: 16, byteCount: 128))
+                entry.presentation.frame = frame; return entry
+            })
+        }
+        let source = index([PinWindowFrame(x: -300.5, y: 100.5, width: 200, height: 100),
+                            PinWindowFrame(x: 100, y: 102, width: 200, height: 101)])
+        let ids = Set(source.entries.map(\.id))
+        let proposed = try PinGroupTransformPlan(index: source, selectedIDs: ids, transform: .align(.bottom))
+        let plan = try PinGroupBackingGeometry.alignmentPlan(proposed, alignment: .bottom, screenFrames: screens, align: align)
+        for change in plan.changes {
+            XCTAssertEqual(change.after.frame.y, 101, "Both destination grids share the quantized bottom edge")
+            XCTAssertEqual(change.after.frame.width, change.before.frame.width)
+            XCTAssertEqual(change.after.frame.height, change.before.frame.height)
+            XCTAssertEqual(change.before, source.entry(id: change.id)?.presentation)
+        }
+        let crossing = index([PinWindowFrame(x: -300, y: 100.5, width: 200, height: 100),
+                              PinWindowFrame(x: 200, y: 100, width: 200, height: 100)])
+        let crossingPlan = try PinGroupTransformPlan(index: crossing, selectedIDs: Set(crossing.entries.map(\.id)), transform: .align(.right))
+        let crossed = try PinGroupBackingGeometry.alignmentPlan(crossingPlan, alignment: .right, screenFrames: screens, align: align)
+        for change in crossed.changes {
+            XCTAssertEqual(change.after.frame.x + change.after.frame.width, 400)
+            XCTAssertEqual(change.after.frame.width, change.before.frame.width)
+            XCTAssertEqual(change.after.frame.height, change.before.frame.height)
+        }
+        XCTAssertEqual(crossed.changes.first { $0.id == crossing.entries[0].id }?.after.frame.y, 101,
+                       "The perpendicular origin follows the actual 1× destination grid")
+        let fractionalSize = index([PinWindowFrame(x: -300, y: 100, width: 200.5, height: 100),
+                                    PinWindowFrame(x: 200, y: 100, width: 200, height: 100)])
+        let fractionalPlan = try PinGroupTransformPlan(index: fractionalSize, selectedIDs: Set(fractionalSize.entries.map(\.id)), transform: .align(.right))
+        XCTAssertThrowsError(try PinGroupBackingGeometry.alignmentPlan(fractionalPlan, alignment: .right, screenFrames: screens, align: align)) {
+            XCTAssertEqual($0 as? PinGroupTransformError, .unrepresentableAlignment)
+        }
+        let incompatible = index([PinWindowFrame(x: 100, y: 100, width: 200, height: 100),
+                                  PinWindowFrame(x: 400, y: 100, width: 201, height: 100)])
+        let incompatiblePlan = try PinGroupTransformPlan(index: incompatible, selectedIDs: Set(incompatible.entries.map(\.id)), transform: .align(.horizontalCenter))
+        let quantized = try PinGroupBackingGeometry.alignmentPlan(incompatiblePlan, alignment: .horizontalCenter, screenFrames: screens, align: align)
+        let residuals = PinGroupBackingGeometry.centerAlignmentResiduals(quantized, alignment: .horizontalCenter)
+        XCTAssertEqual(residuals.values.sorted(), [0, 0.5], "Odd/even widths keep their size and explicitly report the unavoidable half-pixel residual")
+        for change in quantized.changes {
+            XCTAssertEqual(change.after.frame.width, change.before.frame.width)
+            XCTAssertEqual(change.after.frame.height, change.before.frame.height)
+            XCTAssertEqual(try PinGroupBackingGeometry.canonicalFrame(change.after.frame, screenFrames: screens, align: align), change.after.frame)
+        }
+        XCTAssertEqual(try quantized.applying(to: quantized.applying(to: incompatible), forward: false), incompatible)
+        XCTAssertEqual(incompatible.entries.map(\.presentation.frame.width), [200, 201])
+        let compatible = index([PinWindowFrame(x: 100, y: 100, width: 200, height: 100),
+                                PinWindowFrame(x: 400, y: 100, width: 202, height: 100)])
+        let compatiblePlan = try PinGroupTransformPlan(index: compatible, selectedIDs: Set(compatible.entries.map(\.id)), transform: .align(.horizontalCenter))
+        let centered = try PinGroupBackingGeometry.alignmentPlan(compatiblePlan, alignment: .horizontalCenter, screenFrames: screens, align: align)
+        for change in centered.changes {
+            XCTAssertEqual(change.after.frame.x + change.after.frame.width / 2, 351)
+            XCTAssertEqual(change.after.frame.width, change.before.frame.width)
+        }
+    }
+    @MainActor func testLiveScreenConversionMatchesAppKitBackingAlignment() throws {
+        _ = NSApplication.shared
+        XCTAssertFalse(NSScreen.screens.isEmpty, "Native frame tests require a connected display")
+        for screen in NSScreen.screens {
+            let frame = NSRect(x: screen.frame.minX + 50.375, y: screen.frame.minY + 60.625, width: 240.25, height: 120.375)
+            let actual = try PinGroupBackingGeometry.canonicalFrame(PinWindowFrame(frame), screens: [screen])
+            XCTAssertEqual(actual.rect, screen.backingAlignedRect(frame, options: .alignAllEdgesNearest))
+        }
     }
     @MainActor func testDiskFailureRollsBackEveryLiveFrameAndKeepsHistoryAndMemoryIndex() throws {
         let f = try fixture(); defer { f.close() }

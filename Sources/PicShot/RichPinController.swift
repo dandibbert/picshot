@@ -80,7 +80,9 @@ actor RichPinFrameDecoder {
     var latexEditorContentView: NSView? { latexPopover?.contentViewController?.view }
     /// The validated decoded raster is the pixel authority. NSImage.size is in
     /// points; CGImage extraction from that view can choose a display-sized result.
-    /// This is another reference to the same CGImage used by the view, not a decode.
+    /// The view also owns one explicit NSBitmapImageRep, which may copy backing
+    /// storage. Both bounded raster owners are replaced together and cleared on
+    /// close; framework representation cost is measured by the native resource gate.
     private(set) var displayedLaTeXRaster: CGImage?
 
     init(asset: PinRichAsset, data: Data, title: String, renderedImage: CGImage? = nil) throws {
@@ -112,16 +114,13 @@ actor RichPinFrameDecoder {
             let model = LaTeXPinModel(content: content)
             latexModel = model
             model.onCancelSaving = { [weak self] in self?.cancelLaTeXSave() }
-            displayedLaTeXRaster = renderedImage
-            imageView.image = NSImage(cgImage: renderedImage, size: NSSize(width: Double(renderedImage.width) / Double(content.scale), height: Double(renderedImage.height) / Double(content.scale)))
+            setLaTeXRaster(renderedImage, scale: content.scale)
             model.onCommit = { [weak self] prepared in
                 guard let self, !self.closed, let save = self.onRichChange else { throw CancellationError() }
                 let document = try JSONDecoder().decode(PinRichDocument.self, from: prepared.data)
                 try save(prepared)
                 self.richDocument = document
-                let scale = Double(document.latex?.scale ?? 1)
-                self.displayedLaTeXRaster = prepared.poster
-                self.imageView.image = NSImage(cgImage: prepared.poster, size: NSSize(width: Double(prepared.poster.width) / scale, height: Double(prepared.poster.height) / scale))
+                self.setLaTeXRaster(prepared.poster, scale: document.latex?.scale ?? 1)
             }
             let scale = Double(content.scale)
             let width = Double(renderedImage.width) / scale, height = Double(renderedImage.height) / scale
@@ -132,6 +131,18 @@ actor RichPinFrameDecoder {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     deinit { playback?.cancel() }
+
+    private func setLaTeXRaster(_ raster: CGImage, scale: Int) {
+        displayedLaTeXRaster = raster
+        let pointSize = NSSize(width: Double(raster.width) / Double(scale), height: Double(raster.height) / Double(scale))
+        // Keep source pixel dimensions explicit and independent of NSImage's
+        // logical point size; do not resample the source into a display-sized image.
+        let representation = NSBitmapImageRep(cgImage: raster)
+        representation.size = pointSize
+        let image = NSImage(size: pointSize); image.addRepresentation(representation)
+        imageView.usesIntrinsicImageSize = false
+        imageView.image = image
+    }
 
     private static func initialSize(asset: PinRichAsset, richDocument: PinRichDocument?) -> NSSize {
         switch asset.kind {
@@ -570,6 +581,10 @@ actor RichPinFrameDecoder {
     }
 }
 @MainActor private final class RichPinImageView: NSImageView {
+    var usesIntrinsicImageSize = true { didSet { invalidateIntrinsicContentSize() } }
+    override var intrinsicContentSize: NSSize {
+        usesIntrinsicImageSize ? super.intrinsicContentSize : NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
+    }
     override func mouseDown(with event: NSEvent) {
         window?.makeKey()
         if window?.isMovable == true { window?.performDrag(with: event) }

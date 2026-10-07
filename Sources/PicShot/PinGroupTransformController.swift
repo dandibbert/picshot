@@ -67,10 +67,23 @@ import PicShotCore
     }
     func transform(_ transform: PinGroupTransform) throws {
         lastFailure = nil
-        let plan = try PinGroupTransformPlan(index: snapshot(), selectedIDs: selectedIDs, transform: transform)
+        let plan = try plannedTransform(index: snapshot(), selectedIDs: selectedIDs, transform: transform)
         try execute(plan)
     }
-    func execute(_ plan: PinGroupTransformPlan) throws {
+    /// A single canonical target plan is shared by application, persistence and history.
+    /// Do not canonicalize inside apply: undo/redo must replay the exact recorded pair.
+    func plannedTransform(index: PinSessionIndex, selectedIDs: Set<UUID>, transform: PinGroupTransform) throws -> PinGroupTransformPlan {
+        let screens = NSScreen.screens
+        let proposed = try PinGroupTransformPlan(index: index, selectedIDs: selectedIDs, transform: transform)
+        if case let .align(alignment) = transform {
+            return try PinGroupBackingGeometry.alignmentPlan(proposed, alignment: alignment, screenFrames: screens.map(\.frame)) { index, frame in
+                PinGroupBackingGeometry.alignedFrame(frame, toBacking: screens[index].convertRectToBacking,
+                                                     fromBacking: screens[index].convertRectFromBacking)
+            }
+        }
+        return try proposed.canonicalizingTargetFrames { try PinGroupBackingGeometry.canonicalFrame($0, screens: screens) }
+    }
+    private func execute(_ plan: PinGroupTransformPlan) throws {
         lastFailure = nil
         guard selectedIDs == plan.ids else {
             recordFailure(stage: "selection-changed", code: "stalePresentation")
@@ -156,15 +169,168 @@ import PicShotCore
         do {
             let snapshot = try snapshot(), ids = selectedIDs
             let editor = PinGroupTransformEditor(count: ids.count) { [weak self] transform in
-                self?.lastFailure = nil
-                let plan = try PinGroupTransformPlan(index: snapshot, selectedIDs: ids, transform: transform)
-                try self?.execute(plan)
+                guard let self else { throw PinGroupTransformError.unavailablePin }
+                self.lastFailure = nil
+                let plan = try self.plannedTransform(index: snapshot, selectedIDs: ids, transform: transform)
+                try self.execute(plan)
             }
             editor.onApplyAttempt = { [weak self] in self?.lastFailure = nil }
             editor.onClose = { [weak self] in self?.editor = nil }
             editor.window?.collectionBehavior = PinDesktopVisibilityPolicy.behavior(session?.desktopVisibility ?? .defaultMode, preserving: [.fullScreenAuxiliary])
             self.editor = editor; editor.showWindow(nil); editor.window?.makeKeyAndOrderFront(nil)
         } catch { session?.onError?(error) }
+    }
+}
+
+/// Destination geometry, never the source window's backing factor. AppKit conversions
+/// handle global screen origins and mixed-resolution displays; no points-to-pixels
+/// scale is guessed. Offscreen proposals use the nearest display without relocating.
+@MainActor enum PinGroupBackingGeometry {
+    static func canonicalFrame(_ frame: PinWindowFrame, screens: [NSScreen]) throws -> PinWindowFrame {
+        try canonicalFrame(frame, screenFrames: screens.map(\.frame)) { index, proposed in
+            let screen = screens[index]
+            return alignedFrame(proposed, toBacking: screen.convertRectToBacking, fromBacking: screen.convertRectFromBacking)
+        }
+    }
+
+    static func canonicalFrame(_ frame: PinWindowFrame, screenFrames: [NSRect], align: (Int, NSRect) -> NSRect) throws -> PinWindowFrame {
+        guard var index = destinationScreenIndex(for: frame.rect, screenFrames: screenFrames) else {
+            throw PinGroupTransformError.windowConstraint
+        }
+        // Rounding near a display seam can change the majority-overlap destination.
+        // Re-evaluate the original proposal, never accumulate rounding or touch a
+        // source snapshot. A destination cycle rejects before any window is mutated.
+        var visited: Set<Int> = []
+        while visited.insert(index).inserted {
+            let canonical = PinWindowFrame(align(index, frame.rect))
+            guard canonical.isValid else { throw PinGroupTransformError.invalidGeometry }
+            guard let destination = destinationScreenIndex(for: canonical.rect, screenFrames: screenFrames) else {
+                throw PinGroupTransformError.windowConstraint
+            }
+            if destination == index { return canonical }
+            index = destination
+        }
+        throw PinGroupTransformError.windowConstraint
+    }
+
+    /// Alignment preserves every dimension. Edges share a representable anchor.
+    /// Centers use the nearest pixel-aligned origin around the requested shared
+    /// center: mixed odd/even extents can leave a half-pixel center residual.
+    /// These are explicit targets, never a tolerance in transaction verification.
+    static func alignmentPlan(_ proposed: PinGroupTransformPlan, alignment: PinGroupAlignment,
+                              screenFrames: [NSRect], align: (Int, NSRect) -> NSRect) throws -> PinGroupTransformPlan {
+        guard !proposed.isNoOp else { return proposed }
+        if alignment == .horizontalCenter || alignment == .verticalCenter {
+            return try proposed.canonicalizingTargetFrames { frame in
+                try canonicalOriginFrame(frame, screenFrames: screenFrames, align: align)
+            }
+        }
+        func anchor(_ frame: PinWindowFrame) -> Double {
+            switch alignment {
+            case .left: return frame.x
+            case .right: return frame.x + frame.width
+            case .top: return frame.y + frame.height
+            case .bottom: return frame.y
+            case .horizontalCenter: return frame.x + frame.width / 2
+            case .verticalCenter: return frame.y + frame.height / 2
+            }
+        }
+        func positioned(_ frame: PinWindowFrame, at anchor: Double) -> PinWindowFrame {
+            var result = frame
+            switch alignment {
+            case .left: result.x = anchor
+            case .right: result.x = anchor - frame.width
+            case .top: result.y = anchor - frame.height
+            case .bottom: result.y = anchor
+            case .horizontalCenter: result.x = anchor - frame.width / 2
+            case .verticalCenter: result.y = anchor - frame.height / 2
+            }
+            return result
+        }
+        let desired = anchor(proposed.changes[0].after.frame)
+        var candidates: Set<Double> = [desired]
+        for change in proposed.changes {
+            for index in screenFrames.indices {
+                let rounded = align(index, change.after.frame.rect)
+                var translated = change.after.frame
+                translated.x = Double(rounded.minX); translated.y = Double(rounded.minY)
+                let candidate = anchor(translated)
+                if candidate.isFinite { candidates.insert(candidate) }
+            }
+        }
+        let ordered = candidates.sorted {
+            abs($0 - desired) == abs($1 - desired) ? $0 < $1 : abs($0 - desired) < abs($1 - desired)
+        }
+        for candidate in ordered {
+            guard let plan = try? proposed.canonicalizingTargetFrames({
+                try canonicalOriginFrame(positioned($0, at: candidate), screenFrames: screenFrames, align: align)
+            }) else { continue }
+            let exact = plan.changes.allSatisfy { change in
+                guard anchor(change.after.frame) == candidate,
+                      let canonical = try? canonicalOriginFrame(change.after.frame, screenFrames: screenFrames, align: align) else { return false }
+                return canonical == change.after.frame
+            }
+            if exact { return plan }
+        }
+        throw PinGroupTransformError.unrepresentableAlignment
+    }
+
+    private static func canonicalOriginFrame(_ frame: PinWindowFrame, screenFrames: [NSRect],
+                                             align: (Int, NSRect) -> NSRect) throws -> PinWindowFrame {
+        let result = try canonicalFrame(frame, screenFrames: screenFrames) { index, proposed in
+            NSRect(origin: align(index, proposed).origin, size: proposed.size)
+        }
+        // A retained half-point extent from 2× may be unrepresentable on 1×.
+        // Reject before mutation rather than resize it or defer to loose equality.
+        guard try canonicalFrame(result, screenFrames: screenFrames, align: align) == result else {
+            throw PinGroupTransformError.unrepresentableAlignment
+        }
+        return result
+    }
+
+    /// Signed screen-point offsets from the requested collective center. Reporting
+    /// them makes quantized center semantics explicit without relaxing exact apply.
+    static func centerAlignmentResiduals(_ plan: PinGroupTransformPlan, alignment: PinGroupAlignment) -> [UUID: Double] {
+        let frames = plan.changes.map(\.before.frame)
+        guard !frames.isEmpty else { return [:] }
+        let desired: Double
+        switch alignment {
+        case .horizontalCenter: desired = (frames.map(\.x).min()! + frames.map { $0.x + $0.width }.max()!) / 2
+        case .verticalCenter: desired = (frames.map(\.y).min()! + frames.map { $0.y + $0.height }.max()!) / 2
+        default: return [:]
+        }
+        return Dictionary(uniqueKeysWithValues: plan.changes.map { change in
+            let frame = change.after.frame
+            let actual = alignment == .horizontalCenter ? frame.x + frame.width / 2 : frame.y + frame.height / 2
+            return (change.id, actual - desired)
+        })
+    }
+
+    static func alignedFrame(_ frame: NSRect, toBacking: (NSRect) -> NSRect, fromBacking: (NSRect) -> NSRect) -> NSRect {
+        fromBacking(NSIntegralRectWithOptions(toBacking(frame), .alignAllEdgesNearest))
+    }
+
+    /// NSWindow.screen is the screen containing most of the window. Break area ties
+    /// by distance, then display order, so crossing a mixed-resolution boundary is stable.
+    static func destinationScreenIndex(for frame: NSRect, screenFrames: [NSRect]) -> Int? {
+        func overlap(_ screen: NSRect) -> CGFloat {
+            let intersection = frame.intersection(screen)
+            return intersection.isNull ? 0 : intersection.width * intersection.height
+        }
+        func distance(_ screen: NSRect) -> CGFloat {
+            let dx = max(0, max(screen.minX - frame.midX, frame.midX - screen.maxX))
+            let dy = max(0, max(screen.minY - frame.midY, frame.midY - screen.maxY))
+            return dx * dx + dy * dy
+        }
+        var best: Int?
+        for index in screenFrames.indices {
+            guard let current = best else { best = index; continue }
+            if overlap(screenFrames[index]) > overlap(screenFrames[current]) ||
+                (overlap(screenFrames[index]) == overlap(screenFrames[current]) && distance(screenFrames[index]) < distance(screenFrames[current])) {
+                best = index
+            }
+        }
+        return best
     }
 }
 
@@ -250,6 +416,7 @@ struct PinGroupApplyFailure: Encodable {
             case .stalePresentation: return "stalePresentation"
             case .invalidGeometry: return "invalidGeometry"
             case .windowConstraint: return "windowConstraint"
+            case .unrepresentableAlignment: return "unrepresentableAlignment"
             }
         }
         return String(String(reflecting: type(of: error)).prefix(128))

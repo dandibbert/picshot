@@ -121,6 +121,7 @@ import PicShotCore
         for alignment in PinGroupAlignment.allCases { alignPicker.addItem(withTitle: alignment.title) }
         alignPicker.target = self; alignPicker.action = #selector(alignSelected)
         alignPicker.identifier = NSUserInterfaceItemIdentifier("pin-group-align"); alignPicker.setAccessibilityLabel("组合对齐")
+        alignPicker.toolTip = "居中对齐遵循屏幕像素网格；窗口大小与图片像素不变。"
         undoGroupButton.target = self; undoGroupButton.action = #selector(undoGroup)
         undoGroupButton.identifier = NSUserInterfaceItemIdentifier("pin-group-undo")
         redoGroupButton.target = self; redoGroupButton.action = #selector(redoGroup)

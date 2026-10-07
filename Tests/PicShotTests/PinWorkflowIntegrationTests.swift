@@ -269,22 +269,34 @@ final class PinWorkflowIntegrationTests: XCTestCase {
         formula.applyPresentation(requestedFormula); formula.onPresentationChange?(formula.presentation)
         image.applyPresentation(requestedImage); image.onPresentationChange?(image.presentation)
         try f.session.flushPresentationChanges()
-        let before = f.store.index
+        let before = f.store.index, assets = try assetsIn(f.directory)
         let transform = PinGroupTransform.moveAndScale(dx: 0.375, dy: -0.625, scale: 1.25)
-        let plan = try PinGroupTransformPlan(index: before, selectedIDs: f.selection, transform: transform)
+        let proposed = try PinGroupTransformPlan(index: before, selectedIDs: f.selection, transform: transform)
+        let plan = try f.session.groupTransforms.plannedTransform(index: before, selectedIDs: f.selection, transform: transform)
         print("Fractional AppKit initial request/observed: formula=\(requestedFormula.frame)/\(formula.presentation.frame), image=\(requestedImage.frame)/\(image.presentation.frame)")
-        print("Fractional group plan (strict comparison): \(plan.changes)")
+        print("Fractional group proposed/canonical targets (strict comparison): \(proposed.changes)/\(plan.changes)")
         try f.session.groupTransforms.setSelection(f.selection)
         do {
             try f.session.groupTransforms.transform(transform)
+            let committed = try plan.applying(to: before)
+            XCTAssertEqual(f.store.index, committed)
+            XCTAssertEqual(f.session.groupTransforms.history.undoPlans, [plan])
+            XCTAssertEqual(try assetsIn(f.directory), assets)
             for change in plan.changes {
                 let actual = f.session.liveControllers[change.id]?.presentation ?? f.session.richControllers[change.id]?.presentation
-                XCTAssertEqual(actual, change.after, "Fractional placement must be exact; no tolerance substitution")
+                XCTAssertEqual(actual, change.after, "Canonical placement must be exact; no tolerance substitution")
             }
             try f.session.groupTransforms.undo()
             XCTAssertEqual(f.store.index, before)
             XCTAssertEqual(formula.presentation, before.entry(id: f.formulaID)?.presentation)
             XCTAssertEqual(image.presentation, before.entry(id: f.imageID)?.presentation)
+            try f.session.groupTransforms.redo()
+            XCTAssertEqual(f.store.index, committed)
+            for change in plan.changes {
+                let actual = f.session.liveControllers[change.id]?.presentation ?? f.session.richControllers[change.id]?.presentation
+                XCTAssertEqual(actual, change.after, "Redo must replay the recorded canonical target")
+            }
+            XCTAssertEqual(try assetsIn(f.directory), assets)
         } catch {
             print("Fractional group operation rejected by native AppKit: \(error); post-rollback formula=\(formula.presentation.frame), image=\(image.presentation.frame)")
             XCTAssertEqual(f.store.index, before)
