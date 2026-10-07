@@ -7,7 +7,8 @@ import CoreGraphics
 final class ImageRasterMaterializationTests: XCTestCase {
     func testExplicitSelectorsAndFixedBounds() async throws {
         XCTAssertNil(try ImageRasterMaterializationFixture.request(environment: [:]))
-        XCTAssertNil(try await ImageRasterMaterializationFixture.runIfRequested(evidenceDirectory: FileManager.default.temporaryDirectory, environment: [:]))
+        let unrequested = try await ImageRasterMaterializationFixture.runIfRequested(evidenceDirectory: FileManager.default.temporaryDirectory, environment: [:])
+        XCTAssertNil(unrequested)
         XCTAssertEqual(ImageRasterMaterializationFixture.width, 768)
         XCTAssertEqual(ImageRasterMaterializationFixture.height, 576)
         XCTAssertEqual(ImageRasterMaterializationFixture.rasterBytes, 1_769_472)
