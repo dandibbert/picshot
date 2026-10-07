@@ -29,6 +29,8 @@ with open(sys.argv[1],'rb') as f:
         if needle in tail+block: break
         tail=block[-len(needle):]
 PY
+# Preserve exclusive creation of the new leaf while allowing a new parent path.
+mkdir -p "$(dirname "$root")"
 mkdir "$root"
 api_check="$root/api-availability-check.swift"
 cat > "$api_check" <<'SWIFT'
