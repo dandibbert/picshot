@@ -25,7 +25,7 @@ The `dist/` folder contains a `.app`, drag-to-Applications DMG, ZIP, checksums, 
 - Double-click a history item to annotate; right-click to pin, copy, OCR, star or trash
 - The editor provides byte-derived PNG/JPEG/TIFF/BMP/PDF/WebP/AVIF export previews and flattened outputs, solid redaction, blur and pixelation. Blur/pixelation are cosmetic; use opaque redaction for secrets
 - Save and Naming settings provide quick-save, exact-byte save-and-copy, collision-safe names and default-off final-action PNG copies; see [save workflows](docs/SaveWorkflow.md)
-- Pins float over apps; the menu restores click-through pins. Image pins support selectable local OCR and multiple barcode regions
+- Pins float over apps; the menu restores click-through pins. Image pins support selectable local OCR, optional default-off automatic recognition, source-linked text results and multiple barcode regions; see [pin OCR](docs/PinOCRWorkflow.md)
 - Named region/delay presets are stored locally; changed displays invalidate stale presets. UI-element selection uses existing Accessibility access and otherwise falls back to manual selection
 - Screen, microphone and camera permissions are requested only when those user-started features need them
 - OCR/barcodes run locally. The app does not upload captures or recognized text; files saved into a user-selected cloud-backed folder may be synchronized by that provider. Explicit optional-model and system-language downloads require network access, and no analytics code is included
