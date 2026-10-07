@@ -19,16 +19,39 @@ struct ImageDecodeProcessMetrics: Encodable, Sendable {
     var childPolledResidentPeakBytes: UInt64?, childPolledResidentSamples = 0
     var phases: [ImageDecodeChildPhase] = []
     var terminal: ImageDecodeDiagnosticEvent?
+    var rejectedEvent: ImageDecodeDiagnosticEvent?
+    var signaturePhases: [CodecHelperValidationTiming] = []
+    var diagnosticProfile: String?
+    var boundaryUptimes: [String: Double] = [:]
+    var parentBoundaries: [String: ImageDecodeMemoryReading] = [:]
+    var cancellationObservedUptimeSeconds: Double?
     var signatureSeconds = 0.0, stagingSeconds = 0.0, launchThroughExitSeconds = 0.0, rawReadAndHashSeconds = 0.0, cleanupSeconds = 0.0, elapsedSeconds = 0.0
 }
 /// Dedicated diagnostic supervisor. No executable override, shell, export
 /// protocol change, or lease release while the owned child may still write.
 final class ImageDecodeDiagnosticProcess: @unchecked Sendable {
-    enum Mode: Equatable, Sendable { case decode, cancelAfterDecode, timeoutAfterDecode }
+    enum Mode: Equatable, Sendable { case decode, cancelAfterDecode, timeoutAfterDecode, holdForCancellation }
     private let lock = NSLock(), mode: Mode
+    private let profile: ImageDecodeDiagnosticProfile?
+    private let cancellationCheck: @Sendable () -> Bool
+    private let observer: (@Sendable (String, Double) -> Void)?
     private var cancelled = false, metrics = ImageDecodeProcessMetrics()
-    init(mode: Mode) { self.mode = mode }
-    func cancel() { lock.lock(); cancelled = true; lock.unlock() }
+    init(mode: Mode, profile: ImageDecodeDiagnosticProfile? = nil,
+         cancellationCheck: @escaping @Sendable () -> Bool = { false }, observer: (@Sendable (String, Double) -> Void)? = nil) {
+        self.mode = mode; self.profile = profile; self.cancellationCheck = cancellationCheck; self.observer = observer
+        metrics.diagnosticProfile = profile?.rawValue
+    }
+    func cancel() {
+        lock.lock(); cancelled = true
+        if metrics.cancellationObservedUptimeSeconds == nil { metrics.cancellationObservedUptimeSeconds = ProcessInfo.processInfo.systemUptime }
+        lock.unlock()
+    }
+    private func boundary(_ name: String) {
+        guard profile != nil else { return }
+        let now = ProcessInfo.processInfo.systemUptime, reading = ImageDecodeMemoryReading.current()
+        update { $0.boundaryUptimes[name] = now; $0.parentBoundaries[name] = reading }
+        observer?(name, now)
+    }
     private var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
     func snapshot() -> ImageDecodeProcessMetrics { lock.lock(); defer { lock.unlock() }; return metrics }
     private func update(_ f: (inout ImageDecodeProcessMetrics) -> Void) { lock.lock(); f(&metrics); lock.unlock() }
@@ -57,6 +80,7 @@ final class ImageDecodeDiagnosticProcess: @unchecked Sendable {
                 update { $0.cleanupConfirmed = removed; $0.cleanupSeconds = ProcessInfo.processInfo.systemUptime - cleanupStart }
                 if removed { NativeExportAdmission.shared.release(lease); update { $0.admissionReleased = true } }
                 else if let job { NativeExportAdmission.shared.retainUntilRecovered(lease) { job.removeAfterExit() } }
+                boundary("cleanupFinished")
             } else if let process, let job {
                 NativeExportAdmission.shared.retainUntilRecovered(lease) {
                     guard !process.isRunning else { return false }
@@ -65,23 +89,34 @@ final class ImageDecodeDiagnosticProcess: @unchecked Sendable {
             }
         }
         func check() throws {
+            if cancellationCheck() { cancel() }
+            if profile != nil {
+                let memory = ImageDecodeMemoryReading.current()
+                guard memory.usable, (memory.residentBytes ?? UInt64.max) <= 536_870_912,
+                      (memory.footprintBytes ?? UInt64.max) <= 536_870_912 else { throw ImageDecodeDiagnosticError.memoryLimit }
+            }
             if isCancelled { throw ImageDecodeDiagnosticError.cancelled }
             guard ProcessInfo.processInfo.systemUptime < armDeadline else { throw ImageDecodeDiagnosticError.deadline }
         }
         do {
             try check()
             update { $0.lastStage = "signatureValidation" }
+            boundary("signatureStarted")
             let signatureStart = ProcessInfo.processInfo.systemUptime
-            let executable = try CodecHelperExecutable.verified()
+            let executable: URL
+            if profile == nil { executable = try CodecHelperExecutable.verified() }
+            else { executable = try CodecHelperExecutable.verified(timing: { [self] value in update { $0.signaturePhases.append(value) } }) }
             update { $0.signatureSeconds = ProcessInfo.processInfo.systemUptime - signatureStart }
+            boundary("signatureFinished")
             try check()
             let stagingStart = ProcessInfo.processInfo.systemUptime
             let files: ImageDecodeDiagnosticJob
-            do { files = try ImageDecodeDiagnosticJob.create(png: png, mode: mode == .decode ? .decode : .holdAfterDecode, check: check) }
+            do { files = try ImageDecodeDiagnosticJob.create(png: png, mode: mode == .decode ? .decode : .holdAfterDecode, profile: profile, check: check) }
             catch let failure as ImageDecodeDiagnosticCreationFailure {
                 stagingFailure = failure; update { $0.jobDirectory = failure.directory.path }; throw failure
             }
             job = files; update { $0.jobDirectory = files.directory.path; $0.stagingSeconds = ProcessInfo.processInfo.systemUptime - stagingStart; $0.lastStage = "launch" }
+            boundary("stagingFinished")
             let input = Pipe(), output = Pipe(), errors = Pipe()
             defer {
                 try? input.fileHandleForReading.close(); try? input.fileHandleForWriting.close()
@@ -89,7 +124,7 @@ final class ImageDecodeDiagnosticProcess: @unchecked Sendable {
                 try? errors.fileHandleForReading.close(); try? errors.fileHandleForWriting.close()
             }
             let child = Process(); process = child
-            child.executableURL = executable; child.arguments = [ImageDecodeDiagnosticLimits.argument]
+            child.executableURL = executable; child.arguments = [profile == nil ? ImageDecodeDiagnosticLimits.argument : ImageDecodeDiagnosticLimits.largeArgument]
             child.currentDirectoryURL = files.directory
             child.environment = ["HOME": NSHomeDirectory(), "TMPDIR": files.directory.path, "LANG": "en_US.UTF-8"]
             child.standardInput = input; child.standardOutput = output; child.standardError = errors
@@ -101,7 +136,9 @@ final class ImageDecodeDiagnosticProcess: @unchecked Sendable {
             guard fcntl(inputFD, F_SETNOSIGPIPE, 1) == 0 else { throw ImageDecodeDiagnosticError.invalidProtocol }
             try check()
             let launchStart = ProcessInfo.processInfo.systemUptime
+            boundary("processRunStarted")
             try child.run(); launched = true
+            boundary("processRunReturned")
             try? input.fileHandleForReading.close(); try? output.fileHandleForWriting.close(); try? errors.fileHandleForWriting.close()
             update { $0.childLaunched = true; $0.childPID = child.processIdentifier; $0.lastStage = "childRunning" }
             var decoder = ImageDecodeDiagnosticEventDecoder(), outClosed = false, errClosed = false
@@ -120,7 +157,11 @@ final class ImageDecodeDiagnosticProcess: @unchecked Sendable {
                         update { $0.stdoutBytes += n }
                         do {
                             for event in try decoder.consume(Data(buffer.prefix(n))) {
-                                guard event.childPID == child.processIdentifier else { throw ImageDecodeDiagnosticError.invalidProtocol }
+                                guard event.childPID == child.processIdentifier,
+                                      event.schema == (profile == nil ? ImageDecodeDiagnosticLimits.schema : ImageDecodeDiagnosticLimits.largeSchema),
+                                      event.profile == profile else {
+                                    update { $0.rejectedEvent = event }; throw ImageDecodeDiagnosticError.invalidProtocol
+                                }
                                 try sequence.consume(event)
                                 let parentReading = ImageDecodeMemoryReading.current()
                                 guard parentReading.usable else { throw ImageDecodeDiagnosticError.failed }
@@ -128,8 +169,9 @@ final class ImageDecodeDiagnosticProcess: @unchecked Sendable {
                                     receiptSkewSeconds: max(0, ProcessInfo.processInfo.systemUptime - event.uptimeSeconds))
                                 update { $0.phases.append(pair) }
                                 if event.kind == .ready {
-                                    guard mode != .decode, !snapshot().sawPostDecodeReady, event.rawBytes == ImageDecodeDiagnosticLimits.rasterBytes else { throw ImageDecodeDiagnosticError.invalidProtocol }
+                                    guard mode != .decode, !snapshot().sawPostDecodeReady, event.rawBytes == (profile?.rasterBytes ?? ImageDecodeDiagnosticLimits.rasterBytes) else { throw ImageDecodeDiagnosticError.invalidProtocol }
                                     update { $0.sawPostDecodeReady = true }
+                                    boundary("heldAfterDecode")
                                     if mode == .cancelAfterDecode { cancel() }
                                 }
                                 if event.kind == .result || event.kind == .error { terminal = event; update { $0.terminal = event } }
@@ -148,6 +190,11 @@ final class ImageDecodeDiagnosticProcess: @unchecked Sendable {
                     update { $0.childPolledResidentSamples += 1; $0.childPolledResidentPeakBytes = max($0.childPolledResidentPeakBytes ?? 0, info.pti_resident_size) }
                     if info.pti_resident_size > ImageDecodeDiagnosticLimits.residentWatchdogBytes { failure = failure ?? .memoryLimit }
                 }
+                if cancellationCheck() { cancel() }
+                if profile != nil {
+                    let parent = ImageDecodeMemoryReading.current()
+                    if !parent.usable || (parent.residentBytes ?? UInt64.max) > 536_870_912 || (parent.footprintBytes ?? UInt64.max) > 536_870_912 { failure = failure ?? .memoryLimit }
+                }
                 if isCancelled { failure = failure ?? .cancelled }
                 if now >= min(launchStart + ImageDecodeDiagnosticLimits.childWorkSeconds, armDeadline) { failure = failure ?? .deadline }
                 if failure != nil {
@@ -155,6 +202,7 @@ final class ImageDecodeDiagnosticProcess: @unchecked Sendable {
                         stoppingAt = now
                         let result = ImageDecodeDiagnosticLimits.cancelLine.withUnsafeBytes { Darwin.write(inputFD, $0.baseAddress!, $0.count) }
                         update { $0.cancelRequested = true; $0.cancelWriteReturn = result }
+                        boundary("cancelCommandSent")
                     }
                     if now - stoppingAt! >= 0.3, !snapshot().terminateSent { child.terminate(); update { $0.terminateSent = true } }
                     if now - stoppingAt! >= 0.8, snapshot().killReturn == nil, child.isRunning { let result = kill(child.processIdentifier, SIGKILL); update { $0.killReturn = result } }
@@ -163,6 +211,7 @@ final class ImageDecodeDiagnosticProcess: @unchecked Sendable {
                 if child.isRunning { Thread.sleep(forTimeInterval: 0.005) }
             }
             child.waitUntilExit(); exited = true
+            boundary("childExitConfirmed")
             update { $0.exitConfirmed = true; $0.terminationStatus = child.terminationStatus; $0.terminationReason = child.terminationReason == .exit ? "exit" : "uncaughtSignal"
                 $0.launchThroughExitSeconds = ProcessInfo.processInfo.systemUptime - launchStart; $0.lastStage = "pipeDrain" }
             let drainDeadline = min(armDeadline, ProcessInfo.processInfo.systemUptime + 0.5)
@@ -181,7 +230,7 @@ final class ImageDecodeDiagnosticProcess: @unchecked Sendable {
                 guard child.terminationReason == .exit, child.terminationStatus == 1,
                       snapshot().sawPostDecodeReady, !files.outputExists(), let terminal, terminal.kind == .error,
                       terminal.error == .cancelled || terminal.error == .deadline else { throw ImageDecodeDiagnosticError.invalidProtocol }
-                if mode == .cancelAfterDecode {
+                if mode == .cancelAfterDecode || mode == .holdForCancellation {
                     guard snapshot().cancelRequested, terminal.error == .cancelled else { throw ImageDecodeDiagnosticError.invalidProtocol }
                     update { $0.outcome = "cancelled-after-decode" }
                 } else {
@@ -199,6 +248,7 @@ final class ImageDecodeDiagnosticProcess: @unchecked Sendable {
             update { $0.lastStage = "rawReadAndHash" }
             let readStart = ProcessInfo.processInfo.systemUptime
             let raw = try files.readRaw(sha256: digest, check: check)
+            boundary("rawReadFinished")
             update { $0.rawReadAndHashSeconds = ProcessInfo.processInfo.systemUptime - readStart; $0.outcome = "decoded"; $0.lastStage = "cleanup" }
             return raw
         } catch {

@@ -9,7 +9,8 @@ public struct ImageDecodeDiagnosticJob: @unchecked Sendable {
     public let directory: URL, request: ImageDecodeDiagnosticRequest
     private let identity: ImageDecodeFileIdentity, sourceIdentity: ImageDecodeFileIdentity
 
-    public static func create(png: Data, mode: ImageDecodeDiagnosticRequest.Mode, check: () throws -> Void) throws -> Self {
+    public static func create(png: Data, mode: ImageDecodeDiagnosticRequest.Mode,
+                              profile: ImageDecodeDiagnosticProfile? = nil, check: () throws -> Void) throws -> Self {
         guard !png.isEmpty, png.count <= ImageDecodeDiagnosticLimits.pngBytes else { throw ImageDecodeDiagnosticError.invalidInput }
         try check()
         let token = UUID().uuidString
@@ -19,7 +20,7 @@ public struct ImageDecodeDiagnosticJob: @unchecked Sendable {
         let identity = try directoryIdentity(directory)
         do {
             let request = ImageDecodeDiagnosticRequest(token: token, parentPID: getpid(), pngBytes: png.count,
-                pngSHA256: ImageDecodeDiagnosticLimits.digest(png), mode: mode)
+                pngSHA256: ImageDecodeDiagnosticLimits.digest(png), mode: mode, profile: profile)
             let descriptor = try openDirectory(directory, identity: identity); defer { Darwin.close(descriptor) }
             try createFile("request.json", in: descriptor, data: JSONEncoder().encode(request), check: check)
             try createFile("input.png", in: descriptor, data: png, check: check)
@@ -61,15 +62,15 @@ public struct ImageDecodeDiagnosticJob: @unchecked Sendable {
         return data
     }
     public func writeRaw(_ data: Data, check: () throws -> Void) throws {
-        guard data.count == ImageDecodeDiagnosticLimits.rasterBytes else { throw ImageDecodeDiagnosticError.invalidInput }
+        guard data.count == request.rasterBytes else { throw ImageDecodeDiagnosticError.invalidInput }
         let fd = try Self.openDirectory(directory, identity: identity); defer { Darwin.close(fd) }
         try Self.createFile("decoded.rgba", in: fd, data: data, check: check)
     }
     public func readRaw(sha256: String, check: () throws -> Void) throws -> Data {
         guard ImageDecodeDiagnosticLimits.validDigest(sha256) else { throw ImageDecodeDiagnosticError.invalidProtocol }
         let fd = try Self.openDirectory(directory, identity: identity); defer { Darwin.close(fd) }
-        let (data, _) = try Self.readFile("decoded.rgba", in: fd, maximum: ImageDecodeDiagnosticLimits.rasterBytes, check: check)
-        guard data.count == ImageDecodeDiagnosticLimits.rasterBytes, ImageDecodeDiagnosticLimits.digest(data) == sha256 else { throw ImageDecodeDiagnosticError.outputMismatch }
+        let (data, _) = try Self.readFile("decoded.rgba", in: fd, maximum: request.rasterBytes, check: check)
+        guard data.count == request.rasterBytes, ImageDecodeDiagnosticLimits.digest(data) == sha256 else { throw ImageDecodeDiagnosticError.outputMismatch }
         return data
     }
     /// Caller must first confirm that no child can still access this job.

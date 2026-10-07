@@ -56,6 +56,11 @@ codesign --verify --deep --strict "$app"
 # SwiftPM build bundle is unavailable. The verifier restores it before returning.
 python3 scripts/FormulaRender-verify-packaged-runtime.py --app "$app" --build-bundle "$bin/PicShot_PicShotFormulaRenderHelper.bundle"
 codesign --verify --deep --strict "$app"
+# Diagnostic jobs need the verified signed app, without creating installers.
+if [[ "${PICSHOT_PACKAGE_APP_ONLY:-0}" == "1" ]]; then
+  echo "Signed diagnostic application prepared"
+  exit 0
+fi
 base="PicShot-$version-macos-$arch"
 ditto -c -k --sequesterRsrc --keepParent "$app" "dist/$base.zip"
 staging=$(mktemp -d)

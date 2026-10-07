@@ -508,8 +508,22 @@ final class ExportFormatAccessory: NSView {
 /// NSImageView normally advertises the decoded image's pixel-sized intrinsic
 /// dimensions. That can enlarge an Auto Layout NSWindow far beyond the display.
 /// This view is sized exclusively by the compact export panel's layout constraints.
+struct ImageExportPreviewDrawObservation {
+    let uptimeSeconds: Double
+    let imageIdentity: String
+    let bounds: CGRect, displayedImageRect: CGRect, backingRect: CGRect
+    let backingScale: CGFloat
+    let windowVisible: Bool
+}
+
 @MainActor
 final class ImageExportPreviewView: NSImageView {
+    /// Explicit diagnostic observation only; no image/controller ownership in the payload.
+    var diagnosticDrawObserver: ((ImageExportPreviewDrawObservation) -> Void)?
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil { diagnosticDrawObserver = nil }
+        super.viewWillMove(toWindow: newWindow)
+    }
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         effectiveAppearance.performAsCurrentDrawingAppearance {
@@ -531,5 +545,11 @@ final class ImageExportPreviewView: NSImageView {
         guard let image else { return }
         image.draw(in: displayedImageRect, from: .zero, operation: .sourceOver, fraction: 1,
                    respectFlipped: true, hints: [.interpolation: NSImageInterpolation.high.rawValue])
+        if let observe = diagnosticDrawObserver {
+            observe(ImageExportPreviewDrawObservation(uptimeSeconds: ProcessInfo.processInfo.systemUptime,
+                imageIdentity: String(describing: ObjectIdentifier(image)), bounds: bounds, displayedImageRect: displayedImageRect,
+                backingRect: convertToBacking(displayedImageRect), backingScale: window?.backingScaleFactor ?? 1,
+                windowVisible: window?.isVisible == true))
+        }
     }
 }

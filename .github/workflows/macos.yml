@@ -7,7 +7,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[pin-workflows]') && 'pins-010' || contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
+  group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[decode-large]') && 'decode-large' || contains(github.event.head_commit.message || '', '[pin-workflows]') && 'pins-010' || contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
   cancel-in-progress: true
 jobs:
   runner-check:
@@ -338,7 +338,7 @@ jobs:
           retention-days: 14
 
   codec-attribution:
-    if: ${{ contains(github.event.head_commit.message || '', '[codec-attribution]') }}
+    if: ${{ contains(github.event.head_commit.message || '', '[codec-attribution]') && !contains(github.event.head_commit.message || '', '[decode-large]') }}
     strategy:
       fail-fast: false
       matrix:
@@ -415,5 +415,69 @@ jobs:
             dist/evidence/image-draw/
             dist/image-decode-helper.log
             dist/evidence/image-decode-helper/
+          if-no-files-found: warn
+          retention-days: 14
+
+  image-decode-large:
+    if: ${{ contains(github.event.head_commit.message || '', '[decode-large]') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Check bounded diagnostic reports and process cleanup
+        run: |
+          python3 -m unittest discover -s scripts/tests -p 'test_check_image_decode*report.py' -v
+          python3 -m unittest discover -s scripts/tests -p test_run_bounded_command.py -v
+      - name: Build verified signed app without installers or model weights
+        env:
+          PICSHOT_PACKAGE_APP_ONLY: '1'
+        run: |
+          mkdir -p dist
+          set -o pipefail
+          bash scripts/package.sh 2>&1 | tee dist/package.log
+      - name: Compile native diagnostic and existing regression tests
+        timeout-minutes: 10
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 540
+          --log dist/decode-large-test-build.log --report dist/decode-large-test-build-report.json
+          -- swift build --build-tests
+      - name: Build real debug executables for lifecycle checks
+        run: |
+          swift build --product PicShot
+          swift build --product PicShotCodecHelper
+      - name: Verify old and new decode contracts and controller boundaries
+        timeout-minutes: 8
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 420
+          --log dist/decode-large-tests.log --report dist/decode-large-tests-report.json
+          -- swift test --skip-build --filter 'ImageDecode|ImageRasterMaterialization|CodecExportAttribution|ImageExportController|ImageExportLayout|ImageExportService|CodecExportProcess|CodecHelperLifecycle'
+      - name: Repeat original small PNG decode comparison
+        timeout-minutes: 8
+        run: |
+          set -o pipefail
+          bash scripts/image-decode-helper-attribution.sh --compare "$PWD/dist/PicShot.app" "$PWD/dist/evidence/image-decode-helper" 2>&1 | tee dist/decode-small.log
+      - name: Compare bounded large PNG previews and actual native window flows
+        timeout-minutes: 25
+        run: |
+          set -o pipefail
+          bash scripts/image-decode-large-attribution.sh --compare "$PWD/dist/PicShot.app" "$PWD/dist/evidence/image-decode-large" 2>&1 | tee dist/decode-large.log
+      - name: Preserve diagnostic observations without installer publication
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Decode-Large-${{ matrix.arch }}-${{ github.sha }}
+          path: |
+            dist/*.log
+            dist/*report.json
+            dist/evidence/image-decode-helper/
+            dist/evidence/image-decode-large/
           if-no-files-found: warn
           retention-days: 14

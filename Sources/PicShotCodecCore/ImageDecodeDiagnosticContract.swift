@@ -5,6 +5,8 @@ import CryptoKit
 public enum ImageDecodeDiagnosticLimits {
     public static let schema = "image-decode-helper-v1"
     public static let argument = "--image-draw-decode-diagnostic-v1"
+    public static let largeSchema = "image-decode-helper-v2"
+    public static let largeArgument = "--image-draw-decode-diagnostic-v2"
     public static let width = 768, height = 576, rasterBytes = 1_769_472
     public static let pngBytes = 8 * 1_024 * 1_024
     public static let requestBytes = 4_096, eventBytes = 16_384, stdoutBytes = 131_072, stderrBytes = 8_192
@@ -25,24 +27,37 @@ public struct ImageDecodeDiagnosticRequest: Codable, Equatable, Sendable {
     public let schema: String, token: String, pngSHA256: String
     public let parentPID: Int32, pngBytes: Int
     public let mode: Mode
-    public init(token: String, parentPID: Int32, pngBytes: Int, pngSHA256: String, mode: Mode) {
-        schema = ImageDecodeDiagnosticLimits.schema; self.token = token; self.parentPID = parentPID
-        self.pngBytes = pngBytes; self.pngSHA256 = pngSHA256; self.mode = mode
+    public let profile: ImageDecodeDiagnosticProfile?
+    public var sourceWidth: Int { profile?.sourceWidth ?? ImageDecodeDiagnosticLimits.width }
+    public var sourceHeight: Int { profile?.sourceHeight ?? ImageDecodeDiagnosticLimits.height }
+    public var previewWidth: Int { profile?.previewWidth ?? ImageDecodeDiagnosticLimits.width }
+    public var previewHeight: Int { profile?.previewHeight ?? ImageDecodeDiagnosticLimits.height }
+    public var rasterBytes: Int { profile?.rasterBytes ?? ImageDecodeDiagnosticLimits.rasterBytes }
+    public init(token: String, parentPID: Int32, pngBytes: Int, pngSHA256: String, mode: Mode,
+                profile: ImageDecodeDiagnosticProfile? = nil) {
+        schema = profile == nil ? ImageDecodeDiagnosticLimits.schema : ImageDecodeDiagnosticLimits.largeSchema
+        self.token = token; self.parentPID = parentPID
+        self.pngBytes = pngBytes; self.pngSHA256 = pngSHA256; self.mode = mode; self.profile = profile
     }
     public func validate() throws {
-        guard schema == ImageDecodeDiagnosticLimits.schema, UUID(uuidString: token) != nil, parentPID > 1,
+        guard schema == (profile == nil ? ImageDecodeDiagnosticLimits.schema : ImageDecodeDiagnosticLimits.largeSchema),
+              UUID(uuidString: token) != nil, parentPID > 1,
               (1...ImageDecodeDiagnosticLimits.pngBytes).contains(pngBytes), ImageDecodeDiagnosticLimits.validDigest(pngSHA256) else { throw ImageDecodeDiagnosticError.invalidProtocol }
     }
     public static func decode(_ data: Data) throws -> Self {
         guard !data.isEmpty, data.count <= ImageDecodeDiagnosticLimits.requestBytes,
               let object = try imageDecodeDiagnosticObject(data, maximumDepth: 1),
-              Set(object.keys) == ["schema", "token", "pngSHA256", "parentPID", "pngBytes", "mode"] else { throw ImageDecodeDiagnosticError.invalidProtocol }
+              let schema = object["schema"] as? String else { throw ImageDecodeDiagnosticError.invalidProtocol }
+        var keys: Set<String> = ["schema", "token", "pngSHA256", "parentPID", "pngBytes", "mode"]
+        if schema == ImageDecodeDiagnosticLimits.largeSchema { keys.insert("profile") }
+        guard Set(object.keys) == keys else { throw ImageDecodeDiagnosticError.invalidProtocol }
         let result = try JSONDecoder().decode(Self.self, from: data); try result.validate(); return result
     }
 }
 public struct ImageDecodeDiagnosticEvent: Codable, Sendable {
     public enum Kind: String, Codable, Sendable { case phase, ready, result, error }
     public let schema: String
+    public let profile: ImageDecodeDiagnosticProfile?
     public var kind: Kind, phase: String
     public var childPID: Int32
     public var uptimeSeconds: Double
@@ -55,19 +70,34 @@ public struct ImageDecodeDiagnosticEvent: Codable, Sendable {
     public var drawSeconds: Double?
     public var writeSeconds: Double?
     public var childWorkSeconds: Double?
-    public init(kind: Kind, phase: String, childPID: Int32, memory: ImageDecodeMemoryReading? = nil) {
-        schema = ImageDecodeDiagnosticLimits.schema; self.kind = kind; self.phase = phase; self.childPID = childPID
+    /// Monotonic helper entry/response timestamps, not OS process-start times.
+    public var helperEntryUptimeSeconds: Double?
+    public var responsePreparedUptimeSeconds: Double?
+    public var pngReadAndHashSeconds: Double?
+    public init(kind: Kind, phase: String, childPID: Int32, memory: ImageDecodeMemoryReading? = nil,
+                profile: ImageDecodeDiagnosticProfile? = nil) {
+        schema = profile == nil ? ImageDecodeDiagnosticLimits.schema : ImageDecodeDiagnosticLimits.largeSchema
+        self.profile = profile; self.kind = kind; self.phase = phase; self.childPID = childPID
         uptimeSeconds = ProcessInfo.processInfo.systemUptime; self.memory = memory
     }
     public func validate() throws {
         let phases: Set<String> = ["beforePNGRead", "imageCreated", "rasterDrawn", "afterContextRelease", "heldAfterDecode", "outputClosed", "afterDecodePool", "complete", "failed"]
-        guard schema == ImageDecodeDiagnosticLimits.schema, childPID > 1, phases.contains(phase), uptimeSeconds.isFinite, uptimeSeconds >= 0 else { throw ImageDecodeDiagnosticError.invalidProtocol }
+        guard schema == (profile == nil ? ImageDecodeDiagnosticLimits.schema : ImageDecodeDiagnosticLimits.largeSchema),
+              childPID > 1, phases.contains(phase), uptimeSeconds.isFinite, uptimeSeconds >= 0 else { throw ImageDecodeDiagnosticError.invalidProtocol }
         for value in [imageCreationSeconds, drawSeconds, writeSeconds, childWorkSeconds].compactMap({ $0 }) {
             guard value.isFinite, value >= 0 else { throw ImageDecodeDiagnosticError.invalidProtocol }
         }
+        for value in [helperEntryUptimeSeconds, responsePreparedUptimeSeconds].compactMap({ $0 }) {
+            guard value.isFinite, value >= 0, value <= uptimeSeconds else { throw ImageDecodeDiagnosticError.invalidProtocol }
+        }
+        if let entry = helperEntryUptimeSeconds, let response = responsePreparedUptimeSeconds, response < entry { throw ImageDecodeDiagnosticError.invalidProtocol }
+        if let pngReadAndHashSeconds {
+            guard pngReadAndHashSeconds.isFinite, (0...ImageDecodeDiagnosticLimits.childHardSeconds).contains(pngReadAndHashSeconds) else { throw ImageDecodeDiagnosticError.invalidProtocol }
+        }
+        if let rawBytes, rawBytes != (profile?.rasterBytes ?? ImageDecodeDiagnosticLimits.rasterBytes) { throw ImageDecodeDiagnosticError.invalidProtocol }
         if let rawSHA256, !ImageDecodeDiagnosticLimits.validDigest(rawSHA256) { throw ImageDecodeDiagnosticError.invalidProtocol }
         if kind == .result {
-            guard phase == "complete", rawBytes == ImageDecodeDiagnosticLimits.rasterBytes, rawSHA256 != nil,
+            guard phase == "complete", rawBytes == (profile?.rasterBytes ?? ImageDecodeDiagnosticLimits.rasterBytes), rawSHA256 != nil,
                   imageCreationSeconds != nil, drawSeconds != nil, writeSeconds != nil, childWorkSeconds != nil,
                   error == nil, let peaks, peaks.residentSamples > 0, peaks.footprintSamples > 0 else { throw ImageDecodeDiagnosticError.invalidProtocol }
         }
@@ -87,7 +117,7 @@ public struct ImageDecodeDiagnosticEventDecoder {
             guard !terminal else { throw ImageDecodeDiagnosticError.invalidProtocol }
             if byte == 10 {
                 guard !pending.isEmpty, pending.count + 1 <= ImageDecodeDiagnosticLimits.eventBytes, count < ImageDecodeDiagnosticLimits.maximumEvents else { throw ImageDecodeDiagnosticError.invalidProtocol }
-                let keys: Set<String> = ["schema", "kind", "phase", "childPID", "uptimeSeconds", "memory", "peaks", "error", "rawSHA256", "rawBytes", "imageCreationSeconds", "drawSeconds", "writeSeconds", "childWorkSeconds"]
+                let keys: Set<String> = ["schema", "profile", "kind", "phase", "childPID", "uptimeSeconds", "memory", "peaks", "error", "rawSHA256", "rawBytes", "imageCreationSeconds", "drawSeconds", "writeSeconds", "childWorkSeconds", "helperEntryUptimeSeconds", "responsePreparedUptimeSeconds", "pngReadAndHashSeconds"]
                 guard let object = try imageDecodeDiagnosticObject(pending, maximumDepth: 4), Set(object.keys).isSubset(of: keys) else { throw ImageDecodeDiagnosticError.invalidProtocol }
                 let event = try JSONDecoder().decode(ImageDecodeDiagnosticEvent.self, from: pending); try event.validate()
                 pending.removeAll(keepingCapacity: true); count += 1; result.append(event)

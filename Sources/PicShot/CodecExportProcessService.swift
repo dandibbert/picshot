@@ -41,8 +41,16 @@ struct CodecProcessConfiguration: @unchecked Sendable {
     }
 }
 
+struct CodecHelperValidationTiming: Codable, Sendable {
+    let phase: String
+    let startedUptimeSeconds: Double, elapsedSeconds: Double
+    let securityStatus: Int32?
+}
+
 enum CodecHelperExecutable {
-    static func verified(bundleURL: URL = Bundle.main.bundleURL) throws -> URL {
+    static func verified(bundleURL: URL = Bundle.main.bundleURL,
+                         timing: (@Sendable (CodecHelperValidationTiming) -> Void)? = nil) throws -> URL {
+        let pathStarted = timing == nil ? 0 : ProcessInfo.processInfo.systemUptime
         let bundle = bundleURL.standardizedFileURL
         guard bundle.isFileURL, bundle.pathExtension == "app" else { throw CodecExportProcessError.helperUnavailable }
         let executable = bundle.appendingPathComponent("Contents/Helpers/PicShotCodecHelper")
@@ -50,12 +58,21 @@ enum CodecHelperExecutable {
               FileManager.default.isExecutableFile(atPath: executable.path) else { throw CodecExportProcessError.signature }
         var file = stat()
         guard lstat(executable.path, &file) == 0, file.st_mode & S_IFMT == S_IFREG, file.st_nlink == 1 else { throw CodecExportProcessError.signature }
-        for url in [bundle, executable] {
+        if let timing { timing(.init(phase: "pathAndIdentity", startedUptimeSeconds: pathStarted,
+                                     elapsedSeconds: ProcessInfo.processInfo.systemUptime - pathStarted, securityStatus: nil)) }
+        for (index, url) in [bundle, executable].enumerated() {
+            let name = index == 0 ? "app" : "helper"
             var code: SecStaticCode?
-            guard SecStaticCodeCreateWithPath(url as CFURL, [], &code) == errSecSuccess, let code,
-                  SecStaticCodeCheckValidity(code, SecCSFlags(rawValue: kSecCSStrictValidate | kSecCSCheckNestedCode), nil) == errSecSuccess else {
-                throw CodecExportProcessError.signature
-            }
+            let createStarted = timing == nil ? 0 : ProcessInfo.processInfo.systemUptime
+            let createStatus = SecStaticCodeCreateWithPath(url as CFURL, [], &code)
+            if let timing { timing(.init(phase: name + "CodeObject", startedUptimeSeconds: createStarted,
+                                         elapsedSeconds: ProcessInfo.processInfo.systemUptime - createStarted, securityStatus: createStatus)) }
+            guard createStatus == errSecSuccess, let code else { throw CodecExportProcessError.signature }
+            let checkStarted = timing == nil ? 0 : ProcessInfo.processInfo.systemUptime
+            let checkStatus = SecStaticCodeCheckValidity(code, SecCSFlags(rawValue: kSecCSStrictValidate | kSecCSCheckNestedCode), nil)
+            if let timing { timing(.init(phase: name + "Validity", startedUptimeSeconds: checkStarted,
+                                         elapsedSeconds: ProcessInfo.processInfo.systemUptime - checkStarted, securityStatus: checkStatus)) }
+            guard checkStatus == errSecSuccess else { throw CodecExportProcessError.signature }
         }
         return executable
     }

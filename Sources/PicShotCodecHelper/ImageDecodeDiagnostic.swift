@@ -6,11 +6,12 @@ import PicShotCodecCore
 
 /// The explicit diagnostic argument routes here; normal export run() is unchanged.
 enum ImageDecodeDiagnostic {
-    static func run() -> Int32 {
+    static func run(allowedSchema: String = ImageDecodeDiagnosticLimits.schema) -> Int32 {
+        let started = ProcessInfo.processInfo.systemUptime
         _ = signal(SIGPIPE, SIG_IGN); _ = umask(0o077)
         let writer = ImageDecodeDiagnosticWriter()
         let state = ImageDecodeDiagnosticState()
-        let parent = getppid(), started = ProcessInfo.processInfo.systemUptime
+        let parent = getppid()
         let sampler = ImageDecodeMemorySampler(); defer { sampler.stop() }
         DispatchQueue(label: "PicShot.ImageDecodeDiagnostic.HardDeadline").asyncAfter(deadline: .now() + ImageDecodeDiagnosticLimits.childHardSeconds) {
             // Never recursively remove a directory from this backstop while a
@@ -19,16 +20,19 @@ enum ImageDecodeDiagnostic {
         }
         var job: ImageDecodeDiagnosticJob?
         do {
+            guard [ImageDecodeDiagnosticLimits.schema, ImageDecodeDiagnosticLimits.largeSchema].contains(allowedSchema) else { throw ImageDecodeDiagnosticError.invalidProtocol }
             guard parent > 1 else { throw ImageDecodeDiagnosticError.cancelled }
             for fd in [STDIN_FILENO, STDOUT_FILENO] {
                 let flags = fcntl(fd, F_GETFL); guard flags >= 0, fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0 else { throw ImageDecodeDiagnosticError.invalidProtocol }
             }
             let files = try ImageDecodeDiagnosticJob.validateCurrentWorkingDirectory(expectedParent: parent)
             job = files
+            guard files.request.schema == allowedSchema else { throw ImageDecodeDiagnosticError.invalidProtocol }
+            state.admit(profile: files.request.profile)
             DispatchQueue.global(qos: .utility).async {
                 do {
                     let result = try autoreleasepool { try decode(job: files, writer: writer, state: state, sampler: sampler) }
-                    try phase("afterDecodePool", writer: writer, sampler: sampler)
+                    try phase("afterDecodePool", writer: writer, sampler: sampler, profile: files.request.profile)
                     state.finish(result)
                 } catch { state.fail((error as? ImageDecodeDiagnosticError) ?? .failed) }
             }
@@ -64,13 +68,19 @@ enum ImageDecodeDiagnostic {
             var terminal = state.terminal
             terminal.peaks = sampler.snapshot(); terminal.childWorkSeconds = ProcessInfo.processInfo.systemUptime - started
             terminal.memory = ImageDecodeMemoryReading.current()
+            terminal.helperEntryUptimeSeconds = started
+            terminal.responsePreparedUptimeSeconds = ProcessInfo.processInfo.systemUptime
+            terminal.uptimeSeconds = terminal.responsePreparedUptimeSeconds!
             try writer.send(terminal)
             // Worker completion is established before parent-loss cleanup.
             if state.parentLost { _ = files.removeAfterExit() }
             return terminal.kind == .result ? 0 : 1
         } catch {
-            var event = ImageDecodeDiagnosticEvent(kind: .error, phase: "failed", childPID: getpid())
+            var event = ImageDecodeDiagnosticEvent(kind: .error, phase: "failed", childPID: getpid(), profile: job?.request.profile)
             event.error = (error as? ImageDecodeDiagnosticError) ?? .failed; event.peaks = sampler.snapshot()
+            event.helperEntryUptimeSeconds = started
+            event.responsePreparedUptimeSeconds = ProcessInfo.processInfo.systemUptime
+            event.uptimeSeconds = event.responsePreparedUptimeSeconds!
             try? writer.send(event)
             if state.complete && state.parentLost { _ = job?.removeAfterExit() }
             return 1
@@ -121,15 +131,103 @@ enum ImageDecodeDiagnostic {
         withExtendedLifetime((image, source)) { }
         return (pixels, createSeconds, drawSeconds)
     }
+    /// Mirrors the production ImageIO thumbnail options. Only the returned
+    /// 1024x576 image is drawn into RGBA; no full-size bitmap is requested.
+    static func decodeThumbnailPixels(_ data: Data, profile: ImageDecodeDiagnosticProfile,
+                                      check: () throws -> Void, phase: (String) throws -> Void) throws -> (Data, Double, Double) {
+        try check()
+        try validateLargePNG(data, profile: profile, check: check)
+        let creationStart = ProcessInfo.processInfo.systemUptime
+        guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+              CGImageSourceGetCount(source) == 1, CGImageSourceGetStatus(source) == .statusComplete,
+              CGImageSourceGetStatusAtIndex(source, 0) == .statusComplete,
+              CGImageSourceGetType(source) as String? == "public.png",
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, [kCGImageSourceShouldCache: false] as CFDictionary) as? [CFString: Any],
+              properties[kCGImagePropertyPixelWidth] as? Int == profile.sourceWidth,
+              properties[kCGImagePropertyPixelHeight] as? Int == profile.sourceHeight,
+              properties[kCGImagePropertyDepth] as? Int == 8,
+              (properties[kCGImagePropertyOrientation] as? Int ?? 1) == 1 else { throw ImageDecodeDiagnosticError.invalidInput }
+        try check()
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceThumbnailMaxPixelSize: profile.previewWidth,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceShouldCacheImmediately: true] as CFDictionary),
+              image.width == profile.previewWidth, image.height == profile.previewHeight,
+              image.bitsPerComponent == 8, image.bytesPerRow <= 4_194_304 / image.height else { throw ImageDecodeDiagnosticError.invalidInput }
+        let createSeconds = ProcessInfo.processInfo.systemUptime - creationStart
+        try phase("imageCreated"); try check()
+        var pixels = Data(count: profile.rasterBytes)
+        let drawStart = ProcessInfo.processInfo.systemUptime
+        try pixels.withUnsafeMutableBytes { raw in
+            try autoreleasepool {
+                guard let context = CGContext(data: raw.baseAddress, width: image.width, height: image.height, bitsPerComponent: 8,
+                    bytesPerRow: image.width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue) else { throw ImageDecodeDiagnosticError.failed }
+                context.interpolationQuality = .none; context.setBlendMode(.copy)
+                context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height)); context.flush()
+                let borrowed = Data(bytesNoCopy: raw.baseAddress!, count: raw.count, deallocator: .none)
+                _ = ImageDecodeDiagnosticLimits.digest(borrowed)
+                try phase("rasterDrawn")
+                withExtendedLifetime(context) { }
+            }
+        }
+        let drawSeconds = ProcessInfo.processInfo.systemUptime - drawStart
+        guard CGImageSourceGetStatus(source) == .statusComplete, CGImageSourceGetStatusAtIndex(source, 0) == .statusComplete else { throw ImageDecodeDiagnosticError.invalidInput }
+        try phase("afterContextRelease"); try check()
+        withExtendedLifetime((image, source)) { }
+        return (pixels, createSeconds, drawSeconds)
+    }
+    private static func validateLargePNG(_ data: Data, profile: ImageDecodeDiagnosticProfile, check: () throws -> Void) throws {
+        guard data.count >= 45, data.count <= ImageDecodeDiagnosticLimits.pngBytes,
+              data.prefix(8) == Data([137, 80, 78, 71, 13, 10, 26, 10]),
+              data[8..<16] == Data([0, 0, 0, 13, 73, 72, 68, 82]) else { throw ImageDecodeDiagnosticError.invalidInput }
+        func word(_ offset: Int) -> UInt32 { data[offset..<(offset + 4)].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) } }
+        guard word(16) == profile.sourceWidth, word(20) == profile.sourceHeight,
+              data[24] == 8, [UInt8(0), 2, 3, 4, 6].contains(data[25]), data[26] == 0, data[27] == 0,
+              data[28] <= 1 else { throw ImageDecodeDiagnosticError.invalidInput }
+        var offset = 8, sawPixels = false
+        while offset <= data.count - 12 {
+            try check()
+            let length = Int(word(offset))
+            guard length <= data.count - offset - 12 else { throw ImageDecodeDiagnosticError.invalidInput }
+            let end = offset + 12 + length, type = word(offset + 4)
+            var crc = UInt32.max
+            for index in (offset + 4)..<(end - 4) {
+                if index & 0xffff == 0 { try check() }
+                crc = (crc >> 8) ^ pngCRCTable[Int((crc ^ UInt32(data[index])) & 0xff)]
+            }
+            guard crc ^ UInt32.max == word(end - 4), offset == 8 || type != 0x49484452 else { throw ImageDecodeDiagnosticError.invalidInput }
+            if type == 0x49444154 { sawPixels = true }
+            if type == 0x49454e44 {
+                guard length == 0, sawPixels, end == data.count else { throw ImageDecodeDiagnosticError.invalidInput }
+                return
+            }
+            offset = end
+        }
+        throw ImageDecodeDiagnosticError.invalidInput
+    }
+    private static let pngCRCTable: [UInt32] = (0..<256).map { value in
+        var crc = UInt32(value)
+        for _ in 0..<8 { crc = crc & 1 == 1 ? (crc >> 1) ^ 0xedb88320 : crc >> 1 }
+        return crc
+    }
     private static func decode(job: ImageDecodeDiagnosticJob, writer: ImageDecodeDiagnosticWriter,
                                state: ImageDecodeDiagnosticState, sampler: ImageDecodeMemorySampler) throws -> ImageDecodeDiagnosticEvent {
         let check = { try state.check() }
-        try phase("beforePNGRead", writer: writer, sampler: sampler)
+        let profile = job.request.profile
+        try phase("beforePNGRead", writer: writer, sampler: sampler, profile: profile)
+        let readStart = ProcessInfo.processInfo.systemUptime
         let png = try job.readPNG(check: check)
-        let result = try decodePixels(png, check: check) { try phase($0, writer: writer, sampler: sampler) }
+        let readSeconds = ProcessInfo.processInfo.systemUptime - readStart
+        let reportPhase: (String) throws -> Void = { try phase($0, writer: writer, sampler: sampler, profile: profile) }
+        let result: (Data, Double, Double)
+        if let profile { result = try decodeThumbnailPixels(png, profile: profile, check: check, phase: reportPhase) }
+        else { result = try decodePixels(png, check: check, phase: reportPhase) }
         if job.request.mode == .holdAfterDecode {
-            var event = ImageDecodeDiagnosticEvent(kind: .ready, phase: "heldAfterDecode", childPID: getpid(), memory: .current())
+            var event = ImageDecodeDiagnosticEvent(kind: .ready, phase: "heldAfterDecode", childPID: getpid(), memory: .current(), profile: profile)
             event.rawBytes = result.0.count; event.rawSHA256 = ImageDecodeDiagnosticLimits.digest(result.0)
+            event.pngReadAndHashSeconds = readSeconds
             try writer.send(event)
             while true { try check(); Thread.sleep(forTimeInterval: 0.005) }
         }
@@ -137,20 +235,24 @@ enum ImageDecodeDiagnostic {
         let writeStart = ProcessInfo.processInfo.systemUptime
         try job.writeRaw(result.0, check: check)
         let writeSeconds = ProcessInfo.processInfo.systemUptime - writeStart
-        try phase("outputClosed", writer: writer, sampler: sampler)
-        var event = ImageDecodeDiagnosticEvent(kind: .result, phase: "complete", childPID: getpid())
+        try phase("outputClosed", writer: writer, sampler: sampler, profile: profile)
+        var event = ImageDecodeDiagnosticEvent(kind: .result, phase: "complete", childPID: getpid(), profile: profile)
         event.rawBytes = result.0.count; event.rawSHA256 = ImageDecodeDiagnosticLimits.digest(result.0)
         event.imageCreationSeconds = result.1; event.drawSeconds = result.2; event.writeSeconds = writeSeconds
+        event.pngReadAndHashSeconds = readSeconds
         return event
     }
-    private static func phase(_ name: String, writer: ImageDecodeDiagnosticWriter, sampler: ImageDecodeMemorySampler) throws {
+    private static func phase(_ name: String, writer: ImageDecodeDiagnosticWriter, sampler: ImageDecodeMemorySampler,
+                              profile: ImageDecodeDiagnosticProfile? = nil) throws {
         let reading = ImageDecodeMemoryReading.current(); guard reading.usable else { throw ImageDecodeDiagnosticError.failed }
-        sampler.record(reading); try writer.send(.init(kind: .phase, phase: name, childPID: getpid(), memory: reading))
+        sampler.record(reading); try writer.send(.init(kind: .phase, phase: name, childPID: getpid(), memory: reading, profile: profile))
     }
 }
 private final class ImageDecodeDiagnosticState: @unchecked Sendable {
     private let lock = NSLock()
     private var result: ImageDecodeDiagnosticEvent?, cancellation: ImageDecodeDiagnosticError?, lost = false
+    private var profile: ImageDecodeDiagnosticProfile?
+    func admit(profile: ImageDecodeDiagnosticProfile?) { lock.lock(); self.profile = profile; lock.unlock() }
     var complete: Bool { lock.lock(); defer { lock.unlock() }; return result != nil }
     var parentLost: Bool { lock.lock(); defer { lock.unlock() }; return lost }
     func markParentLost() { lock.lock(); lost = true; lock.unlock() }
@@ -160,7 +262,7 @@ private final class ImageDecodeDiagnosticState: @unchecked Sendable {
     func fail(_ error: ImageDecodeDiagnosticError) { lock.lock(); result = failure(cancellation ?? error); lock.unlock() }
     var terminal: ImageDecodeDiagnosticEvent { lock.lock(); defer { lock.unlock() }; return cancellation.map(failure) ?? result ?? failure(.failed) }
     private func failure(_ error: ImageDecodeDiagnosticError) -> ImageDecodeDiagnosticEvent {
-        var e = ImageDecodeDiagnosticEvent(kind: .error, phase: "failed", childPID: getpid()); e.error = error; return e
+        var e = ImageDecodeDiagnosticEvent(kind: .error, phase: "failed", childPID: getpid(), profile: profile); e.error = error; return e
     }
 }
 private final class ImageDecodeDiagnosticWriter: @unchecked Sendable {

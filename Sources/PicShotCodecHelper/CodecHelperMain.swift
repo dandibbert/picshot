@@ -7,6 +7,9 @@ enum PicShotCodecHelper {
     static func main() {
         let arguments = Array(CommandLine.arguments.dropFirst())
         if arguments == [ImageDecodeDiagnosticLimits.argument] { exit(ImageDecodeDiagnostic.run()) }
+        if arguments == [ImageDecodeDiagnosticLimits.largeArgument] {
+            exit(ImageDecodeDiagnostic.run(allowedSchema: ImageDecodeDiagnosticLimits.largeSchema))
+        }
         exit(run(arguments: arguments))
     }
 

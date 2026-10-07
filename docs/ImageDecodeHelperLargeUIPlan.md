@@ -1,6 +1,6 @@
 # Large input and native UI decode experiment proposal
 
-Design only, 2026-10-07. **No new code or execution is authorized by this document.** Implementation is deferred until the independent pin-installer gates finish and the next diagnostic scope is coordinated. The [696b small-input result](ImageDecodeHelper696.md) removed a parent volatile-buffer slope while adding approximately 0.27 / 0.57 seconds median full latency on ARM64 / Intel; it did not establish a production remedy.
+Design baseline, 2026-10-07. A separate [opt-in v2 implementation](ImageDecodeLargeDiagnostic.md) is now prepared for native verification after the accepted 0.10 pin milestone. It changes no production preview default; native compilation and experiment results remain pending. The [696b small-input result](ImageDecodeHelper696.md) removed a parent volatile-buffer slope while adding approximately 0.27 / 0.57 seconds median full latency on ARM64 / Intel; it did not establish a production remedy.
 
 ## Fixed large-input comparison
 
