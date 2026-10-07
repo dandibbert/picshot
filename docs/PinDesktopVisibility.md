@@ -1,5 +1,7 @@
 # Managed pin desktop visibility
 
+**Accepted ARM 0.10.0 build 67** is [03cf310](https://github.com/dandibbert/picshot/commit/03cf310c4228bdbfdc3f9a81ceec810651552f81), with terminal-success [run 37575644941 / ARM job 112643816594](https://github.com/dandibbert/picshot/actions/runs/37575644941/job/112643816594): **1,190 ordinary tests (1,187 passed, 3 intentional pre-weight model skips), 732 focused and 12 actual-model tests**, zero failures. Both actual ZIP/DMG pass their installed startup, native pin and existing feature/cleanup gates. Stages overlap and are not additive distinct-test totals. ARM installer replacements are confirmed; **delivered Intel remains 0.9 b44c1fb**. Physical Spaces/Retina/TCC, all remaining feature gaps and sustained-use evidence remain open. Full GIF stress is ZIP-only. See [VERIFICATION.md](VERIFICATION.md) for exact bytes and process/workload-qualified measurements.
+
 ## Implemented scope
 
 Settings → 贴图 → 桌面显示 and each managed pin's context menu → 所有贴图的桌面 select **所有桌面** (all desktops) or **当前桌面** (current/assigned desktop). This is one global, persisted preference for all managed pin content kinds, not a per-pin Space destination. Saving Settings applies it to live pins; Cancel has no effect. Context selection applies immediately. Image, text, file-reference, color and animation pins share the same policy; formula pins that use `RichPinController` use the same content-agnostic route.
@@ -31,7 +33,7 @@ Formula editor integration: dismiss an open `NSPopover` only when the mode actua
 
 ## Automated evidence versus physical acceptance
 
-The code is implemented. This source-only Linux worktree has no Swift executable or macOS SDK; native XCTest, snapshots and installed-app fixture have **not been run here**. No synthetic result is evidence of actual multi-Space placement.
+ARM 03cf310 now passes native XCTest, shown controls/snapshots and both installed-app public-policy fixtures. Same-mode formula-draft preservation and actual-change dismissal/teardown pass in ordinary and focused tests. The original Linux authoring checkpoint had no native result; it is superseded only for the identified ARM source. `physicalSpacesVerified` remains **false**: no synthetic result establishes actual multi-Space placement.
 
 New tests cover preference defaults/migration/fallback, policy preservation, real AppKit parent/child flags, actual context target/action controls, Settings save/cancel/smoke isolation, repeated in-place toggles, controller/pixel identity, unchanged session files, annotation ownership, hide/show, group switching, close/restore, recovery, restart, weak-reference controller/content teardown and a public CGDataProvider release callback for the original image backing. The shown-window fixture emits a JSON report and two native content-view PNG snapshots, with `physicalSpacesVerified: false` hard-coded.
 

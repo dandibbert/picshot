@@ -1,10 +1,8 @@
-# PIN-13: bounded native group transforms (candidate source)
+# PIN-13: bounded native group transforms (Partial; ARM 0.10 verified)
 
-This implements a focused PIN-13 candidate, not full PixPin parity. It is based on
-b44c1fb0ecc71fbe652ed3c74e377e8f3ea8ba27. This worker ran on Linux without Swift or
-AppKit; all new Swift tests and native interaction/resource fixtures are **not run**.
-The owner must run macOS build, ordinary tests, both architecture gates, and installed
-ZIP/DMG smoke before treating any native acceptance below as passed.
+**Accepted ARM 0.10.0 build 67** is [03cf310](https://github.com/dandibbert/picshot/commit/03cf310c4228bdbfdc3f9a81ceec810651552f81), with terminal-success [run 37575644941 / ARM job 112643816594](https://github.com/dandibbert/picshot/actions/runs/37575644941/job/112643816594): **1,190 ordinary tests (1,187 passed, 3 intentional pre-weight model skips), 732 focused and 12 actual-model tests**, zero failures. Both actual ZIP/DMG pass their installed startup, native pin and existing feature/cleanup gates. Stages overlap and are not additive distinct-test totals. ARM installer replacements are confirmed; **delivered Intel remains 0.9 b44c1fb**. Physical Spaces/Retina/TCC, all remaining feature gaps and sustained-use evidence remain open. Full GIF stress is ZIP-only. See [VERIFICATION.md](VERIFICATION.md) for exact bytes and process/workload-qualified measurements.
+
+PIN-13 remains **Partial**: direct collective drag/resize is absent. ARM native and installed numeric Apply, six alignments, undo/redo and constrained rollback pass; original authoring on Linux was not itself native evidence.
 
 ## User path
 
@@ -15,7 +13,9 @@ ZIP/DMG smoke before treating any native acceptance below as passed.
   window sizes still apply. Window resizing preserves the existing per-pin zoom,
   opacity, text size, original/current pixels and typed rich source
 - Six alignments are available in the same manager: left/right/top/bottom and horizontal/
-  vertical center. Alignment uses the selected windows' collective bounds
+  vertical center. Alignment uses the selected windows' collective bounds, preserves
+  each size and canonicalizes origins/anchors to the destination pixel grid; center
+  placement can retain a half-grid residual
 - Each managed pin also has a native context-menu selection toggle and a shortcut to
   the compact transform inspector. Selected windows receive only a 2-point outline;
   no permanent toolbar or dashboard is added to the image-first pin surface
@@ -52,7 +52,7 @@ ZIP/DMG smoke before treating any native acceptance below as passed.
   than silently clamping individual members and destroying collective geometry;
   existing current-group recovery remains available for off-screen pins
 
-## Verification added (requires macOS)
+## Verification coverage (ARM 03cf310 native and installed)
 
 - `PinGroupTransformTests` (PicShotCoreTests): three varied windows plus a sentinel;
   negative origins, all six alignments, scale/finite limits, stale/deleted/locked/
@@ -70,11 +70,9 @@ ZIP/DMG smoke before treating any native acceptance below as passed.
   service is explicitly isolated; the existing manager restore toggle still reads
   its saved preference, which is disclosed in the report
 
-The fixture has not executed here and no generated UI image is offered as runtime
-proof. Physical multi-display/Spaces movement and mixed animation/LaTeX acceptance
-remain separate real-Mac checks after integration with the other pin workers.
+Actual ARM 03cf310 fixtures and native view snapshots pass in ZIP and DMG. The installed mixed fixture uses image, rotated fixed-zoom image and text; broader mixed animation/LaTeX interactions and physical multi-display/Spaces movement remain separate acceptance work.
 
-## Follow-on resource evidence (authored, native execution pending)
+## Installed ARM resource evidence and measurement scope
 
 Functional control/snapshot setup now returns before resource measurement, releasing
 its strong source-image/manager/table/inspector locals. Asset comparisons retain
@@ -97,4 +95,4 @@ counts and elapsed time. Probes must start with live controller/content: 15 warm
 100 measured and four final-teardown probes must release. Main-process accounting
 is not a whole-system/WindowServer/GPU/helper total; sampled maxima can miss
 transients. Released controllers and flat/negative readings do not prove a plateau
-or zero leaks. This source-only work has not executed the native fixture.
+or zero leaks. Accepted ARM 03cf310 ZIP/DMG comparable RSS grows +278,528/+65,536 bytes; the final three increments are [+49,152, 0, 0] / [0, +32,768, −32,768] bytes. Assets remain unchanged; final live pins and tracked retained controllers/content are zero. This does not resolve existing preview-backing growth. Exact baselines, footprint and other workloads remain in [VERIFICATION.md](VERIFICATION.md).

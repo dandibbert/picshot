@@ -1,11 +1,8 @@
-# Managed pin workflow integration: native acceptance pending
+# Managed pin workflow integration: ARM 0.10 verified, scope still partial
 
-This is a source candidate integrated against `7c3e76c9af09df430c2239d677c422eee472205f`
-(application base `b44c1fb0ecc71fbe652ed3c74e377e8f3ea8ba27`). The source-only Linux
-host has no Swift compiler, AppKit or macOS SDK. New Swift tests, native fixtures,
-window placement, pixel snapshots, packaging and resource gates have **not run**.
-The existing 0.9 acceptance ledger is intentionally unchanged. This document does
-not claim full PixPin parity, physical Spaces acceptance, or zero memory leaks.
+**Accepted ARM 0.10.0 build 67** is [03cf310](https://github.com/dandibbert/picshot/commit/03cf310c4228bdbfdc3f9a81ceec810651552f81), with terminal-success [run 37575644941 / ARM job 112643816594](https://github.com/dandibbert/picshot/actions/runs/37575644941/job/112643816594): **1,190 ordinary tests (1,187 passed, 3 intentional pre-weight model skips), 732 focused and 12 actual-model tests**, zero failures. Both actual ZIP/DMG pass their installed startup, native pin and existing feature/cleanup gates. Stages overlap and are not additive distinct-test totals. ARM installer replacements are confirmed; **delivered Intel remains 0.9 b44c1fb**. Physical Spaces/Retina/TCC, all remaining feature gaps and sustained-use evidence remain open. Full GIF stress is ZIP-only. See [VERIFICATION.md](VERIFICATION.md) for exact bytes and process/workload-qualified measurements.
+
+Originally integrated against 7c3e76c with b44c1fb application base on a Linux host; the source-only statements from that checkpoint are superseded for ARM by the exact-source evidence above. Intel delivery and physical-device acceptance remain separate.
 
 ## Integrated behavior and review corrections
 
@@ -46,9 +43,7 @@ not claim full PixPin parity, physical Spaces acceptance, or zero memory leaks.
   glyphs are readable in light/dark appearances and native cached-view screenshots.
   This is labeled in the pin tooltip and never flattened into exported PNG alpha
 
-No package version, default CI, dependency, permission or allocator diagnostic
-source was changed. The later owner-only allocator runner corrections are outside
-this patch and must not be reverted during application.
+Historical integration scope: that initial patch did not change package version, default CI, dependencies, permissions or allocator diagnostics. Subsequent owner integration/package changes produced accepted ARM 0.10 build 67; no production preview-memory fix is inferred.
 
 ## Remaining interaction limits
 
@@ -57,24 +52,18 @@ window scaling use the numeric inspector; alignment uses manager controls.
 Dragging a selected pin individually still moves only that pin. This is explicit
 in the existing manager/context help and `PIN_GROUP_TRANSFORMS.md`.
 
-`testNativeFractionalFrameScaleAndMoveRequiresExactAppKitResult` records actual
-nonintegral initial frames and exercises 125% scale with fractional translation,
-strict result equality and undo. A native rejection fails this test and reports
-post-rollback frames; it is not converted into a passing usability result.
-
-Exact post-`NSWindow.setFrame` comparison safely rejects an operation if AppKit
-constrains or rounds one member. Check 125% scaling, centered alignments, negative
-screen origins and Retina/non-Retina displays natively; do not weaken stale-state
-or geometry checks merely to make a fixture pass.
+Current fractional/mixed-scale coverage includes `testPositiveSmokeLayoutFitsVisibleFrameBeforeAndAfterFractionalScale`, destination-grid/negative-origin cases, mixed-scale seam selection, size-preserving alignment and actual AppKit backing conversion. Proposed target frames are explicitly canonicalized to the destination pixel grid; transaction verification still requires exact equality to those targets. A constrained or unrepresentable member rejects and rolls back the whole operation. Center alignment may have a half-grid residual without resizing the pin. These native/synthetic passes do not establish physical Retina or display-removal behavior.
 
 Public collection flags are not proof of physical desktop assignment. No private
 Space IDs, activation-follow, named desktop placement or original-Space restart
 restoration are implemented. Run the physical checklist in
 `PinDesktopVisibility.md` independently of automated flag/snapshot fixtures.
 
-## Native gates, still required
+## Native gate commands and remaining physical acceptance
 
-1. Compile and run `swift test` on both architectures. Focused coverage includes
+ARM 03cf310 completed the automated/native and both installed-format routes below; Intel 03cf310 remains pending. The commands remain reproducible checks, and physical/device requirements remain open.
+
+1. Compile and run `swift test` on each architecture. Focused coverage includes
    `PinWorkflowIntegrationTests`, `LaTeXPinExportTests`, `LaTeXPinTests`,
    `PinLaTeXContentTests`, `PinGroupTransformTests`, `PinGroupNativeTransformTests`,
    `PinDesktopVisibilityPolicyTests` and `FormulaRenderContractTests`. Then run the
@@ -132,5 +121,4 @@ parent/cancellation in `formulaSaveChooserGeometry`; remote-panel pixels are not
 cached or fabricated. Both fixture coordinators use isolated desktop preferences.
 The existing group-manager restore toggle still reads its saved preference, and
 that read is explicitly disclosed rather than represented as no preference access.
-All of these follow-on changes are fixture/documentation only and remain native
-unverified until the Mac gates execute.
+These follow-on fixtures have now executed in both accepted ARM 03cf310 installations. Formula 2+12 comparable RSS grows +98,304/+147,456 bytes ZIP/DMG; group 3+20 grows +278,528/+65,536 bytes. Last intervals, source limits and unchanged asset/release evidence are in [VERIFICATION.md](VERIFICATION.md). Formula measured cycles do not render. Physical Spaces and sustained resources remain unverified; existing preview-backing growth is unresolved.

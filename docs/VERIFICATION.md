@@ -1,11 +1,72 @@
 # Verification evidence and release boundary
 
-Reviewed **7 October 2026**. **ARM and Intel 0.9.0 build 52 are independently accepted at [b44c1fb0ecc71fbe652ed3c74e377e8f3ea8ba27](https://github.com/dandibbert/picshot/commit/b44c1fb0ecc71fbe652ed3c74e377e8f3ea8ba27)** in [run 37547871044](https://github.com/dandibbert/picshot/actions/runs/37547871044), with terminal-success [ARM job 112556128669](https://github.com/dandibbert/picshot/actions/runs/37547871044/job/112556128669) and [Intel job 112556128799](https://github.com/dandibbert/picshot/actions/runs/37547871044/job/112556128799). Both architecture installer replacements are confirmed; Intel's confirmation is 00:28 UTC. Each result uses its actual ZIP/DMG and own measurements. Earlier candidate failures and diagnostics remain source-labeled history. The **133-row scope** remains in [PARITY.md](PARITY.md); native/package acceptance is not full parity, whole-device acceptance or leak freedom. Diagnostic-only follow-up source 7c3e76c does not replace these accepted installers or change their app source.
+Reviewed **7 October 2026**. **Accepted and delivered ARM is 0.10.0 build 67 at [03cf310](https://github.com/dandibbert/picshot/commit/03cf310c4228bdbfdc3f9a81ceec810651552f81)**, terminal-success [run 37575644941 / ARM job 112643816594](https://github.com/dandibbert/picshot/actions/runs/37575644941/job/112643816594); ARM DMG/ZIP replacements and the updated guide are confirmed. **Delivered Intel remains 0.9.0 build 52 at b44c1fb**, with its original independent evidence below. Successful Intel ac8 is historical and was not delivered; Intel 03cf310 is rerunning unchanged after aggregate full-suite budget exhaustion. Native/package acceptance is not full parity, real-device acceptance or leak freedom. All **133 requirements** remain in [PARITY.md](PARITY.md).
 
 The earlier ARM 0.5 delivery at [87eaedf16aaf6c2df2001d35ce08af2762ac33c2](https://github.com/dandibbert/picshot/commit/87eaedf16aaf6c2df2001d35ce08af2762ac33c2), delivered at 15:57 UTC, passed [run 37489170662](https://github.com/dandibbert/picshot/actions/runs/37489170662), [build/package job 112357029365](https://github.com/dandibbert/picshot/actions/runs/37489170662/job/112357029365) and [attribution job 112357029582](https://github.com/dandibbert/picshot/actions/runs/37489170662/job/112357029582). Intel 2043254 changes only `.github/workflows/macos.yml` from that application source. Its annotation effects, camera/live annotations, recovery and corrected isolated GIF export remain included in 0.6. [04999d0](https://github.com/dandibbert/picshot/commit/04999d0fd92a00e11bcbbfd2c9fe813f8ea9f11d), [run 37471951304](https://github.com/dandibbert/picshot/actions/runs/37471951304), remains an earlier both-architecture functionality checkpoint. Results and measurements apply only to their identified source, artifact, process and fixture; identical application code does not make differently packaged bytes or measurements interchangeable. Current ARM 0.7 evidence is recorded separately below; older measurements retain their original provenance.
 
 
+## Accepted ARM 0.10 at 03cf310, build 67
+
+[03cf310](https://github.com/dandibbert/picshot/commit/03cf310c4228bdbfdc3f9a81ceec810651552f81), [run 37575644941 / ARM job 112643816594](https://github.com/dandibbert/picshot/actions/runs/37575644941/job/112643816594), passes **1,190 ordinary tests: 1,187 passed, 3 intentional pre-weight model skips, zero failures; 732 focused and 12 actual-model tests passed**. The three ordinary skips require explicitly supplied formula/table/smart-erase weights; the later real-weight stage passes. Stages overlap and are not additive independent totals. Native runtime is **macOS 15.7.9 (24G830), Xcode 16.4 / macOS SDK 15.5**. Embedded metadata identifies 0.10.0, build 67, arm64, macOS 14 minimum, ad-hoc signing and no notarization; macOS 14 runtime is untested.
+
+Both installed ZIP/DMG independently pass expected architecture/signature, no-argument LaunchServices, visible native windows, Save/Retry/owned export panels, actual codecs, signed models, capture/export/recognition, pin sessions/groups, interaction, recording composition and recording WebP. Actual own-app Accessibility remains `skipped-no-existing-accessibility-permission`; no TCC grant or foreign-app acceptance is inferred. Separate own-child SIGKILL recovery passes with five fragments, five seconds recovered, 50 video / 239,552 audio frames decoded, unchanged source and confirmed cleanup; no live devices were started.
+
+### Exact ARM 0.10 bytes and integrity
+
+| File | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `PicShot-0.10.0-macos-arm64.build-info.json` | 177 | `9e9aff7b0a2ba9f5f197fef1f697efbf3ca6280cba726b75eed6bc14671b4b51` |
+| `PicShot-0.10.0-macos-arm64.dmg` | 19,656,613 | `ba488d73805e35e2fc48ca641d10bab44c0b471848d4d51ed2b9832b6d07a2d6` |
+| `PicShot-0.10.0-macos-arm64.zip` | 16,960,876 | `d71c84a3dd4331f7dafccad9279db59b2727e15280efeee48ac32579352910e4` |
+
+All sidecars match actual downloaded bytes. ZIP CRC checks pass; embedded build-info is byte-identical to external metadata, and Info.plist agrees on version/build/source. The bundled formula runtime checksum and 78 CodeResources file digests match; all 166 application sourceCommit fields in the inspected JSON artifacts identify 03cf310. The native package log verifies the DMG internal checksum and relocated renderer/missing-resource rejection. These checks do not establish notarization, publisher identity or Gatekeeper acceptance.
+
+### New pin functionality and exact scope
+
+- **LaTeX:** actual bundled renderer, retained source/options, atomic edit/invalid-draft/cancel, source copy, ten-source/options undo, restore using stored PNG without automatic rendering, and actual .tex/MathML/SVG/PNG/PDF exports pass in both installs. Recognition uses the same prepared route, but the pin fixture itself does no OCR/model inference. White backing is presentation-only; exported PNG alpha is unchanged
+- **Owned Save chooser:** native bounds/visibility/ownership checks keep the same edge-positioned pin exactly 180 × 72 screen points before showing, while open and after real Cancel. Controller/content/source remain intact; callbacks release and no orphan panel remains. The chooser is not a sheet. Remote chooser pixels were not captured; physical Retina/multi-display placement is unverified
+- **Group:** shown native manager/context selection, Escape, numeric move/scale Apply, six alignments, undo/redo and constrained-window atomic rollback pass for image, rotated fixed-zoom image and text plus an unselected sentinel. Rollback preserves all live presentations, manifest/index/assets and history. Sizes stay unchanged by alignment; center origins use the destination pixel grid, with possible half-grid residuals. Direct collective drag/resize is absent
+- **Desktop policy and dismissal:** public flags, menus, Settings and synthetic lifecycle pass. Same-mode draft preservation and actual-change editor teardown regressions pass in both ordinary and focused tests. `physicalSpacesVerified=false`; global all/assigned-Space selection does not establish named/per-pin placement, active-Space following or original-Space restart restoration
+
+### Installed pin resources: comparable endpoints
+
+All values are **ARM 03cf310**, with independent ZIP/DMG baselines. Formula uses 2 warm-ups + 12 hide/show/close/reopen cycles, **zero fixture-requested renders in the measured phase**; actual render/edit/export occurs outside it. Group uses 3 + 20 transform/undo/inspector/hide/show cycles. Comparable endpoints retain one formula or four group pins; final cleanup has zero and is reported separately.
+
+| Install / workload | RSS baseline → measured end bytes | RSS change bytes | Last three single-cycle RSS increments bytes | Footprint change bytes |
+| --- | --- | ---: | --- | ---: |
+| ZIP / latex | 104,120,320 → 104,218,624 | +98,304 | +0 / +0 / +0 | +163,840 |
+| ZIP / group | 122,372,096 → 122,650,624 | +278,528 | +49,152 / +0 / +0 | -491,520 |
+| DMG / latex | 103,268,352 → 103,415,808 | +147,456 | +147,456 / +0 / +0 | +147,456 |
+| DMG / group | 122,142,720 → 122,208,256 | +65,536 | +0 / +32,768 / -32,768 | +180,224 |
+
+All four reports complete their observations with zero failed RSS/footprint samples, unchanged asset hashes, zero final live pins and zero retained tracked controllers/content; formula source models also release. Continuous 50 ms sampling includes asset validation/cleanup and can miss transients. Parent measurements exclude WindowServer/GPU/helpers. Bounded releases and flat/negative intervals do not establish a plateau, zero leaks, repeated-render memory behavior or a preview-memory remedy.
+
+### Other installed ARM resources and unresolved preview growth
+
+| Workload | ZIP RSS change MiB | DMG RSS change MiB | Scope / late interval |
+| --- | ---: | ---: | --- |
+| Editor/pin lifecycle | +0.6875 | +0.34375 | 10 + 40; last ten +0.0625/+0.03125; windows 7 → 7, zero tracked retained content/windows |
+| Save jobs | +0.375 | +0.453125 | 2 + 8 small real jobs; footprint +0.328125/+0.28125; jobs/input/controllers/owned temporary files released |
+| Static WebP/AVIF | +25.71875 | +24.8125 | 768 × 576, three per format plus encode/preview/independent decode/quality/save/cancel; no separate warm-up or phases |
+| PNG/JPEG/BMP/PDF | +25.671875 | +25.890625 | 1440 × 900, 1 + 4; final interval +7.515625/+2.109375 MiB despite session/job/temp cleanup |
+| Full GIF export plus decode | +0.015625 | Not run | ZIP-only 1 + 4, 30 seconds/360 frames at 480 × 270; last RSS interval 0; exit/cancel/cleanup pass |
+
+**Existing preview-resource growth remains unresolved.** Static-codec and existing-format measurements have different work/stage scopes; they do not establish an encoder owner or a production memory fix. Model-child parent-polled peak RSS bytes, ZIP/DMG respectively: **354,320,384 / 411,058,176 formula; 193,757,184 / 209,616,896 table; 1,633,583,104 / 1,852,456,960 smart erase**. All exit 0 with confirmed cleanup. GIF's four child self-RSS peaks are 74,694,656 / 74,809,344 / 75,530,240 / 74,956,800 bytes; its separate 1920 × 1080/12-frame self-peak is 179,355,648 bytes. Sampled peaks are not whole-system or kernel lifetime maxima; the short high-resolution case is not maximum square area/frame count or sustained use.
+
+### Source-qualified candidate history and Intel boundary
+
+- e8209a8 / run 37559437370 compiled on both architectures and passed public desktop flags, but failed LaTeX raster display and group Apply; no release was accepted
+- 761c423 / run 37566701405 passed the new early UI on both, then retained one focused assertion: the formula editor view after policy dismissal. Its early resource figures are not final 03cf310 figures
+- [Intel ac8a93e / run 37572456117, job 112633899835](https://github.com/dandibbert/picshot/actions/runs/37572456117/job/112633899835) passed 1,190 ordinary (3 intentional pre-weight skips), 732 focused, 12 actual-model and both installed formats at its own source, including the corrected dismissal regression. It is an **undelivered historical candidate**, not current Intel 0.10
+- Intel 03cf310 reached the aggregate 420-second ordinary-suite budget. Completed-test runtime increased about 63.1 seconds across suites relative to the prior run; no assertion failure or blocked GIF/Scroll case is established. GIF pre-frame/collision cases returned. The same source is rerunning; no successful result is assigned to it. Delivered Intel remains 0.9 b44c1fb
+
+The separate 696b2286 / run 37567338578 decode/draw-helper diagnostic is not a production preview change: at 768 × 576, 2 + 12, the old 40.5 MiB volatile accumulation disappears, but parent RSS still grows 8.484375 MiB ARM / 0.5859375 MiB Intel and median operation time is about 266/572 ms versus 4/20 ms controls. Larger inputs, UI responsiveness and parent-loss orphan cleanup remain open. Existing 0.9 preview-memory caveats remain historical evidence of the unresolved problem, not a claimed 0.10 fix.
+
 ## Accepted ARM and Intel 0.9 at b44c1fb
+
+### Historical review status before ARM 0.10
+
+Reviewed **7 October 2026**. **ARM and Intel 0.9.0 build 52 are independently accepted at [b44c1fb0ecc71fbe652ed3c74e377e8f3ea8ba27](https://github.com/dandibbert/picshot/commit/b44c1fb0ecc71fbe652ed3c74e377e8f3ea8ba27)** in [run 37547871044](https://github.com/dandibbert/picshot/actions/runs/37547871044), with terminal-success [ARM job 112556128669](https://github.com/dandibbert/picshot/actions/runs/37547871044/job/112556128669) and [Intel job 112556128799](https://github.com/dandibbert/picshot/actions/runs/37547871044/job/112556128799). Both architecture installer replacements are confirmed; Intel's confirmation is 00:28 UTC. Each result uses its actual ZIP/DMG and own measurements. Earlier candidate failures and diagnostics remain source-labeled history. The **133-row scope** remains in [PARITY.md](PARITY.md); native/package acceptance is not full parity, whole-device acceptance or leak freedom. Diagnostic-only follow-up source 7c3e76c does not replace these accepted installers or change their app source.
 
 Downloaded final logs on each architecture independently report **1,080 ordinary tests: 1,077 passed, 3 intentional pre-weight model skips and zero failures; 635 focused passed; 12 actual-model tests passed**. The selected groups overlap and are not additive distinct-test totals. Both installed ZIP/DMG on each architecture pass architecture/signature, no-argument LaunchServices, visible owned UI, save/naming/Retry, codecs, signed models, interaction, recording composition/recovery and cleanup gates. **Full GIF resource/cancellation runs from ZIP only.** Native evidence is macOS 15.7.9 (24G830); macOS 14 runtime remains untested. Packages remain ad-hoc signed and not notarized.
 

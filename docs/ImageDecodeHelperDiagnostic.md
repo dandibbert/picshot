@@ -1,6 +1,6 @@
 # Opt in PNG decode helper diagnostic
 
-Prepared diagnostic only. Native compilation and execution of this new route are pending. The [completed ARM64 and Intel actual-draw result](ImageRasterMaterialization59.md) found +40.5 MiB volatile resident backing for production preview plus drawing, +20.25 MiB for no-cache full decode plus drawing, and zero volatile growth for drawing already-decoded owned RGBA over 12 measured cycles. The raw control excluded PNG decoding.
+The small-input helper comparison completed on ARM64 and Intel at source 696b2286; see the [versioned results](ImageDecodeHelper696.md) for residual memory growth, latency and remaining limits. No production adoption follows. The [completed ARM64 and Intel actual-draw result](ImageRasterMaterialization59.md) found +40.5 MiB volatile resident backing for production preview plus drawing, +20.25 MiB for no-cache full decode plus drawing, and zero volatile growth for drawing already-decoded owned RGBA over 12 measured cycles. The raw control excluded PNG decoding.
 
 This experiment includes actual PNG decoding in a fresh signed bundle helper for each cycle, followed by actual owned-RGBA drawing in the parent. It changes no production preview defaults, normal codec request/response protocol, or resource gates.
 
