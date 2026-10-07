@@ -76,6 +76,8 @@ struct ImageAnnotation {
     var magnifierShadow = true
     var arcStartAngle: CGFloat = 0
     var arcSweepAngle: CGFloat = .pi * 1.5
+    /// Value metadata lives in the annotation snapshot, so linking and exclusions undo together.
+    var mosaicLink: AutomaticMosaicLink? = nil
 
     var localBounds: CGRect {
         let geometryPoints = boundedPathPoints
@@ -142,7 +144,14 @@ enum ImageEditorRenderer {
             guard mark.tool == .eraser else { return nil }
             return (index, mark.mergedEraserPath)
         }
+        // A linked automatic result is a single composite operation. Contiguous members
+        // sample one pre-group raster, rather than copying the full image per match.
+        // Ordinary annotations retain their original sequential filtering semantics.
+        var mosaicSnapshot: CGImage?
+        var mosaicSnapshotGroup: UUID?
         for (index, annotation) in annotations.enumerated() where annotation.tool != .eraser {
+            let group = annotation.mosaicLink?.additionID
+            if group != mosaicSnapshotGroup { mosaicSnapshot = nil; mosaicSnapshotGroup = group }
             context.saveGState()
             // Clip each later eraser separately: operation order is stable, and marks
             // added after an eraser are not removed by an earlier operation.
@@ -163,7 +172,8 @@ enum ImageEditorRenderer {
             context.setLineDash(phase: 0, lengths: annotation.strokeStyle.pattern(width: annotation.lineWidth))
             if annotation.tool == .blur || annotation.tool == .pixelate {
                 let region = annotation.bounds.integral.intersection(extent)
-                if !region.isEmpty, let snapshot = context.makeImage() {
+                if group != nil && mosaicSnapshot == nil { mosaicSnapshot = context.makeImage() }
+                if !region.isEmpty, let snapshot = mosaicSnapshot ?? context.makeImage() {
                     let input = CIImage(cgImage: snapshot)
                     let filtered: CIImage
                     if annotation.tool == .blur {
@@ -331,6 +341,14 @@ final class ImageEditorCanvas: NSView {
     var onExport: (() -> Void)?
     var onCancel: (() -> Void)?
     var onBeforeInteraction: (() -> Void)?
+    var onContentInvalidated: (() -> Void)?
+    private(set) var contentRevision: UInt64 = 0
+    var automaticMosaicReview: AutomaticMosaicReviewState? { didSet { needsDisplay = true } }
+    var automaticMosaicDrawHandler: ((CGRect) -> Void)?
+    var onAutomaticMosaicToggle: ((Int) -> Void)?
+    var onAutomaticMosaicCancel: (() -> Void)?
+    var onAutomaticMosaicApply: (() -> Void)?
+    var onAutomaticMosaicLimit: ((String) -> Void)?
     var editingAnnotationID: UUID? { didSet { cachedImage = nil; needsDisplay = true } }
     private var selection: UUID?
     private var draft: ImageAnnotation?
@@ -363,6 +381,7 @@ final class ImageEditorCanvas: NSView {
     }
 
     func setContent(image: CGImage, annotations: [ImageAnnotation]) {
+        contentRevision &+= 1; onContentInvalidated?()
         self.image = image; self.annotations = annotations
         selection = nil; draft = nil; polylinePreviewPoint = nil; cropRect = nil; cachedImage = nil
         movingOriginal = nil; dragOrigin = nil; activeHandle = nil; didBeginMoving = false
@@ -382,7 +401,7 @@ final class ImageEditorCanvas: NSView {
         result.rotation = 0; result.textBoxSize = nil
         result.frozenTimestamp = captureDate; result.frozenTimeZoneIdentifier = captureTimeZoneIdentifier
         result.timestampIsCaptureDate = captureTimestampKnown
-        result.magnifierSource = nil
+        result.magnifierSource = nil; result.mosaicLink = nil
         if tool == .eraser { result.lineWidth = max(4, result.lineWidth) }
         if tool == .spotlight || tool == .magnifier { result.opacity = 1 }
         if tool == .redact { result.color = CGColor(gray: 0, alpha: 1); result.opacity = 1 }
@@ -395,7 +414,57 @@ final class ImageEditorCanvas: NSView {
         changed()
     }
 
-    private func changed() { cachedImage = nil; needsDisplay = true; onChange?() }
+    private func changed() {
+        contentRevision &+= 1; onContentInvalidated?()
+        cachedImage = nil; needsDisplay = true; onChange?()
+    }
+
+    func canApplyAutomaticMosaic(count: Int, replacing id: UUID?) -> Bool {
+        let retained = annotations.filter { $0.mosaicLink != nil && $0.id != id }.count
+        return count > 0 && count <= AutomaticMosaicModelLimits.maximumLinkedAnnotations - retained
+    }
+
+    @discardableResult
+    func applyAutomaticMosaic(_ replacements: [ImageAnnotation], replacing id: UUID?) -> Bool {
+        guard !replacements.isEmpty else { return false }
+        guard canApplyAutomaticMosaic(count: replacements.count, replacing: id) else {
+            onAutomaticMosaicLimit?("最多保留 200 个关联区域，请先删除部分区域"); return false
+        }
+        onWillChange?()
+        if let id { annotations.removeAll { $0.id == id } }
+        annotations.append(contentsOf: replacements)
+        selection = replacements.first?.id; changed(); return true
+    }
+
+    func setMosaicSync(_ enabled: Bool) {
+        guard let group = selectedAnnotation?.mosaicLink?.groupID else { return }
+        onWillChange?()
+        for index in annotations.indices where annotations[index].mosaicLink?.groupID == group {
+            annotations[index].mosaicLink?.synchronizes = enabled
+        }
+        changed()
+    }
+
+    @discardableResult
+    func addMosaicCorrection(_ rect: CGRect, relativeTo selected: ImageAnnotation) -> Bool {
+        guard let link = selected.mosaicLink, rect.width >= 2, rect.height >= 2 else { return false }
+        let extent = CGRect(x: 0, y: 0, width: image.width, height: image.height)
+        let targets = link.synchronizes ? link.includedTargets : [link.target]
+        let addition = UUID()
+        let marks = targets.compactMap { target -> ImageAnnotation? in
+            let box = rect.offsetBy(dx: target.minX - link.target.minX, dy: target.minY - link.target.minY)
+            guard extent.contains(box) else { return nil }
+            var mark = selected; mark.id = UUID(); mark.rotation = 0
+            mark.points = [box.origin, CGPoint(x: box.maxX, y: box.maxY)]
+            mark.mosaicLink = link.forTarget(target, additionID: addition)
+            return mark
+        }
+        // Never partially synchronize a correction that leaves the image bounds.
+        guard marks.count == targets.count else {
+            onAutomaticMosaicLimit?("补充区域超出图片边缘；请在所有匹配内选择区域"); return false
+        }
+        return applyAutomaticMosaic(marks, replacing: nil)
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         NSColor.white.setFill(); bounds.fill()
@@ -404,7 +473,7 @@ final class ImageEditorCanvas: NSView {
         let imageBounds = CGRect(x: 0, y: 0, width: CGFloat(image.width), height: CGFloat(image.height))
         if cachedImage == nil { cachedImage = ImageEditorRenderer.render(image: image, annotations: annotations.filter { $0.id != editingAnnotationID }) }
         let displayed: CGImage
-        if var draft {
+        if var draft, automaticMosaicDrawHandler == nil {
             if draft.tool == .polyline, let preview = polylinePreviewPoint, draft.points.last != preview,
                draft.points.count < ImageAnnotation.maximumPolylinePoints { draft.points.append(preview) }
             // An eraser needs the original vector stack; a flattened preview would erase
@@ -426,6 +495,8 @@ final class ImageEditorCanvas: NSView {
                 context.setStrokeColor(NSColor.controlAccentColor.cgColor); context.setLineWidth(1 / zoom); context.stroke(rect)
             }
         }
+        if let review = automaticMosaicReview { review.draw(in: context, zoom: zoom) }
+        if automaticMosaicDrawHandler != nil, let draft { drawSelectionBox(CGPath(rect: draft.localBounds, transform: nil), context: context) }
         if let cropRect { drawSelectionBox(CGPath(rect: cropRect, transform: nil), context: context) }
         context.restoreGState()
     }
@@ -472,6 +543,12 @@ final class ImageEditorCanvas: NSView {
     override func mouseDown(with event: NSEvent) {
         onBeforeInteraction?()
         window?.makeFirstResponder(self)
+        if let review = automaticMosaicReview, automaticMosaicDrawHandler == nil {
+            if let index = review.candidates.lastIndex(where: { $0.rect.insetBy(dx: -3 / zoom, dy: -3 / zoom).contains(imagePoint(event)) }) {
+                onAutomaticMosaicToggle?(index)
+            }
+            return
+        }
         if tool == .polyline {
             // The first click of a double-click already fixed the final vertex.
             // Finish before using the second location, which may contain hand jitter.
@@ -578,9 +655,16 @@ final class ImageEditorCanvas: NSView {
             let edited = annotations[index]
             annotations[index] = original
             onWillChange?() // Exactly one original snapshot for an entire gesture, none for Escape.
-            annotations[index] = edited; style = edited; changed()
+            annotations[index] = edited
+            propagateMosaicEdit(from: original, to: edited)
+            style = edited; changed()
         }
         guard var draft else { return }
+        if let handler = automaticMosaicDrawHandler {
+            let rect = draft.localBounds.standardized.integral
+            if rect.width >= 2 && rect.height >= 2 { handler(rect) }
+            return
+        }
         if tool == .eraser && draft.eraserMode == .brush {
             let last = imagePoint(event)
             if let previous = draft.points.last, previous != last {
@@ -604,6 +688,8 @@ final class ImageEditorCanvas: NSView {
         guard draft.bounds.width > 1 || draft.bounds.height > 1 else { return }
         add(draft)
     }
+
+    func cancelAutomaticMosaicGesture() { cancelInteraction() }
 
     private func cancelInteraction() {
         if didBeginMoving, let original = movingOriginal, let index = annotations.firstIndex(where: { $0.id == original.id }) {
@@ -690,13 +776,49 @@ final class ImageEditorCanvas: NSView {
     func updateSelected(_ edit: (inout ImageAnnotation) -> Void) {
         guard let selection, let index = annotations.firstIndex(where: { $0.id == selection }) else { return }
         onWillChange?()
+        let original = annotations[index]
         let previousScale = annotations[index].magnifierScale
         edit(&annotations[index])
         annotations[index] = annotations[index].sanitizedPathGeometry
         if annotations[index].tool == .magnifier, annotations[index].magnifierScale != previousScale {
             annotations[index] = annotations[index].resizedMagnifierLens(scale: annotations[index].effectiveMagnifierScale)
         }
+        let edited = annotations[index]
+        propagateMosaicEdit(from: original, to: edited)
         style = annotations[index]; changed()
+    }
+
+    private func propagateMosaicEdit(from original: ImageAnnotation, to edited: ImageAnnotation) {
+        guard let link = original.mosaicLink else { return }
+        if !link.synchronizes {
+            // A geometrically changed single result no longer represents the same
+            // source location. Detach it rather than reuse stale offsets later.
+            if original.points != edited.points || original.rotation != edited.rotation,
+               let index = annotations.firstIndex(where: { $0.id == edited.id }) {
+                annotations[index].mosaicLink = nil
+                excludeMosaicRootTarget(link)
+            }
+            return
+        }
+        for peer in annotations.indices where annotations[peer].id != original.id && annotations[peer].mosaicLink?.groupID == link.groupID
+            && annotations[peer].mosaicLink?.additionID == link.additionID {
+            let target = annotations[peer].mosaicLink!.target
+            var updated = edited.translated(by: CGSize(width: target.minX - link.target.minX, height: target.minY - link.target.minY))
+            updated.id = annotations[peer].id; updated.mosaicLink = annotations[peer].mosaicLink
+            annotations[peer] = updated
+        }
+    }
+
+    private func excludeMosaicRootTarget(_ link: AutomaticMosaicLink) {
+        // Deleting a correction only removes that addition's member. Deleting or
+        // detaching an original result excludes its target from future additions.
+        guard link.additionID == link.rootAdditionID else { return }
+        for index in annotations.indices where annotations[index].mosaicLink?.groupID == link.groupID {
+            annotations[index].mosaicLink?.includedTargets.removeAll { $0 == link.target }
+            if annotations[index].mosaicLink?.excludedTargets.contains(link.target) == false {
+                annotations[index].mosaicLink?.excludedTargets.append(link.target)
+            }
+        }
     }
 
     func updateSelectedStyle(color newColor: CGColor? = nil, width: CGFloat? = nil) {
@@ -719,8 +841,12 @@ final class ImageEditorCanvas: NSView {
     func duplicateSelection() {
         cancelInteraction()
         guard let selected = selectedAnnotation else { return }
-        var copy = selected.translated(by: CGSize(width: 20, height: -20)); copy.id = UUID()
-        add(copy)
+        if selected.mosaicLink != nil {
+            addMosaicCorrection(selected.localBounds.offsetBy(dx: 20, dy: -20), relativeTo: selected)
+        } else {
+            var copy = selected.translated(by: CGSize(width: 20, height: -20)); copy.id = UUID()
+            add(copy)
+        }
     }
 
     func clearAnnotations() {
@@ -732,7 +858,14 @@ final class ImageEditorCanvas: NSView {
     func deleteSelection() {
         cancelInteraction()
         guard let selection, annotations.contains(where: { $0.id == selection }) else { return }
-        onWillChange?(); annotations.removeAll { $0.id == selection }; self.selection = nil; changed()
+        let link = selectedAnnotation?.mosaicLink
+        onWillChange?()
+        annotations.removeAll { mark in
+            mark.id == selection || (link?.synchronizes == true && mark.mosaicLink?.groupID == link?.groupID
+                && mark.mosaicLink?.additionID == link?.additionID)
+        }
+        if let link, !link.synchronizes { excludeMosaicRootTarget(link) }
+        self.selection = nil; changed()
     }
 
     override func scrollWheel(with event: NSEvent) {
@@ -796,6 +929,11 @@ final class ImageEditorCanvas: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
+        if automaticMosaicReview != nil || automaticMosaicDrawHandler != nil {
+            if event.keyCode == 53 { onAutomaticMosaicCancel?(); return }
+            if event.keyCode == 36 || event.keyCode == 76 { onAutomaticMosaicApply?(); return }
+            if automaticMosaicReview != nil { return }
+        }
         switch event.keyCode {
         case 51, 117:
             if pendingPolylinePointCount > 0 { removeLastPolylineVertex() } else { deleteSelection() }
@@ -874,6 +1012,28 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     private var inlineAnnotation: ImageAnnotation?
     private var inlineExistingID: UUID?
     private var boundaryPreviewFrame: CGRect?
+    let automaticMosaicReviewSurface = AutomaticMosaicReviewSurface(frame: .zero)
+    let automaticMosaicMatcher = AutomaticMosaicMatcher()
+    var automaticMosaicTask: Task<Void, Never>?
+    var automaticMosaicGeneration = UUID()
+    private(set) var automaticMosaicReviewState: AutomaticMosaicReviewState?
+    var automaticMosaicIsComputing: Bool { automaticMosaicTask != nil }
+    var automaticMosaicBlocksOutput: Bool { automaticMosaicReviewState != nil || canvas.automaticMosaicDrawHandler != nil }
+    var automaticMosaicWorkspace: NSView { workspace }
+    // A test may delay a real matcher result; production always uses the actor above.
+    var automaticMosaicFind: ((CGImage, RepeatedRegionPixelRect) async throws -> RepeatedRegionMatchResult)?
+    func setAutomaticMosaicReviewState(_ state: AutomaticMosaicReviewState?) { automaticMosaicReviewState = state }
+    func refreshAutomaticMosaicInterface() { updateStatus() }
+    func automaticMosaicOutputAction(_ action: Selector?) -> Bool {
+        [#selector(copyResult), #selector(exportResult), #selector(pinResult), #selector(applyResult),
+         #selector(saveResult), #selector(recognizeResult), #selector(translateResult),
+         #selector(quickSaveResult), #selector(saveCopyResult)].contains { $0 == action }
+    }
+    func installAutomaticMosaicInspector() {
+        inspector.onAutomaticMosaic = { [weak self] in self?.startAutomaticMosaic() }
+        inspector.onMosaicSync = { [weak self] enabled in self?.canvas.setMosaicSync(enabled) }
+        inspector.onMosaicAdd = { [weak self] in self?.beginLinkedMosaicCorrection() }
+    }
     var onClose: (() -> Void)?
     private(set) var isClosed = false
     /// Current/history/cache/frozen rasters once per identity, with a reserved
@@ -952,6 +1112,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         canvas.onExport = { [weak self] in self?.exportResult() }
         canvas.onCancel = { [weak self] in self?.cancelEditor() }
         canvas.onBeforeInteraction = { [weak self] in self?.finishInlineText(commit: true) }
+        installAutomaticMosaic()
         inspector.onClearAnnotations = { [weak self] in self?.canvas.clearAnnotations() }
         inspector.onFinishPolyline = { [weak self] in
             self?.canvas.finishPolyline(); self?.window?.makeFirstResponder(self?.canvas)
@@ -1105,6 +1266,12 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
             toolButtons[tool] = control; toolbar.addArrangedSubview(control)
             if tool == .ellipse { addSubtoolMenu(for: tool, tools: [.ellipse, .arc, .sector], identifier: "editor.shapeSubtools") }
             if tool == .line { addSubtoolMenu(for: tool, tools: [.line, .polyline], identifier: "editor.lineSubtools") }
+            if tool == .pixelate {
+                addSubtoolMenu(for: tool, tools: [.pixelate, .blur, .redact], identifier: "editor.mosaicSubtools")
+                let item = NSMenuItem(title: "自动马赛克…", action: #selector(chooseAutomaticMosaicTool), keyEquivalent: "")
+                item.target = self; item.identifier = .init("editor.automaticMosaic")
+                subtoolMenus[tool]?.menu?.addItem(item)
+            }
         }
         divider()
         undoButton = iconButton("arrow.uturn.backward", title: "撤销 · ⌘Z", id: "editor.undo", action: #selector(undoEdit))
@@ -1132,7 +1299,10 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         // Width is the actual clickable frame, not an ornament alignment rect.
         saveActions.widthAnchor.constraint(equalToConstant: 19).isActive = true
         saveActions.heightAnchor.constraint(equalToConstant: 32).isActive = true; toolbar.addArrangedSubview(saveActions)
-        if saveWorkflow != nil { canvas.menu = saveActions.menu?.copy() as? NSMenu }
+        canvas.menu = saveWorkflow != nil ? saveActions.menu?.copy() as? NSMenu : NSMenu()
+        let autoMosaic = NSMenuItem(title: "查找相同内容…", action: #selector(startAutomaticMosaic), keyEquivalent: "")
+        autoMosaic.target = self; autoMosaic.identifier = .init("editor.context.automaticMosaic")
+        canvas.menu?.addItem(autoMosaic)
 
         toolbar.addArrangedSubview(iconButton("xmark", title: "取消 · Escape", id: "editor.cancel", action: #selector(cancelEditor)))
         toolbar.addArrangedSubview(iconButton("square.on.square", title: "复制图片 · ⌘C", id: "editor.copy", action: #selector(copyResult)))
@@ -1145,6 +1315,8 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
             item.target = self; item.tag = ImageEditorTool.allCases.firstIndex(of: tool) ?? 0; overflow.menu?.addItem(item)
         }
         overflow.menu?.addItem(.separator())
+        addMenu("自动马赛克…", action: #selector(chooseAutomaticMosaicTool))
+        addMenu("查找所选区域的相同内容…", action: #selector(startAutomaticMosaic))
         addMenu("模糊", action: #selector(selectBlur)); addMenu("创建标注副本 · ⌘D", action: #selector(duplicateAnnotation))
         addMenu("删除标注 · Delete", action: #selector(deleteAnnotation)); overflow.menu?.addItem(.separator())
         addMenu(onApply == nil ? "保存到历史" : "保存编辑", action: #selector(saveResult))
@@ -1207,7 +1379,8 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
             workspace.pixelSize = CGSize(width: (selection.width * CGFloat(presentation.frozenImage.width) / presentation.displayFrame.width).rounded(),
                                          height: (selection.height * CGFloat(presentation.frozenImage.height) / presentation.displayFrame.height).rounded())
         } else { workspace.pixelSize = CGSize(width: canvas.image.width, height: canvas.image.height) }
-        inspector.isHidden = canvas.tool == .crop || (canvas.tool == .select && canvas.selectedAnnotation == nil)
+        inspector.isHidden = automaticMosaicReviewState != nil || canvas.automaticMosaicDrawHandler != nil
+            || canvas.tool == .crop || (canvas.tool == .select && canvas.selectedAnnotation == nil)
         let availableBounds = pinPresentation.flatMap { pin in NSScreen.screens.first { $0.frame.intersects(pin.viewportFrame) }?.frame } ?? workspace.bounds
         for button in toolButtons.values { button.isHidden = false }
         for menu in subtoolMenus.values { menu.isHidden = false }
@@ -1228,6 +1401,17 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         if let pin = pinPresentation, let window {
             var union = selection.union(frames.toolbar)
             if !inspector.isHidden { union = union.union(frames.palette) }
+            let showsMosaic = automaticMosaicReviewState != nil || canvas.automaticMosaicDrawHandler != nil
+            let focusedMosaic = automaticMosaicReviewState.flatMap { state -> CGRect? in
+                guard state.candidates.indices.contains(state.selectedIndex) else { return nil }
+                let rect = state.candidates[state.selectedIndex].rect
+                return CGRect(x: pin.imageFrame.minX + rect.minX * pin.imageFrame.width / CGFloat(canvas.image.width),
+                    y: pin.imageFrame.minY + rect.minY * pin.imageFrame.height / CGFloat(canvas.image.height),
+                    width: rect.width * pin.imageFrame.width / CGFloat(canvas.image.width), height: rect.height * pin.imageFrame.height / CGFloat(canvas.image.height))
+            }
+            let mosaicFrame = AutomaticMosaicReviewSurface.frame(image: selection, available: availableBounds,
+                avoiding: [frames.toolbar] + (inspector.isHidden ? [] : [frames.palette]), focusedCandidate: focusedMosaic)
+            if showsMosaic { union = union.union(mosaicFrame) }
             let windowFrame = CGRect(x: union.minX - 2, y: union.minY - 2, width: union.width + 4, height: union.height + 28)
             if window.frame != windowFrame { window.setFrame(windowFrame, display: false) }
             // AppKit may snap a window origin to backing pixels. Derive local
@@ -1240,6 +1424,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
             canvas.frame = CGRect(x: pin.imageFrame.minX - pin.viewportFrame.minX, y: pin.imageFrame.minY - pin.viewportFrame.minY,
                                   width: pin.imageFrame.width, height: pin.imageFrame.height)
             toolbar.frame = frames.toolbar.offsetBy(dx: dx, dy: dy); inspector.frame = frames.palette.offsetBy(dx: dx, dy: dy)
+            if showsMosaic { automaticMosaicReviewSurface.frame = mosaicFrame.offsetBy(dx: dx, dy: dy); automaticMosaicReviewSurface.layoutSubtreeIfNeeded() }
         } else {
             toolbar.frame = frames.toolbar; inspector.frame = frames.palette
         }
@@ -1248,6 +1433,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         let labelSize = CGSize(width: (status.stringValue as NSString).size(withAttributes: [.font: status.font!]).width + 14, height: 23)
         let occupied = inspector.isHidden ? [toolbar.frame] : [toolbar.frame, inspector.frame]
         status.frame = EditorFloatingLayout.dimensionLabelFrame(selection: workspace.selectionFrame, available: workspace.bounds, size: labelSize, avoiding: occupied)
+        if pinPresentation == nil { layoutAutomaticMosaicReview() }
     }
 
     func setVerificationAnnotations(_ annotations: [ImageAnnotation]) {
@@ -1270,6 +1456,19 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         canvas.setContent(image: state.image, annotations: state.annotations); updateStatus(); layoutInterface()
     }
     private func updateStatus() {
+        let outputIDs: Set<String> = ["editor.copy", "editor.save", "editor.pin", "editor.applyToPin", "editor.ocr", "editor.translate", "editor.saveActions"]
+        for view in toolbar.views + toolbar.detachedViews where outputIDs.contains(view.identifier?.rawValue ?? "") {
+            (view as? NSControl)?.isEnabled = !automaticMosaicBlocksOutput
+        }
+        for menu in [canvas.menu, overflow.menu].compactMap({ $0 }) {
+            for item in menu.items {
+                if item.action == #selector(startAutomaticMosaic) {
+                    item.isEnabled = canvas.selectedAnnotation?.supportsAutomaticMosaic == true && !isClosed
+                    item.toolTip = canvas.selectedAnnotation?.mosaicLink == nil ? "选择同尺寸、未旋转的马赛克、模糊或遮盖区域" : "已关联的结果可用同步/补充区域编辑；重新查找请新建选区"
+                }
+                if automaticMosaicOutputAction(item.action) { item.isEnabled = !automaticMosaicBlocksOutput && !isClosed }
+            }
+        }
         status.stringValue = "\(canvas.image.width) × \(canvas.image.height) px · \(canvas.annotations.count) 个标注"
         undoButton?.isEnabled = !undoStates.isEmpty || canvas.pendingPolylinePointCount > 0; redoButton?.isEnabled = !redoStates.isEmpty && canvas.pendingPolylinePointCount == 0
         cropButton?.isHidden = canvas.tool != .crop
@@ -1291,6 +1490,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         layoutInterface()
     }
     func chooseTool(_ tool: ImageEditorTool) {
+        cancelAutomaticMosaic()
         finishInlineText(commit: true); canvas.tool = tool; refreshSubtoolButton(for: tool); updateStatus(); window?.makeFirstResponder(canvas)
     }
     @objc private func selectTool(_ sender: NSButton) {
@@ -1303,12 +1503,14 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     @objc private func duplicateAnnotation() { finishInlineText(commit: true); canvas.duplicateSelection() }
     @objc private func deleteAnnotation() { finishInlineText(commit: false); canvas.deleteSelection() }
     @objc private func undoEdit() {
+        cancelAutomaticMosaic()
         if canvas.pendingPolylinePointCount > 0 { canvas.removeLastPolylineVertex(); return }
         finishInlineText(commit: true)
         guard let state = undoStates.popLast() else { return }
         redoStates.append(snapshot); trimHistory(preferUndo: false); restore(state)
     }
     @objc private func redoEdit() {
+        cancelAutomaticMosaic()
         guard canvas.pendingPolylinePointCount == 0 else { return }
         finishInlineText(commit: false)
         guard let state = redoStates.popLast() else { return }
@@ -1336,6 +1538,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     @objc private func fitImage() { finishInlineText(commit: true); fitToWindow = true; needsFit = true; layoutInterface() }
     @objc private func actualSize() { guard presentation == nil else { return }; finishInlineText(commit: true); fitToWindow = false; canvas.zoom = 1; layoutInterface() }
     private func result(close: Bool = false, _ action: (CGImage) -> Void) {
+        guard !automaticMosaicBlocksOutput else { return }
         finishInlineText(commit: true); canvas.finishPolyline()
         guard let image = canvas.flattened() else { showError(PicShotError.message("无法合成图片，可能内存不足")); return }
         if close { window?.close() }; action(image)
@@ -1376,6 +1579,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     @objc private func cancelEditor() { finishInlineText(commit: false); window?.close() }
 
     private func beginBoundaryResize() {
+        cancelAutomaticMosaic()
         finishInlineText(commit: true); canvas.finishPolyline()
         guard let presentation, let preview = canvas.rasterForBoundaryPreview() else {
             workspace.cancelBoundaryResize(); return
@@ -1448,6 +1652,11 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     }
     func windowWillClose(_ notification: Notification) {
         guard !isClosed else { return }; isClosed = true
+        cancelAutomaticMosaic(); automaticMosaicFind = nil
+        automaticMosaicReviewSurface.removeFromSuperview()
+        canvas.onContentInvalidated = nil; canvas.onAutomaticMosaicToggle = nil
+        canvas.onAutomaticMosaicCancel = nil; canvas.onAutomaticMosaicApply = nil; canvas.onAutomaticMosaicLimit = nil
+        inspector.onAutomaticMosaic = nil; inspector.onMosaicSync = nil; inspector.onMosaicAdd = nil
         workspace.cancelBoundaryResize()
         finishInlineText(commit: false)
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }; screenObserver = nil
@@ -1468,6 +1677,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     func windowDidResize(_ notification: Notification) { guard !layingOut else { return }; finishInlineText(commit: true); layoutInterface() }
 
     @objc private func exportResult() {
+        guard !automaticMosaicBlocksOutput else { return }
         finishInlineText(commit: true); canvas.finishPolyline()
         guard let window, let image = canvas.flattened() else { return }
         ImageExportController.present(image: image, from: window, saveWorkflow: saveWorkflow) { [weak self] _ in

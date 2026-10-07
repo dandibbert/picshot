@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-ditto -x -k "dist/PicShot-0.11.0-macos-$(uname -m).zip" "$work"
+ditto -x -k "dist/PicShot-0.12.0-macos-$(uname -m).zip" "$work"
 app="$work/PicShot.app"
 codesign --verify --deep --strict "$app"
 mkdir -p dist/evidence/recording-recovery

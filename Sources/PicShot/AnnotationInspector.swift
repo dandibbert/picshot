@@ -8,6 +8,13 @@ final class AnnotationInspector: EditorFloatingSurface {
     var onClearAnnotations: (() -> Void)?
     var onFinishPolyline: (() -> Void)?
     var onCancelPolyline: (() -> Void)?
+    var onAutomaticMosaic: (() -> Void)?
+    var onMosaicSync: ((Bool) -> Void)?
+    var onMosaicAdd: (() -> Void)?
+    private let automaticMosaicButton = NSButton(title: "查找相同内容…", target: nil, action: nil)
+    private let mosaicSyncButton = NSButton(checkboxWithTitle: "同步增删", target: nil, action: nil)
+    private let mosaicAddButton = NSButton(title: "+ 区域", target: nil, action: nil)
+    private var mosaicGroup = NSStackView()
     var polylinePointCount = 0
     private var primaryRow = NSStackView()
     private let detailButton = NSButton(title: "…", target: nil, action: nil)
@@ -69,6 +76,17 @@ final class AnnotationInspector: EditorFloatingSurface {
         super.init(frame: frameRect)
         orientation = .vertical; spacing = 5; alignment = .leading; detachesHiddenViews = true
         edgeInsets = NSEdgeInsets(top: 5, left: 9, bottom: 5, right: 9)
+        automaticMosaicButton.target = self; automaticMosaicButton.action = #selector(findAutomaticMosaic)
+        automaticMosaicButton.identifier = .init("annotation.automaticMosaic")
+        automaticMosaicButton.toolTip = "在原始截图中查找同尺寸、未旋转的相同内容"
+        automaticMosaicButton.controlSize = .small; automaticMosaicButton.bezelStyle = .rounded
+        mosaicSyncButton.target = self; mosaicSyncButton.action = #selector(changeMosaicSync)
+        mosaicSyncButton.identifier = .init("annotation.mosaicSync"); mosaicSyncButton.controlSize = .small
+        mosaicSyncButton.toolTip = "开启时，区域增删和样式会应用到已包括的相同内容；排除项不会恢复"
+        mosaicAddButton.target = self; mosaicAddButton.action = #selector(addMosaicRegion)
+        mosaicAddButton.identifier = .init("annotation.mosaicAdd"); mosaicAddButton.controlSize = .small
+        mosaicAddButton.toolTip = "拖出补充区域；同步开启时，在相同内容的对应位置添加"
+        mosaicGroup = group([automaticMosaicButton, mosaicSyncButton, mosaicAddButton])
         widthPicker.addItems(withTitles: ["1", "3", "4", "6", "10", "16", "24"])
         widthPicker.target = self; widthPicker.action = #selector(changeWidth); widthPicker.controlSize = .small
         widthPicker.identifier = NSUserInterfaceItemIdentifier("annotation.lineWidth")
@@ -251,6 +269,8 @@ final class AnnotationInspector: EditorFloatingSurface {
             primary = [watermarkGroup]; secondary = [textGroup, opacityGroup, watermarkSpacingGroup, colorGroup]
         case .magnifier:
             primary = [magnifierGroup, widthGroup, colorGroup]; secondary = [magnifierOptionsGroup]
+        case .pixelate, .blur, .redact:
+            primary = [widthGroup, colorGroup, detailButton]; secondary = [mosaicGroup, opacityGroup]
         default:
             primary = [textGroup, widthGroup, dashGroup, fillGroup, colorGroup, detailButton]
             secondary = [opacityGroup, rotationGroup, radiusGroup]
@@ -263,10 +283,10 @@ final class AnnotationInspector: EditorFloatingSurface {
         if previousTool != annotation.tool { showsDetails = false; configureRows(for: annotation.tool) }
         previousTool = annotation.tool; displayedAnnotation = annotation; displayedSelected = selected; displayedEnabled = enabled
         let dedicatedRows: [ImageEditorTool] = [.eraser, .spotlight, .watermark, .magnifier, .arc, .sector, .polyline]
-        let alwaysShowsDetails = [.watermark, .magnifier, .arc, .sector, .polyline].contains(annotation.tool)
+        let alwaysShowsDetails = [.watermark, .magnifier, .arc, .sector, .polyline, .pixelate, .blur, .redact].contains(annotation.tool)
         primaryRow.isHidden = !enabled
         detailsGroup.isHidden = !enabled || detailsGroup.arrangedSubviews.isEmpty || (!alwaysShowsDetails && !showsDetails)
-        detailButton.isHidden = !enabled || dedicatedRows.contains(annotation.tool)
+        detailButton.isHidden = !enabled || dedicatedRows.contains(annotation.tool) || [.pixelate, .blur, .redact].contains(annotation.tool)
         detailButton.setAccessibilityValue(showsDetails ? "已展开" : "已收起")
         widthGroup.isHidden = !enabled || [.text, .watermark].contains(annotation.tool)
             || (annotation.tool == .spotlight && !annotation.spotlightBorder)
@@ -293,7 +313,13 @@ final class AnnotationInspector: EditorFloatingSurface {
         opacityGroup.isHidden = !enabled || annotation.tool == .redact
         rotationGroup.isHidden = !enabled || !selected
         hint.isHidden = enabled && annotation.tool == .text
-        hint.stringValue = annotation.tool == .redact ? "遮盖始终不透明；旋转 / 缩放后请确认覆盖范围" : "拖动控制点 · ⇧ 约束 · ⌥点击穿透 · ⌘D 副本"
+        hint.stringValue = annotation.tool == .redact ? "遮盖始终不透明；请确认覆盖范围" :
+            ([ImageEditorTool.blur, .pixelate].contains(annotation.tool) ? "模糊/马赛克不能安全隐藏敏感内容；可改用遮盖" : "拖动控制点 · ⇧ 约束 · ⌥点击穿透 · ⌘D 副本")
+        mosaicGroup.isHidden = !enabled || !selected
+        automaticMosaicButton.isEnabled = enabled && selected && annotation.supportsAutomaticMosaic
+        automaticMosaicButton.toolTip = annotation.mosaicLink == nil ? "在原始截图中查找同尺寸、未旋转的相同内容" : "已关联的结果可用同步/补充区域编辑；重新查找请新建选区"
+        mosaicSyncButton.isHidden = annotation.mosaicLink == nil; mosaicAddButton.isHidden = annotation.mosaicLink == nil
+        mosaicSyncButton.state = annotation.mosaicLink?.synchronizes == true ? .on : .off
         arcStartField.stringValue = String(format: "%g", Double(annotation.effectiveArcStart * 180 / .pi))
         arcSweepField.stringValue = String(format: "%g", Double(annotation.effectiveArcSweep * 180 / .pi))
         pathFinishButton.isEnabled = polylinePointCount >= 2
@@ -332,6 +358,10 @@ final class AnnotationInspector: EditorFloatingSurface {
         magnifierShadowToggle.state = annotation.magnifierShadow ? .on : .off
         magnifierAnnotationsToggle.state = annotation.magnifierShowsAnnotations ? .on : .off
     }
+
+    @objc private func findAutomaticMosaic() { onAutomaticMosaic?() }
+    @objc private func changeMosaicSync() { onMosaicSync?(mosaicSyncButton.state == .on) }
+    @objc private func addMosaicRegion() { onMosaicAdd?() }
 
     @objc private func toggleDetails() {
         showsDetails.toggle()
