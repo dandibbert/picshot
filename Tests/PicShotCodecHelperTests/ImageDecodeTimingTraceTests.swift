@@ -66,10 +66,11 @@ final class ImageDecodeTimingTraceTests: XCTestCase {
         let pipe = Pipe()
         defer { try? pipe.fileHandleForReading.close(); try? pipe.fileHandleForWriting.close() }
         let descriptor = pipe.fileHandleForWriting.fileDescriptor
-        let original = fcntl(descriptor, F_GETFL)
+        let original = fcntl(descriptor, F_GETFL), descriptorFlags = fcntl(descriptor, F_GETFD)
+        XCTAssertGreaterThanOrEqual(original, 0); XCTAssertGreaterThanOrEqual(descriptorFlags, 0)
         let frame = try trace().encodeFrame()
         try ImageDecodeDiagnosticTimingWriter.send(frame, descriptor: descriptor)
-        XCTAssertEqual(fcntl(descriptor, F_GETFL), original)
+        assertRestoredPublicFlags(descriptor, status: original, descriptorFlags: descriptorFlags)
         var bytes = [UInt8](repeating: 0, count: 1_024)
         let count = Darwin.read(pipe.fileHandleForReading.fileDescriptor, &bytes, bytes.count)
         XCTAssertEqual(count, frame.count)
@@ -106,12 +107,70 @@ final class ImageDecodeTimingTraceTests: XCTestCase {
         guard full else { XCTFail("Timing pipe retained space for a small write"); return }
         // Restore blocking mode to prove send itself sets O_NONBLOCK and restores it.
         XCTAssertEqual(fcntl(descriptor, F_SETFL, original), 0)
+        // Filling the pipe already set Darwin's kernel-owned write-history bit.
+        // Capture the complete status immediately before the sender under test.
+        let beforeSend = fcntl(descriptor, F_GETFL), descriptorFlags = fcntl(descriptor, F_GETFD)
+        assertRestoredPublicFlags(descriptor, status: original, descriptorFlags: descriptorFlags)
         let started = ProcessInfo.processInfo.systemUptime
         XCTAssertThrowsError(try ImageDecodeDiagnosticTimingWriter.send(trace().encodeFrame(), descriptor: descriptor)) {
             XCTAssertEqual($0 as? ImageDecodeDiagnosticError, .deadline)
         }
         XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - started, 1)
-        XCTAssertEqual(fcntl(descriptor, F_GETFL), original)
+        XCTAssertEqual(fcntl(descriptor, F_GETFL), beforeSend)
+        assertRestoredPublicFlags(descriptor, status: original, descriptorFlags: descriptorFlags)
+    }
+
+    func testDirectDarwinWriteHistoryIsNotAnFSetFLRestorationFailure() throws {
+        let pipe = Pipe()
+        defer { try? pipe.fileHandleForReading.close(); try? pipe.fileHandleForWriting.close() }
+        let descriptor = pipe.fileHandleForWriting.fileDescriptor
+        let original = fcntl(descriptor, F_GETFL), descriptorFlags = fcntl(descriptor, F_GETFD)
+        XCTAssertGreaterThanOrEqual(original, 0); XCTAssertGreaterThanOrEqual(descriptorFlags, 0)
+        var byte: UInt8 = 42
+        XCTAssertEqual(Darwin.write(descriptor, &byte, 1), 1)
+        let afterDirectWrite = fcntl(descriptor, F_GETFL)
+        // Apple XNU fcntl.h: FWASWRITTEN=0x10000; sys_generic.c fp_writev
+        // sets it after successful bytes. It is absent from FCNTLFLAGS.
+        // This private bit is documented here only as a regression control;
+        // the timing writer never reads, sets, or attempts to clear it.
+        let darwinWriteHistory: Int32 = 0x00010000
+        XCTAssertEqual(afterDirectWrite, original | darwinWriteHistory)
+        XCTAssertEqual(fcntl(descriptor, F_SETFL, original), 0)
+        XCTAssertEqual(fcntl(descriptor, F_GETFL), afterDirectWrite)
+        assertRestoredPublicFlags(descriptor, status: original, descriptorFlags: descriptorFlags)
+    }
+
+    func testTimingWriterPreservesInitiallyNonblockingAndCloseOnExecState() throws {
+        let pipe = Pipe()
+        defer { try? pipe.fileHandleForReading.close(); try? pipe.fileHandleForWriting.close() }
+        let descriptor = pipe.fileHandleForWriting.fileDescriptor
+        let initial = fcntl(descriptor, F_GETFL), initialDescriptor = fcntl(descriptor, F_GETFD)
+        XCTAssertGreaterThanOrEqual(initial, 0); XCTAssertGreaterThanOrEqual(initialDescriptor, 0)
+        XCTAssertEqual(fcntl(descriptor, F_SETFL, initial | O_NONBLOCK), 0)
+        XCTAssertEqual(fcntl(descriptor, F_SETFD, initialDescriptor | FD_CLOEXEC), 0)
+        let original = fcntl(descriptor, F_GETFL), descriptorFlags = fcntl(descriptor, F_GETFD)
+        XCTAssertNotEqual(original & O_NONBLOCK, 0); XCTAssertNotEqual(descriptorFlags & FD_CLOEXEC, 0)
+        let frame = try trace().encodeFrame()
+        try ImageDecodeDiagnosticTimingWriter.send(frame, descriptor: descriptor)
+        assertRestoredPublicFlags(descriptor, status: original, descriptorFlags: descriptorFlags)
+        var bytes = [UInt8](repeating: 0, count: 1_024)
+        let count = Darwin.read(pipe.fileHandleForReading.fileDescriptor, &bytes, bytes.count)
+        XCTAssertEqual(count, frame.count)
+        XCTAssertEqual(Data(bytes.prefix(max(0, count))), frame)
+    }
+
+    private func assertRestoredPublicFlags(_ descriptor: Int32, status original: Int32, descriptorFlags: Int32,
+                                          file: StaticString = #filePath, line: UInt = #line) {
+        let actual = fcntl(descriptor, F_GETFL)
+        XCTAssertGreaterThanOrEqual(actual, 0, file: file, line: line)
+        XCTAssertGreaterThanOrEqual(descriptorFlags, 0, file: file, line: line)
+        // Complete user-settable FCNTLFLAGS mask from Apple XNU fcntl.h:
+        // https://github.com/apple-oss-distributions/xnu/blob/xnu-11417.140.69/bsd/sys/fcntl.h
+        // F_GETFL also exposes kernel write history, which F_SETFL preserves.
+        let settable: Int32 = O_APPEND | O_ASYNC | O_SYNC | O_DSYNC | O_NONBLOCK
+        XCTAssertEqual(actual & settable, original & settable, file: file, line: line)
+        XCTAssertEqual(actual & O_ACCMODE, original & O_ACCMODE, file: file, line: line)
+        XCTAssertEqual(fcntl(descriptor, F_GETFD), descriptorFlags, file: file, line: line)
     }
 
     func testInvalidTimingOutputDoesNotWrite() throws {

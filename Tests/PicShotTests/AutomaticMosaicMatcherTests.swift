@@ -24,12 +24,14 @@ final class AutomaticMosaicMatcherTests: XCTestCase {
     func testYUpDrawingConvertsToTopLeftOddSourceCoordinates() throws {
         let width = 47, height = 39
         let context = try makeContext(width: width, height: height)
-        context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        // These exact channel assertions require an explicit sRGB fixture.
+        // Generic RGB colors are color-managed when drawn into the sRGB context.
+        context.setFillColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1))
         context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-        context.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
+        context.setFillColor(CGColor(srgbRed: 1, green: 0, blue: 0, alpha: 1))
         // A y-up editor rectangle (5, 27, 7, 9) has top-left source y = 3.
         context.fill(CGRect(x: 5, y: 27, width: 7, height: 9))
-        context.setFillColor(CGColor(red: 0, green: 0, blue: 1, alpha: 1))
+        context.setFillColor(CGColor(srgbRed: 0, green: 0, blue: 1, alpha: 1))
         context.fill(CGRect(x: 33, y: 1, width: 3, height: 5))
         let image = try XCTUnwrap(context.makeImage())
         let raster = try AutomaticMosaicMatcher.rasterize(image, seed: .init(x: 5, y: 3, width: 7, height: 9))
@@ -43,11 +45,11 @@ final class AutomaticMosaicMatcherTests: XCTestCase {
     func testServiceFindsNativeDrawnGlyphAtAsymmetricTopLeftCoordinates() async throws {
         let width = 139, height = 97
         let context = try makeContext(width: width, height: height)
-        context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        context.setFillColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1))
         context.fill(CGRect(x: 0, y: 0, width: width, height: height))
         let seed = RepeatedRegionPixelRect(x: 5, y: 7, width: 27, height: 19)
         let candidate = RepeatedRegionPixelRect(x: 87, y: 65, width: 27, height: 19)
-        context.setFillColor(CGColor(red: 0.2, green: 0.1, blue: 0.6, alpha: 1))
+        context.setFillColor(CGColor(srgbRed: 0.2, green: 0.1, blue: 0.6, alpha: 1))
         for region in [seed, candidate] {
             for part in [CGRect(x: 3, y: 2, width: 3, height: 12), CGRect(x: 3, y: 3, width: 16, height: 2),
                          CGRect(x: 15, y: 6, width: 3, height: 10), CGRect(x: 8, y: 11, width: 13, height: 2)] {
