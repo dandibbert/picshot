@@ -211,6 +211,15 @@ final class AdvancedSelectionView: NSView, NSTextFieldDelegate {
     private(set) var selectedOperationIndex: Int?
     private var pointerPoint: CGPoint?
     private var undoHistory: [SelectionSnapshot] = []
+    private var redoHistory: [SelectionSnapshot] = []
+    private(set) var aspectRatio: CaptureAspectRatio?
+    private let ratioControls = CaptureRatioControls(prefix: "multiCapture")
+    private var lastDimensionAxis: CaptureRatioAxis = .width
+    private var resizeHandle: CaptureRatioHandle?
+    private var resizeOriginal: CGRect = .zero
+    private var ratioGeometry: CaptureRatioGeometry? {
+        try? CaptureRatioGeometry(pointSize: selection.pointSize, pixelWidth: selection.pixelWidth, pixelHeight: selection.pixelHeight)
+    }
     private let widthField = NSTextField(string: "")
     private let heightField = NSTextField(string: "")
     private var sizeControls: [NSControl] = []
@@ -219,6 +228,7 @@ final class AdvancedSelectionView: NSView, NSTextFieldDelegate {
         let geometry: CaptureSelectionGeometry
         let selectedIndex: Int?
         let points: [CGPoint]
+        let ratio: CaptureAspectRatio?
     }
     private var dragStart: CGPoint?
     private var dragSubtracts = false
@@ -254,7 +264,7 @@ final class AdvancedSelectionView: NSView, NSTextFieldDelegate {
     override func layout() {
         super.layout()
         let width = max(1, min(760, bounds.width - 24))
-        toolbar.frame = CGRect(x: (bounds.width - width) / 2, y: 16, width: width, height: style == .multiRegion ? 126 : 90)
+        toolbar.frame = CGRect(x: (bounds.width - width) / 2, y: 16, width: width, height: style == .multiRegion ? 178 : 90)
         positionPrecisionHUD()
     }
 
@@ -281,7 +291,12 @@ final class AdvancedSelectionView: NSView, NSTextFieldDelegate {
         case .multiRegion:
             dragStart = point
             dragSubtracts = event.modifierFlags.contains(.option)
-            draftRectangle = .zero
+            resizeHandle = nil
+            if !dragSubtracts, let rectangle = selectedRectangle {
+                resizeHandle = CaptureRatioHandle.hit(at: point, frame: rectangle)
+                resizeOriginal = rectangle
+            }
+            draftRectangle = resizeHandle == nil ? .zero : resizeOriginal
         case .polygon:
             guard draftPoints.count < CaptureSelectionGeometry.maximumPoints else {
                 status.stringValue = CaptureSelectionError.complexityLimit.localizedDescription
@@ -305,21 +320,34 @@ final class AdvancedSelectionView: NSView, NSTextFieldDelegate {
         guard !selection.isCancelled, let start = dragStart else { return }
         let point = localPoint(event)
         updatePrecision(at: point)
+        var ratioError: String?
         if style == .multiRegion {
-            draftRectangle = CGRect(x: min(start.x, point.x), y: min(start.y, point.y),
-                                    width: abs(point.x - start.x), height: abs(point.y - start.y))
+            do {
+                if let aspectRatio, let ratioGeometry {
+                    draftRectangle = try resizeHandle.map { try ratioGeometry.resize(resizeOriginal, handle: $0, to: point, ratio: aspectRatio) }
+                        ?? ratioGeometry.drag(from: start, to: point, ratio: aspectRatio)
+                } else if let resizeHandle {
+                    draftRectangle = resizeHandle.freelyResized(resizeOriginal, to: point, in: bounds)
+                } else {
+                    draftRectangle = CGRect(x: min(start.x, point.x), y: min(start.y, point.y), width: abs(point.x - start.x), height: abs(point.y - start.y))
+                }
+            } catch { ratioError = error.localizedDescription; if resizeHandle == nil { draftRectangle = .zero } }
         } else if style == .freehand {
             appendFreehandPoint(point)
         }
         updateStatus()
+        if let ratioError { ratioControls.showError(ratioError) }
         needsDisplay = true
     }
 
     override func mouseUp(with event: NSEvent) {
         guard !selection.isCancelled, dragStart != nil else { return }
+        let pointer = localPoint(event)
+        let wasClick = dragStart.map { hypot(pointer.x - $0.x, pointer.y - $0.y) < 3 } ?? false
         mouseDragged(with: event)
         defer {
             dragStart = nil
+            resizeHandle = nil
             draftRectangle = nil
             if style == .freehand { draftPoints.removeAll(keepingCapacity: false) }
             needsDisplay = true
@@ -328,7 +356,11 @@ final class AdvancedSelectionView: NSView, NSTextFieldDelegate {
             switch style {
             case .multiRegion:
                 if let rectangle = draftRectangle {
-                    if rectangle.width < 2 && rectangle.height < 2 {
+                    if resizeHandle != nil, let index = selectedOperationIndex, let pixels = selection.rectanglePixelBounds(rectangle) {
+                        var edited = selection
+                        try edited.setRectanglePixelBounds(at: index, bounds: pixels)
+                        if edited.operations != selection.operations { rememberSelection(); selection = edited }
+                    } else if wasClick || (rectangle.width < 2 && rectangle.height < 2) {
                         // A click selects the latest overlapping rectangle, including
                         // cutouts. A drag always creates a new Boolean operation.
                         selectedOperationIndex = selection.operations.indices.reversed().first { index in
@@ -380,7 +412,8 @@ final class AdvancedSelectionView: NSView, NSTextFieldDelegate {
             precisionHUD.isHidden = toolbar.isHidden || precisionHUD.sample == nil
             window?.invalidateCursorRects(for: self)
             needsDisplay = true
-        case 6 where event.modifierFlags.contains(.command): undoSelection(nil)
+        case 6 where event.modifierFlags.contains(.command):
+            if event.modifierFlags.contains(.shift) { redoSelection(nil) } else { undoSelection(nil) }
         case 123, 124, 125, 126: nudgeSelection(with: event)
         case 8 where event.modifierFlags.intersection([.command, .control, .option]).isEmpty:
             if let color = precisionHUD.sample?.color {
@@ -401,7 +434,9 @@ final class AdvancedSelectionView: NSView, NSTextFieldDelegate {
         bounds.fill()
         var operations = selection.operations
         if let rectangle = draftRectangle, rectangle.width > 0, rectangle.height > 0 {
-            operations.append(CaptureSelectionOperation(shape: .rectangle(rectangle), subtracts: dragSubtracts))
+            if resizeHandle != nil, let index = selectedOperationIndex, operations.indices.contains(index) {
+                operations[index] = CaptureSelectionOperation(shape: .rectangle(rectangle), subtracts: operations[index].subtracts)
+            } else { operations.append(CaptureSelectionOperation(shape: .rectangle(rectangle), subtracts: dragSubtracts)) }
         } else if draftPoints.count >= 3 {
             // Polygon/freehand previews show the actual closed mask, rather than
             // a bounding rectangle. The exported fill uses the same even-odd rule.
@@ -428,8 +463,7 @@ final class AdvancedSelectionView: NSView, NSTextFieldDelegate {
             if index == selectedOperationIndex, case .rectangle(let rectangle) = operation.shape {
                 NSColor.controlAccentColor.setFill()
                 let rectangle = rectangle.standardized
-                for point in [CGPoint(x: rectangle.minX, y: rectangle.minY), CGPoint(x: rectangle.maxX, y: rectangle.minY),
-                              CGPoint(x: rectangle.minX, y: rectangle.maxY), CGPoint(x: rectangle.maxX, y: rectangle.maxY)] {
+                for point in CaptureRatioHandle.allCases.map({ $0.point(in: rectangle) }) {
                     NSBezierPath(rect: CGRect(x: point.x - 2.5, y: point.y - 2.5, width: 5, height: 5)).fill()
                 }
             }
@@ -464,6 +498,7 @@ final class AdvancedSelectionView: NSView, NSTextFieldDelegate {
         pointerPoint = nil
         selectedOperationIndex = nil
         undoHistory.removeAll(keepingCapacity: false)
+        redoHistory.removeAll(keepingCapacity: false)
     }
 
     @objc private func captureSelection(_ sender: Any?) {
@@ -505,21 +540,53 @@ final class AdvancedSelectionView: NSView, NSTextFieldDelegate {
         guard !selection.isCancelled else { return }
         if dragStart != nil {
             dragStart = nil
+            resizeHandle = nil
             draftRectangle = nil
             draftPoints.removeAll(keepingCapacity: false)
         } else if let previous = undoHistory.popLast() {
-            selection = previous.geometry
-            selectedOperationIndex = previous.selectedIndex
-            draftPoints = previous.points
+            redoHistory.append(currentSnapshot)
+            restoreSelection(previous)
         } else if style == .polygon, !draftPoints.isEmpty {
-            draftPoints.removeLast()
+            redoHistory.append(currentSnapshot); draftPoints.removeLast()
         } else {
+            if !selection.operations.isEmpty { redoHistory.append(currentSnapshot) }
             selection.undo()
             selectedOperationIndex = selection.operations.indices.last
         }
         updateStatus()
         window?.makeFirstResponder(self)
         needsDisplay = true
+    }
+
+    @objc private func redoSelection(_ sender: Any?) {
+        guard !selection.isCancelled, dragStart == nil, let next = redoHistory.popLast() else { return }
+        undoHistory.append(currentSnapshot); restoreSelection(next)
+        updateStatus(); window?.makeFirstResponder(self); needsDisplay = true
+    }
+    private var currentSnapshot: SelectionSnapshot {
+        SelectionSnapshot(geometry: selection, selectedIndex: selectedOperationIndex, points: draftPoints, ratio: aspectRatio)
+    }
+    private func restoreSelection(_ state: SelectionSnapshot) {
+        selection = state.geometry; selectedOperationIndex = state.selectedIndex; draftPoints = state.points; aspectRatio = state.ratio
+    }
+    private var selectedRectangle: CGRect? {
+        guard let index = selectedOperationIndex, selection.operations.indices.contains(index),
+              case .rectangle(let rectangle) = selection.operations[index].shape else { return nil }
+        return rectangle
+    }
+    @discardableResult
+    func setAspectRatio(_ ratio: CaptureAspectRatio?) -> Bool {
+        guard !selection.isCancelled, dragStart == nil, style == .multiRegion, let ratioGeometry else { return false }
+        do {
+            var edited = selection
+            if let ratio, selectedRectangle == nil { _ = try ratioGeometry.fitting(bounds, ratio: ratio) }
+            if let ratio, let rectangle = selectedRectangle, let index = selectedOperationIndex {
+                let frame = try ratioGeometry.fitting(rectangle, ratio: ratio)
+                try edited.setRectanglePixelBounds(at: index, bounds: ratioGeometry.sourcePixelRect(frame))
+            }
+            if ratio != aspectRatio || edited.operations != selection.operations { rememberSelection(); selection = edited; aspectRatio = ratio }
+            window?.makeFirstResponder(self); updateStatus(); needsDisplay = true; return true
+        } catch { ratioControls.showError(error.localizedDescription); return false }
     }
 
     private func configureToolbar() {
@@ -534,11 +601,12 @@ final class AdvancedSelectionView: NSView, NSTextFieldDelegate {
         title.font = .systemFont(ofSize: 13, weight: .semibold)
         let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelSelection(_:)))
         let undo = NSButton(title: "Undo", target: self, action: #selector(undoSelection(_:)))
+        let redo = NSButton(title: "Redo", target: self, action: #selector(redoSelection(_:)))
         let remove = NSButton(title: "Remove", target: self, action: #selector(removeSelection(_:)))
         remove.toolTip = "Remove the selected shape (Delete). Undo restores it."
         let clear = NSButton(title: "Clear", target: self, action: #selector(clearSelection(_:)))
         let capture = NSButton(title: "Capture", target: self, action: #selector(captureSelection(_:)))
-        for button in [cancel, undo, remove, clear, capture] {
+        for button in [cancel, undo, redo, remove, clear, capture] {
             button.bezelStyle = .rounded
             button.controlSize = .small
             button.font = .systemFont(ofSize: 12)
@@ -556,10 +624,13 @@ final class AdvancedSelectionView: NSView, NSTextFieldDelegate {
         status.stringValue = "Frozen screen · Gaps and cutouts export transparent"
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let row = NSStackView(views: [title, spacer, undo, remove, clear, cancel, capture])
+        let row = NSStackView(views: [title, spacer, undo, redo, remove, clear, cancel, capture])
         row.orientation = .horizontal
         row.spacing = 5
-        let rows: [NSView] = style == .multiRegion ? [row, help, makeSizeControls(), status] : [row, help, status]
+        ratioControls.showsDimensions = false
+        ratioControls.onRatio = { [weak self] ratio in self?.setAspectRatio(ratio) ?? false }
+        ratioControls.onCancel = { [weak self] in self?.cancelSelection(nil) }
+        let rows: [NSView] = style == .multiRegion ? [row, help, ratioControls, makeSizeControls(), status] : [row, help, status]
         let stack = NSStackView(views: rows)
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -595,6 +666,7 @@ final class AdvancedSelectionView: NSView, NSTextFieldDelegate {
 
     private func updateStatus() {
         updateSizeFields()
+        ratioControls.display(ratio: aspectRatio, pixels: selectedRectangle.flatMap { selection.rectanglePixelBounds($0)?.size })
         if let rectangle = draftRectangle, let pixels = selection.rectanglePixelBounds(rectangle) {
             status.stringValue = "Draft \(Int(pixels.width)) × \(Int(pixels.height)) px · X \(Int(pixels.minX)) Y \(Int(pixels.minY)) · \(dragSubtracts ? "Subtract" : "Add")"
         } else if style == .polygon {
@@ -615,7 +687,8 @@ final class AdvancedSelectionView: NSView, NSTextFieldDelegate {
         // limit. COW storage shares unchanged shapes; no image bytes enter undo.
         if undoHistory.count == 64 { undoHistory.removeFirst() }
         undoHistory.append(SelectionSnapshot(geometry: selection, selectedIndex: selectedOperationIndex,
-                                             points: points ?? draftPoints))
+                                             points: points ?? draftPoints, ratio: aspectRatio))
+        redoHistory.removeAll()
     }
 
     @objc private func removeSelection(_ sender: Any?) {
@@ -646,7 +719,13 @@ final class AdvancedSelectionView: NSView, NSTextFieldDelegate {
         let dy = event.keyCode == 126 ? -amount : event.keyCode == 125 ? amount : 0
         do {
             var edited = selection
-            try edited.nudgeRectangle(at: index, deltaX: dx, deltaY: dy, resizing: event.modifierFlags.contains(.option))
+            if event.modifierFlags.contains(.option), let aspectRatio, let rectangle = selectedRectangle, let ratioGeometry {
+                let pixels = try ratioGeometry.sourcePixelRect(rectangle)
+                let axis: CaptureRatioAxis = dx == 0 ? .height : .width
+                let proposed = axis == .width ? Int(pixels.width) + dx * aspectRatio.numerator : Int(pixels.height) + dy * aspectRatio.denominator
+                let frame = try ratioGeometry.sized(rectangle, pixels: proposed, axis: axis, ratio: aspectRatio)
+                try edited.setRectanglePixelBounds(at: index, bounds: ratioGeometry.sourcePixelRect(frame))
+            } else { try edited.nudgeRectangle(at: index, deltaX: dx, deltaY: dy, resizing: event.modifierFlags.contains(.option)) }
             if edited.operations != selection.operations {
                 rememberSelection()
                 selection = edited
@@ -674,6 +753,7 @@ final class AdvancedSelectionView: NSView, NSTextFieldDelegate {
         apply.font = .systemFont(ofSize: 11)
         sizeControls = [widthField, heightField, apply]
         let instructions = NSTextField(labelWithString: "Arrows: 1 px · Shift: 10 · Option: resize · ⌘Z: undo")
+        instructions.stringValue = "Arrows: 1 px · Shift: 10 · Option: ratio step · ⌘Z / ⇧⌘Z"
         instructions.font = .systemFont(ofSize: 10)
         instructions.textColor = .secondaryLabelColor
         let row = NSStackView(views: [NSTextField(labelWithString: "W"), widthField,
@@ -708,7 +788,11 @@ final class AdvancedSelectionView: NSView, NSTextFieldDelegate {
         }
         do {
             var edited = selection
-            try edited.setRectanglePixelSize(at: index, width: width, height: height)
+            let axis = (sender as? NSTextField).map { $0 === heightField ? CaptureRatioAxis.height : .width } ?? lastDimensionAxis
+            if let aspectRatio, let rectangle = selectedRectangle, let ratioGeometry {
+                let frame = try ratioGeometry.sized(rectangle, pixels: axis == .width ? width : height, axis: axis, ratio: aspectRatio)
+                try edited.setRectanglePixelBounds(at: index, bounds: ratioGeometry.sourcePixelRect(frame))
+            } else { try edited.setRectanglePixelSize(at: index, width: width, height: height) }
             if edited.operations != selection.operations {
                 rememberSelection()
                 selection = edited
@@ -717,6 +801,12 @@ final class AdvancedSelectionView: NSView, NSTextFieldDelegate {
             updateStatus()
             needsDisplay = true
         } catch { status.stringValue = error.localizedDescription }
+    }
+
+    func controlTextDidBeginEditing(_ notification: Notification) {
+        if let field = notification.object as? NSTextField, field === widthField || field === heightField {
+            lastDimensionAxis = field === heightField ? .height : .width
+        }
     }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {

@@ -14,6 +14,7 @@ import ImageIO
     let history:HistoryStore
     let capture=CaptureService()
     let advancedCapture=AdvancedCaptureController()
+    let multiWindowCapture=MultiWindowCaptureController()
     let recorder=RecordingService()
     var mainWindow:NSWindow!
     var recordingController:RecordingPanelController?
@@ -132,7 +133,7 @@ import ImageIO
         app.addItem(withTitle:"关于 PicShot",action:#selector(about),keyEquivalent:"").target=self
         app.addItem(withTitle:"设置…",action:#selector(settings),keyEquivalent:",").target=self;app.addItem(.separator());app.addItem(withTitle:"退出 PicShot",action:#selector(NSApplication.terminate(_:)),keyEquivalent:"q")
         let captureItem=NSMenuItem();menu.addItem(captureItem);let captureMenu=NSMenu(title:"截图");captureItem.submenu=captureMenu
-        for (title,action) in [("区域截图",#selector(region)),("界面元素截图…",#selector(elementCapture)),("跨屏区域截图（系统选区）",#selector(systemRegion)),("窗口截图",#selector(windowCapture)),("当前屏幕",#selector(full)),("所有屏幕合成",#selector(allScreens))] {captureMenu.addItem(withTitle:title,action:action,keyEquivalent:"").target=self}
+        for (title,action) in [("区域截图",#selector(region)),("界面元素截图…",#selector(elementCapture)),("跨屏区域截图（系统选区）",#selector(systemRegion)),("窗口截图",#selector(windowCapture)),("多窗口合成…",#selector(captureMultipleWindows)),("当前屏幕",#selector(full)),("所有屏幕合成",#selector(allScreens))] {captureMenu.addItem(withTitle:title,action:action,keyEquivalent:"").target=self}
         captureMenu.addItem(withTitle:"截图预设",action:nil,keyEquivalent:"").submenu=capturePresetsMenu()
         captureMenu.addItem(.separator());captureMenu.addItem(withTitle:"取消当前截图",action:#selector(cancelCapture),keyEquivalent:".").target=self
         let editItem=NSMenuItem();menu.addItem(editItem);let edit=NSMenu(title:"编辑");editItem.submenu=edit
@@ -166,6 +167,10 @@ import ImageIO
         runCapture { [capture] in try await capture.capture(mode:.region,options:options) }
     }
     @objc func windowCapture(){startCapture(.window)}
+    @objc func captureMultipleWindows(){
+        let options=ScreenshotPreferences.options
+        runCapture(title:"多窗口合成") { [multiWindowCapture] in try await multiWindowCapture.capture(options:options) }
+    }
     @objc func full(){startCapture(.fullScreen)}
     @objc func allScreens(){startCapture(.allScreens)}
     @objc func cancelCapture(){captureTask?.cancel()}
@@ -551,7 +556,7 @@ struct LibraryView:View {
         VStack(spacing:0){
             HStack(spacing:8){
                 Button {app.region()} label:{Label("截图",systemImage:"viewfinder")}.keyboardShortcut("n").buttonStyle(.borderedProminent)
-                Menu {Button("多选区域（可减选）"){app.startAdvanced(.multiRegion)};Button("多边形选区"){app.startAdvanced(.polygon)};Button("自由形状选区"){app.startAdvanced(.freehand)};Divider();Button("跨屏区域截图（系统选区）"){app.systemRegion()};Button("窗口截图"){app.windowCapture()};Button("当前屏幕"){app.full()};Button("所有屏幕合成"){app.allScreens()};Button("取消当前截图"){app.cancelCapture()};ForEach(Array(NSScreen.screens.enumerated()),id:\.offset){ index,screen in Button("屏幕 \(index+1) · \(screen.localizedName)"){if let id=screen.displayID{app.startDisplayCapture(id)}}}} label:{Image(systemName:"chevron.down")}.frame(width:30)
+                Menu {Button("多选区域（可减选）"){app.startAdvanced(.multiRegion)};Button("多边形选区"){app.startAdvanced(.polygon)};Button("自由形状选区"){app.startAdvanced(.freehand)};Divider();Button("跨屏区域截图（系统选区）"){app.systemRegion()};Button("窗口截图"){app.windowCapture()};Button("多窗口合成…"){app.captureMultipleWindows()};Button("当前屏幕"){app.full()};Button("所有屏幕合成"){app.allScreens()};Button("取消当前截图"){app.cancelCapture()};ForEach(Array(NSScreen.screens.enumerated()),id:\.offset){ index,screen in Button("屏幕 \(index+1) · \(screen.localizedName)"){if let id=screen.displayID{app.startDisplayCapture(id)}}}} label:{Image(systemName:"chevron.down")}.frame(width:30)
                 Button {app.scroll()} label:{Label("长截图",systemImage:"rectangle.expand.vertical")}
                 Button {app.record()} label:{Label("录屏",systemImage:"record.circle")}
                 Divider().frame(height:20)

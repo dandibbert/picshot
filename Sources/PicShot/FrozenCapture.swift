@@ -22,18 +22,21 @@ struct CapturedImage {
     /// Saved regions own integral pixel coordinates. Do not convert those pixels
     /// to points and floor them again: fractional densities can add an edge pixel.
     static func frozenPixelRegion(image: CGImage, displayID: CGDirectDisplayID,
-                                  displayFrame: CGRect, pixelFrame: CGRect, capturedAt: Date = Date()) throws -> CapturedImage {
+                                  displayFrame: CGRect, pixelFrame: CGRect, capturedAt: Date = Date(), aspectRatio: CaptureAspectRatio? = nil) throws -> CapturedImage {
         guard displayFrame.minX.isFinite, displayFrame.minY.isFinite,
               displayFrame.maxX.isFinite, displayFrame.maxY.isFinite else { throw CaptureError.invalidRegion }
         let geometry = try FrozenCaptureGeometry(pointSize: displayFrame.size, pixelWidth: image.width, pixelHeight: image.height)
         let aligned = try geometry.selectionForPixels(pixelFrame)
+        if let aspectRatio, pixelFrame.width * CGFloat(aspectRatio.denominator) != pixelFrame.height * CGFloat(aspectRatio.numerator) {
+            throw CaptureError.invalidRegion
+        }
         return try frozenAlignedRegion(image: image, displayID: displayID, displayFrame: displayFrame,
-                                       aligned: aligned, capturedAt: capturedAt)
+                                       aligned: aligned, capturedAt: capturedAt, aspectRatio: aspectRatio)
     }
 
     private static func frozenAlignedRegion(image: CGImage, displayID: CGDirectDisplayID,
                                             displayFrame: CGRect, aligned: FrozenCaptureGeometry.Selection,
-                                            capturedAt: Date) throws -> CapturedImage {
+                                            capturedAt: Date, aspectRatio: CaptureAspectRatio? = nil) throws -> CapturedImage {
         guard let crop = image.cropping(to: aligned.pixelFrame),
               crop.width == Int(aligned.pixelFrame.width), crop.height == Int(aligned.pixelFrame.height) else {
             throw CaptureError.failed("Could not prepare the selected pixels.")
@@ -57,7 +60,7 @@ struct CapturedImage {
         guard let result = context.makeImage() else { throw CaptureError.failed("Could not prepare the selected pixels.") }
         return CapturedImage(image: result, presentation: FrozenCapturePresentation(
             frozenImage: image, displayID: displayID, displayFrame: displayFrame,
-            selectionFrame: aligned.selectionFrame, capturedAt: capturedAt))
+            selectionFrame: aligned.selectionFrame, capturedAt: capturedAt, aspectRatio: aspectRatio))
     }
 }
 
@@ -70,6 +73,8 @@ struct FrozenCapturePresentation {
     let selectionFrame: CGRect
     /// Fixed once when this frozen source capture is prepared.
     var capturedAt: Date = Date()
+    /// Selection-only lock, measured in original source pixels.
+    var aspectRatio: CaptureAspectRatio? = nil
 }
 
 /// Converts native selector coordinates to the exact frozen pixels, then derives

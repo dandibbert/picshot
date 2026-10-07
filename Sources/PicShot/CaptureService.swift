@@ -89,6 +89,10 @@ final class CaptureService {
         let rectangle = try await controller.select()
         try Task.checkCancellation()
         try watcher.validate(snapshot: snapshot)
+        if let pixels = controller.selectionPixelFrame {
+            return try CapturedImage.frozenPixelRegion(image: frozen, displayID: displayID,
+                displayFrame: displayFrame, pixelFrame: pixels, capturedAt: capturedAt, aspectRatio: controller.selectionRatio)
+        }
         return try CapturedImage.frozenRegion(image: frozen, displayID: displayID,
                                               displayFrame: displayFrame, selection: rectangle, capturedAt: capturedAt)
     }
@@ -407,6 +411,8 @@ final class RegionSelectionController: NSObject, NSWindowDelegate {
     private var sessionID: UUID?
     private var screenObserver: NSObjectProtocol?
     var isSelecting: Bool { continuation != nil }
+    private(set) var selectionRatio: CaptureAspectRatio?
+    private(set) var selectionPixelFrame: CGRect?
 
     init(screen: NSScreen, frozenImage: CGImage? = nil, elementContext: CaptureElementContext? = nil) {
         self.screen = screen
@@ -420,6 +426,7 @@ final class RegionSelectionController: NSObject, NSWindowDelegate {
         let geometry = try frozenImage.map {
             try FrozenCaptureGeometry(pointSize: screen.frame.size, pixelWidth: $0.width, pixelHeight: $0.height)
         }
+        selectionRatio = nil; selectionPixelFrame = nil
         let session = UUID()
         sessionID = session
         defer { tearDown(); sessionID = nil }
@@ -479,6 +486,10 @@ final class RegionSelectionController: NSObject, NSWindowDelegate {
 
     private func finish(_ result: Result<CGRect, Error>, session: UUID) {
         guard sessionID == session, let completion = continuation else { return }
+        if case .success = result {
+            selectionRatio = selectionView?.aspectRatio
+            selectionPixelFrame = selectionView?.committedPixelFrame
+        }
         continuation = nil
         tearDown()
         completion.resume(with: result)
@@ -520,7 +531,29 @@ final class RegionSelectionView: NSView {
     private var lastHover: CGPoint?
     private var elementClickFrame: CGRect?
     private var start: CGPoint?
-    private var selected: CGRect = .zero
+    private(set) var selected: CGRect = .zero
+    private(set) var aspectRatio: CaptureAspectRatio?
+    private(set) var committedPixelFrame: CGRect?
+    private let ratioControls = CaptureRatioControls(prefix: "capture")
+    private let ratioSurface = NSVisualEffectView()
+    private let ratioAccept = NSButton()
+    private var ratioControlsHidden = false
+    private var precisionEditing = false
+    private var cancelled = false
+    private var resizeHandle: CaptureRatioHandle?
+    private var dragOriginal: CGRect = .zero
+    private struct RatioSnapshot {
+        let rectangle: CGRect
+        let ratio: CaptureAspectRatio?
+        let precision: Bool
+    }
+    private var undoStates: [RatioSnapshot] = []
+    private var redoStates: [RatioSnapshot] = []
+    private var dragSnapshot: RatioSnapshot?
+    private var ratioGeometry: CaptureRatioGeometry? {
+        guard let geometry else { return nil }
+        return try? CaptureRatioGeometry(pointSize: geometry.pointSize, pixelWidth: geometry.pixelWidth, pixelHeight: geometry.pixelHeight)
+    }
     private(set) var elementPreviewFrame: CGRect?
     var elementStatusMessage: String { elementMessage }
     override var isFlipped: Bool { true }
@@ -533,6 +566,7 @@ final class RegionSelectionView: NSView {
         self.elementContext = elementContext
         elementSession = elementContext.map { CaptureElementSession(provider: $0.provider) }
         super.init(frame: frame)
+        if geometry != nil { configureRatioControls() }
         if let elementContext {
             elementEnabled = elementContext.initiallyEnabled
             for (title, identifier, action) in [("元素选择 E", "capture.elements.toggle", #selector(toggleElements)),
@@ -544,7 +578,7 @@ final class RegionSelectionView: NSView {
                 button.setAccessibilityLabel(title); addSubview(button); elementButtons.append(button)
             }
             elementSession?.changed = { [weak self] result in
-                guard let self, self.elementEnabled, self.start == nil else { return }
+                guard let self, self.elementEnabled, self.aspectRatio == nil, self.start == nil else { return }
                 switch result {
                 case .snapshot: self.elementMessage = "元素边界为稍后的辅助功能信息；截图像素保持冻结"
                 case .unavailable(let reason): self.elementMessage = reason.message
@@ -559,6 +593,11 @@ final class RegionSelectionView: NSView {
 
     override func layout() {
         super.layout()
+        if geometry != nil {
+            let width = min(440, max(1, bounds.width - 16)), height = min(118, max(1, bounds.height - 16))
+            ratioSurface.frame = CGRect(x: max(8, (bounds.width - width) / 2), y: 8, width: width, height: height)
+            ratioSurface.isHidden = ratioControlsHidden || bounds.width < 320 || bounds.height < 180
+        }
         let widths: [CGFloat] = [102, 94, 94], gap: CGFloat = 6
         let total = widths.reduce(0, +) + gap * 2
         var x = max(8, (bounds.width - total) / 2)
@@ -575,16 +614,21 @@ final class RegionSelectionView: NSView {
     }
     func discard() {
         elementSession?.stop(); elementPreviewFrame = nil; elementClickFrame = nil
-        finished = nil; frozenImage = nil; start = nil; selected = .zero
+        finished = nil; frozenImage = nil; start = nil; selected = .zero; cancelled = true
+        undoStates.removeAll(); redoStates.removeAll(); dragSnapshot = nil
     }
-    override func resetCursorRects() { addCursorRect(bounds, cursor: .crosshair) }
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .crosshair)
+        if geometry != nil, !ratioSurface.isHidden { addCursorRect(ratioSurface.frame, cursor: .arrow) }
+    }
     override func mouseMoved(with event: NSEvent) { hover(at: convert(event.locationInWindow, from: nil)) }
     override func mouseExited(with event: NSEvent) {
         elementSession?.invalidate(); elementPreviewFrame = nil; lastHover = nil; needsDisplay = true
     }
     func hover(at point: CGPoint) {
-        guard finished != nil, elementEnabled, start == nil, bounds.contains(point),
-              !elementButtons.contains(where: { $0.frame.contains(point) }), let elementContext else { return }
+        guard finished != nil, elementEnabled, aspectRatio == nil, start == nil, bounds.contains(point),
+              !elementButtons.contains(where: { $0.frame.contains(point) }),
+              geometry == nil || ratioSurface.isHidden || !ratioSurface.frame.contains(point), let elementContext else { return }
         if let lastHover, abs(lastHover.x - point.x) < 0.5, abs(lastHover.y - point.y) < 0.5 { return }
         lastHover = point; elementPreviewFrame = nil
         elementMessage = "正在查询元素；可随时拖动选择矩形"
@@ -595,17 +639,17 @@ final class RegionSelectionView: NSView {
     }
     @objc private func toggleElements() {
         elementEnabled.toggle(); elementSession?.invalidate(); elementPreviewFrame = nil; lastHover = nil
-        elementMessage = elementEnabled ? "移动指针选择元素；需要在系统设置中手动开启辅助功能权限" : ""
+        elementMessage = elementEnabled ? (aspectRatio == nil ? "移动指针选择元素；需要在系统设置中手动开启辅助功能权限" : "比例锁定时拖动选择矩形；选择 Free 后可使用元素选择") : ""
         refreshElementControls(); needsDisplay = true; window?.makeFirstResponder(self)
     }
     @objc private func parentElement() { traverseElement(parent: true) }
     @objc private func childElement() { traverseElement(parent: false) }
     private func traverseElement(parent: Bool) {
-        guard elementEnabled, start == nil, elementSession?.traverse(parent: parent) == true else { return }
+        guard elementEnabled, aspectRatio == nil, start == nil, elementSession?.traverse(parent: parent) == true else { return }
         refreshElementPreview(); window?.makeFirstResponder(self)
     }
     private func refreshElementPreview() {
-        if let node = elementSession?.selectedNode, let elementContext {
+        if aspectRatio == nil, let node = elementSession?.selectedNode, let elementContext {
             elementPreviewFrame = CaptureElementGeometry.localFrame(node.frame, displayBounds: elementContext.displayBounds)
         } else { elementPreviewFrame = nil }
         refreshElementControls(); needsDisplay = true
@@ -613,55 +657,197 @@ final class RegionSelectionView: NSView {
     private func refreshElementControls() {
         guard elementButtons.count == 3 else { return }
         elementButtons[0].state = elementEnabled ? .on : .off
-        elementButtons[1].isEnabled = elementEnabled && elementSession?.selectedNode?.parent != nil
-        elementButtons[2].isEnabled = elementEnabled && !(elementSession?.selectedNode?.children.isEmpty ?? true)
+        elementButtons[1].isEnabled = aspectRatio == nil && elementEnabled && elementSession?.selectedNode?.parent != nil
+        elementButtons[2].isEnabled = aspectRatio == nil && elementEnabled && !(elementSession?.selectedNode?.children.isEmpty ?? true)
     }
     override func mouseDown(with event: NSEvent) {
-        guard finished != nil else { return }
+        guard finished != nil, !cancelled else { return }
         let point = convert(event.locationInWindow, from: nil)
+        guard geometry == nil || ratioSurface.isHidden || !ratioSurface.frame.contains(point) else { return }
+        window?.makeFirstResponder(self)
+        dragSnapshot = snapshot
+        resizeHandle = precisionEditing && !selected.isEmpty ? CaptureRatioHandle.hit(at: point, frame: selected) : nil
+        dragOriginal = selected
         start = point
-        // A click accepts only a completed hover covering this exact pointer. A
-        // drag always overrides element picking, including unavailable controls.
-        elementClickFrame = elementPreviewFrame.flatMap { $0.contains(point) ? $0 : nil }
-        elementSession?.invalidate(); elementPreviewFrame = nil; selected = .zero
+        elementClickFrame = aspectRatio == nil ? elementPreviewFrame.flatMap { $0.contains(point) ? $0 : nil } : nil
+        elementSession?.invalidate(); elementPreviewFrame = nil
+        if resizeHandle == nil { selected = .zero }
         needsDisplay = true
     }
     override func mouseDragged(with event: NSEvent) {
-        guard let start else { return }
+        guard !cancelled, let start else { return }
         let end = convert(event.locationInWindow, from: nil)
         if hypot(end.x - start.x, end.y - start.y) >= 3 { elementClickFrame = nil }
-        selected = CGRect(x: min(start.x, end.x), y: min(start.y, end.y), width: abs(end.x - start.x), height: abs(end.y - start.y)).intersection(bounds)
+        else if aspectRatio != nil, resizeHandle == nil { selected = .zero; refreshRatioControls(); needsDisplay = true; return }
+        do {
+            if let ratio = aspectRatio, let ratioGeometry {
+                selected = try resizeHandle.map { try ratioGeometry.resize(dragOriginal, handle: $0, to: end, ratio: ratio) }
+                    ?? ratioGeometry.drag(from: start, to: end, ratio: ratio)
+            } else if let resizeHandle {
+                selected = resizeHandle.freelyResized(dragOriginal, to: end, in: bounds)
+            } else {
+                selected = CGRect(x: min(start.x, end.x), y: min(start.y, end.y), width: abs(end.x - start.x), height: abs(end.y - start.y)).intersection(bounds)
+            }
+            refreshRatioControls()
+        } catch {
+            if resizeHandle == nil { selected = .zero }
+            ratioControls.showError(error.localizedDescription)
+        }
         needsDisplay = true
     }
     override func mouseUp(with event: NSEvent) {
-        guard start != nil else { return }
+        guard !cancelled, start != nil else { return }
         mouseDragged(with: event)
         let rectangle = elementClickFrame ?? selected
-        start = nil; elementClickFrame = nil; lastHover = nil
+        start = nil; resizeHandle = nil; elementClickFrame = nil; lastHover = nil
+        if let previous = dragSnapshot, rectangle != previous.rectangle { remember(previous) }
+        dragSnapshot = nil
         guard rectangle.width >= 2, rectangle.height >= 2 else { return }
+        selected = rectangle
+        if precisionEditing { refreshRatioControls(); needsDisplay = true }
+        else { commitSelection(rectangle) }
+    }
+    private func commitSelection(_ rectangle: CGRect) {
+        guard !cancelled else { return }
         if let geometry {
-            guard (try? geometry.alignedSelection(rectangle)) != nil else { return }
-            finished?(.success(rectangle))
+            if precisionEditing {
+                guard let ratioGeometry, let pixels = try? ratioGeometry.sourcePixelRect(rectangle),
+                      let aligned = try? geometry.selectionForPixels(pixels) else {
+                    ratioControls.showError("Select at least 2 × 2 points inside this display"); return
+                }
+                if let aspectRatio, pixels.width * CGFloat(aspectRatio.denominator) != pixels.height * CGFloat(aspectRatio.numerator) {
+                    ratioControls.showError("The selected pixels do not match the ratio; redraw the region"); return
+                }
+                committedPixelFrame = pixels
+                finished?(.success(aligned.topLeftFrame))
+            } else {
+                guard (try? geometry.alignedSelection(rectangle)) != nil else { return }
+                finished?(.success(rectangle))
+            }
         } else { finished?(.success(rectangle.integral.intersection(bounds))) }
     }
-    override func cancelOperation(_ sender: Any?) { finished?(.failure(CaptureError.cancelled)) }
+    override func cancelOperation(_ sender: Any?) {
+        guard !cancelled else { return }
+        cancelled = true; finished?(.failure(CaptureError.cancelled))
+    }
     override func rightMouseDown(with event: NSEvent) { cancelOperation(nil) }
     override func keyDown(with event: NSEvent) {
+        guard !cancelled else { return }
         if event.keyCode == 53 { cancelOperation(nil) }
-        else if event.keyCode == 126 { parentElement() }
+        else if event.keyCode == 48, geometry != nil {
+            ratioControlsHidden.toggle(); needsLayout = true; layoutSubtreeIfNeeded(); window?.invalidateCursorRects(for: self)
+        }
+        else if event.charactersIgnoringModifiers?.lowercased() == "z", event.modifierFlags.contains(.command) {
+            if event.modifierFlags.contains(.shift) { redoRatioSelection() }
+            else if !undoStates.isEmpty || start != nil { undoRatioSelection() }
+            else if elementSession?.undoTraversal() == true { refreshElementPreview() }
+        } else if precisionEditing, !selected.isEmpty, [123, 124, 125, 126].contains(event.keyCode) {
+            nudgeSelection(event)
+        } else if event.keyCode == 126 { parentElement() }
         else if event.keyCode == 125 { childElement() }
         else if event.charactersIgnoringModifiers?.lowercased() == "e", !event.modifierFlags.contains(.command), elementContext != nil { toggleElements() }
-        else if event.charactersIgnoringModifiers?.lowercased() == "z", event.modifierFlags.contains(.command) {
-            if elementSession?.undoTraversal() == true { refreshElementPreview() }
-        } else if [UInt16(36), 76].contains(event.keyCode), let frame = elementPreviewFrame {
-            finished?(.success(frame))
+        else if [UInt16(36), 76].contains(event.keyCode) {
+            if precisionEditing, !selected.isEmpty { commitSelection(selected) }
+            else if aspectRatio == nil, let frame = elementPreviewFrame { commitSelection(frame) }
         } else { super.keyDown(with: event) }
+    }
+    private var snapshot: RatioSnapshot { RatioSnapshot(rectangle: selected, ratio: aspectRatio, precision: precisionEditing) }
+    private func remember(_ previous: RatioSnapshot) {
+        if undoStates.count == 64 { undoStates.removeFirst() }
+        undoStates.append(previous); redoStates.removeAll()
+    }
+    private func restore(_ state: RatioSnapshot) {
+        selected = state.rectangle; aspectRatio = state.ratio; precisionEditing = state.precision
+        elementSession?.invalidate(); elementPreviewFrame = nil; elementClickFrame = nil; lastHover = nil; refreshElementControls()
+        refreshRatioControls(); needsDisplay = true; window?.makeFirstResponder(self)
+    }
+    private func undoRatioSelection() {
+        if start != nil, let previous = dragSnapshot { start = nil; resizeHandle = nil; dragSnapshot = nil; restore(previous); return }
+        guard let previous = undoStates.popLast() else { return }
+        redoStates.append(snapshot); restore(previous)
+    }
+    private func redoRatioSelection() {
+        guard start == nil, let next = redoStates.popLast() else { return }
+        undoStates.append(snapshot); restore(next)
+    }
+    @objc private func acceptRatioSelection() { if !selected.isEmpty { commitSelection(selected) } }
+    private func configureRatioControls() {
+        ratioSurface.material = .hudWindow; ratioSurface.blendingMode = .withinWindow; ratioSurface.state = .active
+        ratioSurface.wantsLayer = true; ratioSurface.layer?.cornerRadius = 8
+        addSubview(ratioSurface)
+        ratioAccept.title = "Use selection · Return"; ratioAccept.target = self; ratioAccept.action = #selector(acceptRatioSelection)
+        ratioAccept.identifier = .init("capture.ratioAccept"); ratioAccept.bezelStyle = .rounded; ratioAccept.controlSize = .small
+        ratioAccept.isEnabled = false
+        let stack = NSStackView(views: [ratioControls, ratioAccept]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 3
+        stack.translatesAutoresizingMaskIntoConstraints = false; ratioSurface.addSubview(stack)
+        NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo: ratioSurface.leadingAnchor, constant: 8),
+            stack.topAnchor.constraint(equalTo: ratioSurface.topAnchor, constant: 6),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: ratioSurface.trailingAnchor, constant: -8)])
+        ratioControls.onRatio = { [weak self] ratio in self?.setAspectRatio(ratio) ?? false }
+        ratioControls.onSize = { [weak self] w, h, axis in self?.setPixelSize(width: w, height: h, axis: axis) ?? false }
+        ratioControls.onCancel = { [weak self] in self?.cancelOperation(nil) }
+    }
+    @discardableResult
+    func setAspectRatio(_ ratio: CaptureAspectRatio?) -> Bool {
+        guard !cancelled, start == nil, let ratioGeometry else { return false }
+        do {
+            if let ratio, selected.isEmpty { _ = try ratioGeometry.fitting(bounds, ratio: ratio) }
+            let next: CGRect
+            if let ratio, !selected.isEmpty { next = try ratioGeometry.fitting(selected, ratio: ratio) } else { next = selected }
+            if ratio != aspectRatio || next != selected || !precisionEditing { remember(snapshot) }
+            aspectRatio = ratio; selected = next; precisionEditing = true
+            elementSession?.invalidate(); elementPreviewFrame = nil; elementClickFrame = nil; lastHover = nil
+            refreshElementControls()
+            window?.makeFirstResponder(self); refreshRatioControls(); needsDisplay = true; return true
+        } catch { ratioControls.showError(error.localizedDescription); return false }
+    }
+    @discardableResult
+    func setPixelSize(width: Int, height: Int, axis: CaptureRatioAxis) -> Bool {
+        guard !cancelled, start == nil, !selected.isEmpty, let geometry, let ratioGeometry else { return false }
+        do {
+            let next: CGRect
+            if let aspectRatio { next = try ratioGeometry.sized(selected, pixels: axis == .width ? width : height, axis: axis, ratio: aspectRatio) }
+            else {
+                let previous = try ratioGeometry.sourcePixelRect(selected)
+                let pixels = CGRect(x: max(0, min(previous.minX, CGFloat(geometry.pixelWidth) - CGFloat(width))),
+                                    y: max(0, min(previous.minY, CGFloat(geometry.pixelHeight) - CGFloat(height))), width: CGFloat(width), height: CGFloat(height))
+                next = try geometry.selectionForPixels(pixels).topLeftFrame
+            }
+            if next != selected { remember(snapshot); selected = next }
+            precisionEditing = true; window?.makeFirstResponder(self); refreshRatioControls(); needsDisplay = true; return true
+        } catch { ratioControls.showError(error.localizedDescription); return false }
+    }
+    private func refreshRatioControls() {
+        let pixels = ratioGeometry.flatMap { try? $0.sourcePixelRect(selected) }
+        ratioControls.display(ratio: aspectRatio, pixels: pixels?.size)
+        ratioAccept.isEnabled = pixels != nil && start == nil && !cancelled
+    }
+    private func nudgeSelection(_ event: NSEvent) {
+        guard start == nil, event.modifierFlags.intersection([.command, .control]).isEmpty,
+              let geometry, let ratioGeometry, let pixels = try? ratioGeometry.sourcePixelRect(selected) else { return }
+        let amount = event.modifierFlags.contains(.shift) ? 10 : 1
+        let dx = event.keyCode == 123 ? -amount : event.keyCode == 124 ? amount : 0
+        let dy = event.keyCode == 126 ? -amount : event.keyCode == 125 ? amount : 0
+        if event.modifierFlags.contains(.option) {
+            let axis: CaptureRatioAxis = dx == 0 ? .height : .width
+            let stepX = aspectRatio?.numerator ?? 1, stepY = aspectRatio?.denominator ?? 1
+            _ = setPixelSize(width: Int(pixels.width) + dx * stepX, height: Int(pixels.height) + dy * stepY, axis: axis)
+        } else {
+            let moved = CGRect(x: max(0, min(CGFloat(geometry.pixelWidth) - pixels.width, pixels.minX + CGFloat(dx))),
+                               y: max(0, min(CGFloat(geometry.pixelHeight) - pixels.height, pixels.minY + CGFloat(dy))), width: pixels.width, height: pixels.height)
+            if let frame = try? geometry.selectionForPixels(moved).topLeftFrame, frame != selected {
+                remember(snapshot); selected = frame; refreshRatioControls(); needsDisplay = true
+            }
+        }
     }
     override func draw(_ dirtyRect: NSRect) {
         if let frozenImage { drawFrozen(frozenImage) }
         NSColor.black.withAlphaComponent(0.40).setFill(); bounds.fill()
         let preview = selected.isEmpty ? (elementPreviewFrame ?? selected) : selected
-        let aligned = try? geometry?.alignedSelection(preview, minimumPointSize: 0)
+        let aligned: FrozenCaptureGeometry.Selection?
+        if precisionEditing, let pixels = ratioGeometry.flatMap({ try? $0.sourcePixelRect(preview) }) {
+            aligned = try? geometry?.selectionForPixels(pixels)
+        } else { aligned = try? geometry?.alignedSelection(preview, minimumPointSize: 0) }
         let outlineFrame = aligned?.topLeftFrame ?? preview
         if !outlineFrame.isEmpty, !outlineFrame.isNull {
             NSGraphicsContext.saveGraphicsState()
@@ -673,14 +859,14 @@ final class RegionSelectionView: NSView {
             NSGraphicsContext.restoreGraphicsState()
             NSColor.systemBlue.setStroke()
             let outline = NSBezierPath(rect: outlineFrame); outline.lineWidth = 1.5; outline.stroke()
-            for point in [CGPoint(x: outlineFrame.minX, y: outlineFrame.minY), CGPoint(x: outlineFrame.maxX, y: outlineFrame.minY),
-                          CGPoint(x: outlineFrame.minX, y: outlineFrame.maxY), CGPoint(x: outlineFrame.maxX, y: outlineFrame.maxY)] {
+            let handles: [CaptureRatioHandle] = precisionEditing ? CaptureRatioHandle.allCases : [.minXMinY, .maxXMinY, .minXMaxY, .maxXMaxY]
+            for point in handles.map({ $0.point(in: outlineFrame) }) {
                 let handle = NSBezierPath(rect: CGRect(x: point.x - 2.5, y: point.y - 2.5, width: 5, height: 5))
                 NSColor.white.setFill(); handle.fill(); NSColor.systemBlue.setStroke(); handle.lineWidth = 1; handle.stroke()
             }
         }
         let text: String
-        if let aligned { text = "\(Int(aligned.pixelFrame.width)) × \(Int(aligned.pixelFrame.height)) px" }
+        if let aligned { text = "\(Int(aligned.pixelFrame.width)) × \(Int(aligned.pixelFrame.height)) px" + (aspectRatio.map { " · \($0.label) exact · Return to use" } ?? "") }
         else if !selected.isEmpty { text = "\(Int(selected.width)) × \(Int(selected.height)) pt" }
         else { text = "拖动选择截图区域 · Esc 或右键取消" }
         drawLabel(text, at: CGPoint(x: outlineFrame.isEmpty ? bounds.midX : outlineFrame.minX,

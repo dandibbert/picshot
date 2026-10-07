@@ -1,0 +1,37 @@
+# Multi-window capture
+
+Choose **多窗口合成…** from the screenshot menu or the history capture dropdown. Click a window to select/deselect it. Tab/Shift-Tab changes the focused window; Space toggles it. Option-click cycles windows under the pointer, including a covered window; Space adds that focused window. Return or **截图** captures. Escape, right click, **取消**, application deactivation, the existing **取消当前截图** command, or selection timeout cancels.
+
+The selector draws in-place borders over the live desktop and one compact count/action strip. A 1.5%-alpha wash creates a native mouse hit region; fully clear pixels can otherwise pass clicks through to the underlying app. It does not capture a desktop background or allocate a dashboard of window previews. PicShot's own process is excluded from the live Quartz inventory. Only visible, normal-layer windows with valid geometry and an identifiable owning process incarnation are eligible. Windows from another Space or minimized windows are not listed. Oversized individual windows are omitted; an empty eligible inventory refuses capture.
+
+## Composition and consistency
+
+Quartz global coordinates are top-left logical points; negative X/Y origins are valid. The transparent canvas covers the union of the selected window bounds. Windows are acquired and composited back-to-front in the inventory's desktop order, regardless of click order or window IDs. Per-display AppKit/Quartz conversion positions borders without assuming the primary display starts at the origin.
+
+The output uses the largest backing density of displays intersecting the selected windows. The system window screenshot may have a lower backing density; metadata and decoded dimensions must fit the window's bounding density and aspect ratio before composition. Lower-density inputs use nearest-neighbor scaling with no claim of extra detail. Alpha is kept, shadows are omitted, and overlap uses source-over composition in an sRGB RGBA canvas. The existing cursor setting does not apply to this window-only path. The capture path accepts 8-bit PNG inputs; higher bit depths are rejected rather than silently reduced. PNG is lossless; non-sRGB source profiles are color managed into the canvas.
+
+Display geometry plus the existing display reconfiguration watcher are checked throughout selection/acquisition. Window IDs, owning PIDs and launch times, bounds, density limits, and selected relative z-order are revalidated before/after each frame and before return. Changed/closed windows and invalid/partial output abort the entire result. Harmless title-only changes do not invalidate identity. Window captures are sequential, not an atomic snapshot across animated windows. A move-and-return between metadata samples cannot be ruled out; no AX subscription or permission is requested. The live desktop/TCC, cross-density behavior, and reliability of fully occluded window capture still require on-device validation. Minimized/other-Space windows remain excluded.
+
+The command routes through AppMain's existing capture admission and normal editor handoff. Cancellation/errors never save a partial history image or start an editor. Cancel callbacks are scoped to a unique selector session. All selector windows, observers, timers, continuations and temporary files are released. AppMain keeps admission occupied until any owned capture process has stopped and been reaped.
+
+## Resource and time bounds
+
+- 8 selected windows; at most 1,024 inventory entries
+- 16 million pixels per input, 64 million total input pixels, 32 million output pixels, 16,384 pixels per side
+- One RGBA canvas plus one source frame: at most 128,000,000 + 64,000,000 = 192,000,000 owned raster bytes (about 183.1 MiB), with cancellation checks between 128-row drawing strips; no retained array of captured rasters. The canvas allocation transfers directly to the final CGImage, avoiding a full-canvas finish copy. This is owned raster accounting, not a process-RSS cap; PNG mapping/decoder scratch, CoreGraphics/framework and screenshot subprocess memory are separate
+- One private mode-0700 temporary directory and one PNG at a time, with an 80 MiB hard per-file limit and at least 96 MiB free space required before acquisition
+- 180-second selector timeout; 20-second monotonic acquisition/composition deadline
+
+A fixed POSIX `/bin/sh` prelude sets `ulimit -f` and execs `/usr/sbin/screencapture -x -o -t png -l "$1" "$2"`. The only variable inputs are positional arguments; window titles never enter shell code. There is no Python dependency. Cancellation/deadline sends TERM, then KILL after 150 ms if needed, and reaps the process before unlinking its directory. OS process reaping or ImageIO/native draw calls may finish after the nominal deadline; their results are checked and rejected, never handed off late. Exit/signal status and cleanup failures remain visible errors. File type, owner, byte count, PNG metadata, dimensions and actual decoded size are checked before composition.
+
+## Verification boundary
+
+`MultiWindowCaptureLayoutTests` exercises geometry, density, ordering, input/output bounds, identity changes and selection state. `MultiWindowCaptureTests` exercises RGBA/alpha/overlap/scaling, cancellation, deadlines, failures and one-frame ownership. `MultiWindowScreenshotCommandTests` uses owned PNG/copy/sleep/dd fixtures to verify decode, quoted paths, process reaping, cleanup, exit-status evidence and the actual macOS shell's 512-byte filesize-limit units. It reads the installed screenshot command’s help without requesting capture or permissions.
+
+`MultiWindowCaptureNativeFixture` drives real AppKit views/panels, native WindowServer mouse hit testing, NSEvent mouse/key handlers and actual Capture/Cancel button actions with injected inventory, display, permission and RGBA providers. It covers repeated capture, deselection, overlap cycling, Escape, cancellation and changed inventory. This is an owned UI and source-scoped fixture, not physical device, global input injection, TCC, ScreenCaptureKit or multi-monitor evidence.
+
+Run `bash scripts/test-multiwindow-source-scope.sh` on macOS for the isolated fixture. It copies production files unchanged and extracts the existing CaptureError/NSScreen support declarations from CaptureService; it does not stub capture or edit the app. It excludes AppMain/editor handoff and cannot replace the full app build.
+
+This patch was authored on Linux without a Swift compiler or WindowServer. Native compile/test results must be recorded separately by the macOS integration run. Do not turn test source or injected fixtures into a claim that physical capture passed.
+
+API references inspected: [Apple's window-only filter](https://developer.apple.com/documentation/screencapturekit/sccontentfilter/init(desktopindependentwindow:)), [single-frame screenshot API](https://developer.apple.com/documentation/screencapturekit/scscreenshotmanager/captureimage(contentfilter:configuration:completionhandler:)), [window shadow configuration](https://developer.apple.com/documentation/screencapturekit/scstreamconfiguration/ignoreshadowssinglewindow), and the installed macOS `screencapture`/`sh` manual should be checked by native verification. The system command path is chosen because an owned subprocess can be terminated and reaped; SCScreenshotManager on the deployment target has no cancellation handle.

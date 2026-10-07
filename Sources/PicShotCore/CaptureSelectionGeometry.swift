@@ -150,6 +150,16 @@ public struct CaptureSelectionGeometry: Sendable {
             y: min(rectangle.minY, CGFloat(pixelHeight - height)), width: CGFloat(width), height: CGFloat(height)))
     }
 
+    /// Replace one rectangle without changing Boolean operation order or mode.
+    /// Used by precision handles; coordinates are whole original source pixels.
+    public mutating func setRectanglePixelBounds(at index: Int, bounds: CGRect) throws {
+        _ = try editablePixelRectangle(at: index)
+        guard [bounds.minX, bounds.minY, bounds.width, bounds.height, bounds.maxX, bounds.maxY].allSatisfy({ $0.isFinite && $0.rounded() == $0 }),
+              bounds.minX >= 0, bounds.minY >= 0, bounds.maxX <= CGFloat(pixelWidth), bounds.maxY <= CGFloat(pixelHeight),
+              bounds.width >= minimumRectanglePixelWidth, bounds.height >= minimumRectanglePixelHeight else { throw CaptureSelectionError.invalidShape }
+        try replaceRectangle(at: index, pixelBounds: bounds)
+    }
+
     public mutating func removeOperation(at index: Int) throws {
         guard !isCancelled else { throw CaptureSelectionError.cancelled }
         guard operations.indices.contains(index) else { throw CaptureSelectionError.invalidShape }
@@ -229,8 +239,12 @@ public struct CaptureSelectionGeometry: Sendable {
         }
         guard !bounds.isNull, !bounds.isEmpty else { throw CaptureSelectionError.emptySelection }
         let sx = CGFloat(pixelWidth) / pointSize.width, sy = CGFloat(pixelHeight) / pointSize.height
-        let left = max(0, Int(floor(bounds.minX * sx))), top = max(0, Int(floor(bounds.minY * sy)))
-        let right = min(pixelWidth, Int(ceil(bounds.maxX * sx))), bottom = min(pixelHeight, Int(ceil(bounds.maxY * sy)))
+        // Exact source-pixel edits travel through point coordinates. Stabilize
+        // only numerical epsilon around integer edges before conservative bounds
+        // preflight, or a 32M-pixel rectangle can be falsely charged an extra column.
+        func stableEdge(_ edge: CGFloat) -> CGFloat { abs(edge - edge.rounded()) < 1e-7 ? edge.rounded() : edge }
+        let left = max(0, Int(floor(stableEdge(bounds.minX * sx)))), top = max(0, Int(floor(stableEdge(bounds.minY * sy))))
+        let right = min(pixelWidth, Int(ceil(stableEdge(bounds.maxX * sx)))), bottom = min(pixelHeight, Int(ceil(stableEdge(bounds.maxY * sy))))
         guard Self.allowsOutputSize(width: right - left, height: bottom - top) else {
             throw CaptureSelectionError.pixelLimit
         }

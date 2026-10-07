@@ -1139,12 +1139,18 @@ final class EditorSaveActionsButton: NSPopUpButton {
 
 @MainActor
 final class ImageEditorController: NSWindowController, NSWindowDelegate {
-    private struct Snapshot { var image: CGImage; var annotations: [ImageAnnotation]; var selectionFrame: CGRect?; var pinPresentation: PinEditorPresentation?; var numberSequence: NumberedCalloutSequence }
+    private struct Snapshot { var image: CGImage; var annotations: [ImageAnnotation]; var selectionFrame: CGRect?; var pinPresentation: PinEditorPresentation?; var numberSequence: NumberedCalloutSequence; var aspectRatio: CaptureAspectRatio? }
     private let canvas: ImageEditorCanvas
     private let scrollView = NSScrollView()
     private let workspace = EditorWorkspaceView(frame: .zero)
     private let toolbar = EditorFloatingSurface(frame: .zero)
     private let inspector = AnnotationInspector(frame: .zero)
+    private let captureRatioSurface = EditorFloatingSurface(frame: .zero)
+    private let captureRatioControls = CaptureRatioControls(prefix: "editor.capture")
+    private var ratioControlsVisible = false
+    private var ratioButton: NSButton?
+    var captureAspectRatio: CaptureAspectRatio? { presentation?.aspectRatio }
+    var captureRatioPaletteFrame: CGRect { captureRatioSurface.frame }
     private let onSave: (CGImage) -> Void
     private let onPin: (CGImage) -> Void
     private let onOCR: (CGImage) -> Void
@@ -1312,6 +1318,8 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
             workspace.onBoundaryBegin = { [weak self] in self?.beginBoundaryResize() }
             workspace.onBoundaryChange = { [weak self] frame in self?.previewBoundaryResize(frame) }
             workspace.onBoundaryEnd = { [weak self] commit in self?.finishBoundaryResize(commit: commit) }
+            workspace.onRatioError = { [weak self] error in self?.captureRatioControls.showError(error) }
+            workspace.onBoundaryKey = { [weak self] event in self?.handleBoundaryKey(event) ?? false }
             screenObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor in self?.cancelEditor() }
             }
@@ -1448,6 +1456,10 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         toolbar.addArrangedSubview(undoButton); toolbar.addArrangedSubview(redoButton)
         cropButton = iconButton("checkmark", title: "应用裁剪 · Return", id: "editor.applyCrop", action: #selector(applyCrop))
         toolbar.addArrangedSubview(cropButton)
+        if presentation != nil {
+            let button = iconButton("aspectratio", title: "截图区域比例与像素尺寸", id: "editor.captureRatio", action: #selector(toggleCaptureRatio))
+            ratioButton = button; toolbar.addArrangedSubview(button)
+        }
         divider()
         toolbar.addArrangedSubview(iconButton("text.viewfinder", title: "识别文字", id: "editor.ocr", action: #selector(recognizeResult)))
         if onTranslate != nil { toolbar.addArrangedSubview(iconButton("character.bubble", title: "翻译", id: "editor.translate", action: #selector(translateResult))) }
@@ -1472,6 +1484,10 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         let autoMosaic = NSMenuItem(title: "查找相同内容…", action: #selector(startAutomaticMosaic), keyEquivalent: "")
         autoMosaic.target = self; autoMosaic.identifier = .init("editor.context.automaticMosaic")
         canvas.menu?.addItem(autoMosaic)
+        if presentation != nil {
+            let item = NSMenuItem(title: "截图区域比例与像素尺寸…", action: #selector(toggleCaptureRatio), keyEquivalent: "")
+            item.target = self; canvas.menu?.addItem(item)
+        }
 
         toolbar.addArrangedSubview(iconButton("xmark", title: "取消 · Escape", id: "editor.cancel", action: #selector(cancelEditor)))
         toolbar.addArrangedSubview(iconButton("square.on.square", title: "复制图片 · ⌘C", id: "editor.copy", action: #selector(copyResult)))
@@ -1484,6 +1500,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
             item.target = self; item.tag = ImageEditorTool.allCases.firstIndex(of: tool) ?? 0; overflow.menu?.addItem(item)
         }
         overflow.menu?.addItem(.separator())
+        if presentation != nil { addMenu("截图区域比例与像素尺寸…", action: #selector(toggleCaptureRatio)) }
         addMenu("自动马赛克…", action: #selector(chooseAutomaticMosaicTool))
         addMenu("查找所选区域的相同内容…", action: #selector(startAutomaticMosaic))
         addMenu("模糊", action: #selector(selectBlur)); addMenu("创建标注副本 · ⌘D", action: #selector(duplicateAnnotation))
@@ -1505,6 +1522,14 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
             workspace.addSubview(scrollView)
         }
         workspace.addSubview(toolbar); workspace.addSubview(inspector)
+        captureRatioSurface.orientation = .vertical; captureRatioSurface.alignment = .leading
+        captureRatioSurface.edgeInsets = NSEdgeInsets(top: 7, left: 9, bottom: 7, right: 9)
+        captureRatioSurface.identifier = .init("editor.captureRatioPalette")
+        captureRatioSurface.addArrangedSubview(captureRatioControls); captureRatioSurface.isHidden = true
+        captureRatioControls.onRatio = { [weak self] ratio in self?.setCaptureAspectRatio(ratio) ?? false }
+        captureRatioControls.onSize = { [weak self] w, h, axis in self?.setCapturePixelSize(width: w, height: h, axis: axis) ?? false }
+        captureRatioControls.onCancel = { [weak self] in self?.cancelEditor() }
+        workspace.addSubview(captureRatioSurface)
         status.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         status.textColor = .white; status.alignment = .center; status.wantsLayer = true
         status.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.72).cgColor
@@ -1548,7 +1573,10 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
             workspace.pixelSize = CGSize(width: (selection.width * CGFloat(presentation.frozenImage.width) / presentation.displayFrame.width).rounded(),
                                          height: (selection.height * CGFloat(presentation.frozenImage.height) / presentation.displayFrame.height).rounded())
         } else { workspace.pixelSize = CGSize(width: canvas.image.width, height: canvas.image.height) }
-        inspector.isHidden = automaticMosaicReviewState != nil || canvas.automaticMosaicDrawHandler != nil
+        workspace.aspectRatio = presentation?.aspectRatio
+        captureRatioControls.display(ratio: presentation?.aspectRatio, pixels: workspace.pixelSize)
+        captureRatioSurface.isHidden = !ratioControlsVisible || presentation == nil || automaticMosaicBlocksOutput
+        inspector.isHidden = !captureRatioSurface.isHidden || automaticMosaicReviewState != nil || canvas.automaticMosaicDrawHandler != nil
             || canvas.tool == .crop || (canvas.tool == .select && canvas.selectedAnnotation == nil)
         let availableBounds = pinPresentation.flatMap { pin in NSScreen.screens.first { $0.frame.intersects(pin.viewportFrame) }?.frame } ?? workspace.bounds
         for button in toolButtons.values { button.isHidden = false }
@@ -1564,9 +1592,12 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         toolbar.layoutSubtreeIfNeeded(); inspector.layoutSubtreeIfNeeded()
         let activeFamily: ImageEditorTool = canvas.tool.isArcTool ? .ellipse : (canvas.tool == .polyline ? .line : canvas.tool)
         let active = toolButtons[activeFamily].map { toolbar.convert($0.bounds, from: $0).midX } ?? 18
+        let ratioShown = !captureRatioSurface.isHidden
+        let paletteSize = ratioShown ? CGSize(width: max(420, captureRatioSurface.fittingSize.width), height: max(92, captureRatioSurface.fittingSize.height))
+            : (inspector.isHidden ? .zero : CGSize(width: inspector.fittingSize.width, height: max(38, inspector.fittingSize.height)))
         let frames = EditorFloatingLayout.frames(selection: selection, available: availableBounds,
-            toolbarSize: CGSize(width: preferredWidth, height: 40),
-            paletteSize: inspector.isHidden ? .zero : CGSize(width: inspector.fittingSize.width, height: max(38, inspector.fittingSize.height)), activeToolOffset: active)
+            toolbarSize: CGSize(width: preferredWidth, height: 40), paletteSize: paletteSize,
+            activeToolOffset: ratioShown ? (ratioButton.map { toolbar.convert($0.bounds, from: $0).midX } ?? active) : active)
         if let pin = pinPresentation, let window {
             var union = selection.union(frames.toolbar)
             if !inspector.isHidden { union = union.union(frames.palette) }
@@ -1597,13 +1628,16 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         } else {
             toolbar.frame = frames.toolbar; inspector.frame = frames.palette
         }
-        if frames.palette.height == 0 { inspector.isHidden = true }
+        captureRatioSurface.frame = frames.palette
+        if frames.palette.height == 0 { inspector.isHidden = true; captureRatioSurface.isHidden = true }
+        ratioButton?.state = ratioControlsVisible ? .on : .off
         status.stringValue = "\(Int(workspace.pixelSize.width)) × \(Int(workspace.pixelSize.height)) px"
+        if let ratio = presentation?.aspectRatio { status.stringValue += " · \(ratio.label) exact" }
         if (canvas.pendingFreehand ?? canvas.selectedAnnotation)?.freehandWasSimplified == true {
             status.stringValue += " · 长笔迹已简化（最多 2048 点）"
         }
         let labelSize = CGSize(width: (status.stringValue as NSString).size(withAttributes: [.font: status.font!]).width + 14, height: 23)
-        let occupied = inspector.isHidden ? [toolbar.frame] : [toolbar.frame, inspector.frame]
+        let occupied = [toolbar.frame] + (inspector.isHidden ? [] : [inspector.frame]) + (captureRatioSurface.isHidden ? [] : [captureRatioSurface.frame])
         status.frame = EditorFloatingLayout.dimensionLabelFrame(selection: workspace.selectionFrame, available: workspace.bounds, size: labelSize, avoiding: occupied)
         if pinPresentation == nil { layoutAutomaticMosaicReview() }
     }
@@ -1611,7 +1645,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     func setVerificationAnnotations(_ annotations: [ImageAnnotation]) {
         recordChange(); canvas.setContent(image: canvas.image, annotations: annotations); canvas.displayIfNeeded()
     }
-    private var snapshot: Snapshot { Snapshot(image: canvas.image, annotations: canvas.annotations, selectionFrame: presentation?.selectionFrame, pinPresentation: pinPresentation, numberSequence: canvas.numberSequence) }
+    private var snapshot: Snapshot { Snapshot(image: canvas.image, annotations: canvas.annotations, selectionFrame: presentation?.selectionFrame, pinPresentation: pinPresentation, numberSequence: canvas.numberSequence, aspectRatio: presentation?.aspectRatio) }
     private func recordChange() { undoStates.append(snapshot); redoStates.removeAll(); trimHistory(preferUndo: true); updateStatus() }
     private func trimHistory(preferUndo: Bool) {
         let first = preferUndo ? redoStates : undoStates, second = preferUndo ? undoStates : redoStates
@@ -1623,7 +1657,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     private func restore(_ state: Snapshot) {
         if pinPresentation != nil { pinPresentation = state.pinPresentation }
         if let old = presentation, let frame = state.selectionFrame {
-            presentation = FrozenCapturePresentation(frozenImage: old.frozenImage, displayID: old.displayID, displayFrame: old.displayFrame, selectionFrame: frame, capturedAt: old.capturedAt)
+            presentation = FrozenCapturePresentation(frozenImage: old.frozenImage, displayID: old.displayID, displayFrame: old.displayFrame, selectionFrame: frame, capturedAt: old.capturedAt, aspectRatio: state.aspectRatio)
         }
         canvas.setContent(image: state.image, annotations: state.annotations, numberSequence: state.numberSequence); updateStatus(); layoutInterface()
     }
@@ -1665,6 +1699,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         layoutInterface()
     }
     func chooseTool(_ tool: ImageEditorTool) {
+        ratioControlsVisible = false
         cancelAutomaticMosaic()
         finishInlineText(commit: true); canvas.tool = tool; refreshSubtoolButton(for: tool); updateStatus(); window?.makeFirstResponder(canvas)
     }
@@ -1711,6 +1746,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
                                width: clipped.width * scaleX, height: clipped.height * scaleY)
             pinPresentation = PinEditorPresentation(viewportFrame: pin.viewportFrame, imageFrame: frame, opacity: pin.opacity, level: pin.level)
         }
+        presentation?.aspectRatio = nil
         canvas.setContent(image: cropped, annotations: []); fitImage()
     }
     @objc private func fitImage() { canvas.finishNumberComment(commit: true); finishInlineText(commit: true); fitToWindow = true; needsFit = true; layoutInterface() }
@@ -1757,6 +1793,86 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     }
     @objc private func cancelEditor() { finishInlineText(commit: false); window?.close() }
 
+    @objc private func toggleCaptureRatio() {
+        guard presentation != nil else { return }
+        finishInlineText(commit: true); canvas.finishNumberComment(commit: true)
+        ratioControlsVisible.toggle(); layoutInterface()
+        window?.makeFirstResponder(ratioControlsVisible ? workspace : canvas)
+    }
+    private var captureRatioGeometry: CaptureRatioGeometry? {
+        guard let presentation else { return nil }
+        return try? CaptureRatioGeometry(pointSize: presentation.displayFrame.size,
+            pixelWidth: presentation.frozenImage.width, pixelHeight: presentation.frozenImage.height)
+    }
+    @discardableResult
+    func setCaptureAspectRatio(_ ratio: CaptureAspectRatio?) -> Bool {
+        guard !isClosed, boundaryPreviewFrame == nil, let presentation, let geometry = captureRatioGeometry else { return false }
+        do {
+            let frame = try ratio.map { try geometry.fitting(presentation.selectionFrame, ratio: $0) } ?? presentation.selectionFrame
+            return try commitCaptureBoundary(frame, ratio: ratio)
+        } catch { captureRatioControls.showError(error.localizedDescription); return false }
+    }
+    @discardableResult
+    func setCapturePixelSize(width: Int, height: Int, axis: CaptureRatioAxis) -> Bool {
+        guard !isClosed, boundaryPreviewFrame == nil, let presentation, let geometry = captureRatioGeometry else { return false }
+        do {
+            let frame: CGRect
+            if let ratio = presentation.aspectRatio {
+                frame = try geometry.sized(presentation.selectionFrame, pixels: axis == .width ? width : height, axis: axis, ratio: ratio)
+            } else {
+                let source = presentation.frozenImage
+                guard width > 0, height > 0, width <= source.width, height <= source.height else { throw CaptureError.invalidRegion }
+                let original = try geometry.sourcePixelRect(presentation.selectionFrame)
+                let pixels = CGRect(x: min(original.minX, CGFloat(source.width - width)), y: min(original.minY, CGFloat(source.height - height)), width: CGFloat(width), height: CGFloat(height))
+                frame = geometry.pointRect(pixels)
+            }
+            return try commitCaptureBoundary(frame, ratio: presentation.aspectRatio)
+        } catch { captureRatioControls.showError(error.localizedDescription); return false }
+    }
+    @discardableResult
+    private func commitCaptureBoundary(_ frame: CGRect, ratio: CaptureAspectRatio?) throws -> Bool {
+        guard let previous = presentation else { return false }
+        finishInlineText(commit: true); canvas.finishNumberComment(commit: true); canvas.finishPolyline()
+        cancelAutomaticMosaic()
+        var target = previous; target.aspectRatio = ratio
+        let aligned = try EditorBoundaryRenderer.alignedFrame(frame, presentation: target)
+        if aligned == previous.selectionFrame {
+            if ratio != previous.aspectRatio { recordChange(); presentation?.aspectRatio = ratio }
+        } else {
+            canvas.releasePresentationCache()
+            let next = try EditorBoundaryRenderer.recrop(aligned, presentation: target, previousImage: canvas.image)
+            guard let nextPresentation = next.presentation else { return false }
+            let offset = EditorBoundaryRenderer.annotationOffset(from: previous.selectionFrame, to: nextPresentation.selectionFrame, presentation: previous)
+            let annotations = canvas.annotations.map { $0.translated(by: offset) }
+            recordChange(); presentation = nextPresentation; canvas.setContent(image: next.image, annotations: annotations)
+        }
+        window?.makeFirstResponder(workspace); updateStatus(); workspace.needsDisplay = true; return true
+    }
+    private func handleBoundaryKey(_ event: NSEvent) -> Bool {
+        if event.modifierFlags.contains(.command), event.keyCode == 6 {
+            if workspace.isResizingBoundary { workspace.cancelBoundaryResize() }
+            else if event.modifierFlags.contains(.shift) { redoEdit() } else { undoEdit() }
+            return true
+        }
+        guard ratioControlsVisible, !workspace.isResizingBoundary, [123, 124, 125, 126].contains(event.keyCode),
+              event.modifierFlags.intersection([.command, .control]).isEmpty,
+              let presentation, let geometry = captureRatioGeometry,
+              let pixels = try? geometry.sourcePixelRect(presentation.selectionFrame) else { return false }
+        let amount = event.modifierFlags.contains(.shift) ? 10 : 1
+        let dx = event.keyCode == 123 ? -amount : event.keyCode == 124 ? amount : 0
+        let dy = event.keyCode == 125 ? -amount : event.keyCode == 126 ? amount : 0
+        if event.modifierFlags.contains(.option) {
+            _ = setCapturePixelSize(width: Int(pixels.width) + dx * (presentation.aspectRatio?.numerator ?? 1),
+                height: Int(pixels.height) + dy * (presentation.aspectRatio?.denominator ?? 1), axis: dx == 0 ? .height : .width)
+        } else {
+            let moved = CGRect(x: max(0, min(CGFloat(presentation.frozenImage.width) - pixels.width, pixels.minX + CGFloat(dx))),
+                y: max(0, min(CGFloat(presentation.frozenImage.height) - pixels.height, pixels.minY + CGFloat(dy))), width: pixels.width, height: pixels.height)
+            do { _ = try commitCaptureBoundary(geometry.pointRect(moved), ratio: presentation.aspectRatio) }
+            catch { captureRatioControls.showError(error.localizedDescription) }
+        }
+        return true
+    }
+
     private func beginBoundaryResize() {
         cancelAutomaticMosaic()
         canvas.finishNumberComment(commit: true)
@@ -1779,7 +1895,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         boundaryPreviewFrame = nil; workspace.boundaryPreviewImage = nil
         canvas.isHidden = false
         guard commit, let requested, let previous = presentation, requested != previous.selectionFrame else {
-            layoutInterface(); window?.makeFirstResponder(canvas); return
+            layoutInterface(); window?.makeFirstResponder(ratioControlsVisible ? workspace : canvas); return
         }
         // Drop the redraw cache before allocating the new selected raster. Drag
         // motion made no raster copies and did not touch the annotation/history model.
@@ -1793,7 +1909,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
             presentation = nextPresentation
             canvas.setContent(image: next.image, annotations: translated)
         } catch { showError(error) }
-        layoutInterface(); workspace.needsDisplay = true; window?.makeFirstResponder(canvas)
+        layoutInterface(); workspace.needsDisplay = true; window?.makeFirstResponder(ratioControlsVisible ? workspace : canvas)
     }
 
     func beginInlineText(at point: CGPoint, editing id: UUID?) {
@@ -1854,6 +1970,8 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         canvas.cancelPolyline(); canvas.cancelPendingFreehand(); canvas.releasePresentationCache(); inspector.deactivateColorWells()
         workspace.onLayout = nil; workspace.onDismiss = nil; workspace.onOutsideClick = nil
         workspace.onBoundaryBegin = nil; workspace.onBoundaryChange = nil; workspace.onBoundaryEnd = nil
+        workspace.onBoundaryKey = nil; workspace.onRatioError = nil
+        captureRatioControls.onRatio = nil; captureRatioControls.onSize = nil; captureRatioControls.onCancel = nil
         workspace.boundaryPreviewImage = nil; workspace.selectionContent = nil
         if let sheet = window?.attachedSheet { window?.endSheet(sheet, returnCode: .cancel); sheet.orderOut(nil) }
         window?.contentView = nil; window?.delegate = nil

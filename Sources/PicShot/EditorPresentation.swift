@@ -1,4 +1,5 @@
 import AppKit
+import PicShotCore
 
 /// Original AppKit layout, inspired by familiar floating capture tools. All values
 /// are logical points; screenshot pixels are never reused as UI assets.
@@ -108,6 +109,18 @@ enum EditorBoundaryHandle: Int, CaseIterable {
         allCases.min { hypot($0.point(in: frame).x - point.x, $0.point(in: frame).y - point.y) < hypot($1.point(in: frame).x - point.x, $1.point(in: frame).y - point.y) }
             .flatMap { hypot($0.point(in: frame).x - point.x, $0.point(in: frame).y - point.y) <= tolerance ? $0 : nil }
     }
+    var ratioHandle: CaptureRatioHandle {
+        switch self {
+        case .topLeft: return .minXMaxY
+        case .top: return .maxY
+        case .topRight: return .maxXMaxY
+        case .right: return .maxX
+        case .bottomRight: return .maxXMinY
+        case .bottom: return .minY
+        case .bottomLeft: return .minXMinY
+        case .left: return .minX
+        }
+    }
     func resized(_ original: CGRect, to point: CGPoint, in bounds: CGRect) -> CGRect {
         var left = original.minX, right = original.maxX, bottom = original.minY, top = original.maxY
         if [.topLeft, .bottomLeft, .left].contains(self) { left = max(bounds.minX, min(point.x, right - 2)) }
@@ -121,18 +134,32 @@ enum EditorBoundaryHandle: Int, CaseIterable {
 /// One crop-sized allocation at commit; dragging only reuses immutable images.
 /// The old base patch preserves any edits already rasterized by the crop tool.
 enum EditorBoundaryRenderer {
-    static func alignedFrame(_ requested: CGRect, presentation: FrozenCapturePresentation) throws -> CGRect {
+    private static func alignedSelection(_ requested: CGRect, presentation: FrozenCapturePresentation) throws -> FrozenCaptureGeometry.Selection {
         let geometry = try FrozenCaptureGeometry(pointSize: presentation.displayFrame.size,
             pixelWidth: presentation.frozenImage.width, pixelHeight: presentation.frozenImage.height)
         let topLeft = CGRect(x: requested.minX, y: presentation.displayFrame.height - requested.maxY,
                              width: requested.width, height: requested.height)
-        return try geometry.alignedSelection(topLeft).selectionFrame
+        let sx = CGFloat(geometry.pixelWidth) / geometry.pointSize.width, sy = CGFloat(geometry.pixelHeight) / geometry.pointSize.height
+        let edges = [topLeft.minX * sx, topLeft.minY * sy, topLeft.maxX * sx, topLeft.maxY * sy]
+        // A point representation of an integral pixel edge can be 3.9999999999999996.
+        // Preserve existing integer coordinates; arbitrary free drags still use
+        // the original floor/ceil coverage path.
+        if edges.allSatisfy({ $0.isFinite && abs($0 - $0.rounded()) < 1e-7 }) {
+            let pixels = CGRect(x: edges[0].rounded(), y: edges[1].rounded(),
+                width: edges[2].rounded() - edges[0].rounded(), height: edges[3].rounded() - edges[1].rounded())
+            if let ratio = presentation.aspectRatio,
+               pixels.width * CGFloat(ratio.denominator) != pixels.height * CGFloat(ratio.numerator) { throw CaptureError.invalidRegion }
+            return try geometry.selectionForPixels(pixels)
+        }
+        guard presentation.aspectRatio == nil else { throw CaptureError.invalidRegion }
+        return try geometry.alignedSelection(topLeft)
+    }
+    static func alignedFrame(_ requested: CGRect, presentation: FrozenCapturePresentation) throws -> CGRect {
+        try alignedSelection(requested, presentation: presentation).selectionFrame
     }
     static func recrop(_ requested: CGRect, presentation: FrozenCapturePresentation, previousImage: CGImage) throws -> CapturedImage {
         let source = presentation.frozenImage
-        let geometry = try FrozenCaptureGeometry(pointSize: presentation.displayFrame.size, pixelWidth: source.width, pixelHeight: source.height)
-        let topLeft = CGRect(x: requested.minX, y: presentation.displayFrame.height - requested.maxY, width: requested.width, height: requested.height)
-        let aligned = try geometry.alignedSelection(topLeft)
+        let aligned = try alignedSelection(requested, presentation: presentation)
         let width = Int(aligned.pixelFrame.width), height = Int(aligned.pixelFrame.height)
         guard let crop = source.cropping(to: aligned.pixelFrame),
               let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
@@ -146,7 +173,7 @@ enum EditorBoundaryRenderer {
         context.draw(previousImage, in: CGRect(x: offset.width, y: offset.height, width: CGFloat(previousImage.width), height: CGFloat(previousImage.height)))
         guard let image = context.makeImage() else { throw PicShotError.message("无法完成截图区域调整") }
         return CapturedImage(image: image, presentation: FrozenCapturePresentation(frozenImage: source,
-            displayID: presentation.displayID, displayFrame: presentation.displayFrame, selectionFrame: aligned.selectionFrame, capturedAt: presentation.capturedAt))
+            displayID: presentation.displayID, displayFrame: presentation.displayFrame, selectionFrame: aligned.selectionFrame, capturedAt: presentation.capturedAt, aspectRatio: presentation.aspectRatio))
     }
     static func annotationOffset(from previous: CGRect, to next: CGRect, presentation: FrozenCapturePresentation) -> CGSize {
         CGSize(width: ((previous.minX - next.minX) * CGFloat(presentation.frozenImage.width) / presentation.displayFrame.width).rounded(),
@@ -160,6 +187,9 @@ final class EditorWorkspaceView: NSView {
     var transparentBackground = false { didSet { needsDisplay = true } }
     var selectionFrame: CGRect = .zero { didSet { needsDisplay = true } }
     var pixelSize: CGSize = .zero
+    var aspectRatio: CaptureAspectRatio?
+    var onRatioError: ((String) -> Void)?
+    var onBoundaryKey: ((NSEvent) -> Bool)?
     var onLayout: (() -> Void)?
     var onDismiss: (() -> Void)?
     var onOutsideClick: (() -> Void)?
@@ -200,7 +230,12 @@ final class EditorWorkspaceView: NSView {
     override func mouseDragged(with event: NSEvent) {
         guard let handle = boundaryHandle else { return }
         let point = convert(event.locationInWindow, from: nil)
-        onBoundaryChange?(handle.resized(boundaryOriginalFrame, to: point, in: bounds))
+        if let aspectRatio, let frozenImage {
+            do {
+                let geometry = try CaptureRatioGeometry(pointSize: bounds.size, pixelWidth: frozenImage.width, pixelHeight: frozenImage.height)
+                onBoundaryChange?(try geometry.resize(boundaryOriginalFrame, handle: handle.ratioHandle, to: point, ratio: aspectRatio))
+            } catch { onRatioError?(error.localizedDescription) }
+        } else { onBoundaryChange?(handle.resized(boundaryOriginalFrame, to: point, in: bounds)) }
     }
     override func mouseUp(with event: NSEvent) {
         guard boundaryHandle != nil else { return }
@@ -216,7 +251,7 @@ final class EditorWorkspaceView: NSView {
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 53 {
             if isResizingBoundary { cancelBoundaryResize() } else { onDismiss?() }
-        } else { super.keyDown(with: event) }
+        } else if onBoundaryKey?(event) != true { super.keyDown(with: event) }
     }
     override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
