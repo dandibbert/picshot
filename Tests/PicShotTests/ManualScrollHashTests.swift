@@ -62,7 +62,8 @@ final class ManualScrollHashTests: XCTestCase {
 
     func testEveryPixelAndEveryRGBAChannelAffectsObservation() throws {
         let width = 9, height = 11, space = try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB))
-        let initialBytes = Array(repeating: [UInt8(47), 83, 129, 255], count: width * height).flatMap { $0 }
+        let initialPixel: [UInt8] = [47, 83, 129, 255]
+        let initialBytes = Array(repeating: initialPixel, count: width * height).flatMap { $0 }
         let initial = try rgbaBytesImage(width: width, height: height, bytes: initialBytes, space: space)
         let workspace = ManualScrollReusableObservation(), original = try workspace.observation(initial)
         for pixel in 0..<width * height {
@@ -246,7 +247,11 @@ final class ManualScrollHashTests: XCTestCase {
 
     private func grayImage(width: Int, height: Int) throws -> CGImage {
         let stride = width + 7
-        let bytes = (0..<stride * height).map { UInt8(($0 * 37 + $0 / stride * 19) % 256) }
+        var bytes = [UInt8](repeating: 0, count: stride * height)
+        for index in bytes.indices {
+            let row = index / stride
+            bytes[index] = UInt8((index * 37 + row * 19) % 256)
+        }
         return try makeImage(width: width, height: height, bits: 8, pixelBits: 8, rowBytes: stride,
             space: CGColorSpaceCreateDeviceGray(), bitmap: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue), bytes: bytes)
     }
