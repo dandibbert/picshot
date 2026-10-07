@@ -25,8 +25,8 @@ final class ScrollMemoryAttributionTests: XCTestCase {
             let first = try ScrollMemoryAttributionFixture.makeImage(width: width, height: height, offset: 100, axis: axis)
             let second = try ScrollMemoryAttributionFixture.makeImage(width: width, height: height, offset: 100 + step, axis: axis)
             let same = try ScrollMemoryAttributionFixture.makeImage(width: width, height: height, offset: 100, axis: axis)
-            XCTAssertEqual(try ScrollMemoryAttributionFixture.rgbaHash(first), ScrollMemoryAttributionFixture.rgbaHash(same))
-            XCTAssertNotEqual(try ScrollMemoryAttributionFixture.rgbaHash(first), ScrollMemoryAttributionFixture.rgbaHash(second))
+            XCTAssertEqual(try ScrollMemoryAttributionFixture.rgbaHash(first), try ScrollMemoryAttributionFixture.rgbaHash(same))
+            XCTAssertNotEqual(try ScrollMemoryAttributionFixture.rgbaHash(first), try ScrollMemoryAttributionFixture.rgbaHash(second))
             let match = try ScrollStitcher.matchBidirectional(previous: ScrollImageIO.luminance(first), next: ScrollImageIO.luminance(second), axis: axis)
             XCTAssertEqual(match.advance, step)
         }
