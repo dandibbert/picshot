@@ -253,6 +253,130 @@ def validate_callouts(r):
     exact_integer(r['closedControllerCount'], 12, 'callout closed controller count')
     exact_integer(r['releasedControllerCount'], 12, 'callout released controller count')
     hash_string(r['exportedSHA256'])
+    validate_comment_lifecycle(r['commentLifecycle'])
+
+
+def lifecycle_milliseconds(value):
+    need(type(value) in (float, int) and value >= 0, 'invalid lifecycle milliseconds')
+    try:
+        finite = math.isfinite(value)
+    except OverflowError:
+        finite = False
+    need(finite, 'nonfinite lifecycle milliseconds')
+    return value
+
+
+def validate_comment_lifecycle(e):
+    """Check the bounded observations, never infer native proof from JSON alone.
+
+    Owned graph acceptance remains the scheduled 10 ms prompt check. The earlier
+    synchronous observation is reported without asserting immediate retirement.
+    The separate 2 s bound applies only to native input/context retirement: the
+    307e native minimal control retained inputs at 10/100 ms and not at 1000 ms.
+    This is a new framework-only bound, not a widened general leak timeout.
+    """
+    required = {'contract', 'status', 'expectedCycles', 'pollIntervalMilliseconds',
+                'promptOwnershipCheckMilliseconds', 'deferredInputDeadlineMilliseconds',
+                'maximumSamples', 'zeroLeakClaim', 'frameworkRetirementOnly', 'cycles',
+                'samples', 'peakDeferredInputs', 'peakDeferredContexts',
+                'finalDeferredInputs', 'finalDeferredContexts', 'boundRationale'}
+    need(type(e) is dict and set(e) == required, 'comment lifecycle fields')
+    need(e['contract'] == 'owned-graph-prompt_native-input-deadline-v2', 'comment lifecycle contract')
+    need(e['status'] == 'passed', 'comment lifecycle status')
+    for key, expected in [('expectedCycles', 6), ('pollIntervalMilliseconds', 10),
+                          ('promptOwnershipCheckMilliseconds', 10),
+                          ('deferredInputDeadlineMilliseconds', 2000), ('maximumSamples', 256)]:
+        exact_integer(e[key], expected, 'comment lifecycle bound changed: ' + key)
+    flags(e, {'zeroLeakClaim'}, False)
+    flags(e, {'frameworkRetirementOnly'})
+    need(type(e['boundRationale']) is str and e['boundRationale'].strip(), 'comment lifecycle bound rationale')
+
+    rows = e['cycles']
+    need(type(rows) is list and len(rows) == 6, 'comment lifecycle cycle count')
+    row_fields = {'cycle', 'closedAtMilliseconds', 'synchronousCheckedAtMilliseconds',
+                  'synchronousRetainedOwners', 'synchronousRetainedTextSystemObjects',
+                  'promptCheckedAtMilliseconds', 'promptRetainedOwners',
+                  'promptRetainedTextSystemObjects', 'requiredGraphTracked', 'contextWasTracked',
+                  'textKit1WasTracked', 'textKit2WasTracked', 'releasedAfterMilliseconds'}
+    for cycle, row in enumerate(rows, 1):
+        need(type(row) is dict and row_fields <= set(row)
+             and set(row) <= row_fields | {'lastRetainedAfterMilliseconds'}, 'comment lifecycle cycle fields')
+        exact_integer(row['cycle'], cycle, 'comment lifecycle cycle order')
+        closed = lifecycle_milliseconds(row['closedAtMilliseconds'])
+        synchronous = lifecycle_milliseconds(row['synchronousCheckedAtMilliseconds'])
+        prompt = lifecycle_milliseconds(row['promptCheckedAtMilliseconds'])
+        need(closed <= synchronous <= prompt, 'comment lifecycle observation order')
+        need(prompt - synchronous >= 10, 'comment lifecycle prompt check preceded scheduled 10 ms')
+        integer(row['synchronousRetainedOwners'], 0, 5)
+        integer(row['synchronousRetainedTextSystemObjects'], 0, 4)
+        exact_integer(row['promptRetainedOwners'], 0, 'comment lifecycle retained prompt owners')
+        exact_integer(row['promptRetainedTextSystemObjects'], 0, 'comment lifecycle retained prompt text system')
+        flags(row, {'requiredGraphTracked'})
+        for key in ('contextWasTracked', 'textKit1WasTracked', 'textKit2WasTracked'):
+            need(type(row[key]) is bool, 'comment lifecycle tracking flag: ' + key)
+        need(row['textKit1WasTracked'] != row['textKit2WasTracked'], 'comment lifecycle missing/ambiguous TextKit graph')
+        released = lifecycle_milliseconds(row['releasedAfterMilliseconds'])
+        need(released <= 2000, 'comment lifecycle release exceeded native input deadline')
+        if 'lastRetainedAfterMilliseconds' in row:
+            lifecycle_milliseconds(row['lastRetainedAfterMilliseconds'])
+
+    samples = e['samples']
+    need(type(samples) is list and 1 <= len(samples) <= 256, 'comment lifecycle sample count')
+    sample_fields = {'elapsedMilliseconds', 'createdCycles', 'pendingInputCycles',
+                     'pendingContextCycles', 'retainedOwnedGraphObjects'}
+    previous_created, previous_time = 0, 0
+    peak_inputs = peak_contexts = 0
+    first_release, last_pending = {}, {}
+    for sample in samples:
+        need(type(sample) is dict and set(sample) == sample_fields, 'comment lifecycle sample fields')
+        elapsed = lifecycle_milliseconds(sample['elapsedMilliseconds'])
+        need(elapsed >= previous_time, 'comment lifecycle sample time order')
+        created = integer(sample['createdCycles'], 1, 6)
+        need(previous_created <= created <= previous_created + 1, 'comment lifecycle sample creation order')
+        if created != previous_created:
+            row = rows[created - 1]
+            need(row['closedAtMilliseconds'] >= previous_time, 'comment lifecycle close preceded previous sample')
+            need(elapsed == row['promptCheckedAtMilliseconds'], 'comment lifecycle first sample is not prompt observation')
+        exact_integer(sample['retainedOwnedGraphObjects'], 0, 'comment lifecycle retained owned graph')
+        for key in ('pendingInputCycles', 'pendingContextCycles'):
+            pending = sample[key]
+            need(type(pending) is list, 'comment lifecycle pending list')
+            for cycle in pending:
+                integer(cycle, 1, created)
+                if key == 'pendingContextCycles':
+                    need(rows[cycle - 1]['contextWasTracked'], 'comment lifecycle pending untracked context')
+            need(pending == sorted(set(pending)), 'comment lifecycle pending IDs not unique/sorted')
+        peak_inputs = max(peak_inputs, len(sample['pendingInputCycles']))
+        peak_contexts = max(peak_contexts, len(sample['pendingContextCycles']))
+        pending = set(sample['pendingInputCycles']) | set(sample['pendingContextCycles'])
+        for cycle in range(1, created + 1):
+            after_close = elapsed - rows[cycle - 1]['closedAtMilliseconds']
+            need(after_close >= 0, 'comment lifecycle sample preceded close')
+            if cycle in pending:
+                need(cycle not in first_release, 'comment lifecycle input/context reappeared after release')
+                need(after_close <= 2000, 'comment lifecycle pending beyond native input deadline')
+                last_pending[cycle] = after_close
+            elif cycle not in first_release:
+                first_release[cycle] = after_close
+        previous_created, previous_time = created, elapsed
+
+    need(previous_created == 6, 'comment lifecycle missing created cycle evidence')
+    for key, count in [('peakDeferredInputs', peak_inputs), ('peakDeferredContexts', peak_contexts),
+                       ('finalDeferredInputs', len(samples[-1]['pendingInputCycles'])),
+                       ('finalDeferredContexts', len(samples[-1]['pendingContextCycles']))]:
+        exact_integer(e[key], count, 'comment lifecycle inconsistent sample count: ' + key)
+    need(e['finalDeferredInputs'] == e['finalDeferredContexts'] == 0, 'comment lifecycle final deferred objects')
+    for cycle, row in enumerate(rows, 1):
+        need(cycle in first_release, 'comment lifecycle missing release observation')
+        need(first_release[cycle] <= 2000, 'comment lifecycle observed release exceeded native input deadline')
+        need(math.isclose(row['releasedAfterMilliseconds'], first_release[cycle], rel_tol=0, abs_tol=1e-6),
+             'comment lifecycle release duration differs from first release sample')
+        if cycle in last_pending:
+            need('lastRetainedAfterMilliseconds' in row, 'comment lifecycle missing last retained observation')
+            need(math.isclose(row['lastRetainedAfterMilliseconds'], last_pending[cycle], rel_tol=0, abs_tol=1e-6),
+                 'comment lifecycle last retained duration differs from sample')
+        else:
+            need('lastRetainedAfterMilliseconds' not in row, 'comment lifecycle invented last retained observation')
 
 
 def reading(r):

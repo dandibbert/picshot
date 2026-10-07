@@ -97,6 +97,49 @@ def saved_result(filename, *, freehand):
     return r
 
 
+def comment_lifecycle():
+    """Synthetic staggered retirement, including overlapping native objects.
+
+    This fixture tests the JSON contract only. It supplies no macOS lifecycle
+    evidence and cannot establish that a prompt/native deadline actually passes.
+    """
+    rows = []
+    released = [50.25, 50.25, 70.25, 10.25, 50.25, 30.25]
+    retained = [40.25, 40.25, 40.25, None, 40.25, 20.25]
+    for cycle in range(1, 7):
+        closed = (cycle - 1) * 30
+        row = dict(cycle=cycle, closedAtMilliseconds=closed,
+                   synchronousCheckedAtMilliseconds=closed + 0.25,
+                   synchronousRetainedOwners=5, synchronousRetainedTextSystemObjects=4,
+                   promptCheckedAtMilliseconds=closed + 10.25,
+                   promptRetainedOwners=0, promptRetainedTextSystemObjects=0,
+                   requiredGraphTracked=True, contextWasTracked=cycle not in (2, 6),
+                   textKit1WasTracked=cycle % 2 == 1, textKit2WasTracked=cycle % 2 == 0,
+                   releasedAfterMilliseconds=released[cycle - 1])
+        if retained[cycle - 1] is not None:
+            row['lastRetainedAfterMilliseconds'] = retained[cycle - 1]
+        rows.append(row)
+    observations = [
+        (10.25, 1, [1], [1]), (20.25, 1, [1], [1]),
+        (40.25, 2, [1, 2], [1]), (50.25, 2, [2], []),
+        (70.25, 3, [2, 3], [3]), (80.25, 3, [3], [3]),
+        (100.25, 4, [3], [3]), (130.25, 5, [5], [5]),
+        (160.25, 6, [5, 6], [5]), (170.25, 6, [6], []),
+        (180.25, 6, [], []),
+    ]
+    samples = [dict(elapsedMilliseconds=elapsed, createdCycles=created,
+                    pendingInputCycles=inputs, pendingContextCycles=contexts,
+                    retainedOwnedGraphObjects=0) for elapsed, created, inputs, contexts in observations]
+    return dict(contract='owned-graph-prompt_native-input-deadline-v2', status='passed', expectedCycles=6,
+                pollIntervalMilliseconds=10, promptOwnershipCheckMilliseconds=10,
+                deferredInputDeadlineMilliseconds=2000, maximumSamples=256,
+                zeroLeakClaim=False, frameworkRetirementOnly=True, cycles=rows, samples=samples,
+                peakDeferredInputs=2, peakDeferredContexts=1, finalDeferredInputs=0, finalDeferredContexts=0,
+                boundRationale='New framework-only 2 s retirement bound: native 307e minimal control retained inputs '
+                               'at 10/100 ms and released them by 1000 ms; scheduled prompt ownership stays at 10 ms. '
+                               'This synthetic schema fixture is not native evidence.')
+
+
 def modules():
     common = dict(status='passed', syntheticDesktop=True, maximumConcurrentOwnedEditors=1, maximumFixtureRasterPixels=4_000_000,
                   screenCaptureAttempted=False, networkAttempted=False, preferencesWritten=False,
@@ -130,8 +173,178 @@ def modules():
                 globalInputAttempted=False, screenCaptureAttempted=False, networkAttempted=False,
                 generalPasteboardTouched=False, standardDefaultsWritten=False,
                 checks={key: True for key in CHECK.CALLOUT_CHECKS}, files=sorted(CHECK.FILES['callouts']), exportedSHA256='e'*64,
-                closedControllerCount=12, releasedControllerCount=12, limitations=['Schema fixture only; not native evidence'])
+                closedControllerCount=12, releasedControllerCount=12, commentLifecycle=comment_lifecycle(),
+                limitations=['Schema fixture only; not native evidence'])
     return free, text, call
+
+
+class CommentLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        self.lifecycle = comment_lifecycle()
+
+    def reject(self, mutate, message=None):
+        candidate = copy.deepcopy(self.lifecycle)
+        mutate(candidate)
+        # Validate the lifecycle directly: child JSON/hash disagreement must not
+        # hide an acceptance hole in the lifecycle validator under test.
+        with self.assertRaisesRegex(ValueError, message or '.'):
+            CHECK.validate_comment_lifecycle(candidate)
+
+    def test_overlapping_framework_retirement_and_nonzero_synchronous_observations_pass(self):
+        CHECK.validate_comment_lifecycle(self.lifecycle)
+        self.assertEqual(self.lifecycle['cycles'][0]['releasedAfterMilliseconds'], 50.25)
+        self.assertGreater(self.lifecycle['cycles'][0]['synchronousRetainedOwners'], 0)
+        self.assertNotIn('lastRetainedAfterMilliseconds', self.lifecycle['cycles'][3])
+
+    def test_zero_synchronous_observations_and_context_only_retirement_pass(self):
+        for row in self.lifecycle['cycles']:
+            row.update(synchronousRetainedOwners=0, synchronousRetainedTextSystemObjects=0)
+        self.lifecycle['samples'][0]['pendingInputCycles'] = []
+        CHECK.validate_comment_lifecycle(self.lifecycle)
+
+    def test_callout_contract_requires_lifecycle_and_preserves_original_checks(self):
+        callouts = modules()[2]
+        CHECK.validate_callouts(callouts)
+        del callouts['commentLifecycle']
+        with self.assertRaises(KeyError): CHECK.validate_callouts(callouts)
+        for field in ('closedControllerCount', 'releasedControllerCount'):
+            callouts = modules()[2]
+            callouts[field] = 6
+            with self.assertRaisesRegex(ValueError, 'controller count'): CHECK.validate_callouts(callouts)
+        for key in CHECK.CALLOUT_CHECKS:
+            with self.subTest(check=key):
+                callouts = modules()[2]
+                callouts['checks'].pop(key)
+                with self.assertRaisesRegex(ValueError, 'callout checks'): CHECK.validate_callouts(callouts)
+
+    def test_missing_unknown_or_partial_lifecycle_fields_rejected(self):
+        for key in self.lifecycle:
+            with self.subTest(missing=key): self.reject(lambda e: e.pop(key), 'lifecycle fields')
+        for key in self.lifecycle['cycles'][0]:
+            if key != 'lastRetainedAfterMilliseconds':
+                with self.subTest(missing_cycle=key): self.reject(lambda e: e['cycles'][0].pop(key), 'cycle fields')
+        for key in self.lifecycle['samples'][0]:
+            with self.subTest(missing_sample=key): self.reject(lambda e: e['samples'][0].pop(key), 'sample fields')
+        for mutate in [lambda e: e.update(ownedGraphDelayMilliseconds=0),
+                       lambda e: e['cycles'][0].update(unverifiedGraph=True),
+                       lambda e: e['samples'][0].update(retainedOwners=0),
+                       lambda e: e['cycles'].pop(), lambda e: e.update(cycles=[]),
+                       lambda e: e.update(samples=[]), lambda e: e.update(samples=[e['samples'][-1]])]:
+            with self.subTest(mutation=mutate): self.reject(mutate)
+
+    def test_fixed_contract_bounds_status_and_claims(self):
+        for key, values in [
+                ('contract', ['owned-graph-immediate_native-input-deadline-v2', 'v1']),
+                ('status', ['not-run', 'failed']), ('expectedCycles', [5, 7, True, 6.0]),
+                ('pollIntervalMilliseconds', [0, 11, 100]),
+                ('promptOwnershipCheckMilliseconds', [0, 9, 11, 2000]),
+                ('deferredInputDeadlineMilliseconds', [1000, 2001, 10_000]),
+                ('maximumSamples', [255, 257, True]), ('zeroLeakClaim', [True, 0]),
+                ('frameworkRetirementOnly', [False, 1]), ('boundRationale', ['', '  \n', None, 1])]:
+            for value in values:
+                with self.subTest(field=key, value=value): self.reject(lambda e: e.update({key: value}))
+
+    def test_prompt_and_owned_graph_retention_rejected(self):
+        for key in ('promptRetainedOwners', 'promptRetainedTextSystemObjects'):
+            for value in (1, -1, False, 0.0):
+                with self.subTest(field=key, value=value): self.reject(lambda e: e['cycles'][0].update({key: value}))
+        self.reject(lambda e: e['cycles'][0].update(promptCheckedAtMilliseconds=0.25), 'scheduled 10 ms')
+        self.reject(lambda e: e['cycles'][0].update(synchronousCheckedAtMilliseconds=1), 'scheduled 10 ms')
+        self.reject(lambda e: e['cycles'][0].update(synchronousCheckedAtMilliseconds=11), 'observation order')
+        self.reject(lambda e: e['cycles'][0].update(closedAtMilliseconds=1), 'observation order')
+        self.reject(lambda e: e['cycles'][0].update(promptCheckedAtMilliseconds=11), 'first sample')
+        for value in (1, -1, False, 0.0):
+            with self.subTest(sample_retention=value):
+                self.reject(lambda e: e['samples'][4].update(retainedOwnedGraphObjects=value), 'integer|retained owned graph')
+        for key, bad in [('synchronousRetainedOwners', 6), ('synchronousRetainedTextSystemObjects', 5)]:
+            for value in (-1, bad, True, 0.5):
+                with self.subTest(synchronous=key, value=value): self.reject(lambda e: e['cycles'][0].update({key: value}))
+
+    def test_false_or_ambiguous_tracking_rejected(self):
+        for value in (False, 1, None):
+            with self.subTest(required=value): self.reject(lambda e: e['cycles'][0].update(requiredGraphTracked=value))
+        for key in ('contextWasTracked', 'textKit1WasTracked', 'textKit2WasTracked'):
+            with self.subTest(flag=key): self.reject(lambda e: e['cycles'][0].update({key: 1}), 'tracking flag')
+        self.reject(lambda e: e['cycles'][0].update(contextWasTracked=False), 'untracked context')
+        self.reject(lambda e: e['cycles'][0].update(textKit1WasTracked=False), 'TextKit graph')
+        self.reject(lambda e: e['cycles'][0].update(textKit2WasTracked=True), 'TextKit graph')
+
+    def test_nonfinite_negative_or_nonnumeric_times_rejected(self):
+        for key in ('closedAtMilliseconds', 'synchronousCheckedAtMilliseconds', 'promptCheckedAtMilliseconds',
+                    'releasedAfterMilliseconds', 'lastRetainedAfterMilliseconds'):
+            for value in (float('nan'), float('inf'), -float('inf'), -1, True, '10', None, 10 ** 1000):
+                with self.subTest(field=key, value=value): self.reject(lambda e: e['cycles'][0].update({key: value}))
+        for value in (float('nan'), float('inf'), -float('inf'), -1, True, '10', None, 10 ** 1000):
+            with self.subTest(sample_time=value): self.reject(lambda e: e['samples'][0].update(elapsedMilliseconds=value))
+
+    def test_cycle_and_sample_order_rejected(self):
+        self.reject(lambda e: e['cycles'].reverse(), 'cycle order')
+        self.reject(lambda e: e['cycles'][1].update(cycle=1), 'cycle order')
+        self.reject(lambda e: e['samples'][1].update(elapsedMilliseconds=9), 'time order')
+        self.reject(lambda e: e['samples'][0].update(createdCycles=2), 'creation order')
+        self.reject(lambda e: e['samples'][4].update(createdCycles=2), 'integer')
+        self.reject(lambda e: e['samples'][3].update(createdCycles=1), 'creation order')
+        self.reject(lambda e: e['samples'][2].update(createdCycles=3), 'creation order')
+        self.reject(lambda e: e['samples'][1].update(elapsedMilliseconds=31), 'close preceded previous sample')
+        for value in (0, 7, True, 1.0):
+            with self.subTest(created=value): self.reject(lambda e: e['samples'][0].update(createdCycles=value))
+
+    def test_pending_ids_must_be_valid_unique_sorted_and_created(self):
+        for key in ('pendingInputCycles', 'pendingContextCycles'):
+            for value in (None, (1,), [0], [7], [True], [1.0], [1, 1], [2, 1]):
+                with self.subTest(field=key, value=value): self.reject(lambda e: e['samples'][2].update({key: value}))
+            self.reject(lambda e: e['samples'][0].update({key: [2]}))
+
+    def test_input_or_context_cannot_reappear_after_union_released(self):
+        for key in ('pendingInputCycles', 'pendingContextCycles'):
+            with self.subTest(field=key):
+                self.reject(lambda e: e['samples'][4][key].insert(0, 1), 'reappeared after release')
+        self.reject(lambda e: e['samples'][8]['pendingInputCycles'].insert(0, 4), 'reappeared after release')
+
+    def test_missing_or_invented_retention_and_release_evidence(self):
+        self.reject(lambda e: e['cycles'][0].pop('lastRetainedAfterMilliseconds'), 'missing last retained')
+        self.reject(lambda e: e['cycles'][3].update(lastRetainedAfterMilliseconds=0), 'invented last retained')
+        self.reject(lambda e: e['cycles'][0].update(lastRetainedAfterMilliseconds=20.25), 'last retained duration')
+        self.reject(lambda e: e['cycles'][0].update(releasedAfterMilliseconds=40.25), 'first release sample')
+        self.reject(lambda e: e['cycles'][0].update(releasedAfterMilliseconds=70.25), 'first release sample')
+        self.reject(lambda e: e['samples'].pop(), 'inconsistent sample count')
+        self.reject(lambda e: e.update(samples=e['samples'][:8]), 'missing created cycle')
+
+    def test_late_pending_and_late_release_rejected(self):
+        for key in ('pendingInputCycles', 'pendingContextCycles'):
+            def late(e):
+                e['samples'][-1].update(elapsedMilliseconds=2150.01, **{key: [6]})
+                e['cycles'][5]['contextWasTracked'] = True
+            with self.subTest(field=key): self.reject(late, 'pending beyond native input deadline')
+        self.reject(lambda e: e['samples'][-1].update(elapsedMilliseconds=2150.01), 'observed release exceeded')
+        self.reject(lambda e: e['cycles'][5].update(releasedAfterMilliseconds=2000.01), 'release exceeded')
+
+    def test_exact_deadline_and_small_duration_roundoff_pass(self):
+        self.lifecycle['samples'][-1]['elapsedMilliseconds'] = 2150
+        self.lifecycle['cycles'][5]['releasedAfterMilliseconds'] = 2000
+        CHECK.validate_comment_lifecycle(self.lifecycle)
+        self.lifecycle['cycles'][0]['releasedAfterMilliseconds'] += 0.0000005
+        self.lifecycle['cycles'][0]['lastRetainedAfterMilliseconds'] -= 0.0000005
+        CHECK.validate_comment_lifecycle(self.lifecycle)
+        self.reject(lambda e: e['cycles'][0].update(releasedAfterMilliseconds=50.250002), 'release duration')
+        self.reject(lambda e: e['cycles'][0].update(lastRetainedAfterMilliseconds=40.249998), 'last retained duration')
+
+    def test_peak_final_counts_and_final_retirement_must_match_samples(self):
+        for key in ('peakDeferredInputs', 'peakDeferredContexts', 'finalDeferredInputs', 'finalDeferredContexts'):
+            for value in (99, True, -1, 0.5):
+                with self.subTest(field=key, value=value): self.reject(lambda e: e.update({key: value}))
+        self.reject(lambda e: e.update(peakDeferredInputs=1), 'inconsistent sample count')
+        self.reject(lambda e: e.update(peakDeferredContexts=2), 'inconsistent sample count')
+        def retained_final(e):
+            e['samples'][-1]['pendingInputCycles'] = [6]
+            e['finalDeferredInputs'] = 1
+        self.reject(retained_final, 'final deferred objects')
+
+    def test_sample_bound_is_enforced_including_extra_valid_polls(self):
+        final = self.lifecycle['samples'][-1]
+        self.lifecycle['samples'].extend(copy.deepcopy(final) for _ in range(256 - len(self.lifecycle['samples'])))
+        CHECK.validate_comment_lifecycle(self.lifecycle)
+        self.reject(lambda e: e['samples'].append(copy.deepcopy(e['samples'][-1])), 'sample count')
 
 
 class AnnotationReportTests(unittest.TestCase):

@@ -144,6 +144,7 @@ final class NumberedCalloutCommentSession: NSObject, NSTextViewDelegate {
     let imageScaleX: CGFloat
     let imageScaleY: CGFloat
     private let inputUndoManager = UndoManager()
+    private var isClosed = false
     var resizedCommentSize: CGSize {
         CGSize(width: box.bounds.width / imageScaleX, height: box.bounds.height / imageScaleY)
     }
@@ -174,6 +175,7 @@ final class NumberedCalloutCommentSession: NSObject, NSTextViewDelegate {
         if box.input.string != bounded { box.input.string = bounded }
     }
     func close() {
+        guard !isClosed else { return }; isClosed = true
         // End native editing while undoManager(for:) still returns this session's
         // manager. Detaching the delegate first lets teardown fall back to the
         // window's undo manager, and removing actions alone does not end typing.
@@ -186,5 +188,9 @@ final class NumberedCalloutCommentSession: NSObject, NSTextViewDelegate {
         box.input.delegate = nil; box.input.onAccept = nil; box.input.onCancel = nil
         box.onAccept = nil; box.onCancel = nil
         box.removeFromSuperview()
+        // finishNumberComment has already copied accepted text and geometry.
+        // Disconnect this terminal input from its TextKit graph even while AppKit
+        // temporarily retains the detached native view during responder retirement.
+        box.input.textContainer?.textView = nil
     }
 }
