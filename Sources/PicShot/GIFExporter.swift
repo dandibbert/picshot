@@ -117,6 +117,9 @@ enum GIFInProcessEngine {
         generator.requestedTimeToleranceBefore = tolerance
         generator.requestedTimeToleranceAfter = tolerance
         progress?(0)
+        // A progress observer may cancel before any frame request exists. Honor
+        // that here, without entering native image-generation cancellation.
+        try Task.checkCancellation()
         do {
             try await withTaskCancellationHandler {
                 for index in 0..<plan.frameCount {

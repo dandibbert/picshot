@@ -153,30 +153,43 @@ final class GIFFrameExtractionTests: XCTestCase {
     func testScopedExtractionHonorsCancellationBeforeAnyFrameAndRejectsLateDestinationCollision() async throws {
         let root = try directory()
         defer { try? FileManager.default.removeItem(at: root) }
+        Self.extractionPhase("source creation started")
         let source = try await makeMovie(in: root)
+        Self.extractionPhase("source creation completed")
         let options = GIFExportOptions(frameRate: 12, maximumDimension: 32, maximumDuration: 2, maximumFrames: 24)
         let cancelled = root.appendingPathComponent("cancel-before-frame.gif")
+        Self.extractionPhase("zero-frame cancellation export started")
         let task = Task {
             try await GIFInProcessEngine.exportDirect(sourceURL: source, destinationURL: cancelled, options: options,
                                           frameExtraction: .scopedSynchronous) { value in
-                if value == 0 { withUnsafeCurrentTask { $0?.cancel() } }
+                if value == 0 {
+                    Self.extractionPhase("zero-frame cancellation requested")
+                    withUnsafeCurrentTask { $0?.cancel() }
+                    Self.extractionPhase("zero-frame cancellation request returned")
+                }
             }
         }
         do { _ = try await task.value; XCTFail("Pre-frame cancellation must fail") }
         catch is CancellationError { }
+        Self.extractionPhase("zero-frame cancellation export returned")
         XCTAssertFalse(FileManager.default.fileExists(atPath: cancelled.path))
         try assertNoStaging(root)
 
         let collision = root.appendingPathComponent("concurrent.gif")
         let original = Data("independent destination must survive".utf8)
         let probe = GIFExtractionCollision()
+        Self.extractionPhase("collision export started")
         do {
             _ = try await GIFInProcessEngine.exportDirect(sourceURL: source, destinationURL: collision, options: options,
                                               frameExtraction: .scopedSynchronous) { value in
+                if value == 0 { Self.extractionPhase("collision export reached initial progress") }
                 if value > 0, value < 1, probe.claim() {
+                    Self.extractionPhase("collision destination creation started")
                     do { try original.write(to: collision, options: .atomic) }
                     catch { probe.record(error) }
+                    Self.extractionPhase("collision destination creation returned")
                 }
+                if value == 24.0 / 25 { Self.extractionPhase("collision export reached final frame") }
             }
             XCTFail("A destination created during export must not be overwritten")
         } catch {
@@ -184,9 +197,16 @@ final class GIFFrameExtractionTests: XCTestCase {
             XCTAssertEqual((error as NSError).domain, NSCocoaErrorDomain)
             XCTAssertEqual((error as NSError).code, CocoaError.Code.fileWriteFileExists.rawValue)
         }
+        Self.extractionPhase("collision export returned")
         XCTAssertTrue(probe.claimed)
         XCTAssertEqual(try Data(contentsOf: collision), original)
         try assertNoStaging(root)
+    }
+
+    private static func extractionPhase(_ phase: String) {
+        // Fixed phase markers bypass stdio buffering so the bounded CI log
+        // retains the last reached phase if a native framework call stalls.
+        try? FileHandle.standardError.write(contentsOf: Data("GIFFrameExtraction pre-frame/collision: \(phase)\n".utf8))
     }
 
     @MainActor
