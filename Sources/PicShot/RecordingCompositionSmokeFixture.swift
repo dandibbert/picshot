@@ -31,7 +31,7 @@ enum RecordingCompositionSmokeFixture {
     /// recording-composition.json in the caller's evidence directory. Other
     /// evidence already in that directory is untouched. JSON is also written on
     /// failure when possible; the launcher owns the hard process timeout.
-    static func verify(evidenceDirectory: URL, profile: Profile = .installedSmoke) async throws -> [String: Any] {
+    static func verify(evidenceDirectory: URL, profile: Profile = .installedSmoke, traceEnabled: Bool = false) async throws -> [String: Any] {
         try require(evidenceDirectory.isFileURL, "Evidence must be a local file directory")
         try require(profile == .installedSmoke || profile == .quickTest, "Unknown bounded recording smoke profile")
         let files = FileManager.default
@@ -41,11 +41,17 @@ enum RecordingCompositionSmokeFixture {
             try require(!files.fileExists(atPath: evidenceDirectory.appendingPathComponent(witness).path),
                         "Refusing to replace existing recording witness: \(witness)")
         }
+        if traceEnabled {
+            try require(!files.fileExists(atPath: evidenceDirectory.appendingPathComponent("recording-composition-trace.json").path),
+                        "Refusing to replace an existing recording diagnostic trace")
+        }
         let root = files.temporaryDirectory.appendingPathComponent("PicShot-Recording-Composition-" + UUID().uuidString, isDirectory: true)
         try files.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         defer { try? files.removeItem(at: root) }
         let started = ProcessInfo.processInfo.systemUptime
         let deadline = started + 120
+        let trace = traceEnabled ? RecordingCompositionSmokeTrace(directory: evidenceDirectory) : nil
+        trace?.record("fixture.begin", details: ["profile": profile.name, "cooperativeDeadlineSeconds": 120])
         var report: [String: Any] = [
             "status": "running", "profile": profile.name,
             "sourceCommit": Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String ?? "unknown",
@@ -74,7 +80,8 @@ enum RecordingCompositionSmokeFixture {
         ]
         do {
             report["phase"] = "warmup"
-            let warmup = try await cycle(root: root, profile: profile, witnessDirectory: nil, deadline: deadline)
+            trace?.cycle = "warmup"
+            let warmup = try await cycle(root: root, profile: profile, witnessDirectory: nil, deadline: deadline, trace: trace)
             report["warmup"] = warmup.report
             let baseline = GIFResourceMemoryReading.current()
             try require(baseline.residentBytes != nil, "Main-process RSS is unavailable")
@@ -82,9 +89,10 @@ enum RecordingCompositionSmokeFixture {
             var runs: [[String: Any]] = [], settled: [GIFResourceMemoryReading] = [], peaks: [GIFResourceMemoryStatistics] = []
             for index in 0..<profile.measuredCycles {
                 report["phase"] = "measured-cycle-\(index + 1)"
+                trace?.cycle = "measured-cycle-\(index + 1)"
                 try checkDeadline(deadline)
                 let result = try await cycle(root: root, profile: profile,
-                    witnessDirectory: index == 0 ? evidenceDirectory : nil, deadline: deadline)
+                    witnessDirectory: index == 0 ? evidenceDirectory : nil, deadline: deadline, trace: trace)
                 runs.append(result.report); settled.append(result.settled); peaks.append(result.memory)
                 report["cycles"] = runs
                 try write(report, to: reportURL)
@@ -115,11 +123,17 @@ enum RecordingCompositionSmokeFixture {
             report["elapsedSeconds"] = ProcessInfo.processInfo.systemUptime - started
             let passed = resident.withinEnvelope == true && (footprint.withinEnvelope ?? true)
             report["status"] = passed ? "passed" : "failed"
+            trace?.record("fixture.end", details: ["status": passed ? "passed" : "failed"])
+            if let trace { report["diagnostics"] = trace.summary }
             try write(report, to: reportURL)
             try require(passed, "Recording composition memory observations exceeded the fixed smoke envelope; inspect recording-composition.json")
             return report
         } catch {
+            trace?.record("fixture.failure", details: ["error": String(error.localizedDescription.prefix(512)), "taskCancelled": Task.isCancelled])
+            trace?.record("root-cleanup.begin")
             try? files.removeItem(at: root)
+            trace?.record("root-cleanup.end", details: ["directoryAbsent": ownedDirectoryIsAbsent(root)])
+            if let trace { report["diagnostics"] = trace.summary }
             report["temporaryDirectoryRemoved"] = ownedDirectoryIsAbsent(root)
             report["status"] = "failed"; report["error"] = error.localizedDescription
             report["elapsedSeconds"] = ProcessInfo.processInfo.systemUptime - started
@@ -134,7 +148,8 @@ enum RecordingCompositionSmokeFixture {
         let memory: GIFResourceMemoryStatistics
     }
 
-    private static func cycle(root: URL, profile: Profile, witnessDirectory: URL?, deadline: Double) async throws -> CycleResult {
+    private static func cycle(root: URL, profile: Profile, witnessDirectory: URL?, deadline: Double,
+                              trace: RecordingCompositionSmokeTrace?) async throws -> CycleResult {
         let directory = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -142,32 +157,47 @@ enum RecordingCompositionSmokeFixture {
         defer { sampler.stop() }
         let probe = RecordingCompositionSmokeReleaseProbe()
         let started = ProcessInfo.processInfo.systemUptime
+        trace?.record("cycle.begin")
         var report = try await pipeline(directory: directory, profile: profile, witnessDirectory: witnessDirectory,
-                                        sampler: sampler, probe: probe, deadline: deadline)
+                                        sampler: sampler, probe: probe, deadline: deadline, trace: trace)
         // Awaiting an async method's return may briefly overlap the encoder's
         // final completion closure. Verify weak release after a bounded settle.
         let releaseDeadline = min(deadline, ProcessInfo.processInfo.systemUptime + 3)
-        while probe.liveObjectCount != 0 {
-            try checkDeadline(releaseDeadline)
-            try await Task.sleep(nanoseconds: 20_000_000)
+        trace?.record("weak-release.begin", details: ["limitSeconds": 3, "liveObjects": probe.liveObjects])
+        do {
+            while probe.liveObjectCount != 0 {
+                try checkDeadline(releaseDeadline)
+                try await Task.sleep(nanoseconds: 20_000_000)
+            }
+        } catch {
+            trace?.record("weak-release.failure", details: ["error": String(error.localizedDescription.prefix(512)), "liveObjects": probe.liveObjects])
+            throw error
         }
+        trace?.record("weak-release.end", details: ["liveObjects": probe.liveObjects])
         report["releasedObjects"] = ["writer": true, "compositor": true, "state": true, "overlayController": true]
         report["liveTrackedObjectsAfterRelease"] = probe.liveObjectCount
+        trace?.record("cycle-cleanup.begin")
         report["directoryCleanupDisposition"] = try removeOwnedFixtureDirectory(directory)
+        trace?.record("cycle-cleanup.end")
         try require(ownedDirectoryIsAbsent(directory), "Cycle directory cleanup was not independently confirmed")
         report["temporaryFilesRemaining"] = 0
+        trace?.record("memory-settle.begin")
         try await Task.sleep(nanoseconds: 300_000_000)
+        trace?.record("memory-settle.end")
         sampler.stop()
         let memory = sampler.snapshot(), settled = GIFResourceMemoryReading.current()
         try require(memory.residentSampleCount > 0, "No valid RSS sample was collected during the recording cycle")
         report["sampledMemory"] = try object(memory)
         report["settledMemory"] = try object(settled)
         report["elapsedSeconds"] = ProcessInfo.processInfo.systemUptime - started
+        trace?.record("cycle.end", details: ["elapsedSeconds": ProcessInfo.processInfo.systemUptime - started])
         return CycleResult(report: report, settled: settled, memory: memory)
     }
 
     private static func pipeline(directory: URL, profile: Profile, witnessDirectory: URL?, sampler: GIFResourceMemorySampler,
-                                 probe: RecordingCompositionSmokeReleaseProbe, deadline: Double) async throws -> [String: Any] {
+                                 probe: RecordingCompositionSmokeReleaseProbe, deadline: Double,
+                                 trace: RecordingCompositionSmokeTrace?) async throws -> [String: Any] {
+        trace?.record("synthetic-inputs.begin")
         let size = CGSize(width: profile.width, height: profile.height)
         let state = RecordingCompositionState()
         let controller = RecordingOverlayController(state: state), token = UUID(), clock = RecordingCompositionSmokeClock(100)
@@ -176,19 +206,24 @@ enum RecordingCompositionSmokeFixture {
         let imageContext = CIContext(options: [.cacheIntermediates: false, .useSoftwareRenderer: true])
         let desktop = try makeDesktop(profile: profile, context: imageContext)
         state.receiveCamera(try makeCamera(profile: profile, context: imageContext), token: token)
+        trace?.record("compositor-init.begin")
         let compositor = try RecordingFrameCompositor(size: size, state: state)
+        compositor.smokeDiagnosticsEnabled = trace != nil
+        trace?.record("writer-init.begin")
         let stops = RecordingCompositionSmokeStops()
         let writer = try RecordingWriter(size: size,
             options: RecordingOptions(frameRate: profile.frameRate, maximumDuration: 10, maximumFileSize: 16 * 1_024 * 1_024),
             outputDirectory: directory, compositor: compositor, automaticallyRefreshOverlays: false,
             clock: { clock.now }, requestStop: { stops.record($0) })
+        trace?.record("writer-init.end", details: writer.queue.sync { writer.smokeDiagnosticSnapshot() })
         probe.writer = writer; probe.compositor = compositor; probe.state = state; probe.controller = controller
         defer { controller.hide(); state.setCameraSession(nil); _ = state.setAnnotations([]) }
         do {
             for frame in 0..<2 {
                 clock.set(100 + Double(frame) / 10)
                 let sample = try makeSample(pixels: desktop, at: 100 + Double(frame) / 10)
-                try await append(sample, writer: writer, stops: stops, sampler: sampler, deadline: deadline)
+                try await append(sample, writer: writer, stops: stops, sampler: sampler, deadline: deadline,
+                                 phase: "append-screen-\(frame)", trace: trace)
             }
             // Direct controller interaction, no NSEvent/CGEvent or NSWindow.
             controller.cameraEditing = true
@@ -202,35 +237,49 @@ enum RecordingCompositionSmokeFixture {
                         abs(layout.frame.width - 0.3) < 0.0001 && abs(layout.frame.height - 0.4) < 0.0001,
                         "Production camera drag/resize geometry differs")
             layout.mirrored = true; state.setLayout(layout)
-            clock.set(100.2); try await refresh(writer, stops: stops, sampler: sampler, deadline: deadline)
+            clock.set(100.2); try await refresh(writer, stops: stops, sampler: sampler, deadline: deadline,
+                                               phase: "refresh-drag-resize-mirror", trace: trace)
             controller.setCameraCrop(zoom: 2, horizontal: 1, vertical: 1)
-            clock.set(100.3); try await refresh(writer, stops: stops, sampler: sampler, deadline: deadline)
+            clock.set(100.3); try await refresh(writer, stops: stops, sampler: sampler, deadline: deadline,
+                                               phase: "refresh-camera-crop", trace: trace)
             controller.drawing = true; controller.tool = .freehand
             controller.color = NSColor(srgbRed: 0, green: 1, blue: 0, alpha: 1)
             controller.width = max(5, size.width * 0.015)
             controller.begin(at: point(0.1, 0.8, size), resizeCamera: false)
             controller.drag(to: point(0.2, 0.8, size))
             controller.end(at: point(0.28, 0.8, size))
-            clock.set(100.4); try await refresh(writer, stops: stops, sampler: sampler, deadline: deadline)
+            clock.set(100.4); try await refresh(writer, stops: stops, sampler: sampler, deadline: deadline,
+                                               phase: "refresh-live-pen", trace: trace)
             controller.tool = .eraser; controller.width = max(9, size.width * 0.024)
             controller.begin(at: point(0.2, 0.74, size), resizeCamera: false)
             controller.end(at: point(0.2, 0.86, size))
-            clock.set(100.5); try await refresh(writer, stops: stops, sampler: sampler, deadline: deadline)
+            clock.set(100.5); try await refresh(writer, stops: stops, sampler: sampler, deadline: deadline,
+                                               phase: "refresh-live-eraser", trace: trace)
+            trace?.record("pause.begin")
             clock.set(100.6); _ = try await writer.setPaused(true)
+            trace?.record("pause.end")
             state.receiveCamera(try makePixels(width: profile.cameraWidth, height: profile.cameraHeight,
                 image: CIImage(color: CIColor(red: 0, green: 1, blue: 1)), context: imageContext), token: token)
             controller.clear(); controller.cancelInteraction()
+            trace?.record("paused-refresh.begin")
             clock.set(101.5); writer.queue.sync { writer.refreshOverlay() }
             try require(writer.queue.sync { writer.needsOverlayRefresh }, "Paused overlay changes were consumed")
+            trace?.record("paused-refresh.end")
+            trace?.record("resume.begin")
             clock.set(101.6); _ = try await writer.setPaused(false)
+            trace?.record("resume.end")
+            trace?.record("stop-barrier.begin")
             clock.set(101.7); _ = await writer.stopAccepting()
+            trace?.record("stop-barrier.end")
             // Mutation after the stop barrier must not replace the cyan camera
             // snapshot used to finalize the pending resume frame at PTS 0.6.
             state.receiveCamera(try makePixels(width: profile.cameraWidth, height: profile.cameraHeight,
                 image: CIImage(color: CIColor(red: 1, green: 0, blue: 1)), context: imageContext), token: token)
             state.setCameraSession(nil); controller.hide()
             sampler.sample()
+            trace?.record("finish.begin", details: writer.queue.sync { writer.smokeDiagnosticSnapshot() })
             let movie = try await writer.finish()
+            trace?.record("finish.end", details: writer.queue.sync { writer.smokeDiagnosticSnapshot() })
             sampler.sample()
             let snapshot = await writer.snapshot()
             try require(snapshot.retainedVideoFrames == 0 && state.snapshot().camera == nil,
@@ -239,7 +288,7 @@ enum RecordingCompositionSmokeFixture {
             let movieBytes = try fileBytes(movie)
             try require(movieBytes > 0 && movieBytes <= 4 * 1_024 * 1_024, "Synthetic MP4 exceeded its evidence budget")
             var result = try await validate(movie: movie, profile: profile, witnessDirectory: witnessDirectory,
-                                            context: imageContext, sampler: sampler, deadline: deadline)
+                                            context: imageContext, sampler: sampler, deadline: deadline, trace: trace)
             if let witnessDirectory {
                 let destination = witnessDirectory.appendingPathComponent("recording-composition.mp4")
                 try FileManager.default.copyItem(at: movie, to: destination)
@@ -257,13 +306,24 @@ enum RecordingCompositionSmokeFixture {
         } catch {
             // This is only teardown inside the fixture-owned synthetic root,
             // which the caller removes explicitly. It proves no preservation.
-            try? await writer.discard()
+            trace?.record("pipeline.failure", details: ["error": String(error.localizedDescription.prefix(512)), "taskCancelled": Task.isCancelled,
+                "writer": writer.queue.sync { writer.smokeDiagnosticSnapshot() }])
+            trace?.record("discard.begin")
+            do {
+                try await writer.discard()
+                trace?.record("discard.end", details: writer.queue.sync { writer.smokeDiagnosticSnapshot() })
+            } catch {
+                trace?.record("discard.failure", details: ["error": String(error.localizedDescription.prefix(512)),
+                    "writer": writer.queue.sync { writer.smokeDiagnosticSnapshot() }])
+            }
             throw error
         }
     }
 
     private static func validate(movie: URL, profile: Profile, witnessDirectory: URL?, context: CIContext,
-                                 sampler: GIFResourceMemorySampler, deadline: Double) async throws -> [String: Any] {
+                                 sampler: GIFResourceMemorySampler, deadline: Double,
+                                 trace: RecordingCompositionSmokeTrace?) async throws -> [String: Any] {
+        trace?.record("asset-load.begin")
         let asset = AVURLAsset(url: movie)
         let videoTracks = try await asset.loadTracks(withMediaType: .video)
         let audioTracks = try await asset.loadTracks(withMediaType: .audio)
@@ -283,7 +343,11 @@ enum RecordingCompositionSmokeFixture {
         }, "Encoded MP4 color declarations differ from the writer Rec.709 output contract: \(colorProperties)")
         let duration = try await asset.load(.duration).seconds
         try require(abs(duration - profile.duration) < 0.02, "Pause removal or final MP4 duration differs")
+        trace?.record("asset-load.end")
+        trace?.record("stored-packets.begin")
         let stored = try storedTiming(asset: asset, track: videoTracks[0], profile: profile)
+        trace?.record("stored-packets.end")
+        trace?.record("decode.begin")
         let reader = try AVAssetReader(asset: asset)
         defer { if reader.status == .reading { reader.cancelReading() } }
         let output = AVAssetReaderTrackOutput(track: videoTracks[0], outputSettings:
@@ -324,6 +388,7 @@ enum RecordingCompositionSmokeFixture {
         }
         try require(reader.status == .completed && frames == profile.encodedFrames,
                     "Decoded MP4 did not finish with exactly seven frames: \(reader.error?.localizedDescription ?? "")")
+        trace?.record("decode.end", details: ["decodedFrames": frames, "decodedPixelChecks": pixelChecks])
         return ["decodedFrames": frames, "decodedPixelChecks": pixelChecks, "durationSeconds": duration, "videoCodec": "H.264",
                 "storedPacketTiming": stored, "encodedColorProperties": colorProperties, "witnessPNGBytes": pngBytes,
                 "verifiedPhases": ["initial-camera-quadrants", "drag-resize-mirror", "camera-crop",
@@ -454,23 +519,54 @@ enum RecordingCompositionSmokeFixture {
     }
 
     private static func append(_ sample: CMSampleBuffer, writer: RecordingWriter, stops: RecordingCompositionSmokeStops,
-                               sampler: GIFResourceMemorySampler, deadline: Double) async throws {
+                               sampler: GIFResourceMemorySampler, deadline: Double, phase: String,
+                               trace: RecordingCompositionSmokeTrace?) async throws {
         let boundary = min(deadline, ProcessInfo.processInfo.systemUptime + 10)
-        while !writer.queue.sync(execute: { writer.consume(sample, of: .screen) }) {
-            try require(stops.message == nil, "Encoder stopped while appending synthetic screen: \(stops.message ?? "")")
-            try checkDeadline(boundary); try await Task.sleep(nanoseconds: 1_000_000)
+        trace?.record(phase + ".begin", details: ["limitSeconds": 10, "effectiveBudgetSeconds": max(0, boundary - ProcessInfo.processInfo.systemUptime),
+            "globalDeadlineRemainingSeconds": max(0, deadline - ProcessInfo.processInfo.systemUptime), "writer": writer.queue.sync { writer.smokeDiagnosticSnapshot() }])
+        var attempts = 0, maximumAttemptSeconds = 0.0
+        do {
+            while true {
+                let began = ProcessInfo.processInfo.systemUptime
+                let accepted = writer.queue.sync { writer.consume(sample, of: .screen) }
+                attempts += 1; maximumAttemptSeconds = max(maximumAttemptSeconds, ProcessInfo.processInfo.systemUptime - began)
+                if accepted { break }
+                try require(stops.message == nil, "Encoder stopped while appending synthetic screen: \(stops.message ?? "")")
+                try checkDeadline(boundary); try await Task.sleep(nanoseconds: 1_000_000)
+            }
+        } catch {
+            trace?.record(phase + ".failure", details: ["error": String(error.localizedDescription.prefix(512)), "attempts": attempts,
+                "maximumAttemptSeconds": maximumAttemptSeconds, "deadlineOverrunSeconds": max(0, ProcessInfo.processInfo.systemUptime - boundary),
+                "writer": writer.queue.sync { writer.smokeDiagnosticSnapshot() }])
+            throw error
         }
+        trace?.record(phase + ".end", details: ["attempts": attempts, "maximumAttemptSeconds": maximumAttemptSeconds])
         sampler.sample()
     }
 
     private static func refresh(_ writer: RecordingWriter, stops: RecordingCompositionSmokeStops,
-                                sampler: GIFResourceMemorySampler, deadline: Double) async throws {
+                                sampler: GIFResourceMemorySampler, deadline: Double, phase: String,
+                                trace: RecordingCompositionSmokeTrace?) async throws {
         let boundary = min(deadline, ProcessInfo.processInfo.systemUptime + 10)
-        while writer.queue.sync(execute: { writer.needsOverlayRefresh }) {
-            writer.queue.sync { writer.refreshOverlay() }
-            try require(stops.message == nil, "Encoder stopped during static-screen refresh: \(stops.message ?? "")")
-            try checkDeadline(boundary); try await Task.sleep(nanoseconds: 1_000_000)
+        trace?.record(phase + ".begin", details: ["limitSeconds": 10, "effectiveBudgetSeconds": max(0, boundary - ProcessInfo.processInfo.systemUptime),
+            "globalDeadlineRemainingSeconds": max(0, deadline - ProcessInfo.processInfo.systemUptime), "writer": writer.queue.sync { writer.smokeDiagnosticSnapshot() }])
+        var attempts = 0, maximumAttemptSeconds = 0.0
+        do {
+            while writer.queue.sync(execute: { writer.needsOverlayRefresh }) {
+                let began = ProcessInfo.processInfo.systemUptime
+                writer.queue.sync { writer.refreshOverlay() }
+                attempts += 1; maximumAttemptSeconds = max(maximumAttemptSeconds, ProcessInfo.processInfo.systemUptime - began)
+                try require(stops.message == nil, "Encoder stopped during static-screen refresh: \(stops.message ?? "")")
+                // Preserve the original check, including after an accepted refresh.
+                try checkDeadline(boundary); try await Task.sleep(nanoseconds: 1_000_000)
+            }
+        } catch {
+            trace?.record(phase + ".failure", details: ["error": String(error.localizedDescription.prefix(512)), "attempts": attempts,
+                "maximumAttemptSeconds": maximumAttemptSeconds, "deadlineOverrunSeconds": max(0, ProcessInfo.processInfo.systemUptime - boundary),
+                "writer": writer.queue.sync { writer.smokeDiagnosticSnapshot() }])
+            throw error
         }
+        trace?.record(phase + ".end", details: ["attempts": attempts, "maximumAttemptSeconds": maximumAttemptSeconds])
         sampler.sample()
     }
 
@@ -550,6 +646,8 @@ private final class RecordingCompositionSmokeReleaseProbe {
     weak var compositor: RecordingFrameCompositor?
     weak var state: RecordingCompositionState?
     weak var controller: RecordingOverlayController?
+    var liveObjects: [String: Bool] { ["writer": writer != nil, "compositor": compositor != nil,
+                                      "state": state != nil, "overlayController": controller != nil] }
     var liveObjectCount: Int { [writer != nil, compositor != nil, state != nil, controller != nil].filter { $0 }.count }
 }
 
@@ -566,4 +664,68 @@ private final class RecordingCompositionSmokeStops: @unchecked Sendable {
     private var stored: String?
     var message: String? { lock.lock(); defer { lock.unlock() }; return stored }
     func record(_ message: String?) { lock.lock(); defer { lock.unlock() }; if stored == nil { stored = message ?? "automatic limit" } }
+}
+
+/// Only explicit diagnostic runs write this sidecar. Keep no media references,
+/// sample only at phase boundaries (never every poll), and preserve the first
+/// failure before discard/root-cleanup can change the current phase or writer.
+@MainActor
+final class RecordingCompositionSmokeTrace {
+    static let maximumEvents = 192
+    static let maximumBytes = 128 * 1_024
+    private let url: URL
+    private let started = ProcessInfo.processInfo.systemUptime
+    private var previous = ProcessInfo.processInfo.systemUptime
+    private var previousEvent = "none"
+    private var events: [[String: Any]] = []
+    private var droppedEvents = 0
+    private var firstFailure: [String: Any]?
+    private var lastWriteError: String?
+    var cycle = "setup"
+
+    init(directory: URL) { url = directory.appendingPathComponent("recording-composition-trace.json") }
+
+    var summary: [String: Any] {
+        var result: [String: Any] = ["file": url.lastPathComponent, "events": events.count,
+            "droppedEvents": droppedEvents, "maximumEvents": Self.maximumEvents,
+            "maximumBytes": Self.maximumBytes, "observationalOnly": true, "diagnosticOverlay": "recording-wait-trace-v1",
+            "timingScope": "monotonic phase boundaries; synchronous calls cannot be interrupted by the cooperative deadline"]
+        if let firstFailure { result["firstFailure"] = firstFailure }
+        if let lastWriteError { result["lastWriteError"] = lastWriteError }
+        return result
+    }
+
+    func record(_ event: String, details: [String: Any] = [:]) {
+        let now = ProcessInfo.processInfo.systemUptime
+        let entry: [String: Any] = ["event": event, "previousEvent": previousEvent, "cycle": cycle,
+            "elapsedSeconds": now - started, "sincePreviousEventSeconds": now - previous,
+            "details": details]
+        previous = now; previousEvent = event
+        if event.hasSuffix(".failure"), firstFailure == nil { firstFailure = entry }
+        events.append(entry)
+        while events.count > Self.maximumEvents { events.removeFirst(); droppedEvents += 1 }
+        do {
+            while true {
+                var report = summary
+                report["schemaVersion"] = 1
+                report["sourceCommit"] = Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String ?? "unknown"
+                report["events"] = events
+                let data = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
+                if data.count <= Self.maximumBytes {
+                    try data.write(to: url, options: .atomic)
+                    return
+                }
+                guard events.count > 1 else {
+                    throw NSError(domain: "PicShot.RecordingCompositionSmokeTrace", code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "Diagnostic event exceeded its fixed byte budget"])
+                }
+                events.removeFirst(); droppedEvents += 1
+            }
+        } catch {
+            lastWriteError = String(error.localizedDescription.prefix(512))
+            // Evidence failure must be visible, but must not mask/replace the
+            // original pipeline failure or change an existing gate's outcome.
+            fputs("Recording diagnostic write failed: \(lastWriteError!)\n", stderr)
+        }
+    }
 }

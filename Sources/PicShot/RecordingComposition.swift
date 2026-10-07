@@ -120,6 +120,9 @@ final class RecordingFrameCompositor {
     private var format: CMVideoFormatDescription?
     private var frozenSnapshot: RecordingCompositionSnapshot?
     private(set) var lastRevision: UInt64?
+    // Opt-in synthetic smoke observation only; no extra surface or pixel retention.
+    var smokeDiagnosticsEnabled = false
+    private(set) var smokeLastAllocationStatus: CVReturn?
 
     init(size: CGSize, state: RecordingCompositionState) throws {
         guard size.width.isFinite, size.height.isFinite, size.width >= 2, size.height >= 2,
@@ -159,6 +162,7 @@ final class RecordingFrameCompositor {
         var allocated: CVPixelBuffer?
         let status = CVPixelBufferPoolCreatePixelBufferWithAuxAttributes(kCFAllocatorDefault, pool,
             [kCVPixelBufferPoolAllocationThresholdKey as String: 3] as CFDictionary, &allocated)
+        if smokeDiagnosticsEnabled { smokeLastAllocationStatus = status }
         if status == kCVReturnWouldExceedAllocationThreshold { return nil }
         guard status == kCVReturnSuccess, let pixels = allocated else {
             throw RecordingError.failed("A recording overlay surface could not be allocated.")

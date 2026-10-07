@@ -976,6 +976,43 @@ final class RecordingWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchec
         }
     }
 
+    /// Scalar-only diagnostic observation; caller must use the encoder queue.
+    /// Does not drive readiness, allocate a pixel buffer, or change writer state.
+    func smokeDiagnosticSnapshot() -> [String: Any] {
+        dispatchPrecondition(condition: .onQueue(queue))
+        func time(_ value: CMTime?) -> Any {
+            guard let value, value.isNumeric else { return NSNull() }
+            return ["value": value.value, "timescale": Int64(value.timescale)]
+        }
+        var result: [String: Any] = [
+            "assetWriterStatus": writer.status.rawValue,
+            "videoReady": video.isReadyForMoreMediaData,
+            "accepting": accepting, "finishing": finishing, "discarded": discarded,
+            "stopRequested": stopRequested, "paused": timeline.isPaused,
+            "needsOverlayRefresh": needsOverlayRefresh,
+            "screenRevision": screenRevision, "encodedScreenRevision": encodedScreenRevision,
+            "sourceNow": time(sourceNow), "sourceStart": time(timeline.sourceStart),
+            "lastVideoTime": time(lastVideoTime), "removedDuration": time(timeline.removedDuration),
+            "pendingResumeSourceTime": time(pendingResumeSourceTime),
+            "latestScreenPresent": latestScreen != nil, "lastVideoPresent": lastVideo != nil,
+            "pendingResumePresent": pendingResumeVideo != nil, "pausedVideoPresent": pausedVideo != nil,
+            "retainedVideoFrames": currentSnapshot().retainedVideoFrames,
+            "finishContinuationPresent": finishContinuation != nil,
+            "recoveryLeasePresent": recoveryLease != nil, "protectionNeedsRetry": protectionNeedsRetry
+        ]
+        if let error = writer.error as NSError? {
+            result["assetWriterError"] = ["domain": error.domain, "code": error.code,
+                "message": String(error.localizedDescription.prefix(512))]
+        }
+        if let compositor {
+            result["compositorNeedsRefresh"] = compositor.needsRefresh
+            result["compositorLastRevision"] = compositor.lastRevision.map { $0 as Any } ?? NSNull()
+            result["compositionRevision"] = compositor.state.snapshot().revision
+            result["lastPixelPoolAllocationStatus"] = compositor.smokeLastAllocationStatus.map { $0 as Any } ?? NSNull()
+        }
+        return result
+    }
+
     func snapshot() async -> RecordingWriterSnapshot {
         await withCheckedContinuation { continuation in
             queue.async { continuation.resume(returning: self.currentSnapshot()) }

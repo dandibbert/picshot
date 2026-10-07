@@ -9,6 +9,17 @@ import PicShotFormulaRenderCore
         let url=URL(fileURLWithPath:report);let directory=url.deletingLastPathComponent()
         do{
             try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
+            // Explicit diagnostic route: same installed profile/work counts,
+            // synthetic media only, and no broad-smoke claim from this result.
+            if ProcessInfo.processInfo.environment["PICSHOT_RECORDING_COMPOSITION_ONLY"] == "1" {
+                var payload = try await RecordingCompositionSmokeFixture.verify(evidenceDirectory: directory, traceEnabled: true)
+                payload["diagnosticOnly"] = true
+                payload["bundlePath"] = Bundle.main.bundlePath
+                payload["arguments"] = CommandLine.arguments
+                try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]).write(to: url, options: .atomic)
+                try? FileManager.default.removeItem(at: history.directory)
+                NSApp.terminate(nil); return
+            }
             if let payload = try await ScrollMemoryAttributionFixture.runIfRequested(evidenceDirectory: directory, detailRenderer: ScrollMemoryAttributionCurrentDetail.render) {
                 try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]).write(to: url, options: .atomic)
                 try? FileManager.default.removeItem(at: history.directory)
@@ -160,7 +171,8 @@ import PicShotFormulaRenderCore
             try JSONSerialization.data(withJSONObject:pinSessionEvidence,options:[.prettyPrinted,.sortedKeys]).write(to:directory.appendingPathComponent("pin-session.json"),options:.atomic)
             let pinGroupEvidence=try await PinGroupTransformSmokeFixture.verify(evidenceDirectory:directory)
             try JSONSerialization.data(withJSONObject:pinGroupEvidence,options:[.prettyPrinted,.sortedKeys]).write(to:directory.appendingPathComponent("pin-group-transforms.json"),options:.atomic)
-            let recordingCompositionEvidence=try await RecordingCompositionSmokeFixture.verify(evidenceDirectory:directory)
+            let recordingCompositionEvidence=try await RecordingCompositionSmokeFixture.verify(evidenceDirectory:directory,
+                traceEnabled: ProcessInfo.processInfo.environment["PICSHOT_RECORDING_COMPOSITION_TRACE"] == "1")
             let interactionParityEvidence=try await InteractionParitySmokeFixture.verify(evidenceDirectory:directory)
             let captureExportRecognitionEvidence=try await CaptureExportRecognitionSmokeFixture.verify(evidenceDirectory:directory,includeResourceCycles:true)
             let codecExportEvidence=try await CodecExportResourceFixture.verify(evidenceDirectory:directory)

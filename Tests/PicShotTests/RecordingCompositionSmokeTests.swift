@@ -76,6 +76,56 @@ final class RecordingCompositionSmokeTests: XCTestCase {
         }
     }
 
+    func testDiagnosticQuickFixtureKeepsWorkCountsAndRecordsWriterState() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PicShot-Recording-Diagnostic-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let result = try await RecordingCompositionSmokeFixture.verify(evidenceDirectory: directory,
+            profile: .quickTest, traceEnabled: true)
+        XCTAssertEqual(result["status"] as? String, "passed")
+        XCTAssertEqual(result["completedMeasuredCycles"] as? Int, 2)
+        let runs = try XCTUnwrap(result["cycles"] as? [[String: Any]])
+        XCTAssertTrue(runs.allSatisfy { $0["decodedFrames"] as? Int == 7 })
+        let data = try Data(contentsOf: directory.appendingPathComponent("recording-composition-trace.json"))
+        let trace = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let events = try XCTUnwrap(trace["events"] as? [[String: Any]])
+        XCTAssertNil(trace["firstFailure"])
+        XCTAssertNil(trace["lastWriteError"])
+        XCTAssertEqual(trace["droppedEvents"] as? Int, 0)
+        let begins = events.filter { $0["event"] as? String == "append-screen-0.begin" }
+        XCTAssertEqual(begins.count, 3)
+        let details = try XCTUnwrap(begins.first?["details"] as? [String: Any])
+        let writer = try XCTUnwrap(details["writer"] as? [String: Any])
+        XCTAssertNotNil(writer["assetWriterStatus"])
+        XCTAssertNotNil(writer["videoReady"])
+        XCTAssertTrue(events.contains { $0["event"] as? String == "weak-release.end" })
+        XCTAssertLessThanOrEqual(data.count, RecordingCompositionSmokeTrace.maximumBytes)
+    }
+
+    func testTracePreservesFirstFailureAcrossCleanupAndBoundsHistory() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PicShot-Recording-Trace-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let trace = RecordingCompositionSmokeTrace(directory: directory)
+        trace.cycle = "measured-cycle-1"
+        trace.record("refresh-camera-crop.begin")
+        trace.record("refresh-camera-crop.failure", details: ["attempts": 17, "writer": ["videoReady": false]])
+        trace.record("discard.begin")
+        trace.record("discard.failure", details: ["error": "synthetic cleanup failure"])
+        for index in 0..<(RecordingCompositionSmokeTrace.maximumEvents + 1) {
+            trace.record("bounded-test", details: ["index": index])
+        }
+        let data = try Data(contentsOf: directory.appendingPathComponent("recording-composition-trace.json"))
+        XCTAssertLessThanOrEqual(data.count, RecordingCompositionSmokeTrace.maximumBytes)
+        let report = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let first = try XCTUnwrap(report["firstFailure"] as? [String: Any])
+        XCTAssertEqual(first["event"] as? String, "refresh-camera-crop.failure")
+        XCTAssertEqual(first["previousEvent"] as? String, "refresh-camera-crop.begin")
+        XCTAssertEqual(first["cycle"] as? String, "measured-cycle-1")
+        XCTAssertEqual((report["events"] as? [[String: Any]])?.count, RecordingCompositionSmokeTrace.maximumEvents)
+        XCTAssertGreaterThan(try XCTUnwrap(report["droppedEvents"] as? Int), 0)
+        XCTAssertNil(trace.summary["lastWriteError"])
+    }
+
     func testCleanupAcceptsMissingOwnedRootOnlyAfterExactAbsenceCheck() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("PicShot-Recording-Composition-Cleanup-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
