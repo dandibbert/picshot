@@ -6,6 +6,7 @@ import Darwin
 /// helper or timing override. It adds no child, prewarming, retries, or waits.
 final class CodecGIFReadinessEvidence: @unchecked Sendable {
     private static let traceLimit = 4_096
+    let launchDiagnostics = GIFProcessLaunchDiagnostics()
     private let lock = NSLock()
     private let trace: FileHandle
     private let traceURL: URL
@@ -16,6 +17,7 @@ final class CodecGIFReadinessEvidence: @unchecked Sendable {
     private var eventsDropped = 0
     private var childCaptures: [[String: Any]] = []
     private var wait: [String: Any] = [:]
+    private var launchAtReadiness: GIFProcessLaunchDiagnostics.Snapshot?
     private var previousWake: TimeInterval?
     private var maximumWakeGap: TimeInterval = 0
     private var wakeCount = 0
@@ -110,11 +112,15 @@ final class CodecGIFReadinessEvidence: @unchecked Sendable {
     }
 
     func endWait(progressCount: Int) {
+        // Synchronous, bounded memory snapshot: no actor hop, JSON encoding or
+        // file I/O can let a late service event replace this frozen observation.
+        let launchSnapshot = launchDiagnostics.snapshot()
         let now = ProcessInfo.processInfo.systemUptime
         lock.lock(); defer { lock.unlock() }
         wait["endedElapsedSeconds"] = now - start
         wait["endedUnixSeconds"] = Date().timeIntervalSince1970
         wait["progressCountAtAssertion"] = progressCount
+        launchAtReadiness = launchSnapshot
     }
 
     func captureChildTrace(phase: String) {
@@ -156,6 +162,17 @@ final class CodecGIFReadinessEvidence: @unchecked Sendable {
     }
 
     func emit(finalSnapshot: GIFExportProcessSnapshot?) {
+        guard let data = encodedPayload(finalSnapshot: finalSnapshot) else {
+            print("GIF readiness evidence: {\"schema\":\"picshot-codec-gif-readiness-v2\",\"encodingFailedOrOversized\":true}")
+            return
+        }
+        print("GIF readiness evidence: " + String(decoding: data, as: UTF8.self))
+    }
+
+    // Shared with negative/ordering tests so they verify the actual emitted
+    // payload, including its whole-record byte bound and frozen readiness state.
+    func encodedPayload(finalSnapshot: GIFExportProcessSnapshot?) -> Data? {
+        let finalLaunch = launchDiagnostics.snapshot()
         #if arch(x86_64)
         let architecture = "x86_64"
         #elseif arch(arm64)
@@ -165,7 +182,7 @@ final class CodecGIFReadinessEvidence: @unchecked Sendable {
         #endif
         lock.lock()
         var payload: [String: Any] = [
-            "schema": "picshot-codec-gif-readiness-v1",
+            "schema": "picshot-codec-gif-readiness-v2",
             "scope": "test-only synthetic /usr/bin/python3; not the signed native GIF helper",
             "test": "CodecExportProcessTests.testSharedLeaseRejectsCodecWhileGIFChildRunsAndReleasesAfterConfirmedCancel",
             "probeSource": #fileID, "architecture": architecture,
@@ -174,19 +191,25 @@ final class CodecGIFReadinessEvidence: @unchecked Sendable {
             "activeProcessorCount": ProcessInfo.processInfo.activeProcessorCount,
             "sourceFixture": ["bytes": 1, "kind": "synthetic, not valid media"],
             "configuredGIFWallSeconds": 5, "parentEvents": events, "parentEventsDropped": eventsDropped,
+            "parentStartedUptimeSeconds": start,
             "readinessWait": wait, "waitWakeCount": wakeCount, "maximumWaitWakeGapSeconds": maximumWakeGap,
             "childTraceCaptures": childCaptures,
             "clockScope": "unixSeconds permits wall-clock correlation; use monotonic deltas only within each process"
         ]
+        let readinessLaunch = launchAtReadiness
         lock.unlock()
+        for (key, snapshot) in [("launchAtReadiness", readinessLaunch), ("launchAfterTaskJoin", Optional(finalLaunch))] {
+            if let snapshot, let data = snapshot.boundedJSON(),
+               let object = try? JSONSerialization.jsonObject(with: data) {
+                payload[key] = object
+            } else { payload[key + "MissingOrOversized"] = true }
+        }
         if let finalSnapshot, let data = try? JSONEncoder().encode(finalSnapshot),
            let object = try? JSONSerialization.jsonObject(with: data) {
             payload["finalGIFSnapshot"] = object
         } else { payload["finalGIFSnapshotMissing"] = true }
-        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]), data.count <= 16_384 else {
-            print("GIF readiness evidence: {\"schema\":\"picshot-codec-gif-readiness-v1\",\"encodingFailedOrOversized\":true}")
-            return
-        }
-        print("GIF readiness evidence: " + String(decoding: data, as: UTF8.self))
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
+              data.count <= 16_384 else { return nil }
+        return data
     }
 }

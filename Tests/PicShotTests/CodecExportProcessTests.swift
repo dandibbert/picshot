@@ -72,7 +72,8 @@ final class CodecExportProcessTests: XCTestCase {
         let gif = GIFExportProcessService(configuration: .init(executable: {
             evidence.record("executableClosureEntered")
             return pythonURL
-        }, arguments: evidence.pythonArguments, wallSeconds: 5))
+        }, arguments: evidence.pythonArguments, wallSeconds: 5,
+            launchDiagnosticsForTesting: evidence.launchDiagnostics))
         let progress = GIFProcessTestProgress()
         evidence.record("beforeTaskCreation")
         let task = Task {

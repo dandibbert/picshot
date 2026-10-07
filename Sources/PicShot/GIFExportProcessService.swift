@@ -29,14 +29,17 @@ struct GIFProcessConfiguration: @unchecked Sendable {
     let wallSeconds: TimeInterval
     let residentLimitBytes: UInt64
     let stopActions: GIFProcessStopActions
+    let launchDiagnosticsForTesting: GIFProcessLaunchDiagnostics?
     static var production: Self { Self(executable: { try GIFHelperExecutable.verified() }) }
     init(executable: @escaping @Sendable () throws -> URL,
          arguments: [String] = ["--picshot-gif-helper"],
          wallSeconds: TimeInterval = 300, residentLimitBytes: UInt64 = 1_073_741_824,
-         stopActionsForTesting: GIFProcessStopActions? = nil) {
+         stopActionsForTesting: GIFProcessStopActions? = nil,
+         launchDiagnosticsForTesting: GIFProcessLaunchDiagnostics? = nil) {
         self.executable = executable; self.arguments = arguments
         self.wallSeconds = wallSeconds; self.residentLimitBytes = residentLimitBytes
         self.stopActions = stopActionsForTesting ?? .production
+        self.launchDiagnosticsForTesting = launchDiagnosticsForTesting
     }
 }
 
@@ -192,9 +195,11 @@ actor GIFExportProcessService {
             guard configuration.wallSeconds.isFinite, configuration.wallSeconds > 0,
                   configuration.residentLimitBytes > 0 else { throw GIFExportProcessError.invalidProtocol }
             job.update { $0.lastStage = "executableValidation" }
+            configuration.launchDiagnosticsForTesting?.record(.executableValidationStarted)
             let executable = try autoreleasepool { try configuration.executable() }
             guard ProcessInfo.processInfo.systemUptime < started + configuration.wallSeconds else { throw GIFExportProcessError.timedOut }
             job.update { $0.lastStage = "destinationPreparation" }
+            configuration.launchDiagnosticsForTesting?.record(.destinationPreparationStarted)
             let destination: URL
             if let destinationURL {
                 guard destinationURL.isFileURL else { throw GIFExportProcessError.invalidSource }
@@ -214,11 +219,13 @@ actor GIFExportProcessService {
             let jobDirectory = ownedJob.url
             directory = ownedJob; job.setDirectory(ownedJob, ownedDestinationDirectory: ownedDestinationDirectory)
             job.update { $0.lastStage = "sourceSnapshot" }
+            configuration.launchDiagnosticsForTesting?.record(.sourceSnapshotStarted)
             try copySource(sourceURL, to: jobDirectory.appendingPathComponent("source.mp4"), job: job,
                            deadline: started + configuration.wallSeconds)
             try ownedJob.recordSource()
             if let trimStage { try trimStage.validateGIFPaths(sourceURL: sourceURL, destinationURL: destination) }
             try job.checkCancellation()
+            configuration.launchDiagnosticsForTesting?.record(.processConfigurationStarted)
             let request = GIFHelperRequest(options: options, frameExtraction: extraction)
             let inputData = try GIFHelperProtocol.encodeRequestLine(request)
             let input = Pipe(), output = Pipe(), errors = Pipe()
@@ -233,29 +240,44 @@ actor GIFExportProcessService {
             reader.start(stdout: output.fileHandleForReading, stderr: errors.fileHandleForReading)
             defer { reader.close() }
             job.update { $0.lastStage = "helperLaunch" }
+            configuration.launchDiagnosticsForTesting?.record(.processRunStarted)
             do { try process.run() }
-            catch { reader.closeWriters(output: output, errors: errors); throw error }
+            catch {
+                configuration.launchDiagnosticsForTesting?.record(.processRunFailed)
+                reader.closeWriters(output: output, errors: errors); throw error
+            }
             job.setProcess(process)
+            configuration.launchDiagnosticsForTesting?.record(.processRunSucceeded)
             try? input.fileHandleForReading.close()
             reader.closeWriters(output: output, errors: errors)
             defer { try? input.fileHandleForWriting.close() }
             // Fail closed if nonblocking/SIGPIPE safety cannot be established.
             // Never risk delivering an early-exit SIGPIPE to the main app.
+            configuration.launchDiagnosticsForTesting?.record(.requestPipeConfigurationStarted)
             let inputFD = input.fileHandleForWriting.fileDescriptor
             let inputFlags = fcntl(inputFD, F_GETFL)
             let inputSafe = inputFlags >= 0 && fcntl(inputFD, F_SETNOSIGPIPE, 1) == 0 &&
                 fcntl(inputFD, F_SETFL, inputFlags | O_NONBLOCK) == 0
             var failure: Error?
             if inputSafe {
-                do { try input.fileHandleForWriting.write(contentsOf: inputData) }
-                catch { failure = GIFExportProcessError.failed("The helper request pipe closed before setup completed.") }
+                configuration.launchDiagnosticsForTesting?.record(.requestPipeReady)
+                configuration.launchDiagnosticsForTesting?.record(.requestWriteStarted)
+                do {
+                    try input.fileHandleForWriting.write(contentsOf: inputData)
+                    configuration.launchDiagnosticsForTesting?.record(.requestWriteSucceeded)
+                } catch {
+                    configuration.launchDiagnosticsForTesting?.record(.requestWriteFailed)
+                    failure = GIFExportProcessError.failed("The helper request pipe closed before setup completed.")
+                }
             } else {
+                configuration.launchDiagnosticsForTesting?.record(.requestPipeFailed)
                 failure = GIFExportProcessError.failed("The helper control pipe could not be configured safely.")
                 try? input.fileHandleForWriting.close()
             }
             var stopStarted: TimeInterval?
             var sentTerminate = false, sentKill = false
             job.update { $0.lastStage = "helperRunning" }
+            configuration.launchDiagnosticsForTesting?.record(.helperRunning)
             while process.isRunning {
                 let now = ProcessInfo.processInfo.systemUptime
                 sample(job: job, child: process.processIdentifier)
@@ -293,6 +315,7 @@ actor GIFExportProcessService {
             process.waitUntilExit() // Already observed exited; never an unbounded running-child wait.
             job.recordExit(process)
             job.update { $0.lastStage = "helperResponse" }
+            configuration.launchDiagnosticsForTesting?.record(.helperResponse)
             let drainDeadline = ProcessInfo.processInfo.systemUptime + 1
             while !reader.snapshot().finished, ProcessInfo.processInfo.systemUptime < drainDeadline {
                 Thread.sleep(forTimeInterval: 0.01)
