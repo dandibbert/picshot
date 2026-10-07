@@ -101,8 +101,15 @@ import PicShotCore
         let state = try required(editor.automaticMosaicReviewState, "Review disappeared")
         try require(state.phase == .ready, "Matcher refused workload: " + state.message)
         try require(state.candidates.count == 3 && state.includedCount == 3 && !state.truncated, "Expected exactly three authored repeats")
-        for rect in authoredRegions {
-            try require(state.candidates.filter { $0.rect == canvasRect(rect) }.count == 1, "Matcher lost/duplicated expected region")
+        if !authoredRegions.allSatisfy({ rect in state.candidates.filter { $0.rect == canvasRect(rect) }.count == 1 }) {
+            let originalSeed = authoredRegions[0]
+            let direct = try await AutomaticMosaicMatcher().findMatches(in: editor.annotationCanvas.image,
+                seed: .init(x: Int(originalSeed.minX), y: Int(originalSeed.minY), width: Int(originalSeed.width), height: Int(originalSeed.height)))
+            let directBoxes = direct.candidates.map { "\($0.rect.x),\($0.rect.y),\($0.rect.width),\($0.rect.height)" }.joined(separator: ";")
+            throw failure("Matcher lost/duplicated expected region; drawn seed=" + NSStringFromRect(state.seed.localBounds)
+                + "; reviewed=" + state.candidates.map { NSStringFromRect($0.rect) }.joined(separator: ";")
+                + "; expected=" + authoredRegions.map { NSStringFromRect(canvasRect($0)) }.joined(separator: ";")
+                + "; zoom=\(editor.annotationCanvas.zoom),\(editor.annotationCanvas.displayScaleY); direct source candidates=" + directBoxes)
         }
         try require(!state.candidates.contains { $0.rect == canvasRect(nearNonmatch) }, "Changed glyph was treated as repeated content")
     }

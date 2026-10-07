@@ -234,7 +234,7 @@ extension ImageEditorController {
     func installAutomaticMosaic() {
         automaticMosaicWorkspace.addSubview(automaticMosaicReviewSurface)
         annotationCanvas.onContentInvalidated = { [weak self] in
-            guard let self, self.automaticMosaicReviewState != nil else { return }
+            guard let self, self.automaticMosaicReviewState != nil || self.annotationCanvas.automaticMosaicDrawHandler != nil else { return }
             self.cancelAutomaticMosaic()
         }
         annotationCanvas.onAutomaticMosaicToggle = { [weak self] index in self?.toggleAutomaticMosaicCandidate(index) }

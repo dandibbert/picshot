@@ -136,6 +136,26 @@ final class AutomaticMosaicReviewTests: XCTestCase {
     }
 
     @MainActor
+    func testDeleteDuringLinkedCorrectionCancelsCapturedGroupBeforeAnotherDrag() throws {
+        let editor = try editor(); defer { editor.close() }
+        let canvas = editor.annotationCanvas
+        XCTAssertTrue(canvas.applyAutomaticMosaic(state(image: canvas.image).committedAnnotations(), replacing: nil))
+        XCTAssertEqual(canvas.annotations.count, 3)
+        editor.beginLinkedMosaicCorrection()
+        XCTAssertNotNil(canvas.automaticMosaicDrawHandler)
+        XCTAssertNil(editor.automaticMosaicReviewState)
+        canvas.keyDown(with: try key(canvas, "\u{7f}", code: 51))
+        XCTAssertTrue(canvas.annotations.isEmpty)
+        XCTAssertNil(canvas.automaticMosaicDrawHandler)
+        XCTAssertNil(editor.automaticMosaicReviewState)
+        XCTAssertTrue(editor.automaticMosaicReviewSurface.isHidden)
+        XCTAssertFalse(editor.automaticMosaicBlocksOutput)
+        try drag(canvas, CGRect(x: 21, y: 29, width: 6, height: 6))
+        XCTAssertLessThanOrEqual(canvas.annotations.count, 1)
+        XCTAssertTrue(canvas.annotations.allSatisfy { $0.mosaicLink == nil })
+    }
+
+    @MainActor
     func testNativeReviewControlsAreTransactionalAndApplyUndoRestoresSelectedSeed() async throws {
         let editor = try editor(); defer { editor.close() }
         let canvas = editor.annotationCanvas
