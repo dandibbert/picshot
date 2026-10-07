@@ -19,7 +19,9 @@ enum ScrollManualResourceFixture {
         ("5k-vertical", 5120, 2880, .vertical), ("5k-horizontal", 5120, 2880, .horizontal)
     ]
 
-    static func verify(evidenceDirectory: URL, functionalReportURL: URL) async throws -> [String: Any] {
+    static func verify(evidenceDirectory: URL, functionalReportURL: URL,
+                       observationStrategy: ManualScrollObservationStrategy = .fullFrame,
+                       diagnosticContext: [String: Any]? = nil) async throws -> [String: Any] {
         _ = NSApplication.shared
         try FileManager.default.createDirectory(at: evidenceDirectory, withIntermediateDirectories: true)
         let start = ProcessInfo.processInfo.systemUptime, deadline = start + deadlineSeconds
@@ -57,6 +59,19 @@ enum ScrollManualResourceFixture {
                        "previewCachedTiles": ScrollPreviewTileRequest.maximumCachedTiles,
                        "previewActiveJobs": ScrollPreviewTileRequest.maximumConcurrentJobs, "previewPendingJobs": 1]
         ]
+        // The optional extension is consumed only by the dedicated candidate
+        // checker. Ordinary resource reports retain their existing strict schema.
+        try require(observationStrategy == .fullFrame || diagnosticContext != nil,
+                    "Experimental hashing requires an explicit diagnostic context")
+        var hashDiagnosticCycles: [[String: Any]] = []
+        let diagnosticSink: (([String: Any]) -> Void)? = diagnosticContext == nil ? nil : { hashDiagnosticCycles.append($0) }
+        func refreshHashDiagnostics() {
+            guard var context = diagnosticContext else { return }
+            context["strategy"] = observationStrategy.rawValue
+            context["cycles"] = hashDiagnosticCycles
+            report["diagnosticHashComparison"] = context
+        }
+        refreshHashDiagnostics()
         var warmups: [[String: Any]] = [], cycles: [[String: Any]] = []
         let warmupSampler = GIFResourceMemorySampler()
         defer { warmupSampler.stop() }
@@ -69,8 +84,9 @@ enum ScrollManualResourceFixture {
             report["beforeWarmup"] = try memory()
             for repetition in 0..<warmupRepetitions {
                 for (index, profile) in profiles.enumerated() {
-                    warmups.append(try await cycle(profile, index: repetition * profiles.count + index + 1, phase: "warmup", deadline: deadline))
-                    warmupSampler.sample(); report["warmups"] = warmups
+                    warmups.append(try await cycle(profile, index: repetition * profiles.count + index + 1, phase: "warmup", deadline: deadline,
+                                                  observationStrategy: observationStrategy, diagnosticSink: diagnosticSink))
+                    warmupSampler.sample(); report["warmups"] = warmups; refreshHashDiagnostics()
                 }
             }
             warmupSampler.stop(); report["warmupSampledMemory"] = try statistics(warmupSampler)
@@ -80,8 +96,9 @@ enum ScrollManualResourceFixture {
             for repetition in 0..<measuredRepetitions {
                 for (index, profile) in profiles.enumerated() {
                     cycles.append(try await cycle(profile, index: repetition * profiles.count + index + 1,
-                                                   phase: "measured", deadline: deadline))
-                    measuredSampler.sample(); report["cycles"] = cycles
+                                                   phase: "measured", deadline: deadline,
+                                                   observationStrategy: observationStrategy, diagnosticSink: diagnosticSink))
+                    measuredSampler.sample(); report["cycles"] = cycles; refreshHashDiagnostics()
                 }
             }
             try await settle(deadline)
@@ -117,6 +134,7 @@ enum ScrollManualResourceFixture {
             try write(report, to: reportURL)
             return report
         } catch {
+            refreshHashDiagnostics()
             report["status"] = "failed"; report["observationsComplete"] = false
             report["error"] = error.localizedDescription; report["warmups"] = warmups; report["cycles"] = cycles
             report["elapsedSeconds"] = ProcessInfo.processInfo.systemUptime - start
@@ -126,7 +144,8 @@ enum ScrollManualResourceFixture {
     }
 
     private static func cycle(_ profile: (String, Int, Int, ScrollAxis), index: Int,
-                              phase: String, deadline: Double) async throws -> [String: Any] {
+                              phase: String, deadline: Double, observationStrategy: ManualScrollObservationStrategy,
+                              diagnosticSink: (([String: Any]) -> Void)?) async throws -> [String: Any] {
         let (name, width, height, axis) = profile
         let began = ProcessInfo.processInfo.systemUptime
         let source = Source(width: width, height: height, axis: axis)
@@ -141,7 +160,8 @@ enum ScrollManualResourceFixture {
         var coordinator: ManualScrollCoordinator?
         weak var weakCoordinator: ManualScrollCoordinator?
         var directory: URL?
-        let observations = Observations()
+        let observations = Observations(collectNormalization: diagnosticSink != nil)
+        var normalizationReleases: [[String: Any]] = []
         var accepted: [SourceIdentity] = [], after: [SourceIdentity] = []
         var previewProof: [String: Any] = [:], resetProof: [String: Any] = [:]
         var sampledFrames = 0, capturesAtCancel = 0, verifiedDiskBytes: Int64 = 0
@@ -157,11 +177,18 @@ enum ScrollManualResourceFixture {
             coordinator = try live.startManualForVerification(axis: axis,
                 region: CGRect(x: 10, y: 10, width: width, height: height),
                 screenSize: CGSize(width: width + 100, height: height + 100), configuration: config,
+                observationStrategy: observationStrategy,
                 provider: { try await source.next() })
             weakCoordinator = coordinator; weakDriver = live.manualDriverForVerification
             weakControls = live.manualControlsForVerification
             guard let run = coordinator else { throw failure("Missing resource coordinator") }
             func observe() throws { try observations.sample(live, run: run, source: source) }
+            func releasedNormalization(_ label: String) throws {
+                guard diagnosticSink != nil else { return }
+                let bytes = weakDriver?.normalizationBufferBytesForVerification ?? 0
+                try require(bytes == 0, "Normalization workspace survived drained " + label)
+                normalizationReleases.append(["stage": label, "normalizationBufferBytes": bytes])
+            }
             func wait(_ label: String, _ condition: () -> Bool) async throws {
                 try await until(label, deadline: min(deadline, ProcessInfo.processInfo.systemUptime + 40)) {
                     try observe(); return condition()
@@ -174,6 +201,7 @@ enum ScrollManualResourceFixture {
             try await wait("Stationary duplicate samples missing") { source.captures >= duplicateSamples }
             run.pause()
             try await wait("Pause did not drain") { run.canResume }
+            try releasedNormalization("first-pause")
             try require(live.sourceURLsForVerification.count == 1 && weakDriver?.pendingImage == nil,
                         "Stationary viewport duplicated or pause retained a candidate")
             let pauseCaptures = source.captures
@@ -187,18 +215,21 @@ enum ScrollManualResourceFixture {
             run.resume()
             try await wait("Moved source not accepted") { live.sourceURLsForVerification.count == 2 && run.acceptedFrames == 2 && run.state == .waiting }
             run.pause(); try await wait("Second source pause did not drain") { run.canResume }
+            try releasedNormalization("second-pause")
             accepted.append(try fileIdentity(live.sourceURLsForVerification[1]))
             source.offset = source.length * 8 + 17
             run.resume()
             try await wait("Uncertain seam did not pause recoverably") {
                 if case .recoverable = run.state { return run.canResume }; return false
             }
+            try releasedNormalization("recoverable-seam")
             try require(try fileIdentities(live.sourceURLsForVerification) == accepted, "Rejected seam changed accepted bytes")
             for frame in 3...acceptedPerCycle {
                 source.offset = 100 + (frame - 1) * source.step
                 run.resume()
                 try await wait("Stable source \(frame) not accepted") { live.sourceURLsForVerification.count == frame && run.acceptedFrames == frame && run.state == .waiting }
                 run.pause(); try await wait("Stable source pause did not drain") { run.canResume }
+                try releasedNormalization("accepted-\(frame)-pause")
                 accepted.append(try fileIdentity(live.sourceURLsForVerification[frame - 1]))
             }
             try require(run.acceptedFrames == acceptedPerCycle, "Coordinator accepted count differs")
@@ -233,6 +264,7 @@ enum ScrollManualResourceFixture {
             capturesAtCancel = source.captures; sampledFrames = run.sampledFrames
             run.cancel(); source.release()
             try await wait("Canceled capture did not drain") { !run.hasPendingOperation && source.activeProviders == 0 }
+            try releasedNormalization("cancel")
             try require(source.captures == capturesAtCancel && run.sampledFrames == sampledFrames,
                         "Cancellation scheduled late sampling")
             try require(live.manualDriverForVerification?.pendingImage == nil, "Canceled provider retained pending raster")
@@ -240,6 +272,7 @@ enum ScrollManualResourceFixture {
             source.clearRaster()
             live.resetForVerification()
             try await wait("Reset preview worker did not drain") { int(preview.snapshotForVerification, "activeJobs") == 0 }
+            try releasedNormalization("reset")
             resetProof = endpoint(live, run: run, source: source)
             try require(resetProof.values.allSatisfy { ($0 as? Int) == 0 }, "Reset retained owned state")
             try require(directory.map { !FileManager.default.fileExists(atPath: $0.path) } == true, "Reset left spool directory")
@@ -252,6 +285,17 @@ enum ScrollManualResourceFixture {
         try await settle(deadline)
         try require(source.captures == capturesAtCancel && source.activeProviders == 0, "Late provider ran after close")
         let settled = try memory(); sampler.stop()
+        if let diagnosticSink {
+            let expectedPeak = observationStrategy == .reusableFullFrame ? width * height * 4 : 0
+            try require(observations.normalizationPeakBytes == expectedPeak && observations.normalizationSamples > 0,
+                        "Diagnostic normalization workspace was not observed at its expected bound")
+            diagnosticSink(["index": index, "phase": phase, "profile": name,
+                "strategy": observationStrategy.rawValue,
+                "peakNormalizationBufferBytes": observations.normalizationPeakBytes,
+                "normalizationSamples": observations.normalizationSamples,
+                "normalizationReleases": normalizationReleases,
+                "normalizationBufferBytesAfterClose": weakDriver?.normalizationBufferBytesForVerification ?? 0])
+        }
         return [
             "index": index, "phase": phase, "profile": name, "axis": axis.rawValue,
             "width": width, "height": height, "framePixels": width * height, "rgbaBytesPerViewport": width * height * 4,
@@ -307,6 +351,9 @@ enum ScrollManualResourceFixture {
     }
 
     @MainActor private final class Observations {
+        let collectNormalization: Bool
+        private(set) var normalizationPeakBytes = 0, normalizationSamples = 0
+        init(collectNormalization: Bool) { self.collectNormalization = collectNormalization }
         var count = 0
         var peaks: [String: Int] = [:]
         func sample(_ live: ScrollCaptureController, run: ManualScrollCoordinator, source: Source) throws {
@@ -339,6 +386,12 @@ enum ScrollManualResourceFixture {
                 try ScrollManualResourceFixture.require(value >= 0 && value <= caps[key]!, "Observed owned bound exceeded: \(key)")
                 peaks[key] = max(peaks[key] ?? 0, value)
             }
+            if collectNormalization {
+                let bytes = live.manualDriverForVerification?.normalizationBufferBytesForVerification ?? 0
+                try ScrollManualResourceFixture.require(bytes >= 0 && bytes <= source.width * source.height * 4,
+                                                        "Owned normalization workspace exceeded viewport bound")
+                normalizationPeakBytes = max(normalizationPeakBytes, bytes); normalizationSamples += 1
+            }
             count += 1
         }
     }
@@ -367,6 +420,10 @@ enum ScrollManualResourceFixture {
         return try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.fileSizeKey])
             .reduce(0) { sum, url in sum + Int64(try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) }
     }
+    /// Earliest caller-visible boundary is smoke entry after AppDelegate startup.
+    /// This cannot reconstruct counters at process birth.
+    static func hashComparisonMemoryBoundary() throws -> [String: Any] { try memory() }
+
     private static func memory() throws -> [String: Any] {
         let reading = GIFResourceMemoryReading.current()
         try require((reading.residentBytes ?? 0) > 0 && (reading.physicalFootprintBytes ?? 0) > 0

@@ -1,4 +1,4 @@
-# Manual scroll memory: attribution pending
+# Manual scroll memory: measured attribution, delivery held
 
 The actual ARM64 end-to-end run at `0361a7eb1fe9c9ab39732853852b50a6d690a15a` completed its unchanged 8 warmups + 16 measured interleaved 4K/5K, vertical/horizontal cycles in 138.891 seconds. All owned cleanup counters were zero, while settled RSS grew 714,358,784 bytes after warmup. The last three intervals added 42,565,632 / 49,643,520 / 68,403,200 bytes. Physical footprint grew 771,520 bytes. The 1,759 measured RSS/footprint observations had zero failed samples; sampled peaks were 2,011,627,520 RSS / 157,143,680 footprint bytes.
 
@@ -46,4 +46,27 @@ Interpret current versus baseline only after matched architecture, OS, toolchain
 
 The Python checker and nine synthetic mutation tests pass in the Linux editing workspace. They reject missing accounting, failed calls, unqueried standard-flavor purgeable zeros, sampler gaps, ceiling violations, changed provenance, reduced work counts and missing cleanup. Returned purgeable zeros and signed negative ledger values remain valid observations. Growth is reported without a memory-stability pass or leak label.
 
-Swift source and tests require the native build. The current-only Swift test compares the copied procedural generator/hash to the production manual algorithms. Baseline-compatible tests cover known quarter-step matches, hash changes, configuration rejection and sampled watchdog failures. No new native memory results are claimed in this document.
+The current-only Swift test compares the copied procedural generator/hash to the production manual algorithms. Baseline-compatible tests cover known quarter-step matches, hash changes, configuration rejection and sampled watchdog failures. Both architectures passed 59 selected native tests at the source below.
+
+
+## Measured comparison at fda0e7e5
+
+[Run 37661169415](https://github.com/dandibbert/picshot/actions/runs/37661169415), exact source `fda0e7e5c5fbec02f0bd434f3e4811205a12322f`, completed all 13 ARM cells on macOS 15.7.9 (24G830). Each used eight warmup and sixteen measured cycles, for 312 split cycles and 12,024 sampled RSS/footprint pairs, with zero failed samples. The checked matrix confirmed common source hash vectors, identical prepared PNGs, architecture, OS and release build. Current cells preceded the instrumented baseline, so ordering remains a timing confound. This is diagnostic app evidence, not installed ZIP/DMG acceptance.
+
+The current capture-hash control acquired exactly 1,474,560,000 additional volatile-resident bytes during the 32 warmup source normalization/hash intervals. Each 4K source added 33,177,600 bytes and each 5K source 58,982,400 bytes. Source creation added only one other 16 KiB page; subsequent outer pool exits released none of that volatile backing. This localizes the rise to the combined normalization/hash interval but does not isolate which of its two draw/hash calls, context, source conversion or framework cache owns it. A flat measured volatile slope follows about 1.37 GiB of retained backing and is not a low-memory result.
+
+The instrumented baseline hash cell ends at essentially the same volatile total. Its warm-to-final volatile-resident increase of 235,388,928 bytes is exactly matched by a decrease of 235,388,928 in the compressed volatile ledger; volatile virtual size is unchanged at 1,475,870,720 bytes. That is consistent with residency/compression changes in existing backing, not evidence of that much new logical allocation. The hash algorithm in this baseline cell is an added diagnostic control and was not shipped as continuous capture in 0.13.
+
+The shared production acceptance control has unchanged source at the two commits. Current and baseline both finish with 8.75 MiB volatile resident and no measured volatile growth. Their warm-to-final RSS increments are 17.297 and 9.125 MiB respectively. This single paired observation does not attribute that difference to an owned image or a new feature. The separate current detail control retains 228.375 MiB volatile resident after warmup; it does not establish reclaimability.
+
+### Full end-to-end observations
+
+ARM's unchanged full workload completed in 145.2964 seconds, with eight warmups and sixteen measured cycles, four accepted frames and 13 observations per cycle, and zero explicit owners after close. Unlike the split eight-hash cell, it includes rejection, pause/move/retry, asynchronous preview and cancellation. Stage deltas are not additive or workload-identical.
+
+The resource loop runs after functional manual verification in the same process. Its pre-warm boundary already has RSS 818,085,888 / volatile resident 228,720,640 bytes and is not process-cold. Resource warmup adds RSS 238,764,032 / volatile resident 206,766,080 bytes. After warmup, the final increase is RSS 730,906,624 / volatile resident 713,687,040 / physical footprint 575,040 bytes. The final actual volatile-resident total is 1,149,173,760 bytes. Compressed volatile/nonvolatile ledgers remain zero, while volatile virtual size increases 714,244,096 bytes.
+
+The last three RSS increments are 42,565,632 / 49,577,984 / 68,452,352 bytes; actual volatile-resident increments are 42,827,776 / 49,315,840 / 68,648,960 bytes. There are 892 warmup and 2,040 measured sample pairs, with zero failures. Measured sampled peaks are RSS 2,012,938,240 / footprint 157,438,400 bytes. All four profiles are interleaved, so even repeated endpoints for one profile include the intervening profiles. These measurements establish actual volatile accounting, not harmlessness, reclamation, a leak verdict or overall memory stability. Delivery remains held.
+
+### Intel limits
+
+Intel passed the same 59 selected tests and completed the current source-create, capture-hash and PNG-spool cells. Its hash warmup also reached 1,474,560,000 volatile-resident bytes. Stitch-overlap reached the unchanged 240-second cooperative cap at 240.1166 seconds after all eight warmups and 13 of 16 measured cycles. Its 4,822 valid samples remained below sampled ceilings, so this is a time limit and incomplete comparison, not a memory-watchdog failure. Later current cells, all baseline cells and the full Intel end-to-end workload were unrun. No Intel installer acceptance follows from these diagnostics.

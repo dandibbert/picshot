@@ -28,6 +28,8 @@ final class ManualScrollScreenDriver: ManualScrollDriver {
     private let provider: (() async throws -> CGImage)?
     private let accept: (CGImage) async throws -> ManualScrollSample
     private var invalidated = false
+    private let observationStrategy: ManualScrollObservationStrategy
+    private var reusableObservation: ManualScrollReusableObservation?
 
     var targetPoint: CGPoint { CGPoint(x: displayBounds.minX + region.midX, y: displayBounds.minY + region.midY) }
     var pixelSize: CGSize? { expectedPixelSize }
@@ -43,17 +45,20 @@ final class ManualScrollScreenDriver: ManualScrollDriver {
         self.displayID = displayID; self.region = region; self.screenSize = screenSize
         displayBounds = bounds; self.expectedPixelSize = expectedPixelSize; target = lockedTarget
         self.accept = accept; provider = nil; validate = nil
+        observationStrategy = .fullFrame
         permission = { guard CGPreflightScreenCaptureAccess() else { throw CaptureError.screenPermission } }
     }
 
     /// Verification initializer never inspects the desktop, asks for TCC or sends input.
     init(region: CGRect, screenSize: CGSize, expectedPixelSize: CGSize? = nil,
+         observationStrategy: ManualScrollObservationStrategy = .fullFrame,
          permission: @escaping () throws -> Void = {}, validate: @escaping () throws -> Void = {},
          provider: @escaping () async throws -> CGImage,
          accept: @escaping (CGImage) async throws -> ManualScrollSample) {
         displayID = 0; displayBounds = CGRect(origin: .zero, size: screenSize)
         self.region = region; self.screenSize = screenSize; self.expectedPixelSize = expectedPixelSize
         self.permission = permission; self.validate = validate; self.provider = provider; self.accept = accept
+        self.observationStrategy = observationStrategy
     }
 
     func checkPermission() throws { try permission() }
@@ -84,7 +89,20 @@ final class ManualScrollScreenDriver: ManualScrollDriver {
         if let expectedPixelSize, expectedPixelSize != size {
             throw ManualScrollRecoveryError(message: "选区像素尺寸改变。原图未修改，请恢复原显示缩放或停止截图。")
         }
-        let worker = Task.detached(priority: .userInitiated) { try Self.observation(image) }
+        let strategy = observationStrategy
+        if strategy == .reusableFullFrame, reusableObservation == nil {
+            reusableObservation = ManualScrollReusableObservation()
+        }
+        let reusable = reusableObservation
+        let worker = Task.detached(priority: .userInitiated) {
+            switch strategy {
+            case .fullFrame: return try Self.observation(image)
+            case .pooledFullFrame: return try autoreleasepool { try Self.observation(image) }
+            case .reusableFullFrame:
+                guard let reusable else { throw ScrollStitchError.invalidPixels }
+                return try reusable.observation(image)
+            }
+        }
         let result = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
         try Task.checkCancellation()
         guard !invalidated else { throw CancellationError() }
@@ -102,7 +120,11 @@ final class ManualScrollScreenDriver: ManualScrollDriver {
     }
 
     func discardPendingCapture() { pendingImage = nil }
-    func invalidate() { invalidated = true; discardPendingCapture() }
+    // Ordinary discard also runs between observations. Keep the reusable bitmap
+    // there; release it when the owner observes that pause/recovery has drained.
+    func releaseObservationResources() { reusableObservation = nil }
+    var normalizationBufferBytesForVerification: Int { reusableObservation?.allocatedByteCount ?? 0 }
+    func invalidate() { invalidated = true; discardPendingCapture(); releaseObservationResources() }
 
     /// Caller must be paused with no pending operation. No accepted source is changed.
     /// The exact pixel extent is preserved and the new origin is snapped to source pixels.

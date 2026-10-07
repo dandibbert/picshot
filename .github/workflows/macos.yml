@@ -7,7 +7,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[scroll-memory]') && 'scroll-memory' || contains(github.event.head_commit.message || '', '[decode-exit-latch]') && 'decode-exit-latch' || contains(github.event.head_commit.message || '', '[decode-timing-v3]') && 'decode-timing-v3' || contains(github.event.head_commit.message || '', '[decode-large]') && 'decode-large' || contains(github.event.head_commit.message || '', '[pin-workflows]') && 'pins-010' || contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
+  group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[manual-hash]') && 'manual-hash' || contains(github.event.head_commit.message || '', '[scroll-memory]') && 'scroll-memory' || contains(github.event.head_commit.message || '', '[decode-exit-latch]') && 'decode-exit-latch' || contains(github.event.head_commit.message || '', '[decode-timing-v3]') && 'decode-timing-v3' || contains(github.event.head_commit.message || '', '[decode-large]') && 'decode-large' || contains(github.event.head_commit.message || '', '[pin-workflows]') && 'pins-010' || contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
   cancel-in-progress: true
 jobs:
   runner-check:
@@ -24,7 +24,7 @@ jobs:
         timeout-minutes: 2
         run: python3 -m unittest discover -s scripts/tests -p test_run_bounded_command.py -v
   build:
-    if: ${{ (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') && !contains(github.event.head_commit.message || '', '[codec-attribution]') && !contains(github.event.head_commit.message || '', '[runner-only]') && !contains(github.event.head_commit.message || '', '[scroll-memory]') }}
+    if: ${{ (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') && !contains(github.event.head_commit.message || '', '[codec-attribution]') && !contains(github.event.head_commit.message || '', '[runner-only]') && !contains(github.event.head_commit.message || '', '[scroll-memory]') && !contains(github.event.head_commit.message || '', '[manual-hash]') }}
     strategy:
       fail-fast: false
       matrix:
@@ -605,6 +605,62 @@ jobs:
             dist/scroll-*.log
             dist/scroll-*.json
             dist/evidence/scroll-memory/
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 6
+
+
+  manual-hash:
+    if: ${{ contains(github.event.head_commit.message || '', '[manual-hash]') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Check manual hash comparison evidence contracts
+        timeout-minutes: 3
+        run: |
+          python3 -m unittest discover -s scripts/tests -p test_check_scroll_manual_resource_report.py -v
+          python3 -m unittest discover -s scripts/tests -p test_check_manual_hash_comparison.py -v
+          mkdir -p dist
+      - name: Build signed diagnostic app with unchanged production hash default
+        env:
+          PICSHOT_PACKAGE_APP_ONLY: '1'
+        run: |
+          set -o pipefail
+          bash scripts/package.sh 2>&1 | tee dist/manual-hash-package.log
+      - name: Compile native pixel and lifecycle tests
+        timeout-minutes: 10
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 540
+          --log dist/manual-hash-test-build.log --report dist/manual-hash-test-build-report.json
+          -- swift build --build-tests
+      - name: Verify exact normalized pixels and cancellation ownership
+        timeout-minutes: 8
+        run: |
+          swift build --product PicShotCodecHelper
+          python3 scripts/run-bounded-command.py --timeout-seconds 420 --log dist/manual-hash-tests.log --report dist/manual-hash-tests-report.json -- swift test --skip-build --filter 'ScrollMemoryAttribution|ManualScroll|ScrollPreview|ScrollSequencePreview|CodecExportProcess|CodecGIFLease'
+      - name: Compare complete end-to-end lifetimes in fresh app processes
+        timeout-minutes: 31
+        run: |
+          set -o pipefail
+          bash scripts/manual-hash-comparison.sh "$PWD/dist/PicShot.app" "$PWD/dist/evidence/manual-hash" "$GITHUB_SHA" 2>&1 | tee dist/manual-hash-comparison.log
+      - name: Preserve native evidence without installer publication
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Manual-Hash-${{ matrix.arch }}-${{ github.sha }}
+          path: |
+            dist/manual-hash-*.log
+            dist/manual-hash-*.json
+            dist/evidence/manual-hash/
           if-no-files-found: warn
           retention-days: 14
           compression-level: 6

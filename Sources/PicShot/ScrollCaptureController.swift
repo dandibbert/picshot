@@ -298,6 +298,7 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
                                ready: manual?.canResume == true && !repositioning)
         switch state {
         case .paused, .recoverable:
+            if manual?.hasPendingOperation == false { manualDriver?.releaseObservationResources() }
             if !repositioning { window?.makeKeyAndOrderFront(nil) }
         case .finished, .failed:
             manualDriver?.invalidate()
@@ -830,6 +831,7 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
     @discardableResult
     func startManualForVerification(axis requestedAxis: ScrollAxis, region: CGRect, screenSize: CGSize,
                                     configuration: ManualScrollConfiguration,
+                                    observationStrategy: ManualScrollObservationStrategy = .fullFrame,
                                     provider: @escaping () async throws -> CGImage,
                                     validate: @escaping () throws -> Void = {}) throws -> ManualScrollCoordinator {
         guard !sessionBusy, !edits.isEditing else { throw CaptureError.busy }
@@ -838,7 +840,7 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
         let token = generation
         let driver = ManualScrollScreenDriver(region: region, screenSize: screenSize,
             expectedPixelSize: previousFrame.map { CGSize(width: $0.width, height: $0.height) },
-            validate: validate, provider: provider) { [weak self] image in
+            observationStrategy: observationStrategy, validate: validate, provider: provider) { [weak self] image in
                 guard let self, self.generation == token else { throw CancellationError() }
                 return try await self.acceptManualImage(image)
             }

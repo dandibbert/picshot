@@ -15,9 +15,29 @@ import PicShotFormulaRenderCore
                 NSApp.terminate(nil); return
             }
             if ProcessInfo.processInfo.environment["PICSHOT_MANUAL_SCROLL_ONLY"] == "1" {
-                var payload = try await ScrollManualCaptureSmokeFixture.verify(evidenceDirectory: directory, includeLargeFrames: true)
-                if ProcessInfo.processInfo.environment["PICSHOT_MANUAL_SCROLL_RESOURCES"] == "1" {
-                    payload["resourceEvidence"] = try await ScrollManualResourceFixture.verify(evidenceDirectory: directory, functionalReportURL: directory.appendingPathComponent("scroll-manual-continuous.json"))
+                let environment = ProcessInfo.processInfo.environment
+                let strategy = try ManualScrollObservationStrategy.diagnosticSelection(environment: environment)
+                var hashContext: [String: Any]?
+                if environment["PICSHOT_MANUAL_HASH_STRATEGY"] != nil {
+                    hashContext = ["strategy": strategy.rawValue, "diagnosticOnly": true,
+                        "productionDefaultStrategy": "full-frame", "processStartMemoryCaptured": false,
+                        "measurementStartScope": "First manual smoke-route boundary after AppDelegate startup, before functional verification; not process birth or pre-initialization memory",
+                        "runIdentifier": UUID().uuidString,
+                        "operatingSystem": ProcessInfo.processInfo.operatingSystemVersionString,
+                        "smokeEntryBeforeFunctional": try ScrollManualResourceFixture.hashComparisonMemoryBoundary()]
+                    // Preserve entry evidence even if functional verification fails.
+                    try JSONSerialization.data(withJSONObject: hashContext!, options: [.prettyPrinted, .sortedKeys])
+                        .write(to: directory.appendingPathComponent("manual-hash-entry.json"), options: .atomic)
+                }
+                var payload = try await ScrollManualCaptureSmokeFixture.verify(evidenceDirectory: directory,
+                    includeLargeFrames: true, observationStrategy: strategy)
+                if hashContext != nil {
+                    hashContext!["afterFunctionalBeforeResource"] = try ScrollManualResourceFixture.hashComparisonMemoryBoundary()
+                }
+                if environment["PICSHOT_MANUAL_SCROLL_RESOURCES"] == "1" {
+                    payload["resourceEvidence"] = try await ScrollManualResourceFixture.verify(evidenceDirectory: directory,
+                        functionalReportURL: directory.appendingPathComponent("scroll-manual-continuous.json"),
+                        observationStrategy: strategy, diagnosticContext: hashContext)
                 }
                 payload["bundlePath"] = Bundle.main.bundlePath
                 payload["arguments"] = CommandLine.arguments

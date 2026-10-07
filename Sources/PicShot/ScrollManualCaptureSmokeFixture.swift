@@ -7,9 +7,12 @@ import PicShotCore
 /// This never captures an external app, posts global input, or touches TCC/Accessibility.
 @MainActor
 enum ScrollManualCaptureSmokeFixture {
-    static func verify(evidenceDirectory: URL, includeLargeFrames: Bool = false) async throws -> [String: Any] {
+    static func verify(evidenceDirectory: URL, includeLargeFrames: Bool = false,
+                       observationStrategy: ManualScrollObservationStrategy = .fullFrame) async throws -> [String: Any] {
         try FileManager.default.createDirectory(at: evidenceDirectory, withIntermediateDirectories: true)
         var report: [String: Any] = [
+            "manualHashStrategy": observationStrategy.rawValue,
+            "processIdentifier": Int(ProcessInfo.processInfo.processIdentifier),
             "status": "running", "sourceCommit": Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String ?? "unknown",
             "provider": "owned synthetic deterministic RGBA frames, no physical external-app capture",
             "screenCaptureStarted": false, "accessibilityRequested": false, "permissionRequested": false,
@@ -23,17 +26,17 @@ enum ScrollManualCaptureSmokeFixture {
         do {
             report["memoryBefore"] = try memory()
             var axes: [[String: Any]] = []
-            for axis in ScrollAxis.allCases { axes.append(try await acceptanceCycle(axis: axis)) }
+            for axis in ScrollAxis.allCases { axes.append(try await acceptanceCycle(axis: axis, observationStrategy: observationStrategy)) }
             report["axes"] = axes
             report["regionMoveNativeEvents"] = try regionMoveEvents()
-            report["lateCaptureClose"] = try await lateCaptureClose()
-            report["lateWritePauseStopClose"] = try await writeCancellationCycles()
+            report["lateCaptureClose"] = try await lateCaptureClose(observationStrategy: observationStrategy)
+            report["lateWritePauseStopClose"] = try await writeCancellationCycles(observationStrategy: observationStrategy)
             report["colorDigest"] = try colorDigest()
-            report["nativeAppearanceSnapshots"] = try await appearanceSnapshots(directory: evidenceDirectory)
+            report["nativeAppearanceSnapshots"] = try await appearanceSnapshots(directory: evidenceDirectory, observationStrategy: observationStrategy)
             if includeLargeFrames {
                 var resources: [[String: Any]] = []
                 for (size, axis) in [((3840, 2160), ScrollAxis.horizontal), ((5120, 2880), ScrollAxis.vertical)] {
-                    resources.append(try await resourceCycle(width: size.0, height: size.1, axis: axis))
+                    resources.append(try await resourceCycle(width: size.0, height: size.1, axis: axis, observationStrategy: observationStrategy))
                 }
                 report["largeFrameProviders"] = resources
             }
@@ -67,7 +70,7 @@ enum ScrollManualCaptureSmokeFixture {
         return config
     }
 
-    private static func acceptanceCycle(axis: ScrollAxis) async throws -> [String: Any] {
+    private static func acceptanceCycle(axis: ScrollAxis, observationStrategy: ManualScrollObservationStrategy) async throws -> [String: Any] {
         var controller: ScrollCaptureController? = ScrollCaptureController { _ in }
         weak var weakController = controller
         let source = Source(axis: axis)
@@ -79,7 +82,7 @@ enum ScrollManualCaptureSmokeFixture {
             try await live.setAutoCropForVerification(false)
             coordinator = try live.startManualForVerification(axis: axis,
                 region: CGRect(x: 20, y: 20, width: axis == .vertical ? 96 : 140, height: axis == .vertical ? 140 : 96), screenSize: CGSize(width: 800, height: 600),
-                configuration: configuration(), provider: { try source.next() })
+                configuration: configuration(), observationStrategy: observationStrategy, provider: { try source.next() })
             weakDriver = live.manualDriverForVerification
             try await wait("Initial stable viewport not accepted") { live.sourceURLsForVerification.count == 1 }
             let first = live.sourceURLsForVerification
@@ -135,13 +138,13 @@ enum ScrollManualCaptureSmokeFixture {
 
     /// A deliberately noncooperative provider returns after close. No stale image may
     /// install, reopen controls, create a directory or retain the controller after drain.
-    private static func lateCaptureClose() async throws -> Bool {
+    private static func lateCaptureClose(observationStrategy: ManualScrollObservationStrategy) async throws -> Bool {
         let gate = Gate()
         var controller: ScrollCaptureController? = ScrollCaptureController { _ in }
         weak var weakController = controller
         var coordinator: ManualScrollCoordinator? = try controller?.startManualForVerification(axis: .vertical,
             region: CGRect(x: 0, y: 0, width: 96, height: 140), screenSize: CGSize(width: 800, height: 600),
-            configuration: configuration(), provider: {
+            configuration: configuration(), observationStrategy: observationStrategy, provider: {
                 await gate.hold()
                 return try ScrollSequenceSmokeFixture.image(axis: .vertical, offset: 100)
             })
@@ -156,7 +159,7 @@ enum ScrollManualCaptureSmokeFixture {
         return true
     }
 
-    private static func writeCancellationCycles() async throws -> [[String: Any]] {
+    private static func writeCancellationCycles(observationStrategy: ManualScrollObservationStrategy) async throws -> [[String: Any]] {
         var results: [[String: Any]] = []
         for action in ["pause", "stop", "close"] {
             let live = ScrollCaptureController { _ in }
@@ -169,7 +172,7 @@ enum ScrollManualCaptureSmokeFixture {
             live.sourceWriteBarrierForVerification = { url in await gate.hold(url) }
             let coordinator = try live.startManualForVerification(axis: .vertical,
                 region: CGRect(x: 0, y: 0, width: 96, height: 140), screenSize: CGSize(width: 800, height: 600),
-                configuration: configuration(), provider: { try ScrollSequenceSmokeFixture.image(axis: .vertical, offset: 147) })
+                configuration: configuration(), observationStrategy: observationStrategy, provider: { try ScrollSequenceSmokeFixture.image(axis: .vertical, offset: 147) })
             let deadline = ProcessInfo.processInfo.systemUptime + 20
             while await gate.url == nil {
                 guard ProcessInfo.processInfo.systemUptime < deadline else { throw failure("Write gate timeout") }
@@ -224,7 +227,7 @@ enum ScrollManualCaptureSmokeFixture {
 
     /// Separate visual evidence uses readable, owned synthetic page content. Controls
     /// and preview belong to a real paused/stopped session; no mock UI is rendered.
-    private static func appearanceSnapshots(directory: URL) async throws -> [String: Any] {
+    private static func appearanceSnapshots(directory: URL, observationStrategy: ManualScrollObservationStrategy) async throws -> [String: Any] {
         let live = ScrollCaptureController { _ in }
         defer { live.close() }
         try await live.setAutoCropForVerification(false)
@@ -232,7 +235,7 @@ enum ScrollManualCaptureSmokeFixture {
         var offset = 0
         let coordinator = try live.startManualForVerification(axis: .vertical,
             region: CGRect(x: 0, y: 0, width: 640, height: 400), screenSize: CGSize(width: 800, height: 600),
-            configuration: configuration(), provider: {
+            configuration: configuration(), observationStrategy: observationStrategy, provider: {
                 try unwrap(document.cropping(to: CGRect(x: 0, y: offset, width: 640, height: 400)),
                            "Cannot crop readable synthetic viewport")
             })
@@ -351,7 +354,7 @@ enum ScrollManualCaptureSmokeFixture {
         return true
     }
 
-    private static func resourceCycle(width: Int, height: Int, axis: ScrollAxis) async throws -> [String: Any] {
+    private static func resourceCycle(width: Int, height: Int, axis: ScrollAxis, observationStrategy: ManualScrollObservationStrategy) async throws -> [String: Any] {
         let before = try memory()
         var controller: ScrollCaptureController? = ScrollCaptureController { _ in }
         weak var weakController = controller
@@ -362,13 +365,14 @@ enum ScrollManualCaptureSmokeFixture {
         var peakOwnedPending = 0
         var directory: URL?
         var retainedGray = 0, thumbnail = 0
+        var outputDigest = ""
         do {
             let live = try unwrap(controller, "Missing large provider controller")
             try await live.setAutoCropForVerification(false)
             var config = configuration(); config.operationTimeout = 30
             coordinator = try live.startManualForVerification(axis: axis,
                 region: CGRect(x: 0, y: 0, width: width, height: height), screenSize: CGSize(width: width + 100, height: height + 100),
-                configuration: config, provider: {
+                configuration: config, observationStrategy: observationStrategy, provider: {
                     captures += 1
                     let current = offset
                     return try await Task.detached(priority: .userInitiated) { try largeImage(width: width, height: height, offset: current, axis: axis) }.value
@@ -389,6 +393,7 @@ enum ScrollManualCaptureSmokeFixture {
             try require(live.manualDriverForVerification?.pendingImage == nil, "Large provider retained candidate after stop")
             let output = try live.currentOutputForVerification()
             let outputSignature = try ManualScrollScreenDriver.observation(output)
+            outputDigest = outputSignature.rgbaSHA256.map { String(format: "%02x", $0) }.joined()
             let expected = try largeImage(width: width + (axis == .horizontal ? step : 0),
                                           height: height + (axis == .vertical ? step : 0), offset: 100, axis: axis)
             try require(try outputSignature == ManualScrollScreenDriver.observation(expected), "Large output pixel digest differs")
@@ -400,6 +405,7 @@ enum ScrollManualCaptureSmokeFixture {
         if let directory { try require(!FileManager.default.fileExists(atPath: directory.path), "Large spool leaked") }
         return ["width": width, "height": height, "axis": axis.rawValue, "samples": captures, "pendingImagePixelBound": peakOwnedPending,
                 "retainedGrayPixels": retainedGray, "overviewPixels": thumbnail, "exactOutputDigest": true,
+                "outputDigestSHA256": outputDigest,
                 "closeReleasesControllerAndSpool": true, "memoryBefore": before, "memoryAfter": try memory()]
     }
 
