@@ -358,9 +358,9 @@ jobs:
         run: >-
           python3 scripts/run-bounded-command.py --timeout-seconds 420
           --log dist/attribution-tests.log --report dist/attribution-tests-report.json
-          -- swift test --skip-build --filter 'CodecExportAttribution|ImageAllocatorRelief'
+          -- swift test --skip-build --filter 'CodecExportAttribution|ImageAllocatorRelief|ImageRasterMaterialization'
       - name: Run six fresh installed processes after separate input preparation
-        if: ${{ !contains(github.event.head_commit.message || '', '[image-relief]') }}
+        if: ${{ !contains(github.event.head_commit.message || '', '[image-relief]') && !contains(github.event.head_commit.message || '', '[image-draw]') }}
         run: |
           set -o pipefail
           bash scripts/codec-attribution.sh 2>&1 | tee dist/codec-attribution.log
@@ -370,6 +370,12 @@ jobs:
         run: |
           set -o pipefail
           bash scripts/image-relief-attribution.sh --compare "$PWD/dist/PicShot.app" "$PWD/dist/evidence/image-relief" 2>&1 | tee dist/image-relief-attribution.log
+      - name: Run explicitly selected actual-draw comparison
+        if: ${{ contains(github.event.head_commit.message || '', '[image-draw]') }}
+        timeout-minutes: 6
+        run: |
+          set -o pipefail
+          bash scripts/image-draw-attribution.sh --compare "$PWD/dist/PicShot.app" "$PWD/dist/evidence/image-draw" 2>&1 | tee dist/image-draw-attribution.log
       - name: Upload observations without publishing another installer
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -385,5 +391,7 @@ jobs:
             dist/evidence/codec-attribution/
             dist/image-relief-attribution.log
             dist/evidence/image-relief/
+            dist/image-draw-attribution.log
+            dist/evidence/image-draw/
           if-no-files-found: warn
           retention-days: 14
