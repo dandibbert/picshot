@@ -232,7 +232,7 @@ struct PinOCRResourceSnapshot: Equatable {
     static let maximumAutomaticJobs = 1
     static let maximumWaitingSessions = 32
 
-    private final class Job {
+    @MainActor private final class Job {
         let id = UUID()
         let sessionID: UUID
         let generation: UUID

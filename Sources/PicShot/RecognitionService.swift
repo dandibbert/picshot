@@ -477,7 +477,7 @@ private final class RecognitionCancellation: @unchecked Sendable {
     private func synchronizeText() {
         if !projection.text.utf16.elementsEqual(textView.string.utf16) { projection.invalidate(to: textView.string) }
     }
-    func textStorage(_ textStorage: NSTextStorage, didProcessEditing editedMask: NSTextStorage.EditActions, range editedRange: NSRange, changeInLength delta: Int) {
+    func textStorage(_ textStorage: NSTextStorage, didProcessEditing editedMask: NSTextStorageEditActions, range editedRange: NSRange, changeInLength delta: Int) {
         guard !closed, !replacingText, editedMask.contains(.editedCharacters) else { return }
         let current = textStorage.string, newLength = current.utf16.count
         if projection.mappingLimitReached || newLength > RecognizedTextProjection.maximumMappedUTF16Count {
