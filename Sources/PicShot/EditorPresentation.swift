@@ -296,7 +296,7 @@ final class InlineAnnotationTextBox: NSView {
         input.textContainer?.heightTracksTextView = true
         input.textContainer?.lineFragmentPadding = 0
         input.textContainerInset = NSSize(width: 3, height: 2)
-        applyStyle(annotation, zoom: zoom); input.string = annotation.text
+        input.string = annotation.text; applyStyle(annotation, zoom: zoom)
         input.setAccessibilityLabel("图上编辑文字；Command Return 完成，Escape 取消")
         input.onAccept = { [weak self] in self?.onAccept?() }
         input.onCancel = { [weak self] in self?.onCancel?() }
@@ -319,6 +319,18 @@ final class InlineAnnotationTextBox: NSView {
         if annotation.bold { font = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask) }
         if annotation.italic { font = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask) }
         input.font = font
+        let textRange = NSRange(location: 0, length: input.string.utf16.count)
+        if annotation.effectiveTextOutlineWidth > 0 {
+            let strokeColor = NSColor(cgColor: annotation.textOutlineColor) ?? .white
+            input.typingAttributes[.strokeWidth] = annotation.textOutlinePercentage
+            input.typingAttributes[.strokeColor] = strokeColor
+            input.textStorage?.addAttributes([.strokeWidth: annotation.textOutlinePercentage, .strokeColor: strokeColor], range: textRange)
+        } else {
+            input.typingAttributes.removeValue(forKey: .strokeWidth)
+            input.typingAttributes.removeValue(forKey: .strokeColor)
+            input.textStorage?.removeAttribute(.strokeWidth, range: textRange)
+            input.textStorage?.removeAttribute(.strokeColor, range: textRange)
+        }
         input.typingAttributes[.underlineStyle] = annotation.underline ? NSUnderlineStyle.single.rawValue : 0
         if input.string.utf16.count > 0 {
             input.textStorage?.addAttribute(.underlineStyle, value: annotation.underline ? NSUnderlineStyle.single.rawValue : 0, range: NSRange(location: 0, length: input.string.utf16.count))

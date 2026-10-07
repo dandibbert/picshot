@@ -17,7 +17,7 @@ enum AnnotationStrokeStyle: String, CaseIterable {
 }
 
 enum AnnotationHandle: Equatable {
-    case corner(Int), edge(Int), rotation, start, end, source, sourceCorner(Int), arcStart, arcEnd, vertex(Int)
+    case corner(Int), edge(Int), rotation, start, end, source, sourceCorner(Int), arcStart, arcEnd, vertex(Int), numberSize, numberCommentSize
 }
 
 extension ImageAnnotation {
@@ -31,7 +31,8 @@ extension ImageAnnotation {
         if isArc { return AnnotationArcGeometry.path(in: rect, start: effectiveArcStart, sweep: effectiveArcSweep, sector: tool == .sector) }
         if tool == .spotlight { return spotlightShape.path(in: rect) }
         if tool == .magnifier { return magnifierShape.path(in: rect) }
-        if tool == .ellipse || tool == .number { return CGPath(ellipseIn: rect, transform: nil) }
+        if tool == .number { return CGPath(ellipseIn: numberBadgeRect, transform: nil) }
+        if tool == .ellipse { return CGPath(ellipseIn: rect, transform: nil) }
         if tool == .rectangle || tool == .text {
             let radius = min(max(0, cornerRadius), min(rect.width, rect.height) / 2)
             return CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil)
@@ -40,19 +41,12 @@ extension ImageAnnotation {
     }
 
     var strokePath: CGPath {
+        if isFreehandStroke { return freehandPath }
+        if supportsLineEndings { return AnnotationLineGeometry.paths(for: self).stroke }
         let path = CGMutablePath()
-        let geometryPoints = boundedPathPoints
-        guard let first = geometryPoints.first else { return path }
+        guard let first = boundedPathPoints.first else { return path }
         path.move(to: first)
-        for point in geometryPoints.dropFirst() { path.addLine(to: point) }
-        if tool == .arrow, let last = points.last {
-            let angle = atan2(last.y - first.y, last.x - first.x)
-            let length = max(12, lineWidth * 4)
-            path.move(to: last)
-            path.addLine(to: CGPoint(x: last.x - length * cos(angle - .pi / 6), y: last.y - length * sin(angle - .pi / 6)))
-            path.move(to: last)
-            path.addLine(to: CGPoint(x: last.x - length * cos(angle + .pi / 6), y: last.y - length * sin(angle + .pi / 6)))
-        }
+        for point in boundedPathPoints.dropFirst() { path.addLine(to: point) }
         return path
     }
 
@@ -60,6 +54,7 @@ extension ImageAnnotation {
         if tool == .eraser { return erases(imagePoint) }
         if tool == .magnifier && magnifierShape.path(in: magnifierSourceRect).contains(imagePoint) { return true }
         let point = imagePoint.applying(transform.inverted())
+        if tool == .number { return numberHitTest(point, tolerance: tolerance) }
         if tool == .watermark {
             guard localBounds.contains(point) else { return false }
             return AnnotationWatermarkLayout.tileRects(for: self).contains { $0.insetBy(dx: -tolerance, dy: -tolerance).contains(point) }
@@ -68,9 +63,14 @@ extension ImageAnnotation {
             return outline.copy(strokingWithWidth: max(1, lineWidth) + tolerance * 2,
                                 lineCap: .round, lineJoin: .round, miterLimit: 10).contains(point)
         }
-        if isLinear || tool == .freehand || tool == .polyline {
-            return strokePath.copy(strokingWithWidth: max(1, lineWidth) + tolerance * 2,
-                                   lineCap: .round, lineJoin: .round, miterLimit: 10).contains(point)
+        if isFreehandStroke { return freehandInkPath(tolerance: tolerance).contains(point) }
+        if supportsLineEndings {
+            let paths = AnnotationLineGeometry.paths(for: self)
+            if paths.fill.contains(point) { return true }
+            if tolerance > 0 && !paths.fill.isEmpty && paths.fill.copy(strokingWithWidth: tolerance * 2,
+                lineCap: .round, lineJoin: .round, miterLimit: 10).contains(point) { return true }
+            return paths.stroke.copy(strokingWithWidth: max(1, lineWidth) + tolerance * 2,
+                lineCap: lineCap.cgValue, lineJoin: lineJoin.cgValue, miterLimit: 10).contains(point)
         }
         // Interior selection is intentional for hollow shapes, matching familiar drawing editors.
         if outline.contains(point) { return true }
@@ -79,6 +79,7 @@ extension ImageAnnotation {
     }
 
     func handles(zoom: CGFloat) -> [(AnnotationHandle, CGPoint)] {
+        if tool == .number { return numberHandles(zoom: zoom) }
         let box = localBounds, scale = max(0.05, zoom), worldTransform = transform
         if isLinear, let start = points.first, let end = points.last {
             return [(.start, start.applying(worldTransform)), (.end, end.applying(worldTransform))]
@@ -115,6 +116,7 @@ extension ImageAnnotation {
     }
 
     func edited(handle: AnnotationHandle, from origin: CGPoint, to point: CGPoint, shift: Bool) -> ImageAnnotation {
+        if tool == .number { return editedNumber(handle: handle, from: origin, to: point, shift: shift) }
         var result = self
         if tool == .magnifier {
             if handle == .source {
@@ -279,6 +281,11 @@ enum AnnotationTextLayout {
             NSAttributedString.Key(kCTForegroundColorAttributeName as String): annotation.color
         ]
         if annotation.underline { attributes[NSAttributedString.Key(kCTUnderlineStyleAttributeName as String)] = 1 }
+        if annotation.effectiveTextOutlineWidth > 0 {
+            // Core Text's negative percentage draws both the fill and its independent outline.
+            attributes[NSAttributedString.Key(kCTStrokeWidthAttributeName as String)] = annotation.textOutlinePercentage
+            attributes[NSAttributedString.Key(kCTStrokeColorAttributeName as String)] = annotation.textOutlineColor
+        }
         return NSAttributedString(string: annotation.text, attributes: attributes)
     }
 
@@ -298,6 +305,7 @@ enum AnnotationTextLayout {
         context.saveGState()
         context.addPath(annotation.outline); context.clip()
         context.textMatrix = .identity
+        if annotation.effectiveTextOutlineWidth > 0 { context.setLineDash(phase: 0, lengths: []) }
         let framesetter = CTFramesetterCreateWithAttributedString(attributedString(for: annotation))
         let content = box.insetBy(dx: padding, dy: padding)
         let frame = CTFramesetterCreateFrame(framesetter, CFRange(location: 0, length: 0), CGPath(rect: content, transform: nil), nil)

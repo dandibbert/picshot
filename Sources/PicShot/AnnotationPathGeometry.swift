@@ -64,14 +64,25 @@ extension ImageAnnotation {
     var arcStartPoint: CGPoint { AnnotationArcGeometry.point(in: localBounds, angle: effectiveArcStart) }
     var arcEndPoint: CGPoint { AnnotationArcGeometry.point(in: localBounds, angle: effectiveArcStart + effectiveArcSweep) }
     var boundedPathPoints: [CGPoint] {
+        if isFreehandStroke {
+            return points.prefix(Self.maximumGesturePoints).filter { AnnotationFreehandGeometry.bounded($0) }
+        }
         guard tool == .polyline else { return points }
         return Array(points.lazy.filter { $0.x.isFinite && $0.y.isFinite }.prefix(Self.maximumPolylinePoints))
     }
     var sanitizedPathGeometry: ImageAnnotation {
         var result = self
         if tool == .polyline { result.points = boundedPathPoints }
+        if isFreehandStroke {
+            let valid = points.prefix(Self.maximumGesturePoints).enumerated().filter { AnnotationFreehandGeometry.bounded($0.element) }
+            let corners = Set(freehandCorners.prefix(Self.maximumGesturePoints))
+            result.points = valid.map(\.element)
+            result.freehandCorners = valid.enumerated().compactMap { corners.contains($0.element.offset) ? $0.offset : nil }
+            result.lineWidth = effectiveFreehandWidth
+            result.freehandWasSimplified = freehandWasSimplified || points.count > Self.maximumGesturePoints
+        }
         if isArc { result.arcStartAngle = effectiveArcStart; result.arcSweepAngle = effectiveArcSweep }
-        return result
+        return result.sanitizedNumberCallout
     }
 }
 

@@ -274,6 +274,13 @@ final class ImageDecodeTerminationLatchTests: XCTestCase {
             Thread.sleep(forTimeInterval: 0.005)
         }
         XCTAssertFalse(process.isRunning, "The owned child must exit within the cleanup budget")
+        if !process.isRunning {
+            // This fixture owns the installed handler, just like the diagnostic
+            // supervisor. An unlaunched/failed-launch handler will never fire;
+            // release it explicitly instead of assuming Process deinit does so.
+            process.terminationHandler = nil
+            XCTAssertNil(process.terminationHandler, "Owned callback cleanup must be explicit")
+        }
     }
 
     // ARC evidence is collected after exit, allowing Foundation's launching-

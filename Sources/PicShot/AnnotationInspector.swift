@@ -1,9 +1,13 @@
 import AppKit
+import PicShotCore
 
 /// Compact contextual rows. These controls edit the same model used by hit testing
 /// and export; hidden controls have no separate preview-only state.
 @MainActor
 final class AnnotationInspector: EditorFloatingSurface {
+    let numberControls = NumberedCalloutControls()
+    var numberSequence = NumberedCalloutSequence()
+    var numberCount = 0
     var onEdit: (((inout ImageAnnotation) -> Void) -> Void)?
     var onClearAnnotations: (() -> Void)?
     var onFinishPolyline: (() -> Void)?
@@ -44,6 +48,8 @@ final class AnnotationInspector: EditorFloatingSurface {
     private var fillGroup = NSStackView(), dashGroup = NSStackView(), radiusGroup = NSStackView()
     private var opacityGroup = NSStackView(), rotationGroup = NSStackView(), textGroup = NSStackView()
     private var textTraitsGroup = NSStackView()
+    private let lineStyles = AnnotationLineStyleControls()
+    private let textOutline = AnnotationTextOutlineControls()
     private let eraserModePicker = NSPopUpButton()
     private let clearAnnotationsButton = NSButton(title: "清空标注", target: nil, action: nil)
     private var eraserGroup = NSStackView()
@@ -70,6 +76,11 @@ final class AnnotationInspector: EditorFloatingSurface {
     private let pathCancelButton = NSButton(title: "取消", target: nil, action: nil)
     private let pathHint = NSTextField(labelWithString: "单击加点 · 双击/↩完成 · ⌫退点")
     private var pathActionsGroup = NSStackView()
+    private let pencilSmoothToggle = NSButton(checkboxWithTitle: "平滑", target: nil, action: nil)
+    private let pencilConstraintPicker = NSPopUpButton()
+    private let highlighterModePicker = NSPopUpButton()
+    private let highlighterBlendPicker = NSPopUpButton()
+    private var pencilGroup = NSStackView(), highlighterGroup = NSStackView()
     private let fontNames = ["Helvetica", "TimesNewRomanPSMT", "Menlo-Regular"]
 
     override init(frame frameRect: NSRect) {
@@ -139,13 +150,16 @@ final class AnnotationInspector: EditorFloatingSurface {
         }
         textTraitsGroup = group([boldButton, italicButton, underlineButton])
         textGroup = group([textTraitsGroup, fontPicker, sizeField])
+        lineStyles.onEdit = { [weak self] edit in self?.onEdit?(edit) }
+        textOutline.onEdit = { [weak self] edit in self?.onEdit?(edit) }
         configureToolControls()
+        numberControls.onEdit = { [weak self] edit in self?.onEdit?(edit) }
         hint.font = .systemFont(ofSize: 10); hint.textColor = .secondaryLabelColor
         hint.lineBreakMode = .byTruncatingTail; hint.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         detailButton.target = self; detailButton.action = #selector(toggleDetails)
         detailButton.isBordered = false; detailButton.font = .systemFont(ofSize: 17, weight: .medium)
         detailButton.identifier = NSUserInterfaceItemIdentifier("annotation.details")
-        detailButton.setAccessibilityLabel("更多样式：不透明度、旋转、圆角"); detailButton.toolTip = "更多样式"
+        detailButton.setAccessibilityLabel("更多样式：不透明度、旋转、圆角、端点与连接"); detailButton.toolTip = "更多样式"
         fixedWidth(detailButton, 24)
         detailsGroup = group([opacityGroup, rotationGroup, radiusGroup])
         primaryRow = group([textGroup, widthGroup, dashGroup, fillGroup, colorGroup, detailButton])
@@ -184,6 +198,18 @@ final class AnnotationInspector: EditorFloatingSurface {
     }
 
     private func configureToolControls() {
+        configureToggle(pencilSmoothToggle, id: "annotation.pencilSmoothing", label: "平滑笔迹", action: #selector(changePencilSmoothing))
+        pencilSmoothToggle.toolTip = "对画笔样本做有界平滑；Shift 直线保持笔直"
+        configurePicker(pencilConstraintPicker, titles: AnnotationPencilConstraint.allCases.map(\.title),
+                        id: "annotation.pencilConstraint", label: "按住 Shift 时的直线角度", width: 92, action: #selector(changePencilConstraint))
+        pencilConstraintPicker.toolTip = "绘制时随时按住 Shift，以当前位置为起点画直线；松开继续手绘"
+        pencilGroup = group([pencilSmoothToggle, label("⇧"), pencilConstraintPicker])
+        configurePicker(highlighterModePicker, titles: AnnotationHighlighterMode.allCases.map(\.title),
+                        id: "annotation.highlighterMode", label: "荧光笔形状", action: #selector(changeHighlighterMode))
+        configurePicker(highlighterBlendPicker, titles: AnnotationHighlighterBlend.allCases.map(\.title),
+                        id: "annotation.highlighterBlend", label: "荧光笔混合模式", width: 82, action: #selector(changeHighlighterBlend))
+        highlighterBlendPicker.toolTip = "正片叠底适合浅色背景并保留深色字；半透明适合深色背景"
+        highlighterGroup = group([highlighterModePicker, highlighterBlendPicker])
         configureField(arcStartField, id: "annotation.arcStart", label: "圆弧起始角度（度）", action: #selector(changeArcStart))
         configureField(arcSweepField, id: "annotation.arcSweep", label: "圆弧扫过角度（±1–360 度，负数顺时针）", action: #selector(changeArcSweep))
         arcAnglesGroup = group([label("起点 °"), arcStartField, label("扫角 °"), arcSweepField])
@@ -253,14 +279,31 @@ final class AnnotationInspector: EditorFloatingSurface {
         }
         let primary: [NSView], secondary: [NSView]
         widthPicker.removeAllItems()
-        widthPicker.addItems(withTitles: tool == .eraser ? ["4", "8", "16", "24", "32", "48", "64", "96"] : ["1", "3", "4", "6", "10", "16", "24"])
+        widthPicker.addItems(withTitles: [.freehand, .highlighter].contains(tool)
+            ? ["1", "3", "4", "6", "10", "16", "24", "32", "48", "64", "96", "128", "256"]
+            : (tool == .eraser ? ["4", "8", "16", "24", "32", "48", "64", "96"] : ["1", "3", "4", "6", "10", "16", "24"]))
         switch tool {
+        case .freehand:
+            primary = [widthGroup, dashGroup, colorGroup]
+            secondary = [pencilGroup, opacityGroup, rotationGroup]
+        case .highlighter:
+            primary = [highlighterGroup, widthGroup, colorGroup]
+            secondary = [pencilGroup, opacityGroup, rotationGroup]
+        case .number:
+            primary = [numberControls.primary, widthGroup, colorGroup]
+            secondary = [numberControls.details, opacityGroup, rotationGroup]
         case .arc, .sector:
             primary = [widthGroup, dashGroup, fillGroup, colorGroup]
             secondary = [arcAnglesGroup, opacityGroup, rotationGroup]
         case .polyline:
-            primary = [widthGroup, dashGroup, colorGroup]
-            secondary = [pathActionsGroup, opacityGroup, rotationGroup]
+            primary = [widthGroup, dashGroup, lineStyles.endings, colorGroup]
+            secondary = [pathActionsGroup, lineStyles.stroke, opacityGroup, rotationGroup]
+        case .line, .arrow:
+            primary = [widthGroup, dashGroup, lineStyles.endings, colorGroup, detailButton]
+            secondary = [lineStyles.stroke, opacityGroup, rotationGroup]
+        case .text:
+            primary = [textGroup, textOutline.row, fillGroup, colorGroup, detailButton]
+            secondary = [opacityGroup, rotationGroup, radiusGroup]
         case .eraser:
             primary = [eraserGroup, widthGroup, clearAnnotationsButton]; secondary = []
         case .spotlight:
@@ -282,8 +325,8 @@ final class AnnotationInspector: EditorFloatingSurface {
     func display(annotation: ImageAnnotation, selected: Bool, enabled: Bool) {
         if previousTool != annotation.tool { showsDetails = false; configureRows(for: annotation.tool) }
         previousTool = annotation.tool; displayedAnnotation = annotation; displayedSelected = selected; displayedEnabled = enabled
-        let dedicatedRows: [ImageEditorTool] = [.eraser, .spotlight, .watermark, .magnifier, .arc, .sector, .polyline]
-        let alwaysShowsDetails = [.watermark, .magnifier, .arc, .sector, .polyline, .pixelate, .blur, .redact].contains(annotation.tool)
+        let dedicatedRows: [ImageEditorTool] = [.eraser, .spotlight, .watermark, .magnifier, .arc, .sector, .polyline, .freehand, .highlighter, .number]
+        let alwaysShowsDetails = [.watermark, .magnifier, .arc, .sector, .polyline, .pixelate, .blur, .redact, .freehand, .highlighter, .number].contains(annotation.tool)
         primaryRow.isHidden = !enabled
         detailsGroup.isHidden = !enabled || detailsGroup.arrangedSubviews.isEmpty || (!alwaysShowsDetails && !showsDetails)
         detailButton.isHidden = !enabled || dedicatedRows.contains(annotation.tool) || [.pixelate, .blur, .redact].contains(annotation.tool)
@@ -291,8 +334,14 @@ final class AnnotationInspector: EditorFloatingSurface {
         widthGroup.isHidden = !enabled || [.text, .watermark].contains(annotation.tool)
             || (annotation.tool == .spotlight && !annotation.spotlightBorder)
             || (annotation.tool == .eraser && annotation.eraserMode == .rectangle)
+            || (annotation.tool == .highlighter && annotation.highlighterMode == .rectangle)
         widthPicker.setAccessibilityLabel(annotation.tool == .eraser ? "橡皮擦宽度（像素）" : "线宽（像素）")
         widthPicker.toolTip = annotation.tool == .eraser ? "橡皮擦宽度（像素）" : "线宽（像素）"
+        if annotation.tool == .number {
+            widthPicker.setAccessibilityLabel("序号大小，半径为线宽的四倍（14–80 像素）")
+            widthPicker.toolTip = "序号大小，也可滚轮调整或用选择工具拖动右上控制点"
+            numberControls.display(annotation: annotation, selected: selected, sequence: numberSequence, count: numberCount)
+        }
         colorGroup.isHidden = !enabled || [.blur, .pixelate, .eraser].contains(annotation.tool)
             || (annotation.tool == .spotlight && !annotation.spotlightBorder)
         colorWell.color = NSColor(cgColor: annotation.color) ?? .systemRed
@@ -338,7 +387,13 @@ final class AnnotationInspector: EditorFloatingSurface {
         sizeField.integerValue = Int(annotation.effectiveFontSize.rounded())
         boldButton.state = annotation.bold ? .on : .off; italicButton.state = annotation.italic ? .on : .off
         underlineButton.state = annotation.underline ? .on : .off
+        lineStyles.display(annotation); textOutline.display(annotation)
 
+        pencilSmoothToggle.state = annotation.freehandSmoothing ? .on : .off
+        pencilConstraintPicker.selectItem(at: AnnotationPencilConstraint.allCases.firstIndex(of: annotation.freehandConstraint) ?? 0)
+        highlighterModePicker.selectItem(at: AnnotationHighlighterMode.allCases.firstIndex(of: annotation.highlighterMode) ?? 0)
+        highlighterBlendPicker.selectItem(at: AnnotationHighlighterBlend.allCases.firstIndex(of: annotation.highlighterBlend) ?? 0)
+        pencilGroup.isHidden = !enabled || (annotation.tool == .highlighter && annotation.highlighterMode == .rectangle)
         eraserModePicker.selectItem(at: AnnotationEraserMode.allCases.firstIndex(of: annotation.eraserMode) ?? 0)
         clearAnnotationsButton.isEnabled = enabled && onClearAnnotations != nil
         spotlightShapePicker.selectItem(at: AnnotationRegionShape.allCases.firstIndex(of: annotation.spotlightShape) ?? 0)
@@ -369,7 +424,7 @@ final class AnnotationInspector: EditorFloatingSurface {
         superview?.needsLayout = true
     }
 
-    func deactivateColorWells() { colorWell.deactivate(); fillWell.deactivate() }
+    func deactivateColorWells() { colorWell.deactivate(); fillWell.deactivate(); textOutline.deactivateColorWell() }
 
     @objc private func changeColor() { let color = colorWell.color.cgColor; onEdit? { $0.color = color } }
     @objc private func selectColor(_ sender: NSButton) {
@@ -402,6 +457,25 @@ final class AnnotationInspector: EditorFloatingSurface {
     @objc private func changeTextTraits() {
         let bold = boldButton.state == .on, italic = italicButton.state == .on, underline = underlineButton.state == .on
         onEdit? { $0.bold = bold; $0.italic = italic; $0.underline = underline }
+    }
+
+    @objc private func changePencilSmoothing() {
+        let enabled = pencilSmoothToggle.state == .on; onEdit? { $0.freehandSmoothing = enabled }
+    }
+    @objc private func changePencilConstraint() {
+        let index = pencilConstraintPicker.indexOfSelectedItem
+        guard AnnotationPencilConstraint.allCases.indices.contains(index) else { return }
+        let mode = AnnotationPencilConstraint.allCases[index]; onEdit? { $0.freehandConstraint = mode }
+    }
+    @objc private func changeHighlighterMode() {
+        let index = highlighterModePicker.indexOfSelectedItem
+        guard AnnotationHighlighterMode.allCases.indices.contains(index) else { return }
+        let mode = AnnotationHighlighterMode.allCases[index]; onEdit? { $0.highlighterMode = mode }
+    }
+    @objc private func changeHighlighterBlend() {
+        let index = highlighterBlendPicker.indexOfSelectedItem
+        guard AnnotationHighlighterBlend.allCases.indices.contains(index) else { return }
+        let blend = AnnotationHighlighterBlend.allCases[index]; onEdit? { $0.highlighterBlend = blend }
     }
 
     @objc private func changeArcStart() {

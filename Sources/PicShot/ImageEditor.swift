@@ -43,10 +43,20 @@ struct ImageAnnotation {
     var lineWidth: CGFloat = 4
     var text = ""
     var number = 1
+    var numberStyle: NumberedCalloutStyle = .decimal
+    var numberComment = ""
+    var numberCommentSize = CGSize(width: 240, height: 80)
     /// Radians counterclockwise around localBounds' center. Image coordinates are y-up.
     var rotation: CGFloat = 0
     var opacity: CGFloat = 1
     var strokeStyle: AnnotationStrokeStyle = .solid
+    var lineCap: AnnotationLineCap = .round
+    var lineJoin: AnnotationLineJoin = .round
+    var startArrowEnabled = false
+    /// nil keeps each tool's original default: one end arrow only for the arrow tool.
+    var endArrowEnabled: Bool? = nil
+    var startArrowhead: AnnotationArrowhead = .open
+    var endArrowhead: AnnotationArrowhead = .open
     var fillEnabled = false
     var fillColor: CGColor = CGColor(srgbRed: 1, green: 0.91, blue: 0.52, alpha: 1)
     var cornerRadius: CGFloat = 0
@@ -55,6 +65,9 @@ struct ImageAnnotation {
     var bold = false
     var italic = false
     var underline = false
+    var textOutlineEnabled = false
+    var textOutlineColor: CGColor = CGColor(gray: 1, alpha: 1)
+    var textOutlineWidth: CGFloat = 2
     /// Optional explicit box; text wraps to its width and remains clipped to its height.
     var textBoxSize: CGSize? = nil
     var eraserMode: AnnotationEraserMode = .brush
@@ -76,6 +89,13 @@ struct ImageAnnotation {
     var magnifierShadow = true
     var arcStartAngle: CGFloat = 0
     var arcSweepAngle: CGFloat = .pi * 1.5
+    // Defaults preserve existing unsmoothed pencil and rectangular translucent marks.
+    var freehandSmoothing = false
+    var freehandConstraint: AnnotationPencilConstraint = .free
+    var freehandCorners: [Int] = []
+    var freehandWasSimplified = false
+    var highlighterMode: AnnotationHighlighterMode = .rectangle
+    var highlighterBlend: AnnotationHighlighterBlend = .translucent
     /// Value metadata lives in the annotation snapshot, so linking and exclusions undo together.
     var mosaicLink: AutomaticMosaicLink? = nil
 
@@ -86,8 +106,7 @@ struct ImageAnnotation {
             return CGRect(origin: first, size: AnnotationTextLayout.size(for: self))
         }
         if tool == .number {
-            let radius = max(14, lineWidth * 4)
-            return CGRect(x: first.x - radius, y: first.y - radius, width: radius * 2, height: radius * 2)
+            return numberLocalBounds
         }
         let xs = geometryPoints.map(\.x), ys = geometryPoints.map(\.y)
         let x = xs.min() ?? first.x, y = ys.min() ?? first.y
@@ -97,7 +116,7 @@ struct ImageAnnotation {
     var bounds: CGRect { localBounds.applying(transform) }
 
     var transform: CGAffineTransform {
-        let box = localBounds
+        let box = tool == .number ? numberBadgeRect : localBounds
         return CGAffineTransform(translationX: box.midX, y: box.midY)
             .rotated(by: rotation).translatedBy(x: -box.midX, y: -box.midY)
     }
@@ -156,7 +175,8 @@ enum ImageEditorRenderer {
             // Clip each later eraser separately: operation order is stable, and marks
             // added after an eraser are not removed by an earlier operation.
             let affectedBounds = annotation.tool == .spotlight ? extent :
-                (annotation.tool == .magnifier ? annotation.bounds.union(annotation.magnifierSourceRect) : annotation.bounds)
+                (annotation.tool == .magnifier ? annotation.bounds.union(annotation.magnifierSourceRect) :
+                    (annotation.supportsLineEndings ? annotation.linePaintedBounds : annotation.bounds))
                     .insetBy(dx: -max(annotation.tool == .magnifier ? 32 : 10, annotation.lineWidth * 4),
                              dy: -max(annotation.tool == .magnifier ? 32 : 10, annotation.lineWidth * 4))
             for eraser in erasers where eraser.index > index && eraser.path.boundingBoxOfPath.intersects(affectedBounds) {
@@ -168,7 +188,9 @@ enum ImageEditorRenderer {
             context.setStrokeColor(annotation.color)
             context.setFillColor(annotation.color)
             context.setLineWidth(max(1, annotation.lineWidth))
-            context.setLineCap(.round); context.setLineJoin(.round)
+            context.setLineCap(annotation.supportsLineEndings ? annotation.lineCap.cgValue : .round)
+            context.setLineJoin(annotation.supportsLineEndings ? annotation.lineJoin.cgValue : .round)
+            context.setMiterLimit(10)
             context.setLineDash(phase: 0, lengths: annotation.strokeStyle.pattern(width: annotation.lineWidth))
             if annotation.tool == .blur || annotation.tool == .pixelate {
                 let region = annotation.bounds.integral.intersection(extent)
@@ -231,23 +253,17 @@ enum ImageEditorRenderer {
             case .redact:
                 context.setFillColor(annotation.color.copy(alpha: 1) ?? CGColor(gray: 0, alpha: 1))
                 context.setShouldAntialias(false); context.fill(rect.integral)
-            case .highlighter:
-                context.setFillColor(annotation.color.copy(alpha: 0.32) ?? annotation.color); context.fill(rect)
-            case .line, .arrow, .freehand, .polyline:
-                context.addPath(annotation.strokePath); context.strokePath()
+            case .freehand, .highlighter:
+                AnnotationFreehandRenderer.draw(annotation, in: context)
+            case .line, .arrow, .polyline:
+                AnnotationLineGeometry.draw(annotation, in: context)
             case .text:
                 if annotation.fillEnabled {
                     context.setFillColor(annotation.fillColor); context.addPath(annotation.outline); context.fillPath()
                 }
                 AnnotationTextLayout.draw(annotation, context: context)
             case .number:
-                context.fillEllipse(in: rect)
-                let value = String(annotation.number)
-                let fontSize = rect.height * 0.58
-                let font = CTFontCreateWithName("Helvetica-Bold" as CFString, fontSize, nil)
-                let line = CTLineCreateWithAttributedString(NSAttributedString(string: value, attributes: [NSAttributedString.Key(kCTFontAttributeName as String): font]))
-                let width = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
-                drawText(value, point: CGPoint(x: rect.midX - width / 2, y: rect.midY - fontSize * 0.37), size: fontSize, color: CGColor(gray: 1, alpha: 1), context: context, bold: true)
+                NumberedCalloutRenderer.draw(annotation, in: context)
             }
             context.restoreGState()
         }
@@ -323,7 +339,7 @@ final class ImageEditorCanvas: NSView {
     let captureTimeZoneIdentifier: String
     let captureTimestampKnown: Bool
     var annotations: [ImageAnnotation] = []
-    var tool: ImageEditorTool = .arrow { didSet { cancelInteraction(); cropRect = nil; needsDisplay = true } }
+    var tool: ImageEditorTool = .arrow { didSet { finishNumberComment(commit: true); cancelInteraction(); cropRect = nil; needsDisplay = true } }
     var style = ImageAnnotation(tool: .arrow, points: [], color: NSColor.systemRed.cgColor, fontSize: 20)
     var color: CGColor { get { style.color } set { style.color = newValue } }
     var strokeWidth: CGFloat { get { style.lineWidth } set { style.lineWidth = newValue } }
@@ -352,6 +368,8 @@ final class ImageEditorCanvas: NSView {
     var editingAnnotationID: UUID? { didSet { cachedImage = nil; needsDisplay = true } }
     private var selection: UUID?
     private var draft: ImageAnnotation?
+    private var freehandGesture: AnnotationFreehandGesture?
+    var pendingFreehand: ImageAnnotation? { draft?.isFreehandStroke == true ? draft : nil }
     private var polylinePreviewPoint: CGPoint?
     private var pointerTrackingArea: NSTrackingArea?
     var pendingPolylinePointCount: Int { draft?.tool == .polyline ? draft!.points.count : 0 }
@@ -363,12 +381,18 @@ final class ImageEditorCanvas: NSView {
     private var cachedImage: CGImage?
     var retainedPresentationRaster: CGImage? { cachedImage }
     var selectedAnnotation: ImageAnnotation? { annotations.first { $0.id == selection } }
+    private(set) var numberSequence = NumberedCalloutSequence()
+    private var numberCommentSession: NumberedCalloutCommentSession?
+    var activeNumberCommentInput: InlineAnnotationTextView? { numberCommentSession?.box.input }
+    var canCreateNumber: Bool { !numberSequence.isExhausted && annotations.lazy.filter { $0.tool == .number }.count < NumberedCalloutSequence.maximumMarks }
 
     init(image: CGImage, captureDate: Date? = nil, timeZone: TimeZone = .current) {
         self.image = image; self.captureDate = captureDate ?? Date(); self.captureTimeZoneIdentifier = timeZone.identifier
         self.captureTimestampKnown = captureDate != nil
         super.init(frame: CGRect(x: 0, y: 0, width: CGFloat(image.width), height: CGFloat(image.height)))
         wantsLayer = true
+        style.freehandSmoothing = true
+        style.highlighterMode = .freehand; style.highlighterBlend = .multiply
         if captureDate == nil { style.watermarkTemplate = "PicShot · 编辑于 $yyyy-MM-dd HH:mm:ss$" }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -380,10 +404,12 @@ final class ImageEditorCanvas: NSView {
         needsDisplay = true
     }
 
-    func setContent(image: CGImage, annotations: [ImageAnnotation]) {
+    func setContent(image: CGImage, annotations: [ImageAnnotation], numberSequence: NumberedCalloutSequence? = nil) {
+        finishNumberComment(commit: false)
         contentRevision &+= 1; onContentInvalidated?()
         self.image = image; self.annotations = annotations
-        selection = nil; draft = nil; polylinePreviewPoint = nil; cropRect = nil; cachedImage = nil
+        if let numberSequence { self.numberSequence = numberSequence }
+        selection = nil; draft = nil; freehandGesture = nil; polylinePreviewPoint = nil; cropRect = nil; cachedImage = nil
         movingOriginal = nil; dragOrigin = nil; activeHandle = nil; didBeginMoving = false
         resizeCanvas(); onChange?()
     }
@@ -399,9 +425,12 @@ final class ImageEditorCanvas: NSView {
         var result = style
         result.id = UUID(); result.tool = tool; result.points = points; result.text = text
         result.rotation = 0; result.textBoxSize = nil
+        result.freehandCorners = []; result.freehandWasSimplified = false
         result.frozenTimestamp = captureDate; result.frozenTimeZoneIdentifier = captureTimeZoneIdentifier
         result.timestampIsCaptureDate = captureTimestampKnown
         result.magnifierSource = nil; result.mosaicLink = nil
+        result.numberComment = ""; result.numberCommentSize = CGSize(width: 240, height: 80)
+        if tool == .number { result.number = numberSequence.nextValue }
         if tool == .eraser { result.lineWidth = max(4, result.lineWidth) }
         if tool == .spotlight || tool == .magnifier { result.opacity = 1 }
         if tool == .redact { result.color = CGColor(gray: 0, alpha: 1); result.opacity = 1 }
@@ -409,9 +438,66 @@ final class ImageEditorCanvas: NSView {
     }
 
     func add(_ annotation: ImageAnnotation) {
+        if annotation.tool == .number && annotations.lazy.filter({ $0.tool == .number }).count >= NumberedCalloutSequence.maximumMarks { return }
         onWillChange?()
         annotations.append(annotation.sanitizedPathGeometry); selection = annotation.id
+        if annotation.tool == .number { numberSequence.didInsert(annotation.number) }
         changed()
+    }
+
+    func setNextNumber(_ value: Int) {
+        var sequence = numberSequence; sequence.setNext(value)
+        guard sequence != numberSequence else { return }
+        onWillChange?(); numberSequence = sequence; onChange?()
+    }
+
+    func setNumberClosesGaps(_ enabled: Bool) {
+        guard enabled != numberSequence.closesGapsOnDelete else { return }
+        onWillChange?(); numberSequence.closesGapsOnDelete = enabled; onChange?()
+    }
+
+    func renumberAnnotations(startingAt start: Int) {
+        finishNumberComment(commit: true); cancelInteraction()
+        let count = annotations.filter { $0.tool == .number }.count
+        let start = min(NumberedCalloutSequence.clamp(start), max(1, NumberedCalloutSequence.maximumValue - count + 1))
+        guard count > 0 else { setNextNumber(start); return }
+        onWillChange?()
+        var value = start
+        for index in annotations.indices where annotations[index].tool == .number {
+            annotations[index].number = value; value += 1
+        }
+        numberSequence.didInsert(value - 1); changed()
+    }
+
+    func beginNumberComment() {
+        finishNumberComment(commit: true)
+        guard let selected = selectedAnnotation, selected.tool == .number else { return }
+        let rect = selected.numberCommentRect.applying(selected.transform)
+        let width = min(max(100, selected.numberCommentRect.width * zoom), max(80, bounds.width))
+        let height = min(max(64, selected.numberCommentRect.height * displayScaleY), max(40, bounds.height))
+        let frame = CGRect(x: min(max(0, rect.minX * zoom), max(0, bounds.width - width)),
+                           y: min(max(0, rect.minY * displayScaleY), max(0, bounds.height - height)), width: width, height: height)
+        let session = NumberedCalloutCommentSession(annotation: selected, frame: frame, zoom: zoom, verticalZoom: displayScaleY)
+        session.box.onAccept = { [weak self] in self?.finishNumberComment(commit: true) }
+        session.box.onCancel = { [weak self] in self?.finishNumberComment(commit: false) }
+        numberCommentSession = session
+        addSubview(session.box); session.box.layoutSubtreeIfNeeded()
+        window?.makeFirstResponder(session.box.input)
+    }
+
+    func finishNumberComment(commit: Bool) {
+        guard let session = numberCommentSession else { return }
+        numberCommentSession = nil
+        var mark = session.annotation
+        mark.numberComment = NumberedCalloutSequence.boundedComment(session.box.input.string)
+        if session.box.wasResized {
+            mark.numberCommentSize = session.resizedCommentSize
+        }
+        session.close()
+        if commit && (mark.numberComment != session.annotation.numberComment || mark.numberCommentSize != session.annotation.numberCommentSize) {
+            replaceAnnotation(id: mark.id, with: mark)
+        }
+        window?.makeFirstResponder(self)
     }
 
     private func changed() {
@@ -541,6 +627,7 @@ final class ImageEditorCanvas: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        finishNumberComment(commit: true)
         onBeforeInteraction?()
         window?.makeFirstResponder(self)
         if let review = automaticMosaicReview, automaticMosaicDrawHandler == nil {
@@ -579,6 +666,9 @@ final class ImageEditorCanvas: NSView {
                 if event.clickCount == 2, selected.tool == .text {
                     movingOriginal = nil; onRequestText?(selected.points.first ?? point, selected.id)
                 }
+                if event.clickCount == 2, selected.tool == .number {
+                    movingOriginal = nil; beginNumberComment()
+                }
             }
             needsDisplay = true; onChange?()
         } else if tool == .text {
@@ -589,11 +679,19 @@ final class ImageEditorCanvas: NSView {
             annotation.watermarkTemplate = style.watermarkTemplate
             add(annotation)
         } else if tool == .number {
-            var annotation = makeAnnotation(tool: .number, points: [point])
-            annotation.number = (annotations.filter { $0.tool == .number }.map(\.number).max() ?? 0) + 1
-            add(annotation)
+            if let mark = annotations.reversed().first(where: { $0.tool == .number && $0.hitTest(point, tolerance: 3 / zoom) }) {
+                selection = mark.id; style = mark; dragOrigin = nil; needsDisplay = true; onChange?()
+                if event.clickCount == 2 { beginNumberComment() }
+                return
+            }
+            guard canCreateNumber else { onChange?(); return }
+            draft = makeAnnotation(tool: .number, points: [point]); needsDisplay = true
         } else {
             draft = makeAnnotation(tool: tool, points: [point, point]); cropRect = nil
+            if draft?.isFreehandStroke == true {
+                draft?.points = [point]
+                freehandGesture = AnnotationFreehandGesture(point: point, shift: event.modifierFlags.contains(.shift))
+            }
         }
     }
 
@@ -614,7 +712,9 @@ final class ImageEditorCanvas: NSView {
                 annotations[index] = original.tool == .magnifier ? original.translatedLens(by: delta) : original.translated(by: delta)
             }
             changed()
-        } else if tool == .freehand || (tool == .eraser && draft?.eraserMode == .brush) {
+        } else if draft?.isFreehandStroke == true {
+            updateFreehand(point, shift: event.modifierFlags.contains(.shift))
+        } else if tool == .eraser && draft?.eraserMode == .brush {
             if let last = draft?.points.last, hypot(point.x - last.x, point.y - last.y) >= 0.75 / zoom {
                 if (draft?.points.count ?? 0) >= ImageAnnotation.maximumGesturePoints {
                     // Progressive decimation bounds vector history even during very long gestures.
@@ -650,7 +750,10 @@ final class ImageEditorCanvas: NSView {
             }
             dragOrigin = nil; return
         }
-        defer { draft = nil; dragOrigin = nil; movingOriginal = nil; activeHandle = nil; didBeginMoving = false; needsDisplay = true }
+        defer { draft = nil; freehandGesture = nil; dragOrigin = nil; movingOriginal = nil; activeHandle = nil; didBeginMoving = false; needsDisplay = true }
+        if draft?.isFreehandStroke == true {
+            updateFreehand(imagePoint(event), shift: event.modifierFlags.contains(.shift), final: true)
+        }
         if didBeginMoving, let original = movingOriginal, let index = annotations.firstIndex(where: { $0.id == original.id }) {
             let edited = annotations[index]
             annotations[index] = original
@@ -660,10 +763,20 @@ final class ImageEditorCanvas: NSView {
             style = edited; changed()
         }
         guard var draft else { return }
+        if tool == .number {
+            if let center = draft.points.first, draft.points.count > 1,
+               hypot(draft.points[1].x - center.x, draft.points[1].y - center.y) <= draft.numberRadius + 2 {
+                draft.points = [center]
+            }
+            add(draft); return
+        }
         if let handler = automaticMosaicDrawHandler {
             let rect = draft.localBounds.standardized.integral
             if rect.width >= 2 && rect.height >= 2 { handler(rect) }
             return
+        }
+        if draft.isFreehandStroke {
+            if !draft.points.isEmpty { add(draft) }; return
         }
         if tool == .eraser && draft.eraserMode == .brush {
             let last = imagePoint(event)
@@ -695,8 +808,30 @@ final class ImageEditorCanvas: NSView {
         if didBeginMoving, let original = movingOriginal, let index = annotations.firstIndex(where: { $0.id == original.id }) {
             annotations[index] = original; changed()
         }
-        draft = nil; polylinePreviewPoint = nil; dragOrigin = nil; movingOriginal = nil; activeHandle = nil; didBeginMoving = false
+        draft = nil; freehandGesture = nil; polylinePreviewPoint = nil; dragOrigin = nil; movingOriginal = nil; activeHandle = nil; didBeginMoving = false
         needsDisplay = true
+    }
+
+    func cancelPendingFreehand() {
+        guard pendingFreehand != nil else { return }
+        cancelInteraction(); onChange?()
+    }
+
+    private func updateFreehand(_ point: CGPoint, shift: Bool, final: Bool = false) {
+        guard draft?.isFreehandStroke == true, freehandGesture != nil else { return }
+        let previouslySimplified = freehandGesture!.wasSimplified
+        freehandGesture!.sample(point, shift: shift, constraint: draft!.freehandConstraint,
+            extent: CGRect(x: 0, y: 0, width: image.width, height: image.height),
+            minimumDistance: 0.75 / max(0.05, zoom), final: final)
+        draft?.points = freehandGesture!.points; draft?.freehandCorners = freehandGesture!.corners
+        draft?.freehandWasSimplified = freehandGesture!.wasSimplified
+        needsDisplay = true
+        if previouslySimplified != freehandGesture!.wasSimplified { onChange?() }
+    }
+
+    override func flagsChanged(with event: NSEvent) {
+        if draft?.isFreehandStroke == true { freehandGesture?.setShift(event.modifierFlags.contains(.shift)) }
+        else { super.flagsChanged(with: event) }
     }
 
     override func updateTrackingAreas() {
@@ -839,32 +974,46 @@ final class ImageEditorCanvas: NSView {
     }
 
     func duplicateSelection() {
+        finishNumberComment(commit: true)
         cancelInteraction()
         guard let selected = selectedAnnotation else { return }
         if selected.mosaicLink != nil {
             addMosaicCorrection(selected.localBounds.offsetBy(dx: 20, dy: -20), relativeTo: selected)
         } else {
             var copy = selected.translated(by: CGSize(width: 20, height: -20)); copy.id = UUID()
+            if copy.tool == .number {
+                guard canCreateNumber else { return }
+                copy.number = numberSequence.nextValue
+            }
             add(copy)
         }
     }
 
     func clearAnnotations() {
+        finishNumberComment(commit: false)
         cancelInteraction()
         guard !annotations.isEmpty else { return }
         onWillChange?(); annotations.removeAll(); selection = nil; changed()
     }
 
     func deleteSelection() {
+        finishNumberComment(commit: false)
         cancelInteraction()
         guard let selection, annotations.contains(where: { $0.id == selection }) else { return }
         let link = selectedAnnotation?.mosaicLink
+        let deletedNumber = selectedAnnotation.flatMap { $0.tool == .number ? $0.number : nil }
         onWillChange?()
         annotations.removeAll { mark in
             mark.id == selection || (link?.synchronizes == true && mark.mosaicLink?.groupID == link?.groupID
                 && mark.mosaicLink?.additionID == link?.additionID)
         }
         if let link, !link.synchronizes { excludeMosaicRootTarget(link) }
+        if let deletedNumber, numberSequence.closesGapsOnDelete {
+            for index in annotations.indices where annotations[index].tool == .number && annotations[index].number > deletedNumber {
+                annotations[index].number -= 1
+            }
+            numberSequence.didDelete(deletedNumber)
+        }
         self.selection = nil; changed()
     }
 
@@ -873,6 +1022,12 @@ final class ImageEditorCanvas: NSView {
         guard delta.isFinite, abs(delta) > 0.001 else { super.scrollWheel(with: event); return }
         let active = tool == .select ? selectedAnnotation?.tool : tool
         let step: CGFloat = delta > 0 ? 1 : -1
+        if active == .number {
+            finishNumberComment(commit: true)
+            if selectedAnnotation?.tool == .number { updateSelected { $0.lineWidth = min(20, max(3.5, $0.lineWidth + step * 0.5)) } }
+            else { style.lineWidth = min(20, max(3.5, style.lineWidth + step * 0.5)); onChange?() }
+            return
+        }
         if active == .eraser {
             if tool == .select {
                 updateSelected { $0.lineWidth = min(256, max(2, $0.lineWidth + step * 2)) }
@@ -912,6 +1067,11 @@ final class ImageEditorCanvas: NSView {
         guard event.modifierFlags.contains(.command), let key = event.charactersIgnoringModifiers?.lowercased() else {
             return super.performKeyEquivalent(with: event)
         }
+        // NSWindow visits descendants for key equivalents even when the canvas is
+        // not first responder. Let AppKit's Edit menu/text responder own text undo,
+        // redo, copy and other editing keys, including inspector field editors.
+        // Save remains an explicit document action and commits pending input.
+        if key != "s", window?.firstResponder is NSTextView { return false }
         switch key {
         case "z":
             if pendingPolylinePointCount > 0 {
@@ -942,6 +1102,7 @@ final class ImageEditorCanvas: NSView {
             else if cropRect != nil { onApplyCrop?() }
             else if let selected = selectedAnnotation, selected.tool == .text {
                 onRequestText?(selected.points.first ?? .zero, selected.id)
+            } else if selectedAnnotation?.tool == .number { beginNumberComment()
             } else { super.keyDown(with: event) }
         case 53:
             let wasEditing = draft != nil || didBeginMoving || cropRect != nil || (tool == .select && selection != nil)
@@ -960,7 +1121,9 @@ final class ImageEditorCanvas: NSView {
                     else { $0 = $0.translatedLens(by: delta) }
                 } else { $0 = $0.translated(by: delta) }
             }
-        default: super.keyDown(with: event)
+        default:
+            if event.charactersIgnoringModifiers?.lowercased() == "a", !event.modifierFlags.contains(.command), selectedAnnotation?.tool == .number { beginNumberComment() }
+            else { super.keyDown(with: event) }
         }
     }
 }
@@ -976,7 +1139,7 @@ final class EditorSaveActionsButton: NSPopUpButton {
 
 @MainActor
 final class ImageEditorController: NSWindowController, NSWindowDelegate {
-    private struct Snapshot { var image: CGImage; var annotations: [ImageAnnotation]; var selectionFrame: CGRect?; var pinPresentation: PinEditorPresentation? }
+    private struct Snapshot { var image: CGImage; var annotations: [ImageAnnotation]; var selectionFrame: CGRect?; var pinPresentation: PinEditorPresentation?; var numberSequence: NumberedCalloutSequence }
     private let canvas: ImageEditorCanvas
     private let scrollView = NSScrollView()
     private let workspace = EditorWorkspaceView(frame: .zero)
@@ -1120,8 +1283,14 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         inspector.onCancelPolyline = { [weak self] in
             self?.canvas.cancelPolyline(); self?.window?.makeFirstResponder(self?.canvas)
         }
+        inspector.numberControls.onNext = { [weak self] value in self?.canvas.setNextNumber(value) }
+        inspector.numberControls.onRenumber = { [weak self] value in self?.canvas.renumberAnnotations(startingAt: value) }
+        inspector.numberControls.onCloseGaps = { [weak self] enabled in self?.canvas.setNumberClosesGaps(enabled) }
+        inspector.numberControls.onComment = { [weak self] in self?.canvas.beginNumberComment() }
         inspector.onEdit = { [weak self] edit in
             guard let self else { return }
+            self.canvas.finishNumberComment(commit: true)
+            self.canvas.cancelPendingFreehand()
             edit(&self.canvas.style)
             if var annotation = self.inlineAnnotation, let box = self.inlineBox {
                 edit(&annotation); self.inlineAnnotation = annotation
@@ -1131,7 +1300,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
             if self.canvas.pendingPolylinePointCount > 0 {
                 self.canvas.updatePendingPolyline(edit); self.updateStatus(); return
             }
-            if self.canvas.tool == .select || ([ImageEditorTool.watermark, .magnifier, .spotlight, .arc, .sector, .polyline].contains(self.canvas.tool)
+            if self.canvas.tool == .select || ([ImageEditorTool.watermark, .magnifier, .spotlight, .arc, .sector, .polyline, .arrow, .line, .text, .number].contains(self.canvas.tool)
                 && self.canvas.selectedAnnotation?.tool == self.canvas.tool) { self.canvas.updateSelected(edit) }
             self.updateStatus()
         }
@@ -1430,6 +1599,9 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         }
         if frames.palette.height == 0 { inspector.isHidden = true }
         status.stringValue = "\(Int(workspace.pixelSize.width)) × \(Int(workspace.pixelSize.height)) px"
+        if (canvas.pendingFreehand ?? canvas.selectedAnnotation)?.freehandWasSimplified == true {
+            status.stringValue += " · 长笔迹已简化（最多 2048 点）"
+        }
         let labelSize = CGSize(width: (status.stringValue as NSString).size(withAttributes: [.font: status.font!]).width + 14, height: 23)
         let occupied = inspector.isHidden ? [toolbar.frame] : [toolbar.frame, inspector.frame]
         status.frame = EditorFloatingLayout.dimensionLabelFrame(selection: workspace.selectionFrame, available: workspace.bounds, size: labelSize, avoiding: occupied)
@@ -1439,7 +1611,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     func setVerificationAnnotations(_ annotations: [ImageAnnotation]) {
         recordChange(); canvas.setContent(image: canvas.image, annotations: annotations); canvas.displayIfNeeded()
     }
-    private var snapshot: Snapshot { Snapshot(image: canvas.image, annotations: canvas.annotations, selectionFrame: presentation?.selectionFrame, pinPresentation: pinPresentation) }
+    private var snapshot: Snapshot { Snapshot(image: canvas.image, annotations: canvas.annotations, selectionFrame: presentation?.selectionFrame, pinPresentation: pinPresentation, numberSequence: canvas.numberSequence) }
     private func recordChange() { undoStates.append(snapshot); redoStates.removeAll(); trimHistory(preferUndo: true); updateStatus() }
     private func trimHistory(preferUndo: Bool) {
         let first = preferUndo ? redoStates : undoStates, second = preferUndo ? undoStates : redoStates
@@ -1453,7 +1625,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         if let old = presentation, let frame = state.selectionFrame {
             presentation = FrozenCapturePresentation(frozenImage: old.frozenImage, displayID: old.displayID, displayFrame: old.displayFrame, selectionFrame: frame, capturedAt: old.capturedAt)
         }
-        canvas.setContent(image: state.image, annotations: state.annotations); updateStatus(); layoutInterface()
+        canvas.setContent(image: state.image, annotations: state.annotations, numberSequence: state.numberSequence); updateStatus(); layoutInterface()
     }
     private func updateStatus() {
         let outputIDs: Set<String> = ["editor.copy", "editor.save", "editor.pin", "editor.applyToPin", "editor.ocr", "editor.translate", "editor.saveActions"]
@@ -1479,13 +1651,16 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
             button.contentTintColor = active ? .systemBlue : EditorFloatingSurface.ink
             button.layer?.backgroundColor = active ? NSColor.systemBlue.withAlphaComponent(0.12).cgColor : NSColor.clear.cgColor
         }
-        let usesCurrentMark = canvas.tool == .select || ([ImageEditorTool.watermark, .magnifier, .spotlight, .arc, .sector, .polyline].contains(canvas.tool)
+        let usesCurrentMark = canvas.tool == .select || ([ImageEditorTool.watermark, .magnifier, .spotlight, .arc, .sector, .polyline, .arrow, .line, .text, .number].contains(canvas.tool)
             && canvas.selectedAnnotation?.tool == canvas.tool)
         let selected = usesCurrentMark && canvas.pendingPolylinePointCount == 0 ? canvas.selectedAnnotation : nil
-        var inspected = canvas.pendingPolyline ?? selected ?? canvas.style; inspected.tool = selected?.tool ?? canvas.tool
+        var inspected = inlineAnnotation ?? canvas.pendingPolyline ?? selected ?? canvas.style
+        if inlineAnnotation == nil { inspected.tool = selected?.tool ?? canvas.tool }
         let enabled = canvas.tool != .crop && (canvas.tool != .select || selected != nil)
         inspector.isHidden = !enabled
         inspector.polylinePointCount = canvas.pendingPolylinePointCount
+        inspector.numberSequence = canvas.numberSequence
+        inspector.numberCount = canvas.annotations.lazy.filter { $0.tool == .number }.count
         inspector.display(annotation: inspected, selected: selected != nil, enabled: enabled)
         layoutInterface()
     }
@@ -1504,6 +1679,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     @objc private func deleteAnnotation() { finishInlineText(commit: false); canvas.deleteSelection() }
     @objc private func undoEdit() {
         cancelAutomaticMosaic()
+        canvas.finishNumberComment(commit: true)
         if canvas.pendingPolylinePointCount > 0 { canvas.removeLastPolylineVertex(); return }
         finishInlineText(commit: true)
         guard let state = undoStates.popLast() else { return }
@@ -1511,12 +1687,14 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     }
     @objc private func redoEdit() {
         cancelAutomaticMosaic()
+        canvas.finishNumberComment(commit: false)
         guard canvas.pendingPolylinePointCount == 0 else { return }
         finishInlineText(commit: false)
         guard let state = redoStates.popLast() else { return }
         undoStates.append(snapshot); trimHistory(preferUndo: true); restore(state)
     }
     @objc private func applyCrop() {
+        canvas.finishNumberComment(commit: true)
         finishInlineText(commit: true)
         guard let rect = canvas.cropRect, let flattened = canvas.flattened(), let cropped = ImageEditorRenderer.crop(image: flattened, to: rect) else { return }
         recordChange()
@@ -1535,10 +1713,11 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         }
         canvas.setContent(image: cropped, annotations: []); fitImage()
     }
-    @objc private func fitImage() { finishInlineText(commit: true); fitToWindow = true; needsFit = true; layoutInterface() }
-    @objc private func actualSize() { guard presentation == nil else { return }; finishInlineText(commit: true); fitToWindow = false; canvas.zoom = 1; layoutInterface() }
+    @objc private func fitImage() { canvas.finishNumberComment(commit: true); finishInlineText(commit: true); fitToWindow = true; needsFit = true; layoutInterface() }
+    @objc private func actualSize() { guard presentation == nil else { return }; canvas.finishNumberComment(commit: true); finishInlineText(commit: true); fitToWindow = false; canvas.zoom = 1; layoutInterface() }
     private func result(close: Bool = false, _ action: (CGImage) -> Void) {
         guard !automaticMosaicBlocksOutput else { return }
+        canvas.finishNumberComment(commit: true)
         finishInlineText(commit: true); canvas.finishPolyline()
         guard let image = canvas.flattened() else { showError(PicShotError.message("无法合成图片，可能内存不足")); return }
         if close { window?.close() }; action(image)
@@ -1580,6 +1759,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
 
     private func beginBoundaryResize() {
         cancelAutomaticMosaic()
+        canvas.finishNumberComment(commit: true)
         finishInlineText(commit: true); canvas.finishPolyline()
         guard let presentation, let preview = canvas.rasterForBoundaryPreview() else {
             workspace.cancelBoundaryResize(); return
@@ -1617,6 +1797,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     }
 
     func beginInlineText(at point: CGPoint, editing id: UUID?) {
+        canvas.finishNumberComment(commit: true)
         finishInlineText(commit: true)
         let existing = id.flatMap { identifier in canvas.annotations.first { $0.id == identifier && $0.tool == .text } }
         var annotation = existing ?? canvas.makeAnnotation(tool: .text, points: [point])
@@ -1633,6 +1814,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         canvas.editingAnnotationID = existing?.id
         canvas.addSubview(box); box.layoutSubtreeIfNeeded()
         window?.makeFirstResponder(box.input); box.input.setSelectedRange(NSRange(location: box.input.string.utf16.count, length: 0))
+        updateStatus()
     }
     func finishInlineText(commit: Bool) {
         guard let box = inlineBox, var annotation = inlineAnnotation else { return }
@@ -1649,6 +1831,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
             else { canvas.add(annotation) }
         }
         window?.makeFirstResponder(canvas)
+        if !isClosed { updateStatus() }
     }
     func windowWillClose(_ notification: Notification) {
         guard !isClosed else { return }; isClosed = true
@@ -1658,6 +1841,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         canvas.onAutomaticMosaicCancel = nil; canvas.onAutomaticMosaicApply = nil; canvas.onAutomaticMosaicLimit = nil
         inspector.onAutomaticMosaic = nil; inspector.onMosaicSync = nil; inspector.onMosaicAdd = nil
         workspace.cancelBoundaryResize()
+        canvas.finishNumberComment(commit: false)
         finishInlineText(commit: false)
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }; screenObserver = nil
         workspace.frozenImage = nil; presentation = nil; pinPresentation = nil
@@ -1666,7 +1850,8 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         canvas.onUndo = nil; canvas.onRedo = nil; canvas.onApplyCrop = nil
         canvas.onCopy = nil; canvas.onExport = nil; canvas.onCancel = nil; canvas.onBeforeInteraction = nil
         inspector.onEdit = nil; inspector.onClearAnnotations = nil; inspector.onFinishPolyline = nil; inspector.onCancelPolyline = nil
-        canvas.cancelPolyline(); canvas.releasePresentationCache(); inspector.deactivateColorWells()
+        inspector.numberControls.clearCallbacks()
+        canvas.cancelPolyline(); canvas.cancelPendingFreehand(); canvas.releasePresentationCache(); inspector.deactivateColorWells()
         workspace.onLayout = nil; workspace.onDismiss = nil; workspace.onOutsideClick = nil
         workspace.onBoundaryBegin = nil; workspace.onBoundaryChange = nil; workspace.onBoundaryEnd = nil
         workspace.boundaryPreviewImage = nil; workspace.selectionContent = nil
@@ -1674,10 +1859,11 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         window?.contentView = nil; window?.delegate = nil
         let completion = onClose; onClose = nil; completion?()
     }
-    func windowDidResize(_ notification: Notification) { guard !layingOut else { return }; finishInlineText(commit: true); layoutInterface() }
+    func windowDidResize(_ notification: Notification) { guard !layingOut else { return }; canvas.finishNumberComment(commit: true); finishInlineText(commit: true); layoutInterface() }
 
     @objc private func exportResult() {
         guard !automaticMosaicBlocksOutput else { return }
+        canvas.finishNumberComment(commit: true)
         finishInlineText(commit: true); canvas.finishPolyline()
         guard let window, let image = canvas.flattened() else { return }
         ImageExportController.present(image: image, from: window, saveWorkflow: saveWorkflow) { [weak self] _ in
