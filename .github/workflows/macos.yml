@@ -39,6 +39,7 @@ jobs:
           python3 -m unittest discover -s scripts/tests -p test_run_bounded_command.py -v
           python3 -m unittest discover -s scripts/tests -p test_check_annotation_details_report.py -v
           python3 -m unittest discover -s scripts/tests -p test_check_scroll_manual_resource_report.py -v
+          python3 -m unittest discover -s scripts/tests -p test_check_manual_hash_comparison.py -v
       - name: Package signed native app for early pixel review
         run: |
           mkdir -p dist

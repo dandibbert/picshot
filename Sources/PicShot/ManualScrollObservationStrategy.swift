@@ -3,16 +3,18 @@ import CryptoKit
 import Foundation
 import PicShotCore
 
-/// Experimental selection is injected only by verification initializers. Normal
-/// captures keep using the original full-frame implementation until native proof.
+/// Manual capture uses the native conversion workspace. Explicit alternatives
+/// preserve the independent CGContext reference and diagnostic controls.
 enum ManualScrollObservationStrategy: String, CaseIterable, Sendable {
     case fullFrame = "full-frame"
     case pooledFullFrame = "pooled-full-frame"
     case reusableFullFrame = "reusable-full-frame"
     case vImageFullFrame = "vimage-full-frame"
 
+    static let productionDefault: Self = .vImageFullFrame
+
     static func diagnosticSelection(environment: [String: String]) throws -> Self {
-        guard let raw = environment["PICSHOT_MANUAL_HASH_STRATEGY"] else { return .fullFrame }
+        guard let raw = environment["PICSHOT_MANUAL_HASH_STRATEGY"] else { return productionDefault }
         guard let selection = Self(rawValue: raw) else { throw ScrollStitchError.invalidPixels }
         return selection
     }

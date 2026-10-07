@@ -43,16 +43,18 @@ class ComparisonTests(unittest.TestCase):
         (self.app/'Contents/Info.plist').write_bytes(plistlib.dumps(dict(PicShotSourceCommit=FIX.COMMIT,
             CFBundleShortVersionString='0.14.0',CFBundleVersion='140',CFBundleExecutable='PicShot')))
 
-    def fixture(self,strategy='full-frame',pid=123):
-        resource=FIX.report(self.app,self.executable);resource['processIdentifier']=pid
-        functional=FIX.functional();functional.update(manualHashStrategy=strategy,processIdentifier=pid)
+    def fixture(self,strategy='full-frame',pid=123,commit=FIX.COMMIT):
+        resource=FIX.report(self.app,self.executable);resource['processIdentifier']=pid;resource['sourceCommit']=commit
+        info=plistlib.loads((self.app/'Contents/Info.plist').read_bytes());info['PicShotSourceCommit']=commit
+        (self.app/'Contents/Info.plist').write_bytes(plistlib.dumps(info))
+        functional=FIX.functional();functional.update(manualHashStrategy=strategy,processIdentifier=pid,sourceCommit=commit)
         functional['largeFrameProviders']=[dict(width=w,height=h,axis=axis,exactOutputDigest=True,
             closeReleasesControllerAndSpool=True,outputDigestSHA256=hashlib.sha256(axis.encode()).hexdigest())
             for w,h,axis in [(3840,2160,'horizontal'),(5120,2880,'vertical')]]
         functional['nativeAppearanceSnapshots']=dict(exactReferencePixels=True,acceptedFrames=3,outputWidth=640,outputHeight=920)
         digest=hashlib.sha256(json.dumps(functional,sort_keys=True).encode()).hexdigest()
         resource['functionalReportSHA256']=digest
-        context=dict(strategy=strategy,diagnosticOnly=True,productionDefaultStrategy='full-frame',processStartMemoryCaptured=False,
+        context=dict(strategy=strategy,diagnosticOnly=True,productionDefaultStrategy=CHECK.production_default_for_commit(commit),processStartMemoryCaptured=False,
             measurementStartScope='Synthetic smoke entry; not process birth',runIdentifier=str(uuid.uuid4()),
             operatingSystem='Synthetic test OS',smokeEntryBeforeFunctional=FIX.mem(-2),afterFunctionalBeforeResource=FIX.mem(-1),cycles=[])
         for row in resource['warmups']+resource['cycles']:
@@ -66,7 +68,7 @@ class ComparisonTests(unittest.TestCase):
         lifecycle=dict(schemaVersion=1,status='exited',launcherExitCode=0,callbackReceived=True,ownedExitConfirmed=True,
             createsNewApplicationInstance=True,processStartMemoryCaptured=False,timeoutSeconds=600,elapsedSeconds=100.0,
             selectedAppPath=str(self.app),launchedAppPath=str(self.app),processIdentifier=pid)
-        return [resource,functional,launch,lifecycle,entry],dict(app=self.app,commit=FIX.COMMIT,strategy=strategy,functional_sha=digest,launcher_exit_code=0)
+        return [resource,functional,launch,lifecycle,entry],dict(app=self.app,commit=commit,strategy=strategy,functional_sha=digest,launcher_exit_code=0)
 
     def check(self,args,kwargs): return CHECK.validate_cell(*args,**kwargs)
 
@@ -75,6 +77,30 @@ class ComparisonTests(unittest.TestCase):
         result=CHECK.compare_cells(cells,FIX.COMMIT)
         self.assertEqual(result['status'],'observed');self.assertFalse(result['installerAcceptance'])
         self.assertFalse(result['cells'][0]['processStartMemoryCaptured'])
+
+    def test_new_source_requires_vimage_default_even_for_explicit_legacy_control(self):
+        args,kwargs=self.fixture('full-frame')
+        self.assertEqual(self.check(args,kwargs)['productionDefaultStrategy'],'vimage-full-frame')
+        args[0]['diagnosticHashComparison']['productionDefaultStrategy']='full-frame'
+        with self.assertRaisesRegex(ValueError,'production default/scope changed'):self.check(args,kwargs)
+
+    def test_historical_defaults_are_exact_source_scoped_and_not_relabelled(self):
+        for commit in CHECK.HISTORICAL_PRODUCTION_DEFAULTS:
+            suite='context-reuse' if commit.startswith('8cb0c700') else 'direct-conversion'
+            cells=[self.check(*self.fixture(s,100+i,commit)) for i,s in enumerate(CHECK.SUITES[suite])]
+            self.assertEqual(CHECK.compare_cells(cells,commit,suite)['productionDefaultStrategy'],'full-frame')
+            args,kwargs=self.fixture('full-frame',commit=commit)
+            args[0]['diagnosticHashComparison']['productionDefaultStrategy']='vimage-full-frame'
+            with self.assertRaisesRegex(ValueError,'production default/scope changed'):self.check(args,kwargs)
+        self.assertEqual(CHECK.production_default_for_commit('f'*40),'vimage-full-frame')
+
+    def test_new_matrix_rejects_missing_or_old_production_default_label(self):
+        original=[self.check(*self.fixture(s,100+i))for i,s in enumerate(CHECK.SUITES['direct-conversion'])]
+        for value in [None,'full-frame']:
+            cells=copy.deepcopy(original)
+            if value is None: del cells[1]['productionDefaultStrategy']
+            else: cells[1]['productionDefaultStrategy']=value
+            self.assertEqual(CHECK.compare_cells(cells,FIX.COMMIT,'direct-conversion')['status'],'incomplete')
 
     def test_strategy_mismatch_and_missing_extension_fail(self):
         args,kwargs=self.fixture();args[0]['diagnosticHashComparison']['strategy']='pooled-full-frame'

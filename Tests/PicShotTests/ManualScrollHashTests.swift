@@ -24,7 +24,8 @@ final class ManualScrollHashTests: XCTestCase {
     }
 
     func testDiagnosticSelectionIsExplicitAndRejectsUnknownValues() throws {
-        XCTAssertEqual(try ManualScrollObservationStrategy.diagnosticSelection(environment: [:]), .fullFrame)
+        XCTAssertEqual(ManualScrollObservationStrategy.productionDefault, .vImageFullFrame)
+        XCTAssertEqual(try ManualScrollObservationStrategy.diagnosticSelection(environment: [:]), .productionDefault)
         for strategy in ManualScrollObservationStrategy.allCases {
             XCTAssertEqual(try ManualScrollObservationStrategy.diagnosticSelection(environment:
                 ["PICSHOT_MANUAL_HASH_STRATEGY": strategy.rawValue]), strategy)
@@ -213,15 +214,31 @@ final class ManualScrollHashTests: XCTestCase {
         }
     }
 
-    func testDefaultDriverDoesNotAllocateExperimentalWorkspaceAndAllStrategiesAgree() async throws {
+    func testDefaultDriverUsesBoundedVImageWorkspaceAndAllStrategiesAgree() async throws {
         let source = try image(width: 37, height: 131, space: CGColorSpaceCreateDeviceRGB())
+        XCTAssertEqual(ManualScrollObservationStrategy.productionDefault, .vImageFullFrame)
+        let expectedPixels = try referencePixels(source)
+        let normalizedPixels = try ManualScrollVImageObservation().withNormalizedPixels(source) { Data($0) }
+        XCTAssertEqual(normalizedPixels, expectedPixels)
         let expected = try ManualScrollScreenDriver.observation(source)
+        let expectedBytes: Int = source.width * source.height * 4
         let defaultDriver = ManualScrollScreenDriver(region: CGRect(x: 0, y: 0, width: 37, height: 131),
             screenSize: CGSize(width: 800, height: 600), provider: { source }, accept: { _ in .accepted(totalFrames: 1) })
+        XCTAssertEqual(defaultDriver.normalizationBufferBytesForVerification, 0)
         let defaultObservation = try await defaultDriver.capture()
         XCTAssertEqual(defaultObservation, expected)
-        XCTAssertEqual(defaultDriver.normalizationBufferBytesForVerification, 0)
+        XCTAssertTrue(defaultDriver.pendingImage === source)
+        XCTAssertEqual(defaultDriver.normalizationBufferBytesForVerification, expectedBytes)
+        XCTAssertLessThanOrEqual(defaultDriver.normalizationBufferBytesForVerification, ScrollFrame.maximumPixels * 4)
+        defaultDriver.discardPendingCapture()
+        XCTAssertNil(defaultDriver.pendingImage)
+        XCTAssertEqual(defaultDriver.normalizationBufferBytesForVerification, expectedBytes)
+        let repeatedDefaultObservation = try await defaultDriver.capture()
+        XCTAssertEqual(repeatedDefaultObservation, expected)
+        XCTAssertEqual(defaultDriver.normalizationBufferBytesForVerification, expectedBytes)
         defaultDriver.invalidate()
+        XCTAssertNil(defaultDriver.pendingImage)
+        XCTAssertEqual(defaultDriver.normalizationBufferBytesForVerification, 0)
         for strategy in ManualScrollObservationStrategy.allCases {
             let driver = ManualScrollScreenDriver(region: CGRect(x: 0, y: 0, width: 37, height: 131),
                 screenSize: CGSize(width: 800, height: 600), observationStrategy: strategy,

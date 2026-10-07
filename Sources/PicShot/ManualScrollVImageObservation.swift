@@ -4,7 +4,7 @@ import CryptoKit
 import Foundation
 import PicShotCore
 
-/// Diagnostic only: conversion goes through CGImage, never raw provider offsets.
+/// Full-frame observation conversion uses CGImage, never raw provider offsets.
 /// One caller-owned RGBA allocation is retained for this workspace's fixed extent.
 /// kvImageNoAllocate applies to that destination, not vImage/ColorSync caches or
 /// temporary storage. Actual footprint and volatile backing still need measuring.
@@ -81,7 +81,9 @@ final class ManualScrollVImageObservation: @unchecked Sendable {
             // Keep ownership in storage, independent of the in/out buffer struct:
             // failure may clear its data pointer. Never free the borrowed descriptor.
             guard error == kvImageNoError else {
-                throw NSError(domain: "PicShot.ManualScrollVImage", code: Int(error), userInfo: nil)
+                throw NSError(domain: "PicShot.ManualScrollVImage", code: Int(error), userInfo: [
+                    NSLocalizedDescriptionKey: "无法读取当前画面。已接受的片段保持不变，请停止后重新选择截图区域。"
+                ])
             }
             guard destination.data == storage,
                   destination.width == vImagePixelCount(imageWidth),

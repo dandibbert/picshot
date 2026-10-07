@@ -14,6 +14,8 @@ mkdir "$root"
   unset PICSHOT_CODEC_ATTRIBUTION_MODE PICSHOT_IMAGE_BACKING_MODE PICSHOT_IMAGE_RELIEF_MODE
   unset PICSHOT_LATEX_PIN_VERIFY PICSHOT_PIN_DESKTOP_VISIBILITY_ONLY PICSHOT_PIN_GROUP_TRANSFORMS_ONLY
   unset PICSHOT_ANNOTATION_DETAILS_ONLY PICSHOT_AUTOMATIC_MOSAIC_ONLY PICSHOT_MANUAL_SCROLL_RESOURCES
+  unset PICSHOT_MANUAL_HASH_STRATEGY PICSHOT_SCROLL_ATTRIBUTION_MODE PICSHOT_SCROLL_ATTRIBUTION_INPUT_DIRECTORY
+  unset PICSHOT_SCROLL_ATTRIBUTION_PRODUCTION_COMMIT PICSHOT_SCROLL_ATTRIBUTION_OVERLAY_COMMIT
   export PICSHOT_MANUAL_SCROLL_ONLY=1
   if [[ "$format" == zip ]]; then export PICSHOT_MANUAL_SCROLL_RESOURCES=1; fi
   swift scripts/launch-smoke-app.swift "$app" "$root/launch.json"
@@ -24,6 +26,7 @@ spec=importlib.util.spec_from_file_location('manual','scripts/check-scroll-manua
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
 root=pathlib.Path(sys.argv[1]); app=pathlib.Path(sys.argv[2]).resolve();source=sys.argv[3]
 r=module.read_json(root/'launch.json');module.functional(r,source)
+assert r['manualHashStrategy']=='vimage-full-frame',r
 assert pathlib.Path(r['bundlePath']).resolve()==app and len(r['arguments'])==1,r
 large=r['largeFrameProviders'];assert len(large)==2,large
 assert {(x['width'],x['height'],x['axis']) for x in large}=={(3840,2160,'horizontal'),(5120,2880,'vertical')},large

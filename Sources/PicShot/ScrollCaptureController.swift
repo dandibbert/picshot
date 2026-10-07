@@ -831,7 +831,7 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
     @discardableResult
     func startManualForVerification(axis requestedAxis: ScrollAxis, region: CGRect, screenSize: CGSize,
                                     configuration: ManualScrollConfiguration,
-                                    observationStrategy: ManualScrollObservationStrategy = .fullFrame,
+                                    observationStrategy: ManualScrollObservationStrategy = .productionDefault,
                                     provider: @escaping () async throws -> CGImage,
                                     validate: @escaping () throws -> Void = {}) throws -> ManualScrollCoordinator {
         guard !sessionBusy, !edits.isEditing else { throw CaptureError.busy }

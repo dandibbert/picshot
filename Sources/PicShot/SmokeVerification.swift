@@ -20,7 +20,7 @@ import PicShotFormulaRenderCore
                 var hashContext: [String: Any]?
                 if environment["PICSHOT_MANUAL_HASH_STRATEGY"] != nil {
                     hashContext = ["strategy": strategy.rawValue, "diagnosticOnly": true,
-                        "productionDefaultStrategy": "full-frame", "processStartMemoryCaptured": false,
+                        "productionDefaultStrategy": ManualScrollObservationStrategy.productionDefault.rawValue, "processStartMemoryCaptured": false,
                         "measurementStartScope": "First manual smoke-route boundary after AppDelegate startup, before functional verification; not process birth or pre-initialization memory",
                         "runIdentifier": UUID().uuidString,
                         "operatingSystem": ProcessInfo.processInfo.operatingSystemVersionString,

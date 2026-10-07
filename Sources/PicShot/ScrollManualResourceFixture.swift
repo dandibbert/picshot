@@ -20,7 +20,7 @@ enum ScrollManualResourceFixture {
     ]
 
     static func verify(evidenceDirectory: URL, functionalReportURL: URL,
-                       observationStrategy: ManualScrollObservationStrategy = .fullFrame,
+                       observationStrategy: ManualScrollObservationStrategy = .productionDefault,
                        diagnosticContext: [String: Any]? = nil) async throws -> [String: Any] {
         _ = NSApplication.shared
         try FileManager.default.createDirectory(at: evidenceDirectory, withIntermediateDirectories: true)
@@ -49,7 +49,7 @@ enum ScrollManualResourceFixture {
             "purgeabilityInferredFromRSSFootprintGap": false,
             "memoryScope": "Main-process sampled Mach RSS and physical footprint; excludes WindowServer, GPU and other processes. Timer maxima can miss native transients and are not kernel lifetime peaks.",
             "backingCaveat": "ImageIO may retain volatile decoded backing beyond lexical release. RSS and footprint differ; owned-state release is not overall memory stability. Production screen crops may retain full-display backing; injected viewports do not measure that path.",
-            "ownershipScope": "The fixture retains at most one procedural viewport, reused across stable captures; driver references may alias it. Sampled ownership counters cover the pending driver raster, accepted grayscale, overview, preview tile/jobs and provider call; they do not count transient normalization buffers, ImageIO decoder backing or framework caches.",
+            "ownershipScope": "The fixture retains at most one procedural viewport, reused across stable captures; driver references may alias it. Every resource run samples and verifies at most one owned normalization workspace bounded by viewport pixels * 4, at most 96,000,000 bytes, and verifies zero workspace after every drained pause/recovery/cancel/reset and close. Existing report counters cover the pending raster, accepted grayscale, overview, preview tile/jobs and provider call; the optional diagnostic extension exposes workspace samples. Native conversion scratch, ImageIO decoder backing and framework caches are not bounded by those ownership counters.",
             "limits": ["framePixels": ScrollFrame.maximumPixels, "outputPixels": ScrollCaptureSequence.maximumOutputPixels,
                        "outputDimension": ScrollCaptureSequence.maximumOutputDimension, "acceptedSources": ScrollCaptureSequence.maximumBlocks,
                        "temporaryDiskBytes": 512 * 1024 * 1024, "fixtureViewportRasters": 1, "pendingCaptureRasters": 1, "captureRunners": 1,
@@ -61,8 +61,8 @@ enum ScrollManualResourceFixture {
         ]
         // The optional extension is consumed only by the dedicated candidate
         // checker. Ordinary resource reports retain their existing strict schema.
-        try require(observationStrategy == .fullFrame || diagnosticContext != nil,
-                    "Experimental hashing requires an explicit diagnostic context")
+        try require(observationStrategy == .productionDefault || diagnosticContext != nil,
+                    "Non-default hashing requires an explicit diagnostic context")
         var hashDiagnosticCycles: [[String: Any]] = []
         let diagnosticSink: (([String: Any]) -> Void)? = diagnosticContext == nil ? nil : { hashDiagnosticCycles.append($0) }
         func refreshHashDiagnostics() {
@@ -160,7 +160,7 @@ enum ScrollManualResourceFixture {
         var coordinator: ManualScrollCoordinator?
         weak var weakCoordinator: ManualScrollCoordinator?
         var directory: URL?
-        let observations = Observations(collectNormalization: diagnosticSink != nil)
+        let observations = Observations()
         var normalizationReleases: [[String: Any]] = []
         var accepted: [SourceIdentity] = [], after: [SourceIdentity] = []
         var previewProof: [String: Any] = [:], resetProof: [String: Any] = [:]
@@ -184,7 +184,6 @@ enum ScrollManualResourceFixture {
             guard let run = coordinator else { throw failure("Missing resource coordinator") }
             func observe() throws { try observations.sample(live, run: run, source: source) }
             func releasedNormalization(_ label: String) throws {
-                guard diagnosticSink != nil else { return }
                 let bytes = weakDriver?.normalizationBufferBytesForVerification ?? 0
                 try require(bytes == 0, "Normalization workspace survived drained " + label)
                 normalizationReleases.append(["stage": label, "normalizationBufferBytes": bytes])
@@ -285,17 +284,21 @@ enum ScrollManualResourceFixture {
         try await settle(deadline)
         try require(source.captures == capturesAtCancel && source.activeProviders == 0, "Late provider ran after close")
         let settled = try memory(); sampler.stop()
+        // Enforce the workspace contract for ordinary installed-app acceptance
+        // too. Only the additional diagnostic JSON projection is optional.
+        let ownsWorkspace = observationStrategy == .reusableFullFrame || observationStrategy == .vImageFullFrame
+        let expectedPeak = ownsWorkspace ? width * height * 4 : 0
+        try require(observations.normalizationPeakBytes == expectedPeak && observations.normalizationSamples > 0,
+                    "Normalization workspace was not observed at its expected bound")
+        let afterCloseNormalizationBytes = weakDriver?.normalizationBufferBytesForVerification ?? 0
+        try require(afterCloseNormalizationBytes == 0, "Normalization workspace survived close")
         if let diagnosticSink {
-            let ownsWorkspace = observationStrategy == .reusableFullFrame || observationStrategy == .vImageFullFrame
-            let expectedPeak = ownsWorkspace ? width * height * 4 : 0
-            try require(observations.normalizationPeakBytes == expectedPeak && observations.normalizationSamples > 0,
-                        "Diagnostic normalization workspace was not observed at its expected bound")
             diagnosticSink(["index": index, "phase": phase, "profile": name,
                 "strategy": observationStrategy.rawValue,
                 "peakNormalizationBufferBytes": observations.normalizationPeakBytes,
                 "normalizationSamples": observations.normalizationSamples,
                 "normalizationReleases": normalizationReleases,
-                "normalizationBufferBytesAfterClose": weakDriver?.normalizationBufferBytesForVerification ?? 0])
+                "normalizationBufferBytesAfterClose": afterCloseNormalizationBytes])
         }
         return [
             "index": index, "phase": phase, "profile": name, "axis": axis.rawValue,
@@ -352,9 +355,7 @@ enum ScrollManualResourceFixture {
     }
 
     @MainActor private final class Observations {
-        let collectNormalization: Bool
         private(set) var normalizationPeakBytes = 0, normalizationSamples = 0
-        init(collectNormalization: Bool) { self.collectNormalization = collectNormalization }
         var count = 0
         var peaks: [String: Int] = [:]
         func sample(_ live: ScrollCaptureController, run: ManualScrollCoordinator, source: Source) throws {
@@ -387,12 +388,10 @@ enum ScrollManualResourceFixture {
                 try ScrollManualResourceFixture.require(value >= 0 && value <= caps[key]!, "Observed owned bound exceeded: \(key)")
                 peaks[key] = max(peaks[key] ?? 0, value)
             }
-            if collectNormalization {
-                let bytes = live.manualDriverForVerification?.normalizationBufferBytesForVerification ?? 0
-                try ScrollManualResourceFixture.require(bytes >= 0 && bytes <= source.width * source.height * 4,
-                                                        "Owned normalization workspace exceeded viewport bound")
-                normalizationPeakBytes = max(normalizationPeakBytes, bytes); normalizationSamples += 1
-            }
+            let bytes = live.manualDriverForVerification?.normalizationBufferBytesForVerification ?? 0
+            try ScrollManualResourceFixture.require(bytes >= 0 && bytes <= source.width * source.height * 4,
+                                                    "Owned normalization workspace exceeded viewport bound")
+            normalizationPeakBytes = max(normalizationPeakBytes, bytes); normalizationSamples += 1
             count += 1
         }
     }

@@ -8,7 +8,7 @@ import PicShotCore
 @MainActor
 enum ScrollManualCaptureSmokeFixture {
     static func verify(evidenceDirectory: URL, includeLargeFrames: Bool = false,
-                       observationStrategy: ManualScrollObservationStrategy = .fullFrame) async throws -> [String: Any] {
+                       observationStrategy: ManualScrollObservationStrategy = .productionDefault) async throws -> [String: Any] {
         try FileManager.default.createDirectory(at: evidenceDirectory, withIntermediateDirectories: true)
         var report: [String: Any] = [
             "manualHashStrategy": observationStrategy.rawValue,

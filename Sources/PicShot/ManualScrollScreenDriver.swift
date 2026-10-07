@@ -46,13 +46,13 @@ final class ManualScrollScreenDriver: ManualScrollDriver {
         self.displayID = displayID; self.region = region; self.screenSize = screenSize
         displayBounds = bounds; self.expectedPixelSize = expectedPixelSize; target = lockedTarget
         self.accept = accept; provider = nil; validate = nil
-        observationStrategy = .fullFrame
+        observationStrategy = .productionDefault
         permission = { guard CGPreflightScreenCaptureAccess() else { throw CaptureError.screenPermission } }
     }
 
     /// Verification initializer never inspects the desktop, asks for TCC or sends input.
     init(region: CGRect, screenSize: CGSize, expectedPixelSize: CGSize? = nil,
-         observationStrategy: ManualScrollObservationStrategy = .fullFrame,
+         observationStrategy: ManualScrollObservationStrategy = .productionDefault,
          permission: @escaping () throws -> Void = {}, validate: @escaping () throws -> Void = {},
          provider: @escaping () async throws -> CGImage,
          accept: @escaping (CGImage) async throws -> ManualScrollSample) {

@@ -19,6 +19,17 @@ SUITES = {
 }
 STRATEGIES = ('full-frame', 'pooled-full-frame', 'reusable-full-frame', 'vimage-full-frame')
 WORKSPACE_STRATEGIES = {'reusable-full-frame', 'vimage-full-frame'}
+PRODUCTION_DEFAULT_STRATEGY = 'vimage-full-frame'
+# These are historical diagnostic binaries, not the newly integrated default.
+HISTORICAL_PRODUCTION_DEFAULTS = {
+    '8cb0c7003bc2e75859f2b41ba687bd6e937f5ae3': 'full-frame',
+    '6d274ecf0dfff8776a2711e8043720045d9390eb': 'full-frame',
+}
+
+
+def production_default_for_commit(commit):
+    return HISTORICAL_PRODUCTION_DEFAULTS.get(commit, PRODUCTION_DEFAULT_STRATEGY)
+
 RELEASES = ('first-pause', 'second-pause', 'recoverable-seam', 'accepted-3-pause', 'accepted-4-pause', 'cancel', 'reset')
 CONTEXT_FIELDS = {'strategy', 'diagnosticOnly', 'productionDefaultStrategy', 'processStartMemoryCaptured',
                   'measurementStartScope', 'runIdentifier', 'operatingSystem', 'smokeEntryBeforeFunctional',
@@ -92,7 +103,7 @@ def validate_cell(resource, functional, launch, lifecycle, entry, *, app, commit
     context = resource['diagnosticHashComparison']
     BASE.keys(context, CONTEXT_FIELDS)
     BASE.need(context['strategy'] == functional.get('manualHashStrategy') == strategy, 'actual strategy differs between reports')
-    BASE.need(context['diagnosticOnly'] is True and context['productionDefaultStrategy'] == 'full-frame', 'production default/scope changed')
+    BASE.need(context['diagnosticOnly'] is True and context['productionDefaultStrategy'] == production_default_for_commit(commit), 'production default/scope changed')
     BASE.need(context['processStartMemoryCaptured'] is False and 'not process birth' in context['measurementStartScope'], 'startup memory mislabeled')
     BASE.string(context['operatingSystem']); uuid.UUID(context['runIdentifier'])
     BASE.need(type(entry) is dict and entry == {k:v for k,v in context.items() if k not in ('afterFunctionalBeforeResource','cycles')}, 'saved smoke-entry boundary differs')
@@ -146,7 +157,8 @@ def validate_cell(resource, functional, launch, lifecycle, entry, *, app, commit
     BASE.need(appearance.get('exactReferencePixels') is True and appearance.get('acceptedFrames') == 3
               and appearance.get('outputWidth') == 640 and appearance.get('outputHeight') == 920, 'native readable output proof missing')
     return {'status':'observed','strategy':strategy,'diagnosticOnly':True,'observationsComplete':True,
-            'sourceCommit':commit,'executableSHA256':resource['executableSHA256'],'processIdentifier':pid,
+            'sourceCommit':commit,'productionDefaultStrategy':context['productionDefaultStrategy'],
+            'executableSHA256':resource['executableSHA256'],'processIdentifier':pid,
             'runIdentifier':context['runIdentifier'],'ownedExitConfirmed':True,'architecture':resource['architecture'],
             'buildMode':resource['buildMode'],'operatingSystem':context['operatingSystem'],
             'processStartMemoryCaptured':False,'measurementStartScope':context['measurementStartScope'],
@@ -166,13 +178,19 @@ def compare_cells(cells, commit, suite='context-reuse'):
               'suite requires exact ordered cells: ' + ', '.join(selected))
     issues = [f"{c['strategy']}: {c.get('error',c.get('status'))}" for c in cells if c.get('status') != 'observed']
     result = {'schemaVersion':1,'sourceCommit':commit,'diagnosticOnly':True,'installerAcceptance':False,
-              'productionDefaultStrategy':'full-frame','suite':suite,'selectedStrategies':list(selected),'cells':cells,'zeroLeakClaim':False,
+              'productionDefaultStrategy':production_default_for_commit(commit),'suite':suite,'selectedStrategies':list(selected),'cells':cells,'zeroLeakClaim':False,
               'ordering':'fixed ' + ', '.join(selected) + '; timing/order may confound comparisons',
               'scope':'Same executable and full E2E work counts; actual backing accounting does not establish reclaimability or unlimited-run stability'}
     if not issues:
         for field in ('sourceCommit','executableSHA256','architecture','operatingSystem','buildMode','captureCounts','sourceByteDigests','largeOutputDigests'):
             if any(c[field] != cells[0][field] for c in cells[1:]): issues.append('paired equality failed: '+field)
         if cells[0]['sourceCommit'] != commit: issues.append('matrix source identity differs')
+        expected_default = production_default_for_commit(commit)
+        # Older checked summaries predate this explicit field; only the two
+        # pinned historical sources may inherit their source-established label.
+        historical_default = HISTORICAL_PRODUCTION_DEFAULTS.get(commit)
+        if any(c.get('productionDefaultStrategy', historical_default) != expected_default for c in cells):
+            issues.append('production default differs from source-scoped expectation')
         if len({c['processIdentifier'] for c in cells}) != len(selected): issues.append('distinct process IDs not established')
         if len({c['runIdentifier'] for c in cells}) != len(selected): issues.append('distinct invocation IDs not established')
     result.update(status='incomplete' if issues else 'observed', observationsComplete=not issues, issues=issues,
