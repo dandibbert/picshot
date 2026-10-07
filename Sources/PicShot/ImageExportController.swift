@@ -81,6 +81,7 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
                 // borderless captures and ordinary windows alike.
                 window.setFrameOrigin(CGPoint(x: parent.frame.midX - window.frame.width / 2,
                                               y: parent.frame.midY - window.frame.height / 2))
+                PinDesktopVisibilityPolicy.inheritSpaceBehavior(from: parent, to: window)
                 parent.addChildWindow(window, ordered: .above)
                 var level = parent.level.rawValue, ancestor: NSWindow? = parent
                 for _ in 0..<8 {

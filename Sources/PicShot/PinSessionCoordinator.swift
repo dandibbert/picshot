@@ -6,6 +6,15 @@ import PicShotCore
 @MainActor final class PinSessionCoordinator {
     static let maximumLivePins = 20
     let store: PinSessionStore
+    let desktopVisibilityService: PinDesktopVisibilityService
+    var desktopVisibility: PinDesktopVisibility { desktopVisibilityService.mode }
+    lazy var groupTransforms = PinGroupTransformController(session: self)
+    var groupTransformEligibleIDs: Set<UUID> {
+        let visible = Set(store.visibleEntries.map(\.id))
+        let images = liveControllers.filter { $0.value.canParticipateInGroupTransform && (!presentWindows || $0.value.window?.isVisible == true) }.keys
+        let rich = richControllers.filter { $0.value.canParticipateInGroupTransform && (!presentWindows || $0.value.window?.isVisible == true) }.keys
+        return visible.intersection(Set(images).union(rich))
+    }
     private(set) var liveControllers: [UUID: PinController] = [:]
     private(set) var richControllers: [UUID: RichPinController] = [:]
     var livePinIDs: Set<UUID> { Set(liveControllers.keys).union(richControllers.keys) }
@@ -20,12 +29,34 @@ import PicShotCore
     private var terminated = false
 
     init(store: PinSessionStore, presentWindows: Bool = true,
+         desktopVisibilityService: PinDesktopVisibilityService? = nil,
          debounceNanoseconds: UInt64 = 250_000_000,
          screens: @escaping @MainActor () -> [CGRect] = { NSScreen.screens.map(\.visibleFrame) }) {
         self.store = store; self.presentWindows = presentWindows
+        self.desktopVisibilityService = desktopVisibilityService ?? PinDesktopVisibilityService(
+            defaults: ProcessInfo.processInfo.environment["PICSHOT_SMOKE_REPORT"] == nil ? .standard : nil)
         self.debounceNanoseconds = debounceNanoseconds; self.screens = screens
     }
     deinit { presentationSaveTask?.cancel() }
+
+    /// Settings save and context controls share this metadata-only path. Hidden pins
+    /// adopt the preference when next constructed; changing it never opens a group.
+    func setDesktopVisibility(_ mode: PinDesktopVisibility) {
+        guard !terminated else { return }
+        if mode != desktopVisibility { groupTransforms.dismissEditor() }
+        desktopVisibilityService.select(mode); applyDesktopVisibilityToLivePins()
+    }
+    func reloadDesktopVisibility() {
+        guard !terminated else { return }
+        let previousMode = desktopVisibility
+        desktopVisibilityService.reload()
+        if desktopVisibility != previousMode { groupTransforms.dismissEditor() }
+        applyDesktopVisibilityToLivePins()
+    }
+    private func applyDesktopVisibilityToLivePins() {
+        for controller in liveControllers.values { controller.applyDesktopVisibility(desktopVisibility) }
+        for controller in richControllers.values { controller.applyDesktopVisibility(desktopVisibility) }
+    }
 
     /// Call only at launch. A disabled preference and smoke mode are strict no-op paths.
     func restoreOnLaunch(enabled: Bool, isSmoke: Bool) throws {
@@ -56,7 +87,7 @@ import PicShotCore
         guard !terminated else { throw PinSessionError.missingPin }
         guard livePinCount < Self.maximumLivePins else { throw PinSessionError.capacityExceeded }
         try checkAnimationCapacity(kind: prepared.kind)
-        let controller = try RichPinController(asset: prepared.asset, data: prepared.data, title: prepared.title)
+        let controller = try RichPinController(asset: prepared.asset, data: prepared.data, title: prepared.title, renderedImage: prepared.kind == .latex ? prepared.poster : nil)
         do {
             let entry = try store.add(rich: prepared, presentation: controller.presentation, protecting: livePinIDs, revealingGroup: true)
             connect(controller, id: entry.id); present(controller); return entry.id
@@ -70,22 +101,36 @@ import PicShotCore
     private func loadRich(_ entry: PinSessionEntry) throws {
         guard let rich = entry.richContent else { return }
         try checkAnimationCapacity(kind: rich.kind)
-        let controller = try RichPinController(asset: rich, data: store.richData(id: entry.id), title: entry.title)
+        let controller = try RichPinController(asset: rich, data: store.richData(id: entry.id), title: entry.title, renderedImage: rich.kind == .latex ? store.image(id: entry.id) : nil)
         if let recovered = store.recoveredPresentation(id: entry.id, screens: screens()) { controller.applyPresentation(recovered) }
         connect(controller, id: entry.id); present(controller)
     }
     private func connect(_ controller: RichPinController, id: UUID) {
+        controller.applyDesktopVisibility(desktopVisibility)
+        controller.onDesktopVisibilityChange = { [weak self, weak controller] mode in
+            guard let self, let controller, self.richControllers[id] === controller else { return }
+            self.setDesktopVisibility(mode)
+        }
         precondition(!livePinIDs.contains(id)); richControllers[id] = controller
+        controller.onToggleGroupSelection = { [weak self] in self?.groupTransforms.toggleSelection(id: id) }
+        controller.onShowGroupTransform = { [weak self] in self?.groupTransforms.showEditor() }
         controller.onClose = { [weak self, weak controller] in
             guard let self, let controller, self.richControllers[id] === controller else { return }
             self.richControllers.removeValue(forKey: id); self.pendingPresentations.removeValue(forKey: id)
+            self.groupTransforms.pinChanged(id: id)
             do {
                 if self.store.visibleEntries.contains(where: { $0.id == id }) { try self.store.archive(id: id, presentation: controller.presentation) }
                 else if self.store.entry(id: id) != nil { try self.store.updatePresentation(controller.presentation, id: id) }
             } catch { self.onError?(error) }
         }
+        controller.onRichChange = { [weak self, weak controller] prepared in
+            guard let self, let controller, self.richControllers[id] === controller, !self.terminated else { throw CancellationError() }
+            try self.store.replaceRich(prepared, id: id, protecting: self.livePinIDs)
+        }
         controller.onPresentationChange = { [weak self, weak controller] value in
             guard let self, let controller, self.richControllers[id] === controller, !self.terminated else { return }
+            if self.store.entry(id: id)?.presentation == value { self.pendingPresentations.removeValue(forKey: id); return }
+            self.groupTransforms.pinChanged(id: id)
             self.pendingPresentations[id] = value; self.schedulePresentationSave()
         }
     }
@@ -151,6 +196,7 @@ import PicShotCore
     /// already deleted the pin; hiding/moving/switching merely releases its live window.
     func reconcileVisiblePins() throws {
         guard !terminated else { return }
+        groupTransforms.reconcile()
         let entries = store.visibleEntries
         let desired = Set(entries.map(\.id))
         var firstError: Error?
@@ -167,23 +213,17 @@ import PicShotCore
     /// lose the last move/resize. This writes metadata only, never raster PNGs.
     func flushPresentationChanges() throws {
         presentationSaveTask?.cancel(); presentationSaveTask = nil
-        var firstError: Error?
-        for (id, presentation) in pendingPresentations {
-            guard livePinIDs.contains(id), store.entry(id: id) != nil else {
-                pendingPresentations.removeValue(forKey: id); continue
-            }
-            do {
-                try store.updatePresentation(presentation, id: id)
-                pendingPresentations.removeValue(forKey: id)
-            } catch { firstError = firstError ?? error }
-        }
-        if let firstError { throw firstError }
+        pendingPresentations = pendingPresentations.filter { livePinIDs.contains($0.key) && store.entry(id: $0.key) != nil }
+        guard !pendingPresentations.isEmpty else { return }
+        try store.updatePresentations(pendingPresentations)
+        pendingPresentations.removeAll()
     }
 
     /// Termination preserves which pins were open, never archives or deletes them, even when a metadata write
     /// fails. Detach callbacks before asking AppKit to close its windows.
     func prepareForTermination() throws {
         guard !terminated else { return }
+        groupTransforms.reset()
         terminated = true
         var firstError: Error?
         for id in Array(livePinIDs) {
@@ -212,11 +252,19 @@ import PicShotCore
         present(controller)
     }
     private func connect(_ controller: PinController, id: UUID) {
+        controller.applyDesktopVisibility(desktopVisibility)
+        controller.onDesktopVisibilityChange = { [weak self, weak controller] mode in
+            guard let self, let controller, self.liveControllers[id] === controller else { return }
+            self.setDesktopVisibility(mode)
+        }
         precondition(liveControllers[id] == nil)
         liveControllers[id] = controller
+        controller.onToggleGroupSelection = { [weak self] in self?.groupTransforms.toggleSelection(id: id) }
+        controller.onShowGroupTransform = { [weak self] in self?.groupTransforms.showEditor() }
         controller.onClose = { [weak self, weak controller] in
             guard let self, let controller, self.liveControllers[id] === controller else { return }
             self.liveControllers.removeValue(forKey: id)
+            self.groupTransforms.pinChanged(id: id)
             self.pendingPresentations.removeValue(forKey: id)
             do {
                 if self.store.visibleEntries.contains(where: { $0.id == id }) {
@@ -235,6 +283,8 @@ import PicShotCore
         }
         controller.onPresentationChange = { [weak self, weak controller] presentation in
             guard let self, let controller, self.liveControllers[id] === controller, !self.terminated else { return }
+            if self.store.entry(id: id)?.presentation == presentation { self.pendingPresentations.removeValue(forKey: id); return }
+            self.groupTransforms.pinChanged(id: id)
             self.pendingPresentations[id] = presentation
             self.schedulePresentationSave()
         }
@@ -250,9 +300,10 @@ import PicShotCore
         }
     }
     private func closePreservingSession(id: UUID) throws {
+        groupTransforms.pinChanged(id: id)
         if let controller = richControllers[id] {
             defer {
-                controller.onClose = nil; controller.onPresentationChange = nil
+                controller.onClose = nil; controller.onPresentationChange = nil; controller.onRichChange = nil
                 richControllers.removeValue(forKey: id); pendingPresentations.removeValue(forKey: id); controller.close()
             }
             if store.entry(id: id) != nil { try store.updatePresentation(controller.presentation, id: id) }

@@ -412,3 +412,53 @@ private final class SaveWorkflowStage {
     }
     deinit { cleanup() }
 }
+
+/// The physical destination is bound when the user approves the chooser, before
+/// renderer/queue delays. Descriptors survive those delays; publication refuses any
+/// replaced physical ancestor rather than resolving a newer symlink target.
+final class RawPinArtifactDestination: @unchecked Sendable {
+    let url: URL
+    private let directories: SaveWorkflowDirectoryChain
+    init(_ selected: URL) throws {
+        let name = selected.lastPathComponent
+        guard selected.isFileURL, selected.query == nil, selected.fragment == nil,
+              !name.isEmpty, name != ".", name != "..",
+              !name.contains("/"), !name.contains("\u{0}"), name.utf8.count <= 255 else {
+            throw ImageExportError.invalidDestination
+        }
+        let approved = try SaveWorkflowService.resolveApprovedDirectory(selected.deletingLastPathComponent())
+        directories = try SaveWorkflowDirectoryChain(base: approved, children: [], cancellation: ImageExportCancellation())
+        url = approved.appendingPathComponent(name)
+    }
+    fileprivate func publish(_ data: Data, cancellation: ImageExportCancellation,
+                             beforeCommit: (() throws -> Void)?) throws {
+        try cancellation.check()
+        guard !data.isEmpty, data.count <= ImageExportLimits.standard.maximumEncodedBytes else {
+            throw ImageExportError.invalidDestination
+        }
+        let name = url.lastPathComponent
+        try directories.validate()
+        let stage = try SaveWorkflowStage(parent: directories.lastDescriptor)
+        defer { stage.cleanup() }
+        try stage.write(data, cancellation: cancellation)
+        try beforeCommit?()
+        try stage.validate(expectedData: data, cancellation: cancellation, beforeChunk: nil)
+        try cancellation.commit {
+            try directories.validate(); try stage.validateIdentity()
+            guard Darwin.linkat(stage.directoryDescriptor, "payload", directories.lastDescriptor, name, 0) == 0 else {
+                if errno == EEXIST { throw ImageExportError.destinationExists }
+                throw SaveWorkflowError.writeFailed
+            }
+        }
+        _ = Darwin.fsync(directories.lastDescriptor)
+    }
+}
+
+/// Scoped publisher for validated pin artifacts; no fabricated raster/PDF metadata.
+enum RawPinArtifactPublication {
+    static func publish(_ data: Data, to destination: RawPinArtifactDestination,
+                        cancellation: ImageExportCancellation,
+                        beforeCommit: (() throws -> Void)? = nil) throws {
+        try destination.publish(data, cancellation: cancellation, beforeCommit: beforeCommit)
+    }
+}

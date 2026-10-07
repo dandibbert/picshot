@@ -2,7 +2,7 @@ import Foundation
 
 /// Rich content is additive: legacy image pins retain their original/current PNGs.
 /// Payloads are owned by the session; file pins contain references, never file contents.
-public enum PinContentKind: String, Codable, Sendable { case text, files, color, animation }
+public enum PinContentKind: String, Codable, Sendable { case text, files, color, animation, latex }
 
 public struct PinRichAsset: Codable, Equatable, Sendable {
     public let kind: PinContentKind
@@ -110,19 +110,41 @@ public struct PinRGBColor: Codable, Equatable, Sendable {
     }
 }
 
+/// Only editable mathematical source/options are serialized here. Its real rendered PNG
+/// is the entry's original/current raster, counted once by the shared pixel/disk policy.
+/// Restoring this document never invokes a renderer or follows external resources.
+public struct PinLaTeXContent: Codable, Equatable, Sendable {
+    public static let maximumUTF8Bytes = 8_192
+    public let source: String
+    public let fontSize: Double
+    public let scale: Int
+    public let transparent: Bool
+    public init(source: String, fontSize: Double = 24, scale: Int = 2, transparent: Bool = false) {
+        self.source = source; self.fontSize = fontSize; self.scale = scale; self.transparent = transparent
+    }
+    public var isValid: Bool {
+        !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && source.utf8.count <= Self.maximumUTF8Bytes &&
+            !source.unicodeScalars.contains(where: { $0.value == 0 }) &&
+            fontSize.isFinite && (12...96).contains(fontSize) && (1...3).contains(scale)
+    }
+}
+
 public struct PinRichDocument: Codable, Equatable, Sendable {
     public var kind: PinContentKind
     public var text: PinTextContent?
     public var files: [PinFileReference]?
     public var color: PinRGBColor?
+    public var latex: PinLaTeXContent?
     public init(text: PinTextContent) { kind = .text; self.text = text }
     public init(files: [PinFileReference]) { kind = .files; self.files = files }
     public init(color: PinRGBColor) { kind = .color; self.color = color }
+    public init(latex: PinLaTeXContent) { kind = .latex; self.latex = latex }
     public var isValid: Bool {
         switch kind {
-        case .text: return text?.isValid == true && files == nil && color == nil
-        case .files: return text == nil && color == nil && files.map { !$0.isEmpty && $0.count <= 64 && $0.allSatisfy(\.isValid) } == true
-        case .color: return text == nil && files == nil && color != nil
+        case .text: return text?.isValid == true && files == nil && color == nil && latex == nil
+        case .files: return text == nil && color == nil && latex == nil && files.map { !$0.isEmpty && $0.count <= 64 && $0.allSatisfy(\.isValid) } == true
+        case .color: return text == nil && files == nil && color != nil && latex == nil
+        case .latex: return text == nil && files == nil && color == nil && latex?.isValid == true
         case .animation: return false
         }
     }

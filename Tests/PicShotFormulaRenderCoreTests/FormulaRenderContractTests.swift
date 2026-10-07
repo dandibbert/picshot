@@ -11,6 +11,20 @@ final class FormulaRenderContractTests: XCTestCase {
         for size in [Double.nan, .infinity, 11, 97] { XCTAssertThrowsError(try FormulaRenderRequest(latex: "x", fontSize: size).validate()) }
         for scale in [0, 4] { XCTAssertThrowsError(try FormulaRenderRequest(latex: "x", scale: scale).validate()) }
     }
+    func testResultAggregateByteLimitAndExactRequestAssociation() throws {
+        let request = FormulaRenderRequest(latex: "x")
+        func result(_ latex: String = "x", png: Data, pdf: Data) -> FormulaRenderResult {
+            FormulaRenderResult(latex: latex, svg: "<svg />", mathML: "<math />", png: png, pdf: pdf,
+                                width: 2, height: 2, pointWidth: 1, pointHeight: 1)
+        }
+        let pngHeader = Data([137, 80, 78, 71, 13, 10, 26, 10]), pdfHeader = Data("%PDF-".utf8)
+        XCTAssertNoThrow(try result(png: pngHeader, pdf: pdfHeader).validate(for: request))
+        XCTAssertThrowsError(try result("y", png: pngHeader, pdf: pdfHeader).validate(for: request))
+        // Individual formats fit; their aggregate must also fit the existing 24 MiB ceiling.
+        var png = pngHeader; png.append(Data(repeating: 0, count: 13 * 1_024 * 1_024))
+        var pdf = pdfHeader; pdf.append(Data(repeating: 0, count: 13 * 1_024 * 1_024))
+        XCTAssertThrowsError(try result(png: png, pdf: pdf).validate(for: request))
+    }
     func testUnsupportedConvertersAreExplicit() {
         XCTAssertEqual(FormulaRenderCapabilities.available.map(\.rawValue), ["latex", "mathML", "svg", "png", "pdf"])
         XCTAssertTrue(FormulaRenderCapabilities.unavailable.contains("Office OMML"))

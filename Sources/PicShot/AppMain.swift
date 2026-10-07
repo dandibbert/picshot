@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import PicShotCore
+import PicShotFormulaRenderCore
 import ScreenCaptureKit
 import Darwin
 import ImageIO
@@ -30,6 +31,7 @@ import ImageIO
     var pins:[PinController]=[]
     var pinSession:PinSessionCoordinator?
     var pinSessionLoadError:Error?
+    weak var formulaPinEditor: FormulaRenderController?
     weak var pinGroupsController:PinGroupsController?
     weak var settingsController:SettingsController?
     var hotKeys:HotKeyService?
@@ -140,6 +142,7 @@ import ImageIO
         wm.addItem(withTitle:"历史记录",action:#selector(showMain),keyEquivalent:"0").target=self;wm.addItem(withTitle:"贴图组与历史…",action:#selector(managePinGroups),keyEquivalent:"").target=self
         wm.addItem(withTitle:"文件或文件夹贴图…",action:#selector(importFilePin),keyEquivalent:"").target=self
         wm.addItem(withTitle:"动态 GIF / WebP 贴图…",action:#selector(importAnimationPin),keyEquivalent:"").target=self
+        wm.addItem(withTitle:"LaTeX 公式贴图…",action:#selector(createFormulaPin),keyEquivalent:"").target=self
         wm.addItem(withTitle:"颜色贴图…",action:#selector(createColorPin),keyEquivalent:"").target=self
         wm.addItem(withTitle:"显示当前贴图组",action:#selector(showPins),keyEquivalent:"").target=self
         wm.addItem(withTitle:"恢复当前贴图组",action:#selector(restorePins),keyEquivalent:"").target=self
@@ -314,7 +317,12 @@ import ImageIO
             }catch{showError(error);return false}
         };retain(c);c.showWindow(nil)
     }
-    func recognizeFormula(_ image:CGImage){let c=FormulaRecognitionController(image:image);retain(c);c.showWindow(nil)}
+    func recognizeFormula(_ image:CGImage){
+        let c=FormulaRecognitionController(image:image,onPin:{ [weak self] request,result in
+            guard let self else {throw CancellationError()}
+            try self.pinRich(PreparedRichPin(formula:request,result:result))
+        });retain(c);c.showWindow(nil)
+    }
     func recognizeTable(_ image:CGImage){let c=TableRecognitionController(image:image){[weak self] table,warnings in guard let self else{return};let editor=TableEditorController(table:table,sourceImage:image);self.retain(editor);editor.showWindow(nil);if !warnings.isEmpty{let alert=NSAlert();alert.messageText="请核对表格识别结果";alert.informativeText=warnings.joined(separator:"\n");alert.runModal()}};retain(c);c.showWindow(nil)}
     func openEditor(_ image:CGImage,presentation:FrozenCapturePresentation?=nil,captureDate:Date?=nil){
         if presentation != nil, !frozenEditorAdmission.shouldStart(isBusy:false,
@@ -379,7 +387,7 @@ import ImageIO
     @objc func managePinGroups(){
         guard let pinSession else{if let pinSessionLoadError{showError(pinSessionLoadError)};return}
         if let pinGroupsController{pinGroupsController.showWindow(nil);NSApp.activate(ignoringOtherApps:true);return}
-        let controller=PinGroupsController(store:pinSession.store)
+        let controller=PinGroupsController(store:pinSession.store, transforms:pinSession.groupTransforms)
         controller.onSessionChange={ [weak pinSession] in do{try pinSession?.reconcileVisiblePins()}catch{showError(error)}}
         controller.onOpenPin={ [weak pinSession] id in do{try pinSession?.openPin(id:id)}catch{showError(error)}}
         pinGroupsController=controller;retain(controller);controller.showWindow(nil);NSApp.activate(ignoringOtherApps:true)
@@ -387,6 +395,18 @@ import ImageIO
     func pinRich(_ prepared: PreparedRichPin) throws {
         guard let pinSession else { throw RichPinError.unavailableSession }
         try pinSession.add(rich: prepared)
+    }
+    @objc func createFormulaPin() {
+        guard pinSession != nil else { showError(RichPinError.unavailableSession); return }
+        if let formulaPinEditor { formulaPinEditor.showWindow(nil); formulaPinEditor.window?.makeKeyAndOrderFront(nil); return }
+        // Explicit formula action only: ordinary clipboard text keeps its existing text-pin behavior.
+        let clipboard = NSPasteboard.general.string(forType: .string) ?? ""
+        let seed = clipboard.utf8.count <= FormulaRenderLimits.latexBytes && !clipboard.contains("\0") ? clipboard : ""
+        let editor = FormulaRenderController(latex: seed, onPin: { [weak self] request, result in
+            guard let self else { throw CancellationError() }
+            try self.pinRich(PreparedRichPin(formula: request, result: result))
+        })
+        formulaPinEditor = editor; retain(editor); editor.showWindow(nil); editor.window?.makeKeyAndOrderFront(nil)
     }
     @objc func pastePin(){
         let pasteboard = NSPasteboard.general
@@ -499,7 +519,7 @@ import ImageIO
         // Editing an existing global combination must not trigger capture behind Settings.
         let unavailable=hotKeys?.failures ?? []
         hotKeys?.register(HotKeyConfiguration(shortcuts:[]))
-        let controller=SettingsController(onChange:{[weak self] in do{try self?.history.prune()}catch{showError(error)}},unavailableShortcuts:unavailable,onManageCapturePresets:{[weak self] in self?.manageCapturePresets()})
+        let controller=SettingsController(onChange:{[weak self] in self?.pinSession?.reloadDesktopVisibility();do{try self?.history.prune()}catch{showError(error)}},unavailableShortcuts:unavailable,onManageCapturePresets:{[weak self] in self?.manageCapturePresets()})
         settingsController=controller;retain(controller);controller.showWindow(nil);NSApp.activate(ignoringOtherApps:true)
     }
     func refreshHotkeys(){

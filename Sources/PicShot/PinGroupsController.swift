@@ -9,6 +9,18 @@ import PicShotCore
     var onOpenPin: ((UUID) -> Void)?
     var onSessionChange: (() -> Void)?
     private let store: PinSessionStore
+    private let transforms: PinGroupTransformController?
+    private var transformSubscription: AnyCancellable?
+    private let transformButton = NSButton(title: "移动 / 缩放…", target: nil, action: nil)
+    private let alignPicker = NSPopUpButton()
+    private let undoGroupButton = NSButton(title: "撤销组合", target: nil, action: nil)
+    private let redoGroupButton = NSButton(title: "重做", target: nil, action: nil)
+    private let selectionStatus = NSTextField(labelWithString: "⌘ / ⇧ 多选正在显示的贴图")
+    private var selectedPinIDs: Set<UUID> = []
+    private var restoringSelection = false
+    private var tableTracksTransformSelection = false
+    private var selectionGroupID: UUID?
+    private var selectionVisibility: Bool?
     private var subscription: AnyCancellable?
     private let groupPicker = NSPopUpButton()
     private let hiddenToggle = NSButton(checkboxWithTitle: "隐藏此组", target: nil, action: nil)
@@ -27,21 +39,23 @@ import PicShotCore
     private var displayedEntries: [PinSessionEntry] = []
     private var selectedPinID: UUID?
 
-    init(store: PinSessionStore) {
-        self.store = store
-        let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 530),
+    init(store: PinSessionStore, transforms: PinGroupTransformController? = nil) {
+        self.store = store; self.transforms = transforms
+        let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 640),
                              styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
         super.init(window: panel)
         panel.title = "贴图组与历史"; panel.isReleasedWhenClosed = false
-        panel.minSize = NSSize(width: 680, height: 460); panel.center()
+        panel.minSize = NSSize(width: 680, height: 600); panel.center()
         buildInterface(in: panel)
         reload()
         // Scheduled delivery observes the committed value, not @Published's willSet value.
         subscription = store.$index.dropFirst().receive(on: DispatchQueue.main).sink { [weak self] _ in self?.reload() }
+        transformSubscription = transforms?.$revision.dropFirst().receive(on: DispatchQueue.main).sink { [weak self] _ in self?.synchronizeTransformSelection() }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func showWindow(_ sender: Any?) {
+        if let transforms, !transforms.selectedIDs.isEmpty { selectedPinIDs = transforms.selectedIDs }
         reload(); super.showWindow(sender); window?.makeKeyAndOrderFront(sender)
     }
 
@@ -68,7 +82,7 @@ import PicShotCore
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("pin"))
         column.title = "贴图"; column.resizingMask = .autoresizingMask
         table.addTableColumn(column); table.headerView = nil; table.rowHeight = 62
-        table.dataSource = self; table.delegate = self; table.allowsMultipleSelection = false
+        table.dataSource = self; table.delegate = self; table.allowsMultipleSelection = true
         table.usesAlternatingRowBackgroundColors = true
         table.target = self; table.doubleAction = #selector(openSelected)
         table.setAccessibilityLabel("此组保存的贴图")
@@ -78,7 +92,7 @@ import PicShotCore
         preview.imageScaling = .scaleProportionallyUpOrDown; preview.imageAlignment = .alignCenter
         preview.setAccessibilityLabel("所选贴图预览")
         details.textColor = .secondaryLabelColor; details.font = .systemFont(ofSize: 11)
-        details.maximumNumberOfLines = 3
+        details.maximumNumberOfLines = 5
         let previewStack = NSStackView(views: [preview, details])
         previewStack.orientation = .vertical; previewStack.spacing = 8; previewStack.alignment = .leading
         preview.widthAnchor.constraint(equalTo: previewStack.widthAnchor).isActive = true
@@ -101,7 +115,21 @@ import PicShotCore
         actions.orientation = .horizontal; actions.spacing = 8
         status.font = .systemFont(ofSize: 11); status.textColor = .secondaryLabelColor
         status.maximumNumberOfLines = 3
-        let root = NSStackView(views: [heading, visibility, content, actions, restoreToggle, status])
+        transformButton.target = self; transformButton.action = #selector(transformSelected)
+        transformButton.identifier = NSUserInterfaceItemIdentifier("pin-group-transform")
+        alignPicker.addItem(withTitle: "对齐…")
+        for alignment in PinGroupAlignment.allCases { alignPicker.addItem(withTitle: alignment.title) }
+        alignPicker.target = self; alignPicker.action = #selector(alignSelected)
+        alignPicker.identifier = NSUserInterfaceItemIdentifier("pin-group-align"); alignPicker.setAccessibilityLabel("组合对齐")
+        undoGroupButton.target = self; undoGroupButton.action = #selector(undoGroup)
+        undoGroupButton.identifier = NSUserInterfaceItemIdentifier("pin-group-undo")
+        redoGroupButton.target = self; redoGroupButton.action = #selector(redoGroup)
+        redoGroupButton.identifier = NSUserInterfaceItemIdentifier("pin-group-redo")
+        selectionStatus.font = .systemFont(ofSize: 11); selectionStatus.textColor = .secondaryLabelColor
+        let groupActions = NSStackView(views: [transformButton, alignPicker, undoGroupButton, redoGroupButton, selectionStatus])
+        groupActions.orientation = .horizontal; groupActions.spacing = 8
+        groupActions.isHidden = transforms == nil
+        let root = NSStackView(views: [heading, visibility, content, actions, groupActions, restoreToggle, status])
         root.orientation = .vertical; root.spacing = 12; root.alignment = .leading
         let container = NSView(); container.addSubview(root); window.contentView = container
         root.translatesAutoresizingMaskIntoConstraints = false
@@ -116,7 +144,14 @@ import PicShotCore
     }
 
     func reload() {
-        let selection = selectedPinID
+        let visible = !store.index.allHidden && store.groups.first(where: { $0.id == store.index.activeGroupID })?.isHidden == false
+        if let selectionGroupID, selectionGroupID != store.index.activeGroupID || selectionVisibility != visible { selectedPinIDs.removeAll() }
+        selectionGroupID = store.index.activeGroupID; selectionVisibility = visible
+        if let transforms, tableTracksTransformSelection || !transforms.selectedIDs.isEmpty {
+            selectedPinIDs = transforms.selectedIDs; tableTracksTransformSelection = true
+        }
+        let selection = selectedPinIDs
+        restoringSelection = true
         groupPicker.removeAllItems(); movePicker.removeAllItems()
         for group in store.groups {
             let count = store.entries.filter { $0.groupID == group.id }.count
@@ -137,10 +172,10 @@ import PicShotCore
             $0.updatedAt == $1.updatedAt ? $0.id.uuidString < $1.id.uuidString : $0.updatedAt > $1.updatedAt
         }
         table.reloadData()
-        if let selection, let row = displayedEntries.firstIndex(where: { $0.id == selection }) {
-            table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-        } else { table.deselectAll(nil); selectedPinID = nil }
-        updateSelection()
+        let rows = IndexSet(displayedEntries.indices.filter { selection.contains(displayedEntries[$0].id) })
+        table.selectRowIndexes(rows, byExtendingSelection: false)
+        restoringSelection = false
+        updateSelection(updateTransforms: false)
         let bytes = store.entries.reduce(Int64(0)) { $0 + $1.storedByteCount }
         let size = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
         let visibility = store.index.allHidden ? " · 全部已隐藏" : ""
@@ -161,11 +196,20 @@ import PicShotCore
         cell.subtitle.stringValue = "\(visibility) · \(entry.contentLabel) · \(entry.updatedAt.formatted(date: .abbreviated, time: .shortened))"
         return cell
     }
-    func tableViewSelectionDidChange(_ notification: Notification) { updateSelection() }
-    private func updateSelection() {
+    func tableViewSelectionDidChange(_ notification: Notification) { if !restoringSelection { updateSelection() } }
+    private func updateSelection(updateTransforms: Bool = true) {
+        selectedPinIDs = Set(table.selectedRowIndexes.compactMap { displayedEntries.indices.contains($0) ? displayedEntries[$0].id : nil })
         let row = table.selectedRow
         let entry = displayedEntries.indices.contains(row) ? displayedEntries[row] : nil
-        selectedPinID = entry?.id
+        selectedPinID = selectedPinIDs.count == 1 ? entry?.id : nil
+        if updateTransforms, let transforms {
+            do { try transforms.setSelection(selectedPinIDs); tableTracksTransformSelection = true }
+            catch {
+                // Archive/hidden-row preview remains a table-only selection.
+                tableTracksTransformSelection = false
+                if !transforms.selectedIDs.isEmpty { transforms.clearSelection() }
+            }
+        }
         preview.image = entry.flatMap { store.thumbnail(id: $0.id) }
         if let entry {
             let modified = entry.original.filename == entry.current.filename ? "原始图片" : "已编辑；原图仍可恢复"
@@ -178,9 +222,42 @@ import PicShotCore
             if let groupIndex = store.groups.firstIndex(where: { $0.id == entry.groupID }) { movePicker.selectItem(at: groupIndex) }
         } else { details.stringValue = displayedEntries.isEmpty ? "此组还没有贴图\n新贴图将保存到当前组" : "选择贴图以预览" }
         openButton.title = entry?.isVisible == false ? "重新打开" : "显示贴图"
-        openButton.isEnabled = entry != nil; renamePinButton.isEnabled = entry != nil
-        removePinButton.isEnabled = entry != nil; movePicker.isEnabled = entry != nil
+        openButton.isEnabled = selectedPinID != nil; renamePinButton.isEnabled = selectedPinID != nil
+        removePinButton.isEnabled = selectedPinID != nil; movePicker.isEnabled = selectedPinID != nil
+        if selectedPinIDs.count > 1 { details.stringValue = "已选 \(selectedPinIDs.count) 项\n组合操作仅适用于正在显示、未锁定且未穿透的贴图。归档与隐藏项不会自动打开。直接拖动 / 拉伸仍只改变单个贴图；组合操作请用下方按钮。" }
+        updateTransformControls()
     }
+    /// Context menus and reset/hide own the live transform selection. A catalog
+    /// reload must never replay old rows into it, including coalesced hide/show events.
+    private func synchronizeTransformSelection() {
+        guard let transforms else { return }
+        if tableTracksTransformSelection || !transforms.selectedIDs.isEmpty {
+            tableTracksTransformSelection = true
+            restoringSelection = true
+            let rows = IndexSet(displayedEntries.indices.filter { transforms.selectedIDs.contains(displayedEntries[$0].id) })
+            table.selectRowIndexes(rows, byExtendingSelection: false)
+            restoringSelection = false
+            updateSelection(updateTransforms: false)
+        } else { updateTransformControls() }
+    }
+    private func updateTransformControls() {
+        let valid = transforms?.canTransform == true && transforms?.selectedIDs == selectedPinIDs
+        transformButton.isEnabled = valid; alignPicker.isEnabled = valid
+        undoGroupButton.isEnabled = transforms?.canUndo == true; redoGroupButton.isEnabled = transforms?.canRedo == true
+        selectionStatus.stringValue = valid ? "已选 \(selectedPinIDs.count) 项 · 按钮操作" : selectedPinIDs.count > 1 ? "请仅选择可操作的显示项" : "⌘ / ⇧ 多选显示项"
+    }
+    @objc private func transformSelected() { transforms?.showEditor() }
+    @objc private func alignSelected() {
+        let index = alignPicker.indexOfSelectedItem - 1
+        defer { alignPicker.selectItem(at: 0) }
+        guard PinGroupAlignment.allCases.indices.contains(index) else { return }
+        do { try transforms?.transform(.align(PinGroupAlignment.allCases[index])) }
+        catch { showError(error) }
+        updateTransformControls()
+    }
+    @objc private func undoGroup() { do { try transforms?.undo() } catch { showError(error) }; updateTransformControls() }
+    @objc private func redoGroup() { do { try transforms?.redo() } catch { showError(error) }; updateTransformControls() }
+
     @discardableResult private func change(_ operation: () throws -> Void) -> Bool {
         do { try operation(); reload(); onSessionChange?(); return true }
         catch { showError(error); return false }

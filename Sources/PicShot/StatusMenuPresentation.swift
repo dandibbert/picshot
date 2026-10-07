@@ -75,7 +75,7 @@ enum StatusMenuLayout {
                 case .restoreLastPin: item.action = #selector(restoreLastClosedPin); item.isEnabled = pinSession?.store.index.lastArchivedEntry != nil
                 case .morePins:
                     let sub = NSMenu(title: command.title)
-                    for (title, action) in [("文件或文件夹贴图…", #selector(importFilePin)), ("动态 GIF / WebP 贴图…", #selector(importAnimationPin)), ("颜色贴图…", #selector(createColorPin))] { sub.addItem(withTitle: title, action: action, keyEquivalent: "").target = self }
+                    for (title, action) in [("文件或文件夹贴图…", #selector(importFilePin)), ("动态 GIF / WebP 贴图…", #selector(importAnimationPin)), ("颜色贴图…", #selector(createColorPin)), ("LaTeX 公式贴图…", #selector(createFormulaPin))] { sub.addItem(withTitle: title, action: action, keyEquivalent: "").target = self }
                     item.submenu = sub
                 case .pinGroups: item.submenu = pinGroupsMenu()
                 case .history: item.action = #selector(showMain)

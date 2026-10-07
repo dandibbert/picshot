@@ -1,6 +1,9 @@
 import AppKit
 import ImageIO
 import PicShotCore
+import PicShotFormulaRenderCore
+import SwiftUI
+import UniformTypeIdentifiers
 
 /// One sequential decoder per live animation. ImageIO caching is disabled and evicted
 /// after each decode. There is no decoded frame list or persistent hidden player.
@@ -26,9 +29,29 @@ actor RichPinFrameDecoder {
     func release() { source = nil }
 }
 
-@MainActor final class RichPinController: NSWindowController, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate {
+@MainActor final class RichPinController: NSWindowController, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate, NSMenuItemValidation, NSPopoverDelegate, NSOpenSavePanelDelegate {
     var onClose: (() -> Void)?
+    var onToggleGroupSelection: (() -> Void)?
+    var onShowGroupTransform: (() -> Void)?
+    private(set) var isGroupSelected = false
+    var canParticipateInGroupTransform: Bool {
+        !closed && !locked && !hasActiveLaTeXEditorOrRender && window?.ignoresMouseEvents != true
+    }
+    func setGroupSelected(_ selected: Bool) {
+        isGroupSelected = selected
+        window?.contentView?.wantsLayer = true
+        window?.contentView?.layer?.borderWidth = selected ? 2 : 0
+        window?.contentView?.layer?.borderColor = NSColor.controlAccentColor.cgColor
+    }
+    @objc private func toggleGroupSelection() { onToggleGroupSelection?() }
+    @objc private func showGroupTransform() { onShowGroupTransform?() }
     var onPresentationChange: ((PinPresentation) -> Void)?
+    var onDesktopVisibilityChange: ((PinDesktopVisibility) -> Void)? {
+        didSet { desktopVisibilityMenu.onSelect = onDesktopVisibilityChange }
+    }
+    private(set) var desktopVisibility: PinDesktopVisibility = .defaultMode
+    let desktopVisibilityMenu = PinDesktopVisibilityMenu()
+    var onRichChange: ((PreparedRichPin) throws -> Void)?
     let kind: PinContentKind
     private(set) var richDocument: PinRichDocument?
     private let asset: PinRichAsset
@@ -45,27 +68,61 @@ actor RichPinFrameDecoder {
     private var locked = false
     private var textScale = 1.0
     private var playing = false
+    private(set) var latexModel: LaTeXPinModel?
+    private var latexPopover: NSPopover?
+    private(set) var latexSavePanel: NSSavePanel?
+    private var latexSaveGeneration = UUID()
+    private var latexSaveCancellation: ImageExportCancellation?
+    private var latexSaveInput: ImageExportJobInput<Data>?
+    private var latexSaveTask: Task<Void, Never>?
+    private var latexSaveInProgress: Bool { latexSavePanel != nil || latexSaveTask != nil }
+    var hasActiveLaTeXEditorOrRender: Bool { latexPopover?.isShown == true || latexModel?.working == true || latexSaveInProgress }
+    var latexEditorContentView: NSView? { latexPopover?.contentViewController?.view }
+    var displayedLaTeXRaster: CGImage? { kind == .latex ? imageView.image?.cgImage(forProposedRect: nil, context: nil, hints: nil) : nil }
 
-    init(asset: PinRichAsset, data: Data, title: String) throws {
+    init(asset: PinRichAsset, data: Data, title: String, renderedImage: CGImage? = nil) throws {
         self.asset = asset; kind = asset.kind
-        guard asset.isValid else { throw RichPinError.invalidContent }
+        guard asset.isValid, data.count == Int(asset.byteCount) else { throw RichPinError.invalidContent }
         let decodedDocument: PinRichDocument?
         if asset.kind != .animation {
             let value = try JSONDecoder().decode(PinRichDocument.self, from: data)
             guard value.isValid, value.kind == asset.kind else { throw RichPinError.invalidContent }
             decodedDocument = value
         } else { decodedDocument = nil }
+        if asset.kind == .latex {
+            guard let renderedImage, renderedImage.width > 0, renderedImage.height > 0,
+                  renderedImage.width <= FormulaRenderLimits.dimension, renderedImage.height <= FormulaRenderLimits.dimension,
+                  renderedImage.width <= FormulaRenderLimits.pixels / renderedImage.height else { throw RichPinError.invalidContent }
+        }
         richDocument = decodedDocument
         let panel = PinPanel(contentRect: NSRect(origin: .zero, size: RichPinController.initialSize(asset: asset, richDocument: decodedDocument)),
                              styleMask: [.borderless, .resizable], backing: .buffered, defer: false)
         super.init(window: panel)
         panel.title = title; panel.level = .floating; panel.isReleasedWhenClosed = false; panel.isFloatingPanel = true
         panel.hidesOnDeactivate = false; panel.delegate = self; panel.isExcludedFromWindowsMenu = true
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.hasShadow = true; panel.backgroundColor = .textBackgroundColor
+        panel.collectionBehavior = PinDesktopVisibilityPolicy.behavior(desktopVisibility, preserving: [.fullScreenAuxiliary])
+        panel.hasShadow = true; panel.backgroundColor = kind == .latex ? .white : .textBackgroundColor
         panel.isMovableByWindowBackground = true
-        panel.contentMinSize = NSSize(width: kind == .color ? 220 : 180, height: kind == .color ? 116 : 64); panel.center()
+        panel.contentMinSize = NSSize(width: kind == .color ? 220 : (kind == .latex ? 32 : 180), height: kind == .color ? 116 : (kind == .latex ? 24 : 64)); panel.center()
         if asset.kind == .animation { decoder = try RichPinFrameDecoder(data: data, asset: asset) }
+        if let content = decodedDocument?.latex, let renderedImage {
+            let model = LaTeXPinModel(content: content)
+            latexModel = model
+            model.onCancelSaving = { [weak self] in self?.cancelLaTeXSave() }
+            imageView.image = NSImage(cgImage: renderedImage, size: NSSize(width: Double(renderedImage.width) / Double(content.scale), height: Double(renderedImage.height) / Double(content.scale)))
+            model.onCommit = { [weak self] prepared in
+                guard let self, !self.closed, let save = self.onRichChange else { throw CancellationError() }
+                let document = try JSONDecoder().decode(PinRichDocument.self, from: prepared.data)
+                try save(prepared)
+                self.richDocument = document
+                let scale = Double(document.latex?.scale ?? 1)
+                self.imageView.image = NSImage(cgImage: prepared.poster, size: NSSize(width: Double(prepared.poster.width) / scale, height: Double(prepared.poster.height) / scale))
+            }
+            let scale = Double(content.scale)
+            let width = Double(renderedImage.width) / scale, height = Double(renderedImage.height) / scale
+            let fit = min(1, 680 / max(width, height))
+            panel.setContentSize(NSSize(width: max(32, width * fit + 12), height: max(24, height * fit + 12)))
+        }
         buildInterface(panel)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -76,6 +133,7 @@ actor RichPinFrameDecoder {
         case .animation:
             let scale = min(1, 680 / CGFloat(max(asset.width, asset.height)))
             return NSSize(width: max(180, CGFloat(asset.width) * scale), height: max(64, CGFloat(asset.height) * scale))
+        case .latex: return NSSize(width: 320, height: 120)
         case .color: return NSSize(width: 280, height: 148)
         case .files: return NSSize(width: 380, height: max(80, min(340, CGFloat(richDocument?.files?.count ?? 1) * 56 + 16)))
         case .text:
@@ -123,14 +181,22 @@ actor RichPinFrameDecoder {
             swatch.heightAnchor.constraint(equalToConstant: 36).isActive = true
             content = stack
             statusMessage = "sRGB；右键复制 HEX 或 RGB"
+        case .latex:
+            imageView.imageScaling = .scaleProportionallyUpOrDown; content = imageView
+            imageView.setAccessibilityLabel("渲染后的 LaTeX 贴图")
+            statusMessage = "右键编辑 LaTeX、复制源码或导出；原公式与排版结果已保存"
         case .animation:
             imageView.imageScaling = .scaleProportionallyUpOrDown; content = imageView
             statusMessage = "\(asset.width) × \(asset.height) · \(asset.frameCount) 帧；右键暂停或复制当前帧"
         }
         let menu = makeActionMenu()
-        let root = RichPinBackgroundView(); root.addSubview(content); panel.contentView = root
+        let root = RichPinBackgroundView()
+        // This view backing also appears in native view snapshots. Never flatten it
+        // into the saved PNG: transparent black glyphs need contrast in dark mode.
+        if kind == .latex { root.previewBackingColor = .white }
+        root.addSubview(content); panel.contentView = root
         root.menu = menu; content.menu = menu; textView.menu = menu; fileTable.menu = menu; imageView.menu = menu
-        root.toolTip = statusMessage
+        root.toolTip = statusMessage + (kind == .latex ? "（白色仅用于显示，不改变导出透明度）" : "")
         content.translatesAutoresizingMaskIntoConstraints = false
         let inset: CGFloat = kind == .animation || kind == .color ? 0 : 6
         NSLayoutConstraint.activate([
@@ -143,6 +209,12 @@ actor RichPinFrameDecoder {
 
     private func makeActionMenu() -> NSMenu {
         let menu = NSMenu(); menu.delegate = self
+        let select = menu.addItem(withTitle: "加入组合选择", action: #selector(toggleGroupSelection), keyEquivalent: "")
+        select.target = self; select.identifier = NSUserInterfaceItemIdentifier("pin-group-select")
+        select.toolTip = "组合移动 / 缩放请使用菜单；直接拖动或拉伸仍只改变当前贴图"
+        let transform = menu.addItem(withTitle: "组合移动 / 缩放…", action: #selector(showGroupTransform), keyEquivalent: "")
+        transform.target = self; transform.identifier = NSUserInterfaceItemIdentifier("pin-group-transform")
+        menu.addItem(.separator())
         func item(_ title: String, _ action: Selector, in targetMenu: NSMenu? = nil) -> NSMenuItem {
             let result = (targetMenu ?? menu).addItem(withTitle: title, action: action, keyEquivalent: "")
             result.target = self; return result
@@ -160,6 +232,19 @@ actor RichPinFrameDecoder {
             _ = item("复制引用", #selector(copyContent)); _ = item("打开所选", #selector(openFiles)); _ = item("在访达显示", #selector(revealFiles))
         case .color:
             _ = item("复制 HEX", #selector(copyContent)); _ = item("复制 RGB", #selector(copyRGB))
+        case .latex:
+            _ = item("编辑 LaTeX…", #selector(editLaTeX)); _ = item("撤销公式修改", #selector(undoLaTeX))
+            _ = item("复制 LaTeX", #selector(copyContent))
+            let formats = NSMenu(title: "复制排版结果"); formats.delegate = self
+            for (index, format) in [FormulaRenderFormat.png, .svg, .mathML, .pdf].enumerated() {
+                item(format.label, #selector(copyLaTeXFormat(_:)), in: formats).tag = index
+            }
+            menu.addItem(withTitle: "复制排版结果", action: nil, keyEquivalent: "").submenu = formats
+            let save = NSMenu(title: "导出公式"); save.delegate = self
+            for (index, format) in FormulaRenderFormat.allCases.enumerated() {
+                item(format.label + "…", #selector(saveLaTeXFormat(_:)), in: save).tag = index
+            }
+            menu.addItem(withTitle: "导出公式", action: nil, keyEquivalent: "").submenu = save
         case .animation:
             _ = item("暂停", #selector(togglePlayback)); _ = item("复制当前帧", #selector(copyContent))
         }
@@ -167,18 +252,34 @@ actor RichPinFrameDecoder {
         let alpha = NSMenu(title: "不透明度"); alpha.delegate = self
         for percent in [100, 80, 60, 40, 20, 15] { item("\(percent)%", #selector(changeOpacity(_:)), in: alpha).tag = percent }
         menu.addItem(withTitle: "不透明度", action: nil, keyEquivalent: "").submenu = alpha
+        desktopVisibilityMenu.add(to: menu)
         _ = item("锁定", #selector(toggleLock)); _ = item("鼠标穿透（菜单栏恢复当前组）", #selector(clickThrough))
         menu.addItem(.separator()); let close = item("关闭", #selector(closePin)); close.keyEquivalent = "\u{1b}"; close.keyEquivalentModifierMask = []
         return menu
     }
     func menuNeedsUpdate(_ menu: NSMenu) {
         for item in menu.items {
+            if item.action == #selector(toggleGroupSelection) {
+                item.isHidden = onToggleGroupSelection == nil
+                item.state = isGroupSelected ? .on : .off
+                item.title = isGroupSelected ? "移出组合选择" : "加入组合选择"
+            }
+            if item.action == #selector(showGroupTransform) { item.isHidden = onShowGroupTransform == nil }
             if item.action == #selector(toggleLock) { item.state = locked ? .on : .off }
             if item.action == #selector(changeTextStyle) { item.state = plainText ? .on : .off }
             if item.action == #selector(changeTextSize(_:)) { item.state = [0.85, 1, 1.3, 1.7][item.tag] == textScale ? .on : .off }
             if item.action == #selector(changeOpacity(_:)) { item.state = abs(Double(window?.alphaValue ?? 1) - Double(item.tag) / 100) < 0.005 ? .on : .off }
+            if item.action == #selector(undoLaTeX) { item.isEnabled = latexModel?.canUndo == true }
+            if item.action == #selector(saveLaTeXFormat(_:)) { item.isEnabled = latexModel?.working == false && !latexSaveInProgress }
+            if item.action == #selector(copyLaTeXFormat(_:)) { item.isEnabled = item.tag == 0 || (latexModel?.working == false && !latexSaveInProgress) }
             if item.action == #selector(togglePlayback) { item.title = playing ? "暂停" : "播放" }
         }
+    }
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(undoLaTeX) { return latexModel?.canUndo == true }
+        if item.action == #selector(saveLaTeXFormat(_:)) { return latexModel?.working == false && !latexSaveInProgress }
+        if item.action == #selector(copyLaTeXFormat(_:)) { return item.tag == 0 || (latexModel?.working == false && !latexSaveInProgress) }
+        return true
     }
     @objc private func closePin() { close() }
     @objc private func copySelectedText() {
@@ -216,9 +317,120 @@ actor RichPinFrameDecoder {
             guard !urls.isEmpty else { return }; pasteboard.clearContents(); pasteboard.writeObjects(urls)
         case .color:
             pasteboard.clearContents(); pasteboard.setString(richDocument?.color?.hex ?? "", forType: .string)
+        case .latex: latexModel?.copySource()
         case .animation:
             if let image = imageView.image?.cgImage(forProposedRect: nil, context: nil, hints: nil) { copyImage(image) }
         }
+    }
+    @objc func editLaTeX() {
+        guard !closed, let model = latexModel else { return }
+        if latexPopover?.isShown == true { return }
+        let popover = NSPopover(); popover.behavior = .semitransient; popover.delegate = self
+        popover.contentViewController = NSHostingController(rootView: LaTeXPinEditorView(model: model, dismiss: { [weak self] in self?.latexPopover?.close() }))
+        latexPopover = popover
+        window?.makeKeyAndOrderFront(nil)
+        popover.show(relativeTo: imageView.bounds, of: imageView, preferredEdge: .maxY)
+    }
+    func popoverDidClose(_ notification: Notification) {
+        latexModel?.discardDraft(); latexPopover?.delegate = nil; latexPopover?.contentViewController = nil; latexPopover = nil
+    }
+    /// Called before moving a pin between Space policies; never leave a detached editor/render.
+    func dismissLaTeXEditor() { cancelLaTeXSave(); latexModel?.discardDraft(); latexPopover?.close() }
+    @objc private func undoLaTeX() { latexModel?.undo(); editLaTeX() }
+    @objc private func copyLaTeXFormat(_ item: NSMenuItem) {
+        let formats: [FormulaRenderFormat] = [.png, .svg, .mathML, .pdf]
+        guard formats.indices.contains(item.tag) else { return }
+        let format = formats[item.tag]
+        if format == .png, let image = imageView.image?.cgImage(forProposedRect: nil, context: nil, hints: nil) { copyImage(image); return }
+        latexModel?.export(format) { data in
+            let board = NSPasteboard.general; board.clearContents()
+            let type: NSPasteboard.PasteboardType = format == .pdf ? .pdf : NSPasteboard.PasteboardType(format == .svg ? UTType.svg.identifier : "public.mathml")
+            board.setData(data, forType: type)
+            if format == .svg || format == .mathML, let text = String(data: data, encoding: .utf8) { board.setString(text, forType: .string) }
+        }
+        editLaTeX() // Makes progress, cancellation and renderer errors visible in the same compact editor.
+    }
+    @objc private func saveLaTeXFormat(_ item: NSMenuItem) {
+        guard FormulaRenderFormat.allCases.indices.contains(item.tag) else { return }
+        beginLaTeXSave(FormulaRenderFormat.allCases[item.tag])
+    }
+    /// Retained asynchronous chooser: close/hide/genuine desktop changes cancel it.
+    /// The same-mode preference path leaves the chooser and draft untouched.
+    func beginLaTeXSave(_ format: FormulaRenderFormat) {
+        guard !closed, !latexSaveInProgress, latexModel?.working == false,
+              let window, window.attachedSheet == nil else { return }
+        let panel = NSSavePanel(); panel.nameFieldStringValue = "公式." + format.fileExtension
+        panel.title = "保存公式新副本"; panel.prompt = "保存新副本"
+        panel.message = "请选择尚未使用的文件名；已有文件和保存的公式不会被覆盖。"
+        panel.delegate = self
+        if let type = UTType(filenameExtension: format.fileExtension) { panel.allowedContentTypes = [type] }
+        PinDesktopVisibilityPolicy.inheritSpaceBehavior(from: window, to: panel)
+        let generation = UUID(); latexSaveGeneration = generation; latexSavePanel = panel
+        panel.beginSheetModal(for: window) { [weak self, weak panel] response in
+            guard let self, let panel, !self.closed, self.latexSaveGeneration == generation,
+                  self.latexSavePanel === panel else { return }
+            self.latexSavePanel = nil; panel.delegate = nil
+            guard response == .OK, let url = panel.url else { return }
+            do { try self.saveLaTeX(format, to: url) }
+            catch { showError(error) }
+        }
+    }
+    /// Picker approval and native publication/cancellation fixtures share this route.
+    /// Bind the approved physical destination before any renderer or queue delay.
+    func saveLaTeX(_ format: FormulaRenderFormat, to url: URL) throws {
+        guard !closed, !latexSaveInProgress, latexModel?.working == false else { throw CancellationError() }
+        guard let lease = LaTeXPinSaveLease.acquire() else {
+            throw PicShotError.message("公式保存任务达到保护上限，请完成或取消现有任务后重试。")
+        }
+        let destination = try RawPinArtifactDestination(url)
+        let generation = UUID(); latexSaveGeneration = generation
+        if format == .png, let image = displayedLaTeXRaster,
+           let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) {
+            publishLaTeX(data, format: format, to: destination, generation: generation, lease: lease); return
+        }
+        latexModel?.export(format) { [weak self] data in
+            self?.publishLaTeX(data, format: format, to: destination, generation: generation, lease: lease)
+        }
+        if format != .latex { editLaTeX() }
+    }
+    func panel(_ sender: Any, validate url: URL) throws { try ImageExportService.requireUnoccupied(url) }
+    private func publishLaTeX(_ data: Data, format: FormulaRenderFormat, to destination: RawPinArtifactDestination,
+                              generation: UUID, lease: LaTeXPinSaveLease) {
+        guard !closed, latexSaveGeneration == generation, latexSaveTask == nil else { return }
+        guard data.count <= FormulaRenderLimits.resultBytes else { showError(FormulaRenderError.invalidOutput); return }
+        let input = ImageExportJobInput(data), token = ImageExportCancellation()
+        latexSaveInput = input; latexSaveCancellation = token
+        latexModel?.beginSaving()
+        latexSaveTask = Task { [weak self] in
+            var saveError: String?
+            do {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    ImageExportService.queue.addOperation {
+                        defer { lease.release() }
+                        guard let bytes = input.take(), !token.isCancelled else {
+                            continuation.resume(throwing: CancellationError()); return
+                        }
+                        do {
+                            try LaTeXPinExport.publish(bytes, format: format, to: destination, cancellation: token)
+                            continuation.resume()
+                        } catch { continuation.resume(throwing: error) }
+                    }
+                }
+            } catch is CancellationError { saveError = "已取消；原贴图与已完成文件会保留。" }
+            catch { saveError = error.localizedDescription }
+            guard let self, self.latexSaveGeneration == generation else { return }
+            self.latexSaveInput = nil; self.latexSaveCancellation = nil; self.latexSaveTask = nil
+            self.latexModel?.finishSaving(error: saveError)
+        }
+        editLaTeX()
+    }
+    private func cancelLaTeXSave() {
+        latexSaveGeneration = UUID()
+        let panel = latexSavePanel; latexSavePanel = nil
+        panel?.delegate = nil; panel?.cancel(nil)
+        latexSaveCancellation?.cancel(); latexSaveInput?.clear(); latexSaveTask?.cancel()
+        latexSaveCancellation = nil; latexSaveInput = nil; latexSaveTask = nil
+        if latexModel?.saving == true { latexModel?.finishSaving(cancelled: true) }
     }
     @objc private func copyRGB() { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(richDocument?.color?.rgb ?? "", forType: .string) }
     private func selectedFiles(fallbackToAll: Bool = false) -> [PinFileReference] {
@@ -288,6 +500,14 @@ actor RichPinFrameDecoder {
         presentationDidChange()
     }
     @objc private func clickThrough() { window?.ignoresMouseEvents = true; presentationDidChange() }
+    /// Metadata-only: never reconstruct a controller or decode/render content.
+    func applyDesktopVisibility(_ mode: PinDesktopVisibility) {
+        guard !closed else { return }
+        if mode != desktopVisibility { dismissLaTeXEditor() }
+        desktopVisibility = mode; desktopVisibilityMenu.mode = mode
+        PinDesktopVisibilityPolicy.apply(mode, to: window)
+    }
+
     var presentation: PinPresentation {
         PinPresentation(frame: PinWindowFrame(window?.frame ?? .zero), opacity: Double(window?.alphaValue ?? 1),
                         zoom: kind == .text ? textScale : nil, clickThrough: window?.ignoresMouseEvents ?? false, locked: locked).normalized()
@@ -299,7 +519,7 @@ actor RichPinFrameDecoder {
         locked = value.locked; window?.isMovable = !locked
         if locked { window?.styleMask.remove(.resizable) } else { window?.styleMask.insert(.resizable) }
         window?.ignoresMouseEvents = value.clickThrough
-        if kind == .text {
+        if kind == .text, textScale != (value.zoom ?? 1) {
             textScale = value.zoom ?? 1
             renderText()
         }
@@ -312,7 +532,11 @@ actor RichPinFrameDecoder {
     private func finishClose() {
         guard !closed else { return }; closed = true
         let callback = onClose
-        onClose = nil; onPresentationChange = nil
+        onClose = nil; onPresentationChange = nil; onToggleGroupSelection = nil; onShowGroupTransform = nil; onRichChange = nil
+        onDesktopVisibilityChange = nil; desktopVisibilityMenu.invalidate()
+        cancelLaTeXSave()
+        latexModel?.close(); latexModel = nil
+        latexPopover?.delegate = nil; latexPopover?.close(); latexPopover?.contentViewController = nil; latexPopover = nil
         pausePlayback()
         if let decoder { Task { await decoder.release() } }; decoder = nil
         callback?()
@@ -324,6 +548,11 @@ actor RichPinFrameDecoder {
 
 /// Empty margins and image surfaces are drag targets; text selection and file drag-out remain native.
 @MainActor private final class RichPinBackgroundView: NSView {
+    var previewBackingColor: NSColor?
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        if let previewBackingColor { previewBackingColor.setFill(); NSBezierPath(rect: bounds).fill() }
+    }
     override func mouseDown(with event: NSEvent) {
         window?.makeKey()
         if window?.isMovable == true { window?.performDrag(with: event) }

@@ -54,3 +54,19 @@ Image-only sessions continue writing schema 1, with unchanged original/current P
 New source tests cover legacy/rich metadata, path and type validation, animation integer-overflow/frame/working-pixel bounds, text/HTML parser limits, safe HTML omission, color conversions, transaction rollback, mixed pin quotas, file-reference restoration without target access, cleanup, archive/reopen/repeated group switches, single-frame GIF/WebP clipboard routing, malformed/oversized container rejection, image-only HTML fallback, sequential GIF decode/release, an original animated WebP fixture (explicitly skipped when the OS lacks that decoder), and the four-animation live limit.
 
 These tests require macOS AppKit/ImageIO for native coverage. Linux-side review and whitespace checks do not establish a successful native compile, WebP decoder behavior, drag interactions, or measured RSS. Run the full Swift suite and native UI validation before calling this milestone verified.
+
+## LaTeX formula pins (PIN-07 candidate)
+
+LaTeX is an additional managed rich kind. Its `.pinjson` holds bounded editable
+source, font size, PNG scale and transparency; the entry's ordinary PNG holds the
+actual rendered formula. Both files commit in one transaction. This preserves the
+existing document limit and accounts for the full raster in shared disk/pixel
+quotas. Existing image/text/file/color/animation routing is unchanged; plain text
+clipboard pins remain plain text unless the explicit formula action is selected.
+
+The native pin context menu provides an inline source editor, bounded source-only
+undo, source copy and supported formula-format copy/export. Hidden/closed pins
+release the popover, render task, undo/source model, document and image. Restore
+never renders, opens external resources or downloads models. See
+[managed formula behavior and native gate](FormulaRender.md#managed-latex-pins-pin-07-candidate-native-gates-pending)
+for exact limits, persistence/error behavior and remaining export/recognition gaps.

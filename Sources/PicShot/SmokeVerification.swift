@@ -9,6 +9,32 @@ import PicShotFormulaRenderCore
         let url=URL(fileURLWithPath:report);let directory=url.deletingLastPathComponent()
         do{
             try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
+            if ProcessInfo.processInfo.environment["PICSHOT_PIN_GROUP_TRANSFORMS_ONLY"] == "1" {
+                var payload = try await PinGroupTransformSmokeFixture.verify(evidenceDirectory: directory)
+                payload["sourceCommit"] = Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String ?? "unknown"
+                payload["bundlePath"] = Bundle.main.bundlePath
+                payload["arguments"] = CommandLine.arguments
+                try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]).write(to: url, options: .atomic)
+                try? FileManager.default.removeItem(at: history.directory)
+                NSApp.terminate(nil); return
+            }
+            if ProcessInfo.processInfo.environment["PICSHOT_PIN_DESKTOP_VISIBILITY_ONLY"] == "1" {
+                var payload = try await PinDesktopVisibilityFixture.verify(evidenceDirectory: directory)
+                payload["sourceCommit"] = Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String ?? "unknown"
+                payload["bundlePath"] = Bundle.main.bundlePath
+                payload["arguments"] = CommandLine.arguments
+                try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]).write(to: url, options: .atomic)
+                try? FileManager.default.removeItem(at: history.directory)
+                NSApp.terminate(nil); return
+            }
+            if ProcessInfo.processInfo.environment["PICSHOT_LATEX_PIN_VERIFY"] == "1" {
+                var payload = try await LaTeXPinSmokeFixture.verify(evidenceDirectory: directory)
+                payload["bundlePath"] = Bundle.main.bundlePath
+                payload["arguments"] = CommandLine.arguments
+                try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]).write(to: url, options: .atomic)
+                try? FileManager.default.removeItem(at: history.directory)
+                NSApp.terminate(nil); return
+            }
             if let payload = try await CodecExportAttributionFixture.runIfRequested(evidenceDirectory: directory) {
                 try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]).write(to: url, options: .atomic)
                 try? FileManager.default.removeItem(at: history.directory)
@@ -78,6 +104,8 @@ import PicShotFormulaRenderCore
             try JSONSerialization.data(withJSONObject:modelEvidence,options:[.prettyPrinted,.sortedKeys]).write(to:directory.appendingPathComponent("model-evidence.json"),options:.atomic)
             let pinSessionEvidence=try await PinSessionSmokeFixture.verify(evidenceDirectory:directory)
             try JSONSerialization.data(withJSONObject:pinSessionEvidence,options:[.prettyPrinted,.sortedKeys]).write(to:directory.appendingPathComponent("pin-session.json"),options:.atomic)
+            let pinGroupEvidence=try await PinGroupTransformSmokeFixture.verify(evidenceDirectory:directory)
+            try JSONSerialization.data(withJSONObject:pinGroupEvidence,options:[.prettyPrinted,.sortedKeys]).write(to:directory.appendingPathComponent("pin-group-transforms.json"),options:.atomic)
             let recordingCompositionEvidence=try await RecordingCompositionSmokeFixture.verify(evidenceDirectory:directory)
             let interactionParityEvidence=try await InteractionParitySmokeFixture.verify(evidenceDirectory:directory)
             let captureExportRecognitionEvidence=try await CaptureExportRecognitionSmokeFixture.verify(evidenceDirectory:directory,includeResourceCycles:true)
@@ -110,7 +138,7 @@ import PicShotFormulaRenderCore
             let final=residentBytes();let growth=Int64(final)-Int64(baseline);let lastIntervalGrowth=Int64(samples.last ?? final)-Int64(samples.dropLast().last ?? baseline);let windowsStable=windowCount()<=baselineWindows+3 && retainedOwned == 0
             let visible=mainWindow.isVisible && mainWindow.contentView != nil
             let source=(Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String) ?? "unknown"
-            let payload:[String:Any] = ["status":visible && growth<160*1024*1024 && lastIntervalGrowth<32*1024*1024 && windowsStable ? "passed":"failed","bundlePath":Bundle.main.bundlePath,"bundleIdentifier":Bundle.main.bundleIdentifier ?? "", "sourceCommit":source,"mainWindowVisible":visible,"arguments":CommandLine.arguments,"safeMode":true,"captureStarted":false,"packagedModelEvidence":modelEvidence,"pinSessionEvidence":pinSessionEvidence,"gifResourceEvidence":gifResourceEvidence,"recordingCompositionEvidence":recordingCompositionEvidence,"interactionParityEvidence":interactionParityEvidence,"captureExportRecognitionEvidence":captureExportRecognitionEvidence,"codecExportEvidence":codecExportEvidence,"saveWorkflowEvidence":saveWorkflowEvidence,"recordingWebPEvidence":recordingWebPEvidence,"windowTitle":mainWindow.title,"resourceCycleCount":40,"warmupCycleCount":10,"rssSamplesEveryTenCycles":samples,"windowCountsEveryTenCycles":windowCounts,"baselineWindowCount":baselineWindows,"finalWindowCount":windowCount(),"weakCycleWindowCounts":weakCounts,"finalRetainedCycleWindows":retained.count,"retainedCycleWindowDetails":retained,"finalRetainedAppControllersOrContent":retainedOwned,"lastTenCyclesGrowthBytes":lastIntervalGrowth,"baselineRSSBytes":baseline,"peakRSSBytes":peak,"finalRSSBytes":final,"growthRSSBytes":growth,"resourceScope":"10 warm-up plus 40 synthetic editor/pin create-render-close cycles; not a screen-capture or recording leak test"]
+            let payload:[String:Any] = ["status":visible && growth<160*1024*1024 && lastIntervalGrowth<32*1024*1024 && windowsStable ? "passed":"failed","bundlePath":Bundle.main.bundlePath,"bundleIdentifier":Bundle.main.bundleIdentifier ?? "", "sourceCommit":source,"mainWindowVisible":visible,"arguments":CommandLine.arguments,"safeMode":true,"captureStarted":false,"packagedModelEvidence":modelEvidence,"pinSessionEvidence":pinSessionEvidence,"pinGroupTransformEvidence":pinGroupEvidence,"gifResourceEvidence":gifResourceEvidence,"recordingCompositionEvidence":recordingCompositionEvidence,"interactionParityEvidence":interactionParityEvidence,"captureExportRecognitionEvidence":captureExportRecognitionEvidence,"codecExportEvidence":codecExportEvidence,"saveWorkflowEvidence":saveWorkflowEvidence,"recordingWebPEvidence":recordingWebPEvidence,"windowTitle":mainWindow.title,"resourceCycleCount":40,"warmupCycleCount":10,"rssSamplesEveryTenCycles":samples,"windowCountsEveryTenCycles":windowCounts,"baselineWindowCount":baselineWindows,"finalWindowCount":windowCount(),"weakCycleWindowCounts":weakCounts,"finalRetainedCycleWindows":retained.count,"retainedCycleWindowDetails":retained,"finalRetainedAppControllersOrContent":retainedOwned,"lastTenCyclesGrowthBytes":lastIntervalGrowth,"baselineRSSBytes":baseline,"peakRSSBytes":peak,"finalRSSBytes":final,"growthRSSBytes":growth,"resourceScope":"10 warm-up plus 40 synthetic editor/pin create-render-close cycles; not a screen-capture or recording leak test"]
             try JSONSerialization.data(withJSONObject:payload,options:[.prettyPrinted,.sortedKeys]).write(to:url,options:.atomic)
             try? FileManager.default.removeItem(at:history.directory)
         }catch{try? JSONSerialization.data(withJSONObject:["status":"failed","error":error.localizedDescription]).write(to:url)}

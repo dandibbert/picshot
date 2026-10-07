@@ -101,7 +101,26 @@ struct PinImageState {
     var onClose: (() -> Void)?
     /// Invoked before accepting an edit. A persistence failure leaves the live image unchanged.
     var onPixelChange: ((CGImage, Bool) throws -> Void)?
+    var onToggleGroupSelection: (() -> Void)?
+    var onShowGroupTransform: (() -> Void)?
+    private(set) var isGroupSelected = false
+    var canParticipateInGroupTransform: Bool {
+        !closed && !temporarilyHidden && annotationEditor == nil && !exportInProgress && !locked && window?.ignoresMouseEvents != true
+    }
+    func setGroupSelected(_ selected: Bool) {
+        isGroupSelected = selected
+        window?.contentView?.wantsLayer = true
+        window?.contentView?.layer?.borderWidth = selected ? 2 : 0
+        window?.contentView?.layer?.borderColor = NSColor.controlAccentColor.cgColor
+    }
+    @objc private func toggleGroupSelection() { onToggleGroupSelection?() }
+    @objc private func showGroupTransform() { onShowGroupTransform?() }
     var onPresentationChange: ((PinPresentation) -> Void)?
+    var onDesktopVisibilityChange: ((PinDesktopVisibility) -> Void)? {
+        didSet { desktopVisibilityMenu.onSelect = onDesktopVisibilityChange }
+    }
+    private(set) var desktopVisibility: PinDesktopVisibility = .defaultMode
+    let desktopVisibilityMenu = PinDesktopVisibilityMenu()
     var currentImage: CGImage { state.current }
     private var state: PinImageState
     private var pixelRevision: UInt = 0
@@ -159,7 +178,7 @@ struct PinImageState {
         panel.hidesOnDeactivate = false; panel.delegate = self
         panel.isExcludedFromWindowsMenu = true; panel.hasShadow = true
         panel.isOpaque = false; panel.backgroundColor = .clear
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.collectionBehavior = PinDesktopVisibilityPolicy.behavior(desktopVisibility, preserving: [.fullScreenAuxiliary])
         panel.contentMinSize = NSSize(width: 32, height: 24)
         panel.center()
 
@@ -199,6 +218,12 @@ struct PinImageState {
 
     private func makeActionMenu() -> NSMenu {
         let menu = NSMenu(); menu.delegate = self
+        let select = menu.addItem(withTitle: "加入组合选择", action: #selector(toggleGroupSelection), keyEquivalent: "")
+        select.target = self; select.identifier = NSUserInterfaceItemIdentifier("pin-group-select")
+        select.toolTip = "组合移动 / 缩放请使用菜单；直接拖动或拉伸仍只改变当前贴图"
+        let transform = menu.addItem(withTitle: "组合移动 / 缩放…", action: #selector(showGroupTransform), keyEquivalent: "")
+        transform.target = self; transform.identifier = NSUserInterfaceItemIdentifier("pin-group-transform")
+        menu.addItem(.separator())
         let recognition = NSMenu(title: "识别")
         let selection = addItem("选择图片文字", action: #selector(toggleTextSelection), key: "t", to: recognition)
         selection.keyEquivalentModifierMask = [.command, .shift]
@@ -235,6 +260,7 @@ struct PinImageState {
         addItem("鼠标穿透（菜单栏恢复当前组）", action: #selector(clickThrough), to: menu)
         addItem("窗口阴影", action: #selector(toggleShadow), to: menu)
         addItem("窗口置顶", action: #selector(toggleFloating), to: menu)
+        desktopVisibilityMenu.add(to: menu)
         menu.addItem(.separator())
         let original = NSMenu(title: "原始图片")
         addItem("复制原始图片", action: #selector(copyOriginal), to: original)
@@ -252,6 +278,12 @@ struct PinImageState {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         for item in menu.items {
+            if item.action == #selector(toggleGroupSelection) {
+                item.isHidden = onToggleGroupSelection == nil
+                item.state = isGroupSelected ? .on : .off
+                item.title = isGroupSelected ? "移出组合选择" : "加入组合选择"
+            }
+            if item.action == #selector(showGroupTransform) { item.isHidden = onShowGroupTransform == nil }
             if item.action == #selector(toggleTextSelection) {
                 item.state = textSelectionEnabled ? .on : .off
                 item.title = textSelectionIsRecognizing ? "正在识别文字（取消）" : "选择图片文字"
@@ -316,7 +348,7 @@ struct PinImageState {
             if shouldRestore { self.bringForward() }
         }
         annotationEditor = editor
-        guard editor.showPinned(anchor) else {
+        guard editor.showPinned(anchor, desktopVisibility: desktopVisibility) else {
             dismissAnnotations(restoringPin: false); return
         }
         // Keep the original window's saved frame/opacity unchanged while its canvas is being edited.
@@ -494,6 +526,7 @@ struct PinImageState {
                     resultWindow.setFrameOrigin(CGPoint(x: min(max(preferredX, screen.minX), max(screen.minX, screen.maxX - width)),
                                                        y: min(max(pinWindow.frame.maxY - height, screen.minY), max(screen.minY, screen.maxY - height))))
                 }
+                PinDesktopVisibilityPolicy.apply(self.desktopVisibility, to: browser.window)
                 browser.showWindow(nil); browser.window?.makeKeyAndOrderFront(nil)
             } catch is CancellationError {
                 guard let self, self.barcodeGeneration == generation else { return }
@@ -525,6 +558,7 @@ struct PinImageState {
                 let resultWindow = TextResultController(text: result.displayText, sourceImage: image)
                 resultWindow.onClose = { [weak self] in self?.recognitionWindow = nil }
                 self.recognitionWindow = resultWindow
+                PinDesktopVisibilityPolicy.apply(self.desktopVisibility, to: resultWindow.window)
                 resultWindow.showWindow(nil); resultWindow.window?.makeKeyAndOrderFront(nil)
             } catch is CancellationError {} catch {
                 guard !Task.isCancelled, self?.closed == false, self?.recognitionGeneration == generation else { return }
@@ -625,6 +659,17 @@ struct PinImageState {
     @objc private func clickThrough() { setTextSelectionEnabled(false); setBarcodeSelectionEnabled(false); setCropping(false); annotationEditor?.close(); window?.ignoresMouseEvents = true; presentationDidChange() }
     @objc private func closePin() { close() }
 
+    /// Metadata-only: never reconstruct a controller or decode/render content.
+    func applyDesktopVisibility(_ mode: PinDesktopVisibility) {
+        guard !closed else { return }
+        desktopVisibility = mode; desktopVisibilityMenu.mode = mode
+        PinDesktopVisibilityPolicy.apply(mode, to: window)
+        PinDesktopVisibilityPolicy.apply(mode, to: annotationEditor?.window)
+        PinDesktopVisibilityPolicy.apply(mode, to: recognitionWindow?.window)
+        PinDesktopVisibilityPolicy.apply(mode, to: barcodeWindow?.window)
+        PinDesktopVisibilityPolicy.apply(mode, to: imageExportController?.window)
+    }
+
     var presentation: PinPresentation {
         PinPresentation(frame: PinWindowFrame(window?.frame ?? .zero), opacity: Double(window?.alphaValue ?? 1),
                         zoom: fixedZoom.map { Double($0) }, clickThrough: window?.ignoresMouseEvents ?? false,
@@ -677,7 +722,8 @@ struct PinImageState {
         canvas.onAnnotate = nil; canvas.onClose = nil; canvas.onCopy = nil; canvas.onToggleTextSelection = nil
         canvas.textSelectionOverlay = nil; canvas.barcodeSelectionOverlay = nil
         let completion = onClose
-        onClose = nil; onPixelChange = nil; onPresentationChange = nil
+        onClose = nil; onPixelChange = nil; onPresentationChange = nil; onToggleGroupSelection = nil; onShowGroupTransform = nil
+        onDesktopVisibilityChange = nil; desktopVisibilityMenu.invalidate()
         completion?()
         // AppKit can keep the last closed utility panel cached after this controller dies.
         // Pins are single-use: sever its view/image graph without changing ARC ownership.

@@ -203,3 +203,86 @@ Before release on macOS 14+, open a recognized fraction, a 2×2 matrix and a lon
 accent; inspect the native preview; copy and reopen each format; verify SVG/PDF
 vector appearance; edit while rendering; cancel; close/reopen; try two windows at
 once; and verify no PicShotFormulaRenderHelper process persists after jobs finish.
+
+## Managed LaTeX pins (PIN-07 candidate, native gates pending)
+
+The window/menu-bar “LaTeX 公式贴图…” action opens this same formula editor,
+optionally seeded from a bounded text clipboard. “贴到屏幕” creates a managed
+formula pin. The recognition window's current editable source reaches the same
+button through “公式预览、贴图与导出…”. Recognition models remain optional and
+are never downloaded by creating, restoring, editing or exporting a pin.
+
+The pin itself is an image-first native floating panel. Its context menu edits
+source/options in an owned compact popover, copies original LaTeX, copies or saves
+PNG/SVG/MathML/PDF, and undoes a committed edit. The previous valid image and source
+stay committed during editing, syntax errors, cancellation, renderer failure or a
+failed storage transaction. Invalid drafts remain editable while the editor stays
+open. Cancel/dismiss discards the uncommitted draft. Ten source/options undo entries
+are retained while the pin is live; they are discarded on hide/close. Undo rerenders
+on explicit request and does not mutate history if rendering/storage fails.
+
+Persistence uses the existing schema-2 typed document plus its original=current
+PNG. The formula document is still below the existing 1 MiB cap, with an 8 KiB
+UTF-8 source bound. The PNG is the real renderer raster, bounded to 4096 per axis
+and 4,194,304 pixels, and is counted once in the ordinary shared 100-million-pixel
+and 512 MiB disk quotas. Edits write fresh source and raster assets, then atomically
+commit their references before deleting the old pair. Failed edits remove only
+the new assets. No arrays of render results or vector caches are persisted.
+
+Restoration reads native PNG plus inert source/options only; no renderer, external
+file, web resource, recognition model or vector document executes automatically.
+SVG/MathML/PDF exports are freshly generated from the committed source through the
+same signed offline helper on explicit request. PNG and LaTeX copy work directly
+from the restored content. Format regeneration errors are shown in the inline
+editor. Rendering is cancellable, shares the existing single-helper gate, and is
+cancelled on close, hide, group switches and editor dismissal. Source typing and
+paste are bounded before insertion; the native editor has no unbounded text undo
+stack. Resizing/moving the panel never rerenders the formula.
+
+Still missing: multi-formula/page recognition, broad recognition accuracy evidence,
+Office OMML, Typst, AsciiMath, arbitrary TeX packages/fonts and cross-application
+editable-formula round-trip acceptance. Source undo is live-session-only. This is
+candidate code, not a native/macOS or memory-leak pass.
+
+Native acceptance entry (installed signed app, no capture permission): set
+`PICSHOT_SMOKE_REPORT` to an isolated report JSON path and
+`PICSHOT_LATEX_PIN_VERIFY=1`. The fixture exercises the actual bundled renderer,
+native source control, update/copy/options/error/undo/cancel, atomic saved content,
+new-store restore, stale close, twelve hide/archive/reopen cycles and exports. It
+writes actual `latex-managed-pin.png` and `latex-inline-editor.png` view snapshots,
+plus `latex-managed-pin.json` and exported formula files. Do not manufacture these
+images on Linux. Run the full native Swift suite as well, including
+`LaTeXPinTests`, `PinLaTeXContentTests` and `FormulaRenderContractTests`.
+
+### Managed-pin resource and chooser follow-on (native execution pending)
+
+The LaTeX fixture separates actual renderer/edit/export/snapshot checks from the
+lifecycle resource phase. Functional strong references to the old pin, source model,
+editor and PNG/PDF/SVG/MathML result leave scope before measurement. Two explicit
+warm-ups precede twelve measured hide/show/close/reopen cycles. The baseline and
+all twelve endpoints have one restored pin; final cleanup has zero. The original
+renderer requests/source characters are unchanged. No renderer is explicitly
+requested by the lifecycle loop, and restored models must not be working/saving.
+
+Existing 50 ms `GIFResourceMemorySampler` statistics cover main-process RSS and
+physical footprint continuously through measured transitions, asset-hash validation
+and final cleanup. Both fields at every boundary, real timer ticks, peaks and
+consistent successful counts with zero failed samples are required. Missing data
+fails rather than becoming zero. Per-cycle scalars, last-three one-cycle increments,
+comparable growth and separate cleanup deltas are retained. No resource threshold,
+plateau verdict or zero-leak conclusion is introduced. Helper process memory and
+whole-system/WindowServer/GPU totals are not established by these parent readings.
+
+Each hide and close probes actual live controller/content/source-model references:
+four warm-up probes, twenty-four measured probes and one final-teardown probe must
+release. Editors are tested in functional setup, not claimed as opened in each
+resource cycle. Source/raster filenames, byte counts and SHA-256 must remain equal;
+that establishes unchanged contents, not an independent proof against same-byte
+rewrites or uninstrumented activity. Desktop visibility uses an isolated service.
+
+`formulaSaveChooserGeometry` records real NSSavePanel frame, visibility and owned
+sheet observations from a compact formula pin near a screen edge. It requires
+complete on-screen placement, an unchanged pin frame, and cancellation with no
+remaining sheet. It captures no remote-panel pixels and supplies no fabricated
+screenshot. Native failure must be investigated without changing production code
+or widening geometry requirements just to pass this fixture.

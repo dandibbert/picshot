@@ -158,7 +158,7 @@ public struct PinSessionEntry: Codable, Identifiable, Equatable, Sendable {
     public var assetFilenames: [String] { assets.map(\.filename) + (richContent.map { [$0.filename] } ?? []) }
     public var storedByteCount: Int64 { assets.reduce(0) { $0 + $1.byteCount } + (richContent?.byteCount ?? 0) }
     public var contentLabel: String {
-        switch richContent?.kind { case .text: return "文字 / HTML"; case .files: return "文件引用"; case .color: return "颜色"; case .animation: return "动态图片"; case nil: return "图片" }
+        switch richContent?.kind { case .text: return "文字 / HTML"; case .files: return "文件引用"; case .color: return "颜色"; case .animation: return "动态图片"; case .latex: return "LaTeX 公式"; case nil: return "图片" }
     }
     public var assets: [PinRasterAsset] { original.filename == current.filename ? [original] : [original, current] }
 }
@@ -278,6 +278,10 @@ public struct PinSessionIndex: Codable, Equatable, Sendable {
                 guard PinRichAsset.isSafeFilename(rich.filename) else { throw PinSessionError.unsafePath }
                 guard version >= 2, rich.isValid, filenames.insert(rich.filename.lowercased()).inserted,
                       entry.original == entry.current else { throw PinSessionError.invalidManifest }
+                if rich.kind == .latex {
+                    guard entry.current.width <= 4_096, entry.current.height <= 4_096,
+                          entry.current.pixelCount <= 4_194_304 else { throw PinSessionError.invalidManifest }
+                }
             }
             if entry.original.filename == entry.current.filename && entry.original != entry.current { throw PinSessionError.invalidManifest }
             for asset in entry.assets {

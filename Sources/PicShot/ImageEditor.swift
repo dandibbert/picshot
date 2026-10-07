@@ -1006,7 +1006,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     /// The new borderless window contains only the viewport and adjacent controls;
     /// its unused area is transparent and no desktop pixels are acquired.
     @discardableResult
-    func showPinned(_ placement: PinEditorPresentation) -> Bool {
+    func showPinned(_ placement: PinEditorPresentation, desktopVisibility: PinDesktopVisibility = .defaultMode) -> Bool {
         guard presentation == nil, onApply != nil,
               [placement.viewportFrame.minX, placement.viewportFrame.minY, placement.viewportFrame.width, placement.viewportFrame.height,
                placement.imageFrame.minX, placement.imageFrame.minY, placement.imageFrame.width, placement.imageFrame.height].allSatisfy({ $0.isFinite }),
@@ -1017,7 +1017,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         let oldWindow = window
         let panel = EditorOverlayWindow(contentRect: placement.viewportFrame, styleMask: [.borderless], backing: .buffered, defer: false)
         panel.isReleasedWhenClosed = false; panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = false
-        panel.level = placement.level; panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.level = placement.level; panel.collectionBehavior = PinDesktopVisibilityPolicy.behavior(desktopVisibility, preserving: [.fullScreenAuxiliary])
         oldWindow?.delegate = nil; oldWindow?.contentView = nil
         window = panel; panel.delegate = self; panel.contentView = workspace
         oldWindow?.orderOut(nil); oldWindow?.close()

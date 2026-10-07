@@ -98,6 +98,30 @@ import PicShotCore
         return entry
     }
 
+    /// A formula edit atomically replaces the source/options and its corresponding raster.
+    /// The old pair survives render, quota, validation and manifest-write failures.
+    func replaceRich(_ prepared: PreparedRichPin, id: UUID, protecting protectedIDs: Set<UUID> = []) throws {
+        guard let position = index.entries.firstIndex(where: { $0.id == id }) else { throw PinSessionError.missingPin }
+        guard prepared.kind == .latex, index.entries[position].richContent?.kind == .latex else { throw RichPinError.invalidContent }
+        let rich = prepared.asset
+        guard rich.isValid else { throw RichPinError.invalidContent }
+        let raster = try writeAsset(prepared.poster)
+        var committed = false
+        defer { if !committed { removeAssetIfSafe(raster.filename); removeAssetIfSafe(rich.filename) } }
+        let temporary = directory.appendingPathComponent(".pin-write-" + rich.filename)
+        defer { try? fileManager.removeItem(at: temporary) }
+        try prepared.data.write(to: temporary, options: .atomic)
+        _ = try checkedRegularFile(temporary)
+        try fileManager.moveItem(at: temporary, to: assetURL(rich.filename))
+        guard try inspectedRichAsset(rich) else { throw RichPinError.invalidContent }
+        var next = index
+        next.entries[position].richContent = rich
+        next.entries[position].original = raster; next.entries[position].current = raster
+        next.entries[position].updatedAt = Date()
+        next.entries = try policy.retaining(next, requiring: [id], protecting: protectedIDs)
+        try commit(next); committed = true; removeThumbnail(id: id)
+    }
+
     /// A bounded payload read never follows the referenced file paths inside a document.
     func richData(id: UUID) throws -> Data {
         guard let rich = entry(id: id)?.richContent else { throw PinSessionError.missingPin }
@@ -178,8 +202,25 @@ import PicShotCore
     }
 
     func updatePresentation(_ presentation: PinPresentation, id: UUID) throws {
-        guard let position = index.entries.firstIndex(where: { $0.id == id }) else { throw PinSessionError.missingPin }
-        var next = index; next.entries[position].presentation = presentation.normalized()
+        try updatePresentations([id: presentation])
+    }
+
+    /// A debounce flush is a single metadata write, not a partially committed loop.
+    func updatePresentations(_ presentations: [UUID: PinPresentation]) throws {
+        guard presentations.count <= PinGroupTransformPlan.maximumSelection else { throw PinSessionError.capacityExceeded }
+        var next = index
+        for (id, presentation) in presentations {
+            guard let position = index.entries.firstIndex(where: { $0.id == id }) else { throw PinSessionError.missingPin }
+            next.entries[position].presentation = presentation.normalized()
+        }
+        guard next != index else { return }
+        try commit(next)
+    }
+
+    /// Validates every stable ID and expected presentation before the one atomic manifest
+    /// replacement. No raster IO, cache insertion, quota eviction, or asset deletion.
+    func applyGroupPresentations(_ plan: PinGroupTransformPlan, forward: Bool = true) throws {
+        let next = try plan.applying(to: index, forward: forward)
         guard next != index else { return }
         try commit(next)
     }

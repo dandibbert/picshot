@@ -1,6 +1,6 @@
 # Opt-in allocator-relief comparison
 
-This is a separate diagnostic patch, not a production fix or a default PicShot 0.9 gate. It has not yet been run natively. The existing [backing attribution results](ImageBackingAttribution.md) do not demonstrate reclamation of the accumulating preview backing.
+This is a separate diagnostic patch, not a production fix or a default PicShot 0.9 gate. Native ARM64 and Intel observations at source `971a786` are complete; neither demonstrated reclamation of the accumulated preview backing. See the [versioned result](ImageAllocatorRelief971.md). The existing [backing attribution results](ImageBackingAttribution.md) do not demonstrate reclamation of the accumulating preview backing.
 
 ## Run explicitly
 

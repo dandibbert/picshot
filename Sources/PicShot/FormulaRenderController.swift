@@ -8,11 +8,12 @@ import PicShotFormulaRenderCore
 final class FormulaRenderController: NSWindowController, NSWindowDelegate {
     private let model: FormulaRenderModel
     var onClose: (() -> Void)?
-    init(latex: String) {
+    init(latex: String, onPin: ((FormulaRenderRequest, FormulaRenderResult) throws -> Void)? = nil) {
         model = FormulaRenderModel(latex: latex)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 600),
                               styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         super.init(window: window)
+        model.onPin = onPin
         window.title = "公式预览与导出 · 本机 MathJax"
         window.minSize = NSSize(width: 680, height: 520)
         window.isReleasedWhenClosed = false; window.delegate = self
@@ -53,6 +54,7 @@ final class FormulaRenderModel: ObservableObject {
     private var drainingTask: Task<Void, Never>?
     private var generation = UUID()
     private var closed = false
+    var onPin: ((FormulaRenderRequest, FormulaRenderResult) throws -> Void)?
     private let renderer: @Sendable (FormulaRenderRequest) async throws -> FormulaRenderResult
 
     init(latex: String, renderer: @escaping @Sendable (FormulaRenderRequest) async throws -> FormulaRenderResult = { try await FormulaRenderService.shared.render($0) }) {
@@ -107,7 +109,14 @@ final class FormulaRenderModel: ObservableObject {
         status = latex.utf8.count > FormulaRenderLimits.latexBytes ? "公式超过 8 KiB，请缩短后再预览。" : "内容已修改，请更新预览后再导出。"
     }
     func cancel() { invalidate(); status = "已取消。" }
-    func close() { closed = true; invalidate(); drainingTask = nil }
+    func close() { closed = true; invalidate(); drainingTask = nil; onPin = nil }
+    func pin() {
+        guard canExport, let result, let onPin else { return }
+        do {
+            try onPin(FormulaRenderRequest(latex: latex, fontSize: fontSize, scale: scale, transparent: transparent), result)
+            status = "已创建可编辑公式贴图；右键可编辑、撤销或复制。"
+        } catch { status = error.localizedDescription }
+    }
 
     func copyLaTeX() {
         guard !latex.isEmpty, latex.utf8.count <= FormulaRenderLimits.latexBytes else { return }
@@ -151,7 +160,7 @@ private struct FormulaRenderView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("LaTeX · 可编辑；使用公式本身，无需 $…$ 或 \\[ … \\] 分隔符").font(.caption)
-            TextEditor(text: $model.latex).font(.system(size: 15, design: .monospaced))
+            BoundedLaTeXEditor(text: $model.latex)
                 .frame(minHeight: 100, maxHeight: 170).border(Color.secondary.opacity(0.3))
                 .accessibilityLabel("可编辑的 LaTeX 公式")
             HStack {
@@ -180,6 +189,7 @@ private struct FormulaRenderView: View {
                 Menu("复制排版结果") {
                     ForEach([FormulaRenderFormat.mathML, .svg, .png, .pdf]) { format in Button(format.label) { model.copy(format) } }
                 }.disabled(!model.canExport)
+                if model.onPin != nil { Button("贴到屏幕") { model.pin() }.disabled(!model.canExport) }
                 Spacer()
                 Picker("格式", selection: $model.format) { ForEach(FormulaRenderFormat.allCases) { format in Text(format.label).tag(format) } }.frame(width: 150)
                 Button("导出…") { model.save() }.disabled(!model.canExport)

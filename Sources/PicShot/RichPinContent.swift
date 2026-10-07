@@ -2,6 +2,7 @@ import AppKit
 import ImageIO
 import UniformTypeIdentifiers
 import PicShotCore
+import PicShotFormulaRenderCore
 
 struct PreparedRichPin {
     let kind: PinContentKind
@@ -14,12 +15,23 @@ struct PreparedRichPin {
     let title: String
 
     @MainActor init(document: PinRichDocument, title: String) throws {
-        guard document.isValid else { throw RichPinError.invalidContent }
+        guard document.isValid, document.kind != .latex else { throw RichPinError.invalidContent }
         let bytes = try JSONEncoder().encode(document)
         guard bytes.count <= PinRichAsset.maximumDocumentBytes else { throw RichPinError.tooLarge }
         kind = document.kind; data = bytes; fileExtension = "pinjson"
         width = 0; height = 0; frameCount = 0; self.title = title
         poster = try RichPinPoster.make(document)
+    }
+    /// The source and actual renderer PNG are committed together by PinSessionStore.
+    /// No SVG, PDF, JavaScript, MathML, or remote references are replayed from disk.
+    init(formula request: FormulaRenderRequest, result: FormulaRenderResult, title: String = "LaTeX 公式") throws {
+        try result.validate(for: request)
+        let document = PinRichDocument(latex: PinLaTeXContent(request))
+        let bytes = try JSONEncoder().encode(document)
+        guard document.isValid, bytes.count <= PinRichAsset.maximumDocumentBytes else { throw RichPinError.invalidContent }
+        let image = try LaTeXPinRaster.decode(result.png, width: result.width, height: result.height)
+        kind = .latex; data = bytes; fileExtension = "pinjson"; poster = image
+        width = 0; height = 0; frameCount = 0; self.title = title
     }
     init(animation data: Data, title: String) throws {
         let info = try RichPinAnimationInfo.inspect(data)

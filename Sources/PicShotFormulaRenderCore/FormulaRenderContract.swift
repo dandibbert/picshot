@@ -76,6 +76,7 @@ public struct FormulaRenderResult: Codable, Sendable {
               svg.hasPrefix("<svg "), mathML.hasPrefix("<math "),
               png.starts(with: [137, 80, 78, 71, 13, 10, 26, 10]), pdf.starts(with: Array("%PDF-".utf8)),
               png.count <= FormulaRenderLimits.resultBytes, pdf.count <= FormulaRenderLimits.resultBytes,
+              png.count + pdf.count + svg.utf8.count + mathML.utf8.count + latex.utf8.count <= FormulaRenderLimits.resultBytes,
               width > 0, height > 0, width <= FormulaRenderLimits.dimension, height <= FormulaRenderLimits.dimension,
               width <= FormulaRenderLimits.pixels / height,
               pointWidth.isFinite, pointHeight.isFinite, pointWidth > 0, pointHeight > 0,

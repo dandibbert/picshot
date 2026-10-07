@@ -5,6 +5,7 @@ import PicShotCore
 @MainActor final class SettingsController: NSWindowController, NSWindowDelegate {
     private weak var callingWindow: NSWindow?
     private var callingObserver: NSObjectProtocol?
+    private var callingCollectionBehavior: NSWindow.CollectionBehavior?
     private let change: () -> Void
     private let onManageCapturePresets: (() -> Void)?
     private let defaults: UserDefaults
@@ -20,6 +21,7 @@ import PicShotCore
     private let screenshotDelay = NSPopUpButton(frame: .zero, pullsDown: false)
     private let screenshotCursor = NSButton(checkboxWithTitle: "屏幕截图包含鼠标指针", target: nil, action: nil)
     let saveWorkflowView: SaveWorkflowSettingsView
+    let pinDesktopVisibility = NSPopUpButton(frame: .zero, pullsDown: false)
     private let restorePins = NSButton(checkboxWithTitle: "启动时恢复上次显示的贴图组", target: nil, action: nil)
     private(set) var selectedCategory: SettingsCategory = .appearance
 
@@ -47,6 +49,12 @@ import PicShotCore
         screenshotDelay.addItems(withTitles: ["无延时", "3 秒", "5 秒", "10 秒"])
         for (index, delay) in ScreenshotDelay.allCases.enumerated() { screenshotDelay.item(at: index)?.tag = delay.rawValue }
         screenshotDelay.selectItem(withTag: options.delay.rawValue); screenshotCursor.state = options.showsCursor ? .on : .off
+        pinDesktopVisibility.identifier = NSUserInterfaceItemIdentifier("settings.pinDesktopVisibility")
+        pinDesktopVisibility.setAccessibilityLabel("所有贴图的桌面范围")
+        pinDesktopVisibility.toolTip = PinDesktopVisibility.explanation
+        pinDesktopVisibility.addItems(withTitles: PinDesktopVisibility.allCases.map(\.title))
+        let desktopMode = safeMode ? PinDesktopVisibility.defaultMode : .read(from: defaults)
+        pinDesktopVisibility.selectItem(at: PinDesktopVisibility.allCases.firstIndex(of: desktopMode) ?? 0)
         restorePins.state = !safeMode && defaults.bool(forKey: PinSessionStore.restorePreferenceKey) ? .on : .off
         let retention = safeMode ? HistoryRetentionPreferences() : .read(from: defaults)
         for value in [retention.days, retention.count, retention.megabytes] {
@@ -125,7 +133,8 @@ import PicShotCore
             addNote("快速保存使用 PNG；导出窗口中的快速保存使用当前实际编码格式。已有文件只允许保留两者、更改名称或取消，不提供覆盖替换。")
         case .pins:
             addGroup("启动与会话", rows: [restorePins, note("默认关闭。贴图自动保存在本机；关闭贴图会将它归档，隐藏和切换贴图组保留会话状态。")])
-            addGroup("贴图历史", rows: [note("恢复上次关闭的贴图会按实际关闭顺序重新打开。已有的旧版归档项仍可在“贴图组与历史”中选择打开。")])
+            addGroup("桌面显示", rows: [row("所有贴图显示在", control: pinDesktopVisibility), note(PinDesktopVisibility.explanation)])
+            addNote("恢复上次关闭的贴图按关闭顺序重新打开；旧归档仍可在“贴图组与历史”中选择打开。")
             addNote("含归档最多保存 20 项、1 亿工作像素、512 MiB；最多同时显示 20 项。恢复当前组还可找回鼠标穿透、低透明度或屏幕外的贴图。")
         case .history:
             addGroup("历史保留上限", rows: [row("最多天数", control: retentionFields[0], suffix: "天"), row("最多截图", control: retentionFields[1], suffix: "张"), row("最大磁盘空间", control: retentionFields[2], suffix: "MB")])
@@ -184,16 +193,22 @@ import PicShotCore
     func showAbove(_ parent: NSWindow?) {
         detachCallingWindow()
         guard let parent, let window else { showWindow(nil); return }
-        callingWindow = parent; parent.addChildWindow(window, ordered: .above)
+        callingWindow = parent; callingCollectionBehavior = window.collectionBehavior
+        PinDesktopVisibilityPolicy.inheritSpaceBehavior(from: parent, to: window)
+        parent.addChildWindow(window, ordered: .above)
         window.level = NSWindow.Level(rawValue: parent.level.rawValue + 1)
         callingObserver = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: parent, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.detachCallingWindow() }
+            MainActor.assumeIsolated { self?.close() }
         }
         showWindow(nil); window.makeKeyAndOrderFront(nil)
     }
     private func detachCallingWindow() {
         if let callingObserver { NotificationCenter.default.removeObserver(callingObserver) }; callingObserver = nil
-        if let window { callingWindow?.removeChildWindow(window); window.level = .normal }; callingWindow = nil
+        if let window {
+            callingWindow?.removeChildWindow(window); window.level = .normal
+            if let callingCollectionBehavior { window.collectionBehavior = callingCollectionBehavior }
+        }
+        callingWindow = nil; callingCollectionBehavior = nil
     }
     override func close() { saveWorkflowView.cancelPendingPanel(); detachCallingWindow(); super.close() }
     func windowWillClose(_ notification: Notification) { saveWorkflowView.cancelPendingPanel(); detachCallingWindow() }
@@ -215,6 +230,10 @@ import PicShotCore
         _ = retention.save(to: defaults)
         ScreenshotPreferences.save(ScreenshotCaptureOptions(delay: ScreenshotDelay(rawValue: screenshotDelay.selectedTag()) ?? .none, showsCursor: screenshotCursor.state == .on), to: defaults)
         defaults.set(restorePins.state == .on, forKey: PinSessionStore.restorePreferenceKey)
+        let desktopModes = PinDesktopVisibility.allCases
+        if desktopModes.indices.contains(pinDesktopVisibility.indexOfSelectedItem) {
+            desktopModes[pinDesktopVisibility.indexOfSelectedItem].save(to: defaults)
+        }
         let choice = AppAppearancePreference.allCases[max(0, appearance.indexOfSelectedItem)]
         choice.save(to: defaults); NSApp.appearance = choice.appKitAppearance
         change(); close()

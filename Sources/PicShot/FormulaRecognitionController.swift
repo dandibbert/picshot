@@ -10,7 +10,9 @@ import PicShotFormulaRenderCore
 final class FormulaRecognitionController: NSWindowController, NSWindowDelegate {
     private let model: FormulaRecognitionModel
     private var renderController: FormulaRenderController?
-    init(image: CGImage) {
+    private let onPin: ((FormulaRenderRequest, FormulaRenderResult) throws -> Void)?
+    init(image: CGImage, onPin: ((FormulaRenderRequest, FormulaRenderResult) throws -> Void)? = nil) {
+        self.onPin = onPin
         model = FormulaRecognitionModel(image: image)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 740, height: 520),
                               styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -36,7 +38,7 @@ final class FormulaRecognitionController: NSWindowController, NSWindowDelegate {
             preview.update(latex: model.latex)
             preview.showWindow(nil); preview.window?.makeKeyAndOrderFront(nil)
         } else {
-            let preview = FormulaRenderController(latex: model.latex)
+            let preview = FormulaRenderController(latex: model.latex, onPin: onPin)
             preview.onClose = { [weak self] in self?.renderController = nil }
             renderController = preview
             preview.showWindow(nil); preview.window?.makeKeyAndOrderFront(nil)
@@ -164,7 +166,7 @@ private struct FormulaRecognitionView: View {
                 Button("导出 .tex…") { model.save() }.disabled(model.latex.isEmpty || model.working)
             }
             HStack {
-                Button("公式预览与更多导出…", action: openRenderedPreview)
+                Button("公式预览、贴图与导出…", action: openRenderedPreview)
                     .disabled(model.working || model.latex.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.latex.utf8.count > FormulaRenderLimits.latexBytes)
                 Text("本机排版 · SVG / MathML / PNG / PDF · 无需下载模型")
                     .font(.system(size: 11)).foregroundStyle(.secondary)

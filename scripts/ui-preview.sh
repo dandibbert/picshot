@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-ditto -x -k "dist/PicShot-0.9.0-macos-$(uname -m).zip" "$work"
+ditto -x -k "dist/PicShot-0.10.0-macos-$(uname -m).zip" "$work"
 app="$work/PicShot.app"
 codesign --verify --deep --strict "$app"
 mkdir -p dist/evidence/ui
@@ -36,3 +36,6 @@ for c in save['resourceCycles']:
     assert c['activeJobs']==0 and c['retainedInputBytes']==0 and c['controllerReleased'] and c['temporaryJobRemoved'],c
 print(json.dumps(r,indent=2))
 PY
+
+# Source-specific pin UI gates from the same installed ZIP, each in its own process.
+bash scripts/pin-workflows-smoke.sh "$app" "$PWD/dist/evidence/ui/pin-workflows" "$(git rev-parse HEAD)"
