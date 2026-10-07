@@ -93,6 +93,8 @@ import PicShotCore
         try nativeTool(tool, in: editor)
         try drag(editor.annotationCanvas, rect: canvasRect(authoredRegions[0]))
         try require(editor.annotationCanvas.annotations.count == 1, "Seed gesture failed")
+        try require(editor.annotationCanvas.annotations[0].localBounds.standardized.integral == canvasRect(authoredRegions[0]),
+                    "Native gesture does not cover the exact authored seed pixel bounds")
         try nativeTool(.select, in: editor)
         try click("annotation.automaticMosaic", in: editor)
     }
@@ -608,9 +610,14 @@ import PicShotCore
             windowNumber: canvas.window?.windowNumber ?? 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1), "Native pointer unavailable")
     }
     private static func drag(_ canvas: ImageEditorCanvas, rect: CGRect) throws {
-        canvas.mouseDown(with: try pointer(canvas, type: .leftMouseDown, point: CGPoint(x: rect.minX, y: rect.minY)))
-        canvas.mouseDragged(with: try pointer(canvas, type: .leftMouseDragged, point: CGPoint(x: rect.maxX, y: rect.maxY)))
-        canvas.mouseUp(with: try pointer(canvas, type: .leftMouseUp, point: CGPoint(x: rect.maxX, y: rect.maxY)))
+        // Choose points safely inside the first/last pixels. The production
+        // outward integral selection must still equal the exact authored mask;
+        // exact edge coordinates are numerically ambiguous after AppKit transforms.
+        let start = CGPoint(x: rect.minX + 0.125, y: rect.minY + 0.125)
+        let end = CGPoint(x: rect.maxX - 0.125, y: rect.maxY - 0.125)
+        canvas.mouseDown(with: try pointer(canvas, type: .leftMouseDown, point: start))
+        canvas.mouseDragged(with: try pointer(canvas, type: .leftMouseDragged, point: end))
+        canvas.mouseUp(with: try pointer(canvas, type: .leftMouseUp, point: end))
     }
     private static func select(_ canvas: ImageEditorCanvas, at point: CGPoint) throws {
         canvas.mouseDown(with: try pointer(canvas, type: .leftMouseDown, point: point))
