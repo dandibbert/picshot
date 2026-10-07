@@ -162,7 +162,12 @@ final class RepeatedRegionMatcherTests: XCTestCase {
                 XCTAssertLessThanOrEqual(Double(overlap) / Double(128 - overlap), 0.3)
             }
         }
-        XCTAssertEqual(first.candidates.map(\.rect), first.candidates.map(\.rect).sorted { $0.y == $1.y ? $0.x < $1.x : $0.y < $1.y })
+        let observedOrder: [RepeatedRegionPixelRect] = first.candidates.map(\.rect)
+        let expectedOrder = observedOrder.sorted { (left: RepeatedRegionPixelRect, right: RepeatedRegionPixelRect) -> Bool in
+            if left.y == right.y { return left.x < right.x }
+            return left.y < right.y
+        }
+        XCTAssertEqual(observedOrder, expectedOrder)
     }
 
     private func rect(_ x: Int, _ y: Int) -> RepeatedRegionPixelRect { .init(x: x, y: y, width: 24, height: 16) }

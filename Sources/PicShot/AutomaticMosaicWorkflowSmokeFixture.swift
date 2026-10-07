@@ -546,8 +546,8 @@ import PicShotCore
             provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent), "Source image unavailable")
     }
 
-    private static func canvasRect(_ sourceRect: CGRect, height: Int = sourceHeight) -> CGRect {
-        CGRect(x: sourceRect.minX, y: CGFloat(height) - sourceRect.maxY, width: sourceRect.width, height: sourceRect.height)
+    private static func canvasRect(_ sourceRect: CGRect) -> CGRect {
+        CGRect(x: sourceRect.minX, y: CGFloat(sourceHeight) - sourceRect.maxY, width: sourceRect.width, height: sourceRect.height)
     }
     private static func rectangleObject(_ rect: CGRect) -> [Int] { [Int(rect.minX), Int(rect.minY), Int(rect.width), Int(rect.height)] }
     private static func sha(_ bytes: Data) -> String { SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined() }
