@@ -158,13 +158,92 @@ class BoundedCommandTests(unittest.TestCase):
         self.assert_not_running(report["pid"])
 
     def test_noisy_command_cannot_starve_deadline(self):
-        report, stdout = self.finish(self.start(
-            "import os\nwhile True: os.write(1, b'x' * 65536)", timeout=0.2, cap=17
-        ))
+        # Exercise the real runner loop with output ready from its first tick.
+        # A fresh Python child's startup can legitimately consume the entire
+        # 0.2s deadline before writing anything. Real process startup/deadline,
+        # streaming caps, and group cleanup remain covered by adjacent tests.
+        args = argparse.Namespace(
+            log=self.log, report=self.report, command=["continuously-readable-test-child"],
+            timeout_seconds=0.2, grace_seconds=0.15, max_log_bytes=17,
+        )
+        clock = SimpleNamespace(now=0.0, reads=0, polls=0)
+        state = SimpleNamespace(killed=False, registered=False)
+        sent = []
+        pipe = SimpleNamespace(fileno=lambda: 43210, close=mock.Mock())
+        process = SimpleNamespace(pid=43210, stdout=pipe, wait=mock.Mock(return_value=-signal.SIGKILL))
+        group = SimpleNamespace(
+            retired=False, leader_exited=lambda: state.killed, alive=lambda: not state.killed,
+        )
+
+        def send(signum):
+            sent.append((signum, clock.now))
+            if signum == signal.SIGKILL:
+                state.killed = True
+            return True  # This child deliberately ignores SIGTERM.
+
+        def close_group():
+            group.retired = True
+
+        def read(_fd, limit):
+            clock.reads += 1
+            # Independent fixture bound: a regression draining forever must
+            # fail this test rather than hang the suite waiting for a deadline.
+            if clock.reads > 200:
+                raise RuntimeError("runner starved its deadline while output remained ready")
+            clock.now += 0.01
+            if state.killed:
+                return b""
+            return b"x" * min(limit, 65536)
+
+        def sleep(seconds):
+            clock.now += seconds
+
+        group.send = send
+        group.close = close_group
+        selector = mock.MagicMock()
+        selector.__enter__.return_value = selector
+        selector.register.side_effect = lambda *_: setattr(state, "registered", True)
+        selector.unregister.side_effect = lambda *_: setattr(state, "registered", False)
+        key = SimpleNamespace(fd=43210, fileobj=pipe)
+
+        def select_events(**_):
+            clock.polls += 1
+            if clock.polls > 200:
+                raise RuntimeError("runner did not finish bounded output cleanup")
+            if state.registered:
+                return [(key, 1)]
+            clock.now += 0.01
+            return []
+
+        selector.select.side_effect = select_events
+        selector.get_map.side_effect = lambda: {43210: key} if state.registered else {}
+        console = io.BytesIO()
+        with mock.patch.object(BOUNDED.subprocess, "Popen", return_value=process), mock.patch.object(
+            BOUNDED, "ProcessGroup", return_value=group
+        ), mock.patch.object(BOUNDED.selectors, "DefaultSelector", return_value=selector), mock.patch.object(
+            BOUNDED.os, "set_blocking"
+        ), mock.patch.object(BOUNDED.os, "read", side_effect=read), mock.patch.object(
+            BOUNDED, "time", SimpleNamespace(monotonic=lambda: clock.now, sleep=sleep)
+        ), mock.patch.object(BOUNDED.sys, "stdout", SimpleNamespace(buffer=console)), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(BOUNDED.run(args), 124)
+        report = json.loads(self.report.read_text())
         self.assertEqual(report["status"], "timeout")
         self.assertEqual(report["exit_code"], 124)
-        self.assertEqual(stdout, b"x" * 17)
+        self.assertEqual(console.getvalue(), b"x" * 17)
+        self.assertEqual(self.log.read_bytes(), b"x" * 17)
+        self.assertEqual(report["log_bytes"], 17)
+        self.assertGreater(report["output_bytes"], 65536)
         self.assertTrue(report["log_truncated"])
+        self.assertEqual([signum for signum, _ in sent], [signal.SIGTERM, signal.SIGKILL])
+        term_at, kill_at = (stamp for _, stamp in sent)
+        self.assertGreaterEqual(term_at, args.timeout_seconds)
+        self.assertLessEqual(term_at, args.timeout_seconds + 0.010001)
+        self.assertGreaterEqual(kill_at - term_at, args.grace_seconds)
+        self.assertLessEqual(kill_at - term_at, args.grace_seconds + 0.010001)
+        self.assertTrue(report["sigterm_sent"])
+        self.assertTrue(report["sigkill_sent"])
+        self.assertEqual(report["child_returncode"], -signal.SIGKILL)
+        self.assertTrue(group.retired)
         self.assertLess(report["duration_seconds"], 2)
 
     def child_tree(self, *, parent_exits=False, close_child_output=False):

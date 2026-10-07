@@ -9,6 +9,17 @@ import PicShotFormulaRenderCore
         let url=URL(fileURLWithPath:report);let directory=url.deletingLastPathComponent()
         do{
             try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
+            if ProcessInfo.processInfo.environment["PICSHOT_MANUAL_SCROLL_ONLY"] == "1" {
+                var payload = try await ScrollManualCaptureSmokeFixture.verify(evidenceDirectory: directory, includeLargeFrames: true)
+                if ProcessInfo.processInfo.environment["PICSHOT_MANUAL_SCROLL_RESOURCES"] == "1" {
+                    payload["resourceEvidence"] = try await ScrollManualResourceFixture.verify(evidenceDirectory: directory, functionalReportURL: directory.appendingPathComponent("scroll-manual-continuous.json"))
+                }
+                payload["bundlePath"] = Bundle.main.bundlePath
+                payload["arguments"] = CommandLine.arguments
+                try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]).write(to: url, options: .atomic)
+                try? FileManager.default.removeItem(at: history.directory)
+                NSApp.terminate(nil); return
+            }
             if ProcessInfo.processInfo.environment["PICSHOT_ANNOTATION_DETAILS_ONLY"] == "1" {
                 var payload = try await AnnotationDetailAcceptanceFixture.verify(evidenceDirectory: directory, includeResourceCycles: ProcessInfo.processInfo.environment["PICSHOT_UI_PREVIEW_ONLY"] != "1")
                 payload["arguments"] = CommandLine.arguments
@@ -75,6 +86,7 @@ import PicShotFormulaRenderCore
                 let pinOCRWorkflow=try await PinOCRWorkflowSmokeFixture.verify(evidenceDirectory:directory.appendingPathComponent("pin-ocr"),includeResourceCycles:false)
                 let automaticMosaicWorkflow=try await AutomaticMosaicWorkflowSmokeFixture.verify(evidenceDirectory:directory.appendingPathComponent("automatic-mosaic"),includeResourceCycles:false)
                 let annotationDetails=try await AnnotationDetailAcceptanceFixture.verify(evidenceDirectory:directory.appendingPathComponent("annotation-details"),includeResourceCycles:false)
+                let manualScroll=try await ScrollManualCaptureSmokeFixture.verify(evidenceDirectory:directory.appendingPathComponent("manual-scroll"),includeLargeFrames:false)
                 let originalAppearance=NSApp.appearance
                 for dark in [false,true] {
                     NSApp.appearance=NSAppearance(named:dark ? .darkAqua : .aqua)
@@ -85,7 +97,7 @@ import PicShotFormulaRenderCore
                     settings.close()
                 }
                 NSApp.appearance=originalAppearance
-                let payload:[String:Any] = ["status":"passed","uiPreviewOnly":true,"captureStarted":false,"bundlePath":Bundle.main.bundlePath,"sourceCommit":Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String ?? "unknown","previews":previews,"annotationEffects":annotationEffects,"interactionParity":interactionParity,"captureExportRecognition":captureExportRecognition,"codecUIPreview":codecUIPreview,"saveWorkflowUI":saveWorkflowUI,"pinOCRWorkflow":pinOCRWorkflow,"automaticMosaicWorkflow":automaticMosaicWorkflow,"annotationDetails":annotationDetails,"scope":"Real native AppKit UI over an original synthetic frozen-desktop fixture; no screen-capture permission or live desktop capture"]
+                let payload:[String:Any] = ["status":"passed","uiPreviewOnly":true,"captureStarted":false,"bundlePath":Bundle.main.bundlePath,"sourceCommit":Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String ?? "unknown","previews":previews,"annotationEffects":annotationEffects,"interactionParity":interactionParity,"captureExportRecognition":captureExportRecognition,"codecUIPreview":codecUIPreview,"saveWorkflowUI":saveWorkflowUI,"pinOCRWorkflow":pinOCRWorkflow,"automaticMosaicWorkflow":automaticMosaicWorkflow,"annotationDetails":annotationDetails,"manualScroll":manualScroll,"scope":"Real native AppKit UI over an original synthetic frozen-desktop fixture; no screen-capture permission or live desktop capture"]
                 try JSONSerialization.data(withJSONObject:payload,options:[.prettyPrinted,.sortedKeys]).write(to:url,options:.atomic)
                 NSApp.terminate(nil);return
             }

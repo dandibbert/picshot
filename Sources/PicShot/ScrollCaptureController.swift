@@ -28,13 +28,19 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
     private var busy = false
     private var automatic: AutomaticScrollCoordinator?
     private var automaticControls: AutomaticScrollControls?
+    private var manual: ManualScrollCoordinator?
+    private var manualDriver: ManualScrollScreenDriver?
+    private var manualControls: ManualScrollControls?
+    private var regionMover: ManualScrollRegionMover?
+    private var moveOperation: Task<Void, Never>?
+    private var repositioning = false
     private let maximumFrames = 100
     private let maximumDiskBytes: Int64
 
     private let direction = NSPopUpButton(frame: .zero, pullsDown: false)
     private let displayPicker = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let chooseButton = NSButton(title: "选择区域并截图", target: nil, action: nil)
-    private let nextButton = NSButton(title: "捕获下一帧（3秒）", target: nil, action: nil)
+    private let chooseButton = NSButton(title: "选择区域并连续捕获", target: nil, action: nil)
+    private let nextButton = NSButton(title: "连续捕获", target: nil, action: nil)
     private let automaticButton = NSButton(title: "自动滚动（3秒）", target: nil, action: nil)
     private let accessibilityButton = NSButton(title: "辅助功能设置…", target: nil, action: nil)
     private let importButton = NSButton(title: "导入图片…", target: nil, action: nil)
@@ -87,7 +93,7 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
         }
         if let main = NSScreen.main?.displayID,
            let index = NSScreen.screens.firstIndex(where: { $0.displayID == main }) { displayPicker.selectItem(at: index) }
-        let explanation = NSTextField(wrappingLabelWithString: "只选择滚动内容，避开固定页眉、侧栏和滚动条。手动捕获支持双向滚动，反向自动裁剪会缩短返回一侧；关闭后保留全部已捕获内容。自动模式在3秒后向下或向右滚动，需要辅助功能权限；请在倒计时内切回目标应用。")
+        let explanation = NSTextField(wrappingLabelWithString: "手动滚动时自动捕获停稳画面，可暂停、移动固定选区再继续。请保留至少25%重叠并避开固定页眉和动画。自动滚动单独需要辅助功能权限。")
         explanation.textColor = .secondaryLabelColor
         status.maximumNumberOfLines = 4
         dimensions.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
@@ -96,7 +102,7 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
         preview.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
         preview.layer?.cornerRadius = 8
         chooseButton.target = self; chooseButton.action = #selector(chooseRegion)
-        nextButton.target = self; nextButton.action = #selector(captureNext)
+        nextButton.target = self; nextButton.action = #selector(startManual)
         nextButton.keyEquivalent = "\r"
         nextButton.keyEquivalentModifierMask = [.command]
         automaticButton.target = self; automaticButton.action = #selector(startAutomatic)
@@ -143,7 +149,7 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
         bandRow.orientation = .horizontal; bandRow.spacing = 8; bandControls = bandRow
         for (control, identifier) in [(trimButton, "trim"), (deleteButton, "delete"), (undoButton, "undo"),
                                       (redoButton, "redo"), (applyButton, "apply"), (cancelButton, "cancel"),
-                                      (finishButton, "finish"), (autoCropButton, "autoCrop"), (resetDirectionButton, "resetDirection"),
+                                      (finishButton, "finish"), (nextButton, "manualStart"), (chooseButton, "choose"), (resetButton, "reset"), (autoCropButton, "autoCrop"), (resetDirectionButton, "resetDirection"),
                                       (restoreCoverageButton, "restoreEdges"), (selectBandButton, "selectBand"), (restoreCutsButton, "restoreCuts")] {
             control.identifier = NSUserInterfaceItemIdentifier("scroll." + identifier)
         }
@@ -168,7 +174,7 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
             stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
             stack.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -20),
             preview.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            preview.heightAnchor.constraint(equalToConstant: 170),
+            preview.heightAnchor.constraint(equalToConstant: 230),
             explanation.widthAnchor.constraint(equalTo: stack.widthAnchor),
             status.widthAnchor.constraint(equalTo: stack.widthAnchor)
         ])
@@ -183,44 +189,144 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
               let screen = NSScreen.screens.first(where: { $0.displayID == displayID }) else { return }
         selectedDisplayID = displayID
         selectedDisplaySize = screen.frame.size
-        startOperation { [weak self] in
+        startOperation(afterSuccess: { [weak self] in self?.startManual() }) { [weak self] in
             guard let self else { return }
             try CaptureService.requireScreenPermission()
             self.window?.orderOut(nil)
             let selected = try await self.captureService.selectRegion(displayID: displayID)
             try Task.checkCancellation()
             self.region = selected
-            try await self.grabSelectedRegion()
         }
     }
 
-    @objc private func captureNext() {
-        guard !edits.isEditing, region != nil, selectedDisplayID != nil else { return }
-        startOperation { [weak self] in try await self?.grabSelectedRegion() }
+    @objc private func startManual() {
+        guard !sessionBusy, !edits.isEditing, let region, let displayID = selectedDisplayID,
+              let screenSize = selectedDisplaySize, frames.count < maximumFrames else { return }
+        do {
+            let token = generation
+            let driver = try ManualScrollScreenDriver(displayID: displayID, region: region, screenSize: screenSize,
+                expectedPixelSize: previousFrame.map { CGSize(width: $0.width, height: $0.height) },
+                lockedTarget: manualDriver?.target) { [weak self] image in
+                guard let self, self.generation == token else { throw CancellationError() }
+                return try await self.acceptManualImage(image)
+            }
+            try driver.checkPermission()
+            beginManual(driver: driver)
+        } catch {
+            status.stringValue = "\(error.localizedDescription) 已保留捕获内容。"
+            updateControls()
+        }
     }
 
-    private func grabSelectedRegion() async throws {
-        guard let region, let displayID = selectedDisplayID, let screenSize = selectedDisplaySize else {
-            throw CaptureError.invalidRegion
+    private func acceptManualImage(_ image: CGImage) async throws -> ManualScrollSample {
+        do {
+            try await accept(image)
+            return .accepted(totalFrames: frames.count)
+        } catch ScrollStitchError.duplicate { return .duplicate }
+        catch ScrollSequenceImageError.changedSource {
+            // A full-color conflict/revisit refuses only this candidate. Keep the
+            // accepted anchor and recovery controls so the user can return and retry.
+            throw ManualScrollRecoveryError(message: ScrollSequenceImageError.changedSource.localizedDescription)
         }
-        guard let currentScreen = NSScreen.screens.first(where: { $0.displayID == displayID }),
-              currentScreen.frame.size == screenSize else {
-            throw CaptureError.failed("显示器布局已改变，请重新开始长截图。")
+    }
+
+    private func beginManual(driver: ManualScrollScreenDriver, configuration: ManualScrollConfiguration = .init()) {
+        manual?.onChange = nil
+        manual?.cancel()
+        manualDriver?.invalidate()
+        manualControls?.detach()
+        manualDriver = driver
+        let coordinator = ManualScrollCoordinator(configuration: configuration, driver: driver, initialFrameCount: frames.count)
+        manual = coordinator
+        let controls = ManualScrollControls(displayBounds: driver.displayBounds)
+        controls.pauseOrResume = { [weak self, weak coordinator] in
+            guard let self, !self.repositioning, let coordinator else { return }
+            if coordinator.canResume {
+                self.window?.orderOut(nil)
+                coordinator.resume()
+            } else { coordinator.pause() }
         }
-        status.stringValue = "3秒后捕获。请切回页面，滚动后停稳。"
-        window?.orderOut(nil)
-        try await Task.sleep(nanoseconds: 3_000_000_000)
-        let fullImage = try await captureService.captureDisplay(displayID: displayID)
-        try Task.checkCancellation()
-        let scaleX = CGFloat(fullImage.width) / screenSize.width
-        let scaleY = CGFloat(fullImage.height) / screenSize.height
-        // RegionSelectionController and CGImage cropping both use top-left coordinates.
-        let pixels = CGRect(x: region.minX * scaleX, y: region.minY * scaleY,
-                            width: region.width * scaleX, height: region.height * scaleY).integral
-        guard let crop = fullImage.cropping(to: pixels), crop.width >= 8, crop.height >= 16 else {
-            throw CaptureError.invalidRegion
+        controls.move = { [weak self] in self?.moveManualRegion() }
+        controls.stop = { [weak coordinator] in coordinator?.stop() }
+        manualControls = controls
+        coordinator.onChange = { [weak self] state in self?.manualChanged(state) }
+        window?.orderOut(nil); controls.window?.orderFrontRegardless()
+        coordinator.start()
+    }
+
+    private var manualPaused: Bool {
+        switch manual?.state {
+        case .paused?, .recoverable?: return true
+        default: return false
         }
-        try await accept(crop)
+    }
+
+    private func manualChanged(_ state: ManualScrollState) {
+        let text: String
+        var recoverable = false
+        switch state {
+        case .ready: text = "已准备连续手动捕获"
+        case .countdown(let seconds): text = "\(seconds)秒后开始 · 请切回目标页面"
+        case .sampling: text = "观察页面 · 已保存\(frames.count)帧 · 请手动滚动"
+        case .settling: text = "等待画面停稳 · 保留至少25%重叠"
+        case .matching: text = "正在验证接缝 · 已保存\(frames.count)帧"
+        case .waiting: text = "正在捕获 · 已保存\(frames.count)帧 · 可向两个方向滚动"
+        case .paused:
+            text = manual?.hasPendingOperation == true ? "已暂停 · 等待当前采样结束" : "已暂停 · 可移动固定选区，或继续、停止并编辑"
+        case .recoverable(let message):
+            recoverable = true
+            text = "\(message) 未接入不确定画面；请返回上次位置、减小滚动距离，再重试。"
+        case .failed(let message): text = "\(message) 已保留已接受原图，可完成或重新连续捕获。"
+        case .finished(let reason):
+            switch reason {
+            case .stopped: text = "连续捕获已停止。可检查预览、裁剪、完成，或再次连续捕获。"
+            case .frameLimit: text = "已达到100帧上限，请检查并完成截图。"
+            case .sampleLimit: text = "已达到采样次数上限。原图已保留，请检查并完成截图。"
+            case .timeLimit: text = "已达到3分钟捕获上限。原图已保留，请检查并完成截图。"
+            }
+        }
+        region = manualDriver?.region ?? region
+        status.stringValue = text
+        manualControls?.update(text: text, paused: manualPaused, retry: recoverable,
+                               ready: manual?.canResume == true && !repositioning)
+        switch state {
+        case .paused, .recoverable:
+            if !repositioning { window?.makeKeyAndOrderFront(nil) }
+        case .finished, .failed:
+            manualDriver?.invalidate()
+            manualControls?.detach(); manualControls = nil
+            window?.makeKeyAndOrderFront(nil)
+        default: break
+        }
+        updateControls()
+    }
+
+    private func moveManualRegion() {
+        guard !repositioning, manual?.canResume == true, let driver = manualDriver,
+              let screen = NSScreen.screens.first(where: { $0.displayID == driver.displayID }) else { return }
+        let token = generation
+        repositioning = true
+        let mover = ManualScrollRegionMover(); regionMover = mover
+        window?.orderOut(nil); manualControls?.window?.orderOut(nil)
+        updateControls()
+        moveOperation = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let moved = try await mover.choose(screen: screen, region: driver.region)
+                try Task.checkCancellation()
+                guard self.generation == token, self.manual?.canResume == true else { throw CancellationError() }
+                try driver.moveRegion(to: moved)
+                self.region = driver.region
+                self.status.stringValue = "选区位置已更新，尺寸、显示器、目标窗口及原图均保留。请明确点击继续；接缝仍须验证。"
+            } catch is CancellationError { }
+            catch CaptureError.cancelled { self.status.stringValue = "已取消移动，保留原选区。" }
+            catch { self.status.stringValue = "\(error.localizedDescription) 原选区和已接受图片均保留。" }
+            guard self.generation == token else { return }
+            self.regionMover = nil; self.moveOperation = nil; self.repositioning = false
+            self.manualControls?.update(text: self.status.stringValue, paused: true, retry: false, ready: self.manual?.canResume == true)
+            self.manualControls?.window?.orderFrontRegardless(); self.window?.makeKeyAndOrderFront(nil)
+            self.updateControls()
+        }
     }
 
     @objc private func openAccessibilitySettings() {
@@ -308,7 +414,8 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
     }
 
     private var sessionBusy: Bool {
-        busy || automatic?.isRunning == true || automatic?.state == .paused || automatic?.hasPendingOperation == true
+        busy || repositioning || manual?.isRunning == true || manualPaused || manual?.hasPendingOperation == true
+            || automatic?.isRunning == true || automatic?.state == .paused || automatic?.hasPendingOperation == true
     }
 
     @objc private func importFrames() {
@@ -439,7 +546,9 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
 
     private func refreshSequencePresentation() {
         guard let sequence, let layout = try? edits.layout(for: sequence) else { return }
-        preview.layout = layout; preview.axis = axis
+        let viewportLength = axis == .vertical ? sequence.frameHeight : sequence.frameWidth
+        preview.updateProjection(layout: layout, axis: axis, sources: frames,
+                                 viewport: sequence.viewportOffset..<(sequence.viewportOffset + viewportLength))
         selectedBand = nil; preview.selectedRange = nil
         autoCropButton.state = edits.autoCropEnabled ? .on : .off
         if !layout.strips.contains(where: { $0.block.id == selectedBlockID }) { selectedBlockID = layout.strips.first?.block.id }
@@ -569,7 +678,8 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
     }
 
     private var canFinishCommittedFrames: Bool {
-        !busy && !edits.isEditing && automatic?.isRunning != true && automatic?.state != .paused
+        !busy && !repositioning && !edits.isEditing && manual?.isRunning != true && !manualPaused
+            && automatic?.isRunning != true && automatic?.state != .paused
     }
 
     @objc private func finishCapture() {
@@ -609,14 +719,15 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
         resetSession()
     }
 
-    private func startOperation(allowTerminalDrain: Bool = false, _ body: @escaping @MainActor () async throws -> Void) {
+    private func startOperation(allowTerminalDrain: Bool = false, afterSuccess: (() -> Void)? = nil, _ body: @escaping @MainActor () async throws -> Void) {
         guard !sessionBusy || (allowTerminalDrain && canFinishCommittedFrames) else { return }
         busy = true
         updateControls()
         let token = generation
         operation = Task { [weak self] in
             guard let self else { return }
-            do { try await body() }
+            var succeeded = false
+            do { try await body(); succeeded = true }
             catch is CancellationError { }
             catch {
                 if self.generation == token {
@@ -627,7 +738,8 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
             self.busy = false
             self.operation = nil
             self.updateControls()
-            self.window?.makeKeyAndOrderFront(nil)
+            if succeeded, let afterSuccess { afterSuccess() }
+            else { self.window?.makeKeyAndOrderFront(nil) }
         }
     }
 
@@ -636,7 +748,7 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
         direction.isEnabled = !busy && frames.isEmpty
         displayPicker.isEnabled = !busy && frames.isEmpty
         chooseButton.isEnabled = !busy && frames.isEmpty
-        nextButton.isEnabled = !busy && region != nil
+        nextButton.isEnabled = !busy && region != nil && frames.count < maximumFrames
         automaticButton.isEnabled = !busy && region != nil && !frames.isEmpty && frames.count < maximumFrames
         accessibilityButton.isEnabled = !busy
         importButton.isEnabled = !busy
@@ -666,6 +778,13 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
     }
 
     private func resetSession() {
+        manual?.onChange = nil
+        manual?.cancel(); manual = nil
+        manualDriver?.invalidate(); manualDriver = nil
+        manualControls?.detach(); manualControls = nil
+        regionMover?.cancel(); regionMover = nil
+        moveOperation?.cancel(); moveOperation = nil; repositioning = false
+        preview.clearDetail()
         automatic?.onChange = nil
         automatic?.cancel()
         automatic = nil
@@ -701,6 +820,38 @@ final class ScrollCaptureController: NSWindowController, NSWindowDelegate {
         guard axis == requestedAxis else { throw ScrollSequenceError.invalidGeometry }
         return try await accept(image)
     }
+    @discardableResult
+    func startManualForVerification(axis requestedAxis: ScrollAxis, region: CGRect, screenSize: CGSize,
+                                    configuration: ManualScrollConfiguration,
+                                    provider: @escaping () async throws -> CGImage,
+                                    validate: @escaping () throws -> Void = {}) throws -> ManualScrollCoordinator {
+        guard !sessionBusy, !edits.isEditing else { throw CaptureError.busy }
+        if frames.isEmpty { direction.selectItem(at: requestedAxis == .vertical ? 0 : 1) }
+        guard axis == requestedAxis else { throw ScrollSequenceError.invalidGeometry }
+        let token = generation
+        let driver = ManualScrollScreenDriver(region: region, screenSize: screenSize,
+            expectedPixelSize: previousFrame.map { CGSize(width: $0.width, height: $0.height) },
+            validate: validate, provider: provider) { [weak self] image in
+                guard let self, self.generation == token else { throw CancellationError() }
+                return try await self.acceptManualImage(image)
+            }
+        self.region = region
+        beginManual(driver: driver, configuration: configuration)
+        guard let manual else { throw CaptureError.busy }
+        return manual
+    }
+    func moveManualRegionForVerification(to region: CGRect) throws {
+        guard manual?.canResume == true, let manualDriver else { throw CaptureError.busy }
+        try manualDriver.moveRegion(to: region)
+        self.region = manualDriver.region
+    }
+    func resetForVerification() { resetSession() }
+    var previewForVerification: ScrollSequencePreview { preview }
+    var manualControlsForVerification: NSWindowController? { manualControls }
+    var manualDriverForVerification: ManualScrollScreenDriver? { manualDriver }
+    var manualRegionForVerification: CGRect? { manualDriver?.region }
+    var manualStateForVerification: ManualScrollState? { manual?.state }
+    var statusForVerification: String { status.stringValue }
     func waitForOperationForVerification() async { await operation?.value }
     var sequenceForVerification: ScrollCaptureSequence? { sequence }
     var removedBlocksForVerification: Set<UUID> { edits.removed }

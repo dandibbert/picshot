@@ -6,7 +6,7 @@ export PICSHOT_SMOKE_FORMULA_MODEL_DIR="$PWD/.build/model-fixtures/formula"
 export PICSHOT_SMOKE_FORMULA_INPUT="$PWD/Tests/PicShotMLHelperTests/Fixtures/energy.png"
 export PICSHOT_SMOKE_TABLE_MODEL_DIR="$PWD/.build/model-fixtures/table"
 export PICSHOT_SMOKE_TABLE_INPUT="$PWD/Tests/PicShotTableEngineTests/Fixtures/merged-table.png"
-base="PicShot-0.13.0-macos-$(uname -m)"
+base="PicShot-0.14.0-macos-$(uname -m)"
 work=$(mktemp -d)
 mounted=false
 trap 'if [[ "$mounted" == true ]];then hdiutil detach "$work/mount" || true;fi;rm -rf "$work"' EXIT
@@ -121,8 +121,9 @@ for c in save['resourceCycles']:
     assert c['activeJobs']==0 and c['retainedInputBytes']==0 and c['controllerReleased'] and c['temporaryJobRemoved'],c
 print(json.dumps(r,indent=2))
 PY
-  python3 scripts/check-pin-ocr-report.py "$PWD/dist/evidence/$format/pin-ocr/pin-ocr-workflow.json" "$app" "$(git rev-parse HEAD)" 0.13.0 "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")" --full
+  python3 scripts/check-pin-ocr-report.py "$PWD/dist/evidence/$format/pin-ocr/pin-ocr-workflow.json" "$app" "$(git rev-parse HEAD)" 0.14.0 "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")" --full
   python3 scripts/check-automatic-mosaic-report.py "$PWD/dist/evidence/$format/automatic-mosaic/automatic-mosaic-workflow.json" "$app" "$(git rev-parse HEAD)" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")" --full
   python3 scripts/check-annotation-details-report.py "$PWD/dist/evidence/$format/annotation-details/annotation-details.json" "$app" "$(git rev-parse HEAD)" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")" --full
   bash scripts/pin-workflows-smoke.sh "$app" "$PWD/dist/evidence/$format/pin-workflows" "$(git rev-parse HEAD)"
+  bash scripts/manual-scroll-smoke.sh "$app" "$PWD/dist/evidence/$format/manual-scroll" "$(git rev-parse HEAD)" "$format"
 done
