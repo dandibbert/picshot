@@ -81,6 +81,7 @@ import PicShotCore
                 "mixedKinds": ["image", "rotated-image-fixed-zoom", "text"],
                 "stages": ["native-table-multiselect", "native-context-selection", "escape-cancel", "native-move-scale-apply", "atomic-undo-redo", "six-native-alignments", "bounded-hide-show-resource-cycles"],
                 "snapshots": ["pin-group-multiselect.png", "pin-group-transform.png"],
+                "snapshotBackground": PinWorkflowSnapshot.backgroundDescription,
                 "warmupCycles": 3, "cycles": 20, "releaseProbes": probes.count, "retainedControllersOrContent": 0,
                 "baselineRSSBytes": baseline.residentBytes!, "peakRSSBytes": measuredStatistics.peakResidentBytes!, "finalRSSBytes": final.residentBytes!,
                 "growthRSSBytes": try delta(final.residentBytes, baseline.residentBytes), "rssSamplesEveryFiveCycles": [rss[4], rss[9], rss[14], rss[19]],
@@ -145,7 +146,23 @@ import PicShotCore
         try control(NSTextField.self, "pin-group-scale", in: editor.window?.contentView).stringValue = "125"
         try snapshot(try window(editor), to: evidenceDirectory.appendingPathComponent("pin-group-transform.png"))
         try control(NSButton.self, "pin-group-apply", in: editor.window?.contentView).performClick(nil)
-        try require(session.groupTransforms.editor == nil, "Apply failed or inspector remained open")
+        if session.groupTransforms.editor != nil {
+            var diagnostic: [String: Any] = ["status": "failed", "applyOutcome": editor.applyOutcome,
+                "sourceCommit": Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String ?? "unknown", "bundlePath": Bundle.main.bundlePath,
+                "snapshotBackground": PinWorkflowSnapshot.backgroundDescription,
+                "indexUnchanged": store.index == original, "undoCount": session.groupTransforms.history.undoPlans.count,
+                "selectedIDs": session.groupTransforms.selectedIDs.map(\.uuidString).sorted(),
+                "eligibleIDs": session.groupTransformEligibleIDs.map(\.uuidString).sorted()]
+            if let error = editor.lastApplyFailure { diagnostic["applyFailure"] = try object(error) }
+            if let failure = session.groupTransforms.lastFailure { diagnostic["transactionFailure"] = try object(failure) }
+            do { try snapshot(try window(editor), to: evidenceDirectory.appendingPathComponent("pin-group-apply-failure.png")) }
+            catch { diagnostic["snapshotError"] = error.localizedDescription }
+            try JSONSerialization.data(withJSONObject: diagnostic, options: [.prettyPrinted, .sortedKeys])
+                .write(to: evidenceDirectory.appendingPathComponent("pin-group-apply-failure.json"), options: .atomic)
+            let code = editor.lastApplyFailure?.code ?? "no-captured-error"
+            let detail = editor.lastApplyFailure?.message ?? "No transform error was captured"
+            throw failure("Apply outcome=\(editor.applyOutcome), code=\(code): \(detail); see pin-group-apply-failure.json for pre-rollback geometry")
+        }
         let changed = store.index
         try require(changed != original && changed.entry(id: sentinel) == original.entry(id: sentinel), "Group transform moved sentinel or made no change")
         try require(try assets(in: directory) == assetHashes, "Move/scale rewrote raster or source assets")
@@ -232,10 +249,7 @@ import PicShotCore
     }
     private static func snapshot(_ window: NSWindow, to url: URL) throws {
         guard window.isVisible, let view = window.contentView else { throw failure("Snapshot requires a real shown window") }
-        view.layoutSubtreeIfNeeded(); window.displayIfNeeded()
-        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw failure("No native bitmap") }
-        view.cacheDisplay(in: view.bounds, to: bitmap)
-        guard let image = bitmap.cgImage else { throw failure("No native snapshot pixels") }; try image.writePNG(to: url)
+        try PinWorkflowSnapshot.write(view, to: url)
     }
     private static func observedMemory() throws -> GIFResourceMemoryReading {
         let reading = GIFResourceMemoryReading.current()

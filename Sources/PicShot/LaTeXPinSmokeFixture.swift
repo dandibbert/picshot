@@ -98,6 +98,7 @@ import PicShotFormulaRenderCore
             "exportBytes": exportSizes, "previews": ["latex-managed-pin.png", "latex-inline-editor.png",
                 "latex-managed-pin-light.png", "latex-managed-pin-dark.png", "latex-inline-editor-light.png", "latex-inline-editor-dark.png"],
             "pinPreviewBacking": "White presentation backing in both appearances; exported alpha is unchanged",
+            "snapshotBackground": PinWorkflowSnapshot.backgroundDescription,
             "screenCaptureStarted": false, "modelDownloaded": false,
             "desktopVisibilityPreferencesIsolated": true, "formulaSaveChooserGeometry": setup.chooserEvidence,
             "resourceEvidence": resource,
@@ -115,7 +116,29 @@ import PicShotFormulaRenderCore
         let id = try coordinator.add(rich: PreparedRichPin(formula: original, result: rendered))
         try await Task.sleep(nanoseconds: 80_000_000)
         guard let pin = coordinator.richControllers[id], let model = pin.latexModel else { throw failure("Managed formula pin missing") }
-        try require(pin.window?.isVisible == true && pin.displayedLaTeXRaster?.width == rendered.width, "Real rendered raster was not shown")
+        let nativeImageView: NSImageView?
+        if let view = pin.window?.contentView { nativeImageView = descendant(NSImageView.self, in: view) } else { nativeImageView = nil }
+        let viewImage = nativeImageView?.image
+        let pointSizedReconstruction = viewImage?.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        var displayEvidence: [String: Any] = [
+            "sourceCommit": Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String ?? "unknown",
+            "bundlePath": Bundle.main.bundlePath,
+            "windowVisible": pin.window?.isVisible == true, "viewHasImage": viewImage != nil,
+            "expectedPixelWidth": rendered.width, "expectedPixelHeight": rendered.height,
+            "actualPixelWidth": pin.displayedLaTeXRaster?.width as Any? ?? NSNull(),
+            "actualPixelHeight": pin.displayedLaTeXRaster?.height as Any? ?? NSNull(),
+            "renderScale": original.scale,
+            "pointSizedExtractionWidth": pointSizedReconstruction?.width as Any? ?? NSNull(),
+            "pointSizedExtractionHeight": pointSizedReconstruction?.height as Any? ?? NSNull(),
+            "representationPixels": viewImage?.representations.prefix(8).map { ["width": $0.pixelsWide, "height": $0.pixelsHigh] } ?? []
+        ]
+        if let size = viewImage?.size { displayEvidence["imagePointSize"] = ["width": Double(size.width), "height": Double(size.height)] }
+        try JSONSerialization.data(withJSONObject: displayEvidence, options: [.prettyPrinted, .sortedKeys])
+            .write(to: evidenceDirectory.appendingPathComponent("latex-initial-display.json"), options: .atomic)
+        try require(pin.window?.isVisible == true, "Managed formula window was not visible; see latex-initial-display.json")
+        try require(viewImage != nil, "Managed formula view had no image; see latex-initial-display.json")
+        try require(pin.displayedLaTeXRaster?.width == rendered.width && pin.displayedLaTeXRaster?.height == rendered.height,
+                    "Validated formula raster dimensions changed; see latex-initial-display.json")
         try snapshot(pin.window?.contentView, to: evidenceDirectory.appendingPathComponent("latex-managed-pin.png"))
         pin.editLaTeX()
         try await Task.sleep(nanoseconds: 100_000_000)
@@ -303,11 +326,7 @@ import PicShotFormulaRenderCore
     }
     private static func snapshot(_ view: NSView?, to url: URL) throws {
         guard let view else { throw failure("Missing native preview view") }
-        view.layoutSubtreeIfNeeded(); view.displayIfNeeded()
-        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw failure("Cannot cache native view") }
-        view.cacheDisplay(in: view.bounds, to: bitmap)
-        guard let image = bitmap.cgImage else { throw failure("Native snapshot has no pixels") }
-        try image.writePNG(to: url)
+        try PinWorkflowSnapshot.write(view, to: url)
     }
     private static func require(_ condition: Bool, _ detail: String) throws { if !condition { throw failure(detail) } }
     private static func failure(_ detail: String) -> Error { PicShotError.message("LaTeX pin acceptance: " + detail) }

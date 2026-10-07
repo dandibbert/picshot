@@ -37,6 +37,7 @@ final class PinGroupNativeTransformTests: XCTestCase {
         try FileManager.default.createDirectory(at: manifest, withIntermediateDirectories: false)
         XCTAssertThrowsError(try f.session.groupTransforms.transform(.align(.top)))
         XCTAssertEqual(f.store.index, before); XCTAssertFalse(f.session.groupTransforms.canUndo)
+        XCTAssertEqual(f.session.groupTransforms.lastFailure?.stage, "commit-store")
         for id in f.ids { XCTAssertEqual(presentation(f.session, id), before.entry(id: id)?.presentation) }
         XCTAssertEqual(try fileBytes(f.directory), assets)
         try FileManager.default.removeItem(at: manifest); try bytes.write(to: manifest, options: .atomic)
@@ -63,6 +64,7 @@ final class PinGroupNativeTransformTests: XCTestCase {
         try field("pin-group-scale", in: invalid).stringValue = "nan"
         try button("pin-group-apply", in: invalid).performClick(nil)
         XCTAssertTrue(group.editor === invalid); XCTAssertEqual(f.store.index, before)
+        XCTAssertEqual(invalid.applyOutcome, "failed"); XCTAssertEqual(invalid.lastApplyFailure?.code, "invalidGeometry")
         try field("pin-group-scale", in: invalid).stringValue = "125"
         // A different live window move while the inspector was open invalidates its snapshot.
         let image = try XCTUnwrap(f.session.liveControllers[f.ids[0]])
@@ -70,6 +72,14 @@ final class PinGroupNativeTransformTests: XCTestCase {
         try f.session.flushPresentationChanges(); let intervening = f.store.index
         try button("pin-group-apply", in: invalid).performClick(nil)
         XCTAssertEqual(f.store.index, intervening); XCTAssertFalse(group.canUndo)
+        XCTAssertEqual(invalid.applyOutcome, "failed"); XCTAssertEqual(invalid.lastApplyFailure?.code, "stalePresentation")
+        XCTAssertEqual(group.lastFailure?.stage, "validate-store")
+        XCTAssertEqual(group.lastFailure?.expected, before.entry(id: f.ids[0])?.presentation)
+        XCTAssertEqual(group.lastFailure?.actual, intervening.entry(id: f.ids[0])?.presentation)
+        try field("pin-group-dx", in: invalid).stringValue = "not-a-number"
+        try button("pin-group-apply", in: invalid).performClick(nil)
+        XCTAssertEqual(invalid.lastApplyFailure?.code, "invalidGeometry")
+        XCTAssertNil(group.lastFailure, "A parsing failure must not reuse an earlier transaction's geometry")
         for id in f.ids { XCTAssertEqual(presentation(f.session, id), intervening.entry(id: id)?.presentation) }
         invalid.close()
     }

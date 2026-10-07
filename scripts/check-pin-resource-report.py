@@ -2,7 +2,7 @@
 import json,sys
 r=json.load(open(sys.argv[1])); kind=sys.argv[2]
 assert kind in ('group','latex')
-assert r['status']=='passed'
+assert r['status']=='passed', {key: r[key] for key in ('status','error','stage') if key in r}
 e=r['resourceEvidence']; warm,cycles,live,warm_probes,probes,final_probes=(3,20,4,15,100,4) if kind=='group' else (2,12,1,4,24,1)
 assert e['observationsComplete'] is True and e['warmupCycles']==warm and e['measuredCycles']==cycles
 assert e['completedMeasuredCycles']==cycles and len(e['settledAfterCycles'])==cycles

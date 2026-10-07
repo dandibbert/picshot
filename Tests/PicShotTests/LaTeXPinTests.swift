@@ -1,11 +1,38 @@
 import XCTest
 import AppKit
+import ImageIO
 import SwiftUI
 import PicShotCore
 import PicShotFormulaRenderCore
 @testable import PicShot
 
 final class LaTeXPinTests: XCTestCase {
+    @MainActor func testFormulaPNGKeepsOriginalPixelRasterAcrossDisplayScalesResizeAndCommit() throws {
+        _ = NSApplication.shared
+        let board = NSPasteboard.withUniqueName(); defer { board.releaseGlobally() }
+        for scale in 1...3 {
+            let request = FormulaRenderRequest(latex: "x", scale: scale)
+            let prepared = try PreparedRichPin(formula: request, result: Self.result(request, width: 96))
+            let pin = try RichPinController(asset: prepared.asset, data: prepared.data, title: "Scale", renderedImage: prepared.poster)
+            defer { pin.close() }
+            XCTAssertTrue(pin.displayedLaTeXRaster === prepared.poster, "Point-size presentation must retain the actual decoded raster")
+            var presentation = pin.presentation; presentation.frame.width = 193; presentation.frame.height = 85
+            pin.applyPresentation(presentation)
+            XCTAssertTrue(pin.displayedLaTeXRaster === prepared.poster)
+            pin.copyLaTeXPNG(to: board)
+            let data = try XCTUnwrap(board.data(forType: .png))
+            let source = try XCTUnwrap(CGImageSourceCreateWithData(data as CFData, nil))
+            let copied = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+            XCTAssertEqual(copied.width, prepared.poster.width); XCTAssertEqual(copied.height, prepared.poster.height)
+            pin.onRichChange = { _ in }
+            let replacementRequest = FormulaRenderRequest(latex: "y", scale: scale)
+            let replacement = try PreparedRichPin(formula: replacementRequest, result: Self.result(replacementRequest, width: 132))
+            try XCTUnwrap(pin.latexModel?.onCommit)(replacement)
+            XCTAssertTrue(pin.displayedLaTeXRaster === replacement.poster)
+            pin.close(); XCTAssertNil(pin.displayedLaTeXRaster)
+        }
+    }
+
     @MainActor func testAtomicSourceRasterReplacementAndRestore() throws {
         let directory = temporary(); defer { try? FileManager.default.removeItem(at: directory) }
         let store = try PinSessionStore(directory: directory)

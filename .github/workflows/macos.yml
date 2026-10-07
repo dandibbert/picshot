@@ -28,6 +28,18 @@ jobs:
           mkdir -p dist
           set -o pipefail
           bash scripts/package.sh 2>&1 | tee dist/package.log
+      - name: Render native UI from installed ZIP before slow verification
+        run: |
+          set -o pipefail
+          bash scripts/ui-preview.sh 2>&1 | tee dist/ui-preview.log
+      - name: Upload early native UI preview
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-UI-${{ matrix.arch }}-${{ github.sha }}
+          path: dist/evidence/ui/
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Measure codec and image backing in fresh installed processes
         timeout-minutes: 8
         run: |
@@ -44,18 +56,6 @@ jobs:
             dist/image-backing-attribution.log
             dist/evidence/codec-attribution/
             dist/evidence/image-backing/
-          if-no-files-found: ignore
-          retention-days: 14
-      - name: Render native UI from installed ZIP before slow verification
-        run: |
-          set -o pipefail
-          bash scripts/ui-preview.sh 2>&1 | tee dist/ui-preview.log
-      - name: Upload early native UI preview
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: PicShot-UI-${{ matrix.arch }}-${{ github.sha }}
-          path: dist/evidence/ui/
           if-no-files-found: ignore
           retention-days: 14
       # Keep compilation outside the eight-minute execution gates. Inner

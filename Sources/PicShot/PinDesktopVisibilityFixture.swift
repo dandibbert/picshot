@@ -143,7 +143,7 @@ import PicShotCore
         return ["status": "passed", "toggledInPlace": true, "closedControllersReleased": true,
                 "contentKinds": ["image", "text", "files", "color", "animation"], "contextActionCount": 25, "inPlaceToggleCount": 27,
                 "scope": "Real AppKit flags, target/action menus, Settings view, metadata and lifecycle over synthetic local content",
-                "physicalSpacesVerified": false, "physicalSpacesAcceptance": "NOT RUN: two desktops, fullscreen, two displays and Stage Manager require an interactive macOS session",
+                "physicalSpacesVerified": false, "snapshotBackground": PinWorkflowSnapshot.backgroundDescription, "physicalSpacesAcceptance": "NOT RUN: two desktops, fullscreen, two displays and Stage Manager require an interactive macOS session",
                 "screenCaptureAttempted": false, "userPreferencesReadOrWritten": false,
                 "sessionBytesUnchangedByToggle": true, "noActivationFollowFlag": true, "originalRasterProviderReleased": true,
                 "snapshots": ["pin-desktop-settings.png", "pin-desktop-current-text.png"]]
@@ -224,10 +224,7 @@ import PicShotCore
     private static func snapshot(_ window: NSWindow, to url: URL) throws {
         window.displayIfNeeded()
         let view = try required(window.contentView, "Snapshot view missing")
-        view.layoutSubtreeIfNeeded()
-        let bitmap = try required(view.bitmapImageRepForCachingDisplay(in: view.bounds), "Snapshot allocation failed")
-        view.cacheDisplay(in: view.bounds, to: bitmap)
-        try required(bitmap.representation(using: .png, properties: [:]), "PNG encoding failed").write(to: url)
+        try PinWorkflowSnapshot.write(view, to: url)
     }
     private static func require(_ condition: @autoclosure () throws -> Bool, _ message: String) throws { if try !condition() { throw failure(message) } }
     private static func required<T>(_ value: T?, _ message: String) throws -> T { guard let value else { throw failure(message) }; return value }

@@ -78,7 +78,10 @@ actor RichPinFrameDecoder {
     private var latexSaveInProgress: Bool { latexSavePanel != nil || latexSaveTask != nil }
     var hasActiveLaTeXEditorOrRender: Bool { latexPopover?.isShown == true || latexModel?.working == true || latexSaveInProgress }
     var latexEditorContentView: NSView? { latexPopover?.contentViewController?.view }
-    var displayedLaTeXRaster: CGImage? { kind == .latex ? imageView.image?.cgImage(forProposedRect: nil, context: nil, hints: nil) : nil }
+    /// The validated decoded raster is the pixel authority. NSImage.size is in
+    /// points; CGImage extraction from that view can choose a display-sized result.
+    /// This is another reference to the same CGImage used by the view, not a decode.
+    private(set) var displayedLaTeXRaster: CGImage?
 
     init(asset: PinRichAsset, data: Data, title: String, renderedImage: CGImage? = nil) throws {
         self.asset = asset; kind = asset.kind
@@ -109,6 +112,7 @@ actor RichPinFrameDecoder {
             let model = LaTeXPinModel(content: content)
             latexModel = model
             model.onCancelSaving = { [weak self] in self?.cancelLaTeXSave() }
+            displayedLaTeXRaster = renderedImage
             imageView.image = NSImage(cgImage: renderedImage, size: NSSize(width: Double(renderedImage.width) / Double(content.scale), height: Double(renderedImage.height) / Double(content.scale)))
             model.onCommit = { [weak self] prepared in
                 guard let self, !self.closed, let save = self.onRichChange else { throw CancellationError() }
@@ -116,6 +120,7 @@ actor RichPinFrameDecoder {
                 try save(prepared)
                 self.richDocument = document
                 let scale = Double(document.latex?.scale ?? 1)
+                self.displayedLaTeXRaster = prepared.poster
                 self.imageView.image = NSImage(cgImage: prepared.poster, size: NSSize(width: Double(prepared.poster.width) / scale, height: Double(prepared.poster.height) / scale))
             }
             let scale = Double(content.scale)
@@ -341,7 +346,7 @@ actor RichPinFrameDecoder {
         let formats: [FormulaRenderFormat] = [.png, .svg, .mathML, .pdf]
         guard formats.indices.contains(item.tag) else { return }
         let format = formats[item.tag]
-        if format == .png, let image = imageView.image?.cgImage(forProposedRect: nil, context: nil, hints: nil) { copyImage(image); return }
+        if format == .png { copyLaTeXPNG(); return }
         latexModel?.export(format) { data in
             let board = NSPasteboard.general; board.clearContents()
             let type: NSPasteboard.PasteboardType = format == .pdf ? .pdf : NSPasteboard.PasteboardType(format == .svg ? UTType.svg.identifier : "public.mathml")
@@ -349,6 +354,11 @@ actor RichPinFrameDecoder {
             if format == .svg || format == .mathML, let text = String(data: data, encoding: .utf8) { board.setString(text, forType: .string) }
         }
         editLaTeX() // Makes progress, cancellation and renderer errors visible in the same compact editor.
+    }
+    func copyLaTeXPNG(to pasteboard: NSPasteboard = .general) {
+        guard !closed, let image = displayedLaTeXRaster,
+              let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { return }
+        pasteboard.clearContents(); pasteboard.setData(data, forType: .png)
     }
     @objc private func saveLaTeXFormat(_ item: NSMenuItem) {
         guard FormulaRenderFormat.allCases.indices.contains(item.tag) else { return }
@@ -540,6 +550,7 @@ actor RichPinFrameDecoder {
         pausePlayback()
         if let decoder { Task { await decoder.release() } }; decoder = nil
         callback?()
+        displayedLaTeXRaster = nil
         fileTable.dataSource = nil; fileTable.delegate = nil; fileTable.menu = nil; imageView.image = nil; imageView.menu = nil; textView.menu = nil
         textView.textStorage?.setAttributedString(NSAttributedString(string: "")); richDocument = nil
         window?.delegate = nil; window?.contentView = nil
