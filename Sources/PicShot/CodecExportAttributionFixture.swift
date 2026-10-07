@@ -27,6 +27,9 @@ enum CodecExportAttributionFixture {
     /// The launcher must use a new process for preparation and every matrix cell.
     static func runIfRequested(evidenceDirectory: URL,
                               environment: [String: String] = ProcessInfo.processInfo.environment) async throws -> [String: Any]? {
+        if let report = try await ImageAllocatorReliefFixture.runIfRequested(evidenceDirectory: evidenceDirectory, environment: environment) {
+            return report
+        }
         if environment["PICSHOT_IMAGE_BACKING_MODE"] != nil {
             guard environment["PICSHOT_CODEC_ATTRIBUTION_MODE"] == nil else {
                 throw failure("Image backing and codec attribution require separate fresh processes")

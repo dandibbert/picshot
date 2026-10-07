@@ -358,11 +358,18 @@ jobs:
         run: >-
           python3 scripts/run-bounded-command.py --timeout-seconds 420
           --log dist/attribution-tests.log --report dist/attribution-tests-report.json
-          -- swift test --skip-build --filter 'CodecExportAttribution'
+          -- swift test --skip-build --filter 'CodecExportAttribution|ImageAllocatorRelief'
       - name: Run six fresh installed processes after separate input preparation
+        if: ${{ !contains(github.event.head_commit.message || '', '[image-relief]') }}
         run: |
           set -o pipefail
           bash scripts/codec-attribution.sh 2>&1 | tee dist/codec-attribution.log
+      - name: Run explicitly selected self-only allocator comparison
+        if: ${{ contains(github.event.head_commit.message || '', '[image-relief]') }}
+        timeout-minutes: 5
+        run: |
+          set -o pipefail
+          bash scripts/image-relief-attribution.sh --compare "$PWD/dist/PicShot.app" "$PWD/dist/evidence/image-relief" 2>&1 | tee dist/image-relief-attribution.log
       - name: Upload observations without publishing another installer
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -376,5 +383,7 @@ jobs:
             dist/attribution-tests-report.json
             dist/codec-attribution.log
             dist/evidence/codec-attribution/
+            dist/image-relief-attribution.log
+            dist/evidence/image-relief/
           if-no-files-found: warn
           retention-days: 14
