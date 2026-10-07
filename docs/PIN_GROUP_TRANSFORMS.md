@@ -1,8 +1,8 @@
-# PIN-13: bounded native group transforms (Partial; ARM 0.10 verified)
+# PIN-13: bounded native group transforms (Partial; ARM/Intel 0.10 verified)
 
-**Accepted ARM 0.10.0 build 67** is [03cf310](https://github.com/dandibbert/picshot/commit/03cf310c4228bdbfdc3f9a81ceec810651552f81), with terminal-success [run 37575644941 / ARM job 112643816594](https://github.com/dandibbert/picshot/actions/runs/37575644941/job/112643816594): **1,190 ordinary tests (1,187 passed, 3 intentional pre-weight model skips), 732 focused and 12 actual-model tests**, zero failures. Both actual ZIP/DMG pass their installed startup, native pin and existing feature/cleanup gates. Stages overlap and are not additive distinct-test totals. ARM installer replacements are confirmed; **delivered Intel remains 0.9 b44c1fb**. Physical Spaces/Retina/TCC, all remaining feature gaps and sustained-use evidence remain open. Full GIF stress is ZIP-only. See [VERIFICATION.md](VERIFICATION.md) for exact bytes and process/workload-qualified measurements.
+**Accepted and delivered ARM/Intel 0.10.0 build 67** is [03cf310](https://github.com/dandibbert/picshot/commit/03cf310c4228bdbfdc3f9a81ceec810651552f81), with independent terminal-success [ARM job 112643816594](https://github.com/dandibbert/picshot/actions/runs/37575644941/job/112643816594) and [Intel attempt 2 / job 112653589644](https://github.com/dandibbert/picshot/actions/runs/37575644941/job/112653589644) in run 37575644941. Each architecture passes **1,190 ordinary tests (1,187 passed, 3 intentional pre-weight model skips), 732 focused and 12 actual-model tests**, zero failures, plus both actual ZIP/DMG installed startup, native pin and existing feature/cleanup gates. Stages overlap and are not additive distinct-test totals. Both architecture installer replacements are confirmed; Intel DMG/ZIP Library version 8 and guide version 15 are saved, with ARM bytes unchanged. Physical Spaces/Retina/TCC, all remaining feature gaps and sustained-use evidence remain open. Full GIF stress is ZIP-only on each architecture. Acceptance is limited to 03cf310/build 67; no 0.11 acceptance is claimed. See [VERIFICATION.md](VERIFICATION.md) for exact bytes and process/workload-qualified measurements.
 
-PIN-13 remains **Partial**: direct collective drag/resize is absent. ARM native and installed numeric Apply, six alignments, undo/redo and constrained rollback pass; original authoring on Linux was not itself native evidence.
+PIN-13 remains **Partial**: direct collective drag/resize is absent. Independent ARM/Intel native and installed numeric Apply, six alignments, undo/redo and constrained rollback pass; original authoring on Linux was not itself native evidence.
 
 ## User path
 
@@ -52,7 +52,7 @@ PIN-13 remains **Partial**: direct collective drag/resize is absent. ARM native 
   than silently clamping individual members and destroying collective geometry;
   existing current-group recovery remains available for off-screen pins
 
-## Verification coverage (ARM 03cf310 native and installed)
+## Verification coverage (ARM/Intel 03cf310 native and installed)
 
 - `PinGroupTransformTests` (PicShotCoreTests): three varied windows plus a sentinel;
   negative origins, all six alignments, scale/finite limits, stale/deleted/locked/
@@ -70,7 +70,7 @@ PIN-13 remains **Partial**: direct collective drag/resize is absent. ARM native 
   service is explicitly isolated; the existing manager restore toggle still reads
   its saved preference, which is disclosed in the report
 
-Actual ARM 03cf310 fixtures and native view snapshots pass in ZIP and DMG. The installed mixed fixture uses image, rotated fixed-zoom image and text; broader mixed animation/LaTeX interactions and physical multi-display/Spaces movement remain separate acceptance work.
+Actual ARM and Intel 03cf310 fixtures and native view snapshots independently pass in ZIP and DMG. The installed mixed fixture uses image, rotated fixed-zoom image and text; broader mixed animation/LaTeX interactions and physical multi-display/Spaces movement remain separate acceptance work.
 
 ## Installed ARM resource evidence and measurement scope
 
@@ -96,3 +96,10 @@ counts and elapsed time. Probes must start with live controller/content: 15 warm
 is not a whole-system/WindowServer/GPU/helper total; sampled maxima can miss
 transients. Released controllers and flat/negative readings do not prove a plateau
 or zero leaks. Accepted ARM 03cf310 ZIP/DMG comparable RSS grows +278,528/+65,536 bytes; the final three increments are [+49,152, 0, 0] / [0, +32,768, −32,768] bytes. Assets remain unchanged; final live pins and tracked retained controllers/content are zero. This does not resolve existing preview-backing growth. Exact baselines, footprint and other workloads remain in [VERIFICATION.md](VERIFICATION.md).
+
+
+## Independent installed Intel resource evidence
+
+Accepted Intel 03cf310/build 67, run 37575644941 attempt 2/job 112653589644, uses its own 3 + 20 workload. ZIP RSS baseline → comparable measured end is **106,496,000 → 107,433,984 bytes**, growth **+937,984 bytes**, final three single-cycle increments **[+36,864, −45,056, +266,240]** and footprint change **+540,672 bytes**. DMG is **108,195,840 → 108,613,632 bytes**, growth **+417,792 bytes**, final three **[0, +16,384, +4,096]** and footprint change **−950,272 bytes**. Sampled parent RSS peaks are **107,499,520/108,904,448 bytes** ZIP/DMG.
+
+Both Intel reports complete all samples without failures, preserve asset hashes and finish with zero live pins and zero retained tracked controllers/content. Four live pins are retained at comparable baseline/measured endpoints; final-cleanup decreases are separate. Native constrained-window rollback restores all four presentations and preserves manifest/index/assets and undo/redo. These results do not fill direct collective drag/resize, broader mixed-content, physical Spaces/Retina/multi-display or sustained-resource gaps, and do not resolve preview-backing growth. [VERIFICATION.md](VERIFICATION.md) contains exact Intel installer hashes and the other independent workloads.

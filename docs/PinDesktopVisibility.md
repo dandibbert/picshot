@@ -1,6 +1,6 @@
 # Managed pin desktop visibility
 
-**Accepted ARM 0.10.0 build 67** is [03cf310](https://github.com/dandibbert/picshot/commit/03cf310c4228bdbfdc3f9a81ceec810651552f81), with terminal-success [run 37575644941 / ARM job 112643816594](https://github.com/dandibbert/picshot/actions/runs/37575644941/job/112643816594): **1,190 ordinary tests (1,187 passed, 3 intentional pre-weight model skips), 732 focused and 12 actual-model tests**, zero failures. Both actual ZIP/DMG pass their installed startup, native pin and existing feature/cleanup gates. Stages overlap and are not additive distinct-test totals. ARM installer replacements are confirmed; **delivered Intel remains 0.9 b44c1fb**. Physical Spaces/Retina/TCC, all remaining feature gaps and sustained-use evidence remain open. Full GIF stress is ZIP-only. See [VERIFICATION.md](VERIFICATION.md) for exact bytes and process/workload-qualified measurements.
+**Accepted and delivered ARM/Intel 0.10.0 build 67** is [03cf310](https://github.com/dandibbert/picshot/commit/03cf310c4228bdbfdc3f9a81ceec810651552f81), with independent terminal-success [ARM job 112643816594](https://github.com/dandibbert/picshot/actions/runs/37575644941/job/112643816594) and [Intel attempt 2 / job 112653589644](https://github.com/dandibbert/picshot/actions/runs/37575644941/job/112653589644) in run 37575644941. Each architecture passes **1,190 ordinary tests (1,187 passed, 3 intentional pre-weight model skips), 732 focused and 12 actual-model tests**, zero failures, plus both actual ZIP/DMG installed startup, native pin and existing feature/cleanup gates. Stages overlap and are not additive distinct-test totals. Both architecture installer replacements are confirmed; Intel DMG/ZIP Library version 8 and guide version 15 are saved, with ARM bytes unchanged. Physical Spaces/Retina/TCC, all remaining feature gaps and sustained-use evidence remain open. Full GIF stress is ZIP-only on each architecture. Acceptance is limited to 03cf310/build 67; no 0.11 acceptance is claimed. See [VERIFICATION.md](VERIFICATION.md) for exact bytes and process/workload-qualified measurements.
 
 ## Implemented scope
 
@@ -33,7 +33,7 @@ Formula editor integration: dismiss an open `NSPopover` only when the mode actua
 
 ## Automated evidence versus physical acceptance
 
-ARM 03cf310 now passes native XCTest, shown controls/snapshots and both installed-app public-policy fixtures. Same-mode formula-draft preservation and actual-change dismissal/teardown pass in ordinary and focused tests. The original Linux authoring checkpoint had no native result; it is superseded only for the identified ARM source. `physicalSpacesVerified` remains **false**: no synthetic result establishes actual multi-Space placement.
+ARM and Intel 03cf310 independently pass native XCTest, shown controls/snapshots and both installed-app public-policy fixtures. Same-mode formula-draft preservation and actual-change dismissal/teardown pass in ordinary and focused tests. The original Linux authoring checkpoint had no native result; it is superseded only for the identified ARM/Intel 03cf310 source and its architecture-specific results. `physicalSpacesVerified` remains **false**: no synthetic result establishes actual multi-Space placement.
 
 New tests cover preference defaults/migration/fallback, policy preservation, real AppKit parent/child flags, actual context target/action controls, Settings save/cancel/smoke isolation, repeated in-place toggles, controller/pixel identity, unchanged session files, annotation ownership, hide/show, group switching, close/restore, recovery, restart, weak-reference controller/content teardown and a public CGDataProvider release callback for the original image backing. The shown-window fixture emits a JSON report and two native content-view PNG snapshots, with `physicalSpacesVerified: false` hard-coded.
 
@@ -45,6 +45,12 @@ scripts/pin-desktop-visibility-smoke.sh /absolute/PicShot.app /absolute/evidence
 ```
 
 The smoke wrapper is opt-in. It verifies the existing bundle signature, launches the installed bundle, checks the embedded source commit when supplied, validates the report and PNG signatures, and does not alter default CI, package versions, signing settings or releases.
+
+### Independent Intel acceptance and remaining physical boundary
+
+Intel 0.10 build 67 at 03cf310 passed run 37575644941 attempt 2/job 112653589644. Each actual ZIP/DMG desktop launch report identifies the exact source and records **25 context actions, 27 in-place toggles, unchanged session bytes, no activation-follow flag, released closed controllers and released original raster provider**. Synthetic content kinds in this desktop fixture are image/text/files/color/animation; managed LaTeX integration is checked separately. Same-mode formula/group draft preservation and actual-change dismissal regressions pass in Intel ordinary/focused tests. Neither installed desktop fixture reads/writes user preferences or requests screen capture.
+
+Both reports retain **`physicalSpacesVerified: false`** and explicitly mark real two-desktop/fullscreen/two-display/Stage Manager acceptance **NOT RUN**. Intel acceptance does not resolve named/per-pin placement, active-Space following, original-Space restore or the interactive checklist below. Exact installer hashes and the separate formula/group/resource workloads are in [VERIFICATION.md](VERIFICATION.md); no parent-memory or preview-stability conclusion is derived from public-flag lifecycle passes.
 
 ### Required interactive acceptance, not run by the fixture
 

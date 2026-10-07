@@ -1,8 +1,8 @@
-# Managed pin workflow integration: ARM 0.10 verified, scope still partial
+# Managed pin workflow integration: ARM/Intel 0.10 verified, scope still partial
 
-**Accepted ARM 0.10.0 build 67** is [03cf310](https://github.com/dandibbert/picshot/commit/03cf310c4228bdbfdc3f9a81ceec810651552f81), with terminal-success [run 37575644941 / ARM job 112643816594](https://github.com/dandibbert/picshot/actions/runs/37575644941/job/112643816594): **1,190 ordinary tests (1,187 passed, 3 intentional pre-weight model skips), 732 focused and 12 actual-model tests**, zero failures. Both actual ZIP/DMG pass their installed startup, native pin and existing feature/cleanup gates. Stages overlap and are not additive distinct-test totals. ARM installer replacements are confirmed; **delivered Intel remains 0.9 b44c1fb**. Physical Spaces/Retina/TCC, all remaining feature gaps and sustained-use evidence remain open. Full GIF stress is ZIP-only. See [VERIFICATION.md](VERIFICATION.md) for exact bytes and process/workload-qualified measurements.
+**Accepted and delivered ARM/Intel 0.10.0 build 67** is [03cf310](https://github.com/dandibbert/picshot/commit/03cf310c4228bdbfdc3f9a81ceec810651552f81), with independent terminal-success [ARM job 112643816594](https://github.com/dandibbert/picshot/actions/runs/37575644941/job/112643816594) and [Intel attempt 2 / job 112653589644](https://github.com/dandibbert/picshot/actions/runs/37575644941/job/112653589644) in run 37575644941. Each architecture passes **1,190 ordinary tests (1,187 passed, 3 intentional pre-weight model skips), 732 focused and 12 actual-model tests**, zero failures, plus both actual ZIP/DMG installed startup, native pin and existing feature/cleanup gates. Stages overlap and are not additive distinct-test totals. Both architecture installer replacements are confirmed; Intel DMG/ZIP Library version 8 and guide version 15 are saved, with ARM bytes unchanged. Physical Spaces/Retina/TCC, all remaining feature gaps and sustained-use evidence remain open. Full GIF stress is ZIP-only on each architecture. Acceptance is limited to 03cf310/build 67; no 0.11 acceptance is claimed. See [VERIFICATION.md](VERIFICATION.md) for exact bytes and process/workload-qualified measurements.
 
-Originally integrated against 7c3e76c with b44c1fb application base on a Linux host; the source-only statements from that checkpoint are superseded for ARM by the exact-source evidence above. Intel delivery and physical-device acceptance remain separate.
+Originally integrated against 7c3e76c with b44c1fb application base on a Linux host; the source-only statements from that checkpoint are superseded for ARM and Intel by their independent exact-source evidence above. Physical-device acceptance remains separate.
 
 ## Integrated behavior and review corrections
 
@@ -43,7 +43,7 @@ Originally integrated against 7c3e76c with b44c1fb application base on a Linux h
   glyphs are readable in light/dark appearances and native cached-view screenshots.
   This is labeled in the pin tooltip and never flattened into exported PNG alpha
 
-Historical integration scope: that initial patch did not change package version, default CI, dependencies, permissions or allocator diagnostics. Subsequent owner integration/package changes produced accepted ARM 0.10 build 67; no production preview-memory fix is inferred.
+Historical integration scope: that initial patch did not change package version, default CI, dependencies, permissions or allocator diagnostics. Subsequent owner integration/package changes produced accepted ARM/Intel 0.10 build 67; no production preview-memory fix is inferred.
 
 ## Remaining interaction limits
 
@@ -61,7 +61,7 @@ restoration are implemented. Run the physical checklist in
 
 ## Native gate commands and remaining physical acceptance
 
-ARM 03cf310 completed the automated/native and both installed-format routes below; Intel 03cf310 remains pending. The commands remain reproducible checks, and physical/device requirements remain open.
+ARM and Intel 03cf310 independently completed the automated/native and both installed-format routes below; accepted Intel evidence is attempt 2/job 112653589644. The commands remain reproducible checks, and physical/device requirements remain open.
 
 1. Compile and run `swift test` on each architecture. Focused coverage includes
    `PinWorkflowIntegrationTests`, `LaTeXPinExportTests`, `LaTeXPinTests`,
@@ -122,3 +122,9 @@ cached or fabricated. Both fixture coordinators use isolated desktop preferences
 The existing group-manager restore toggle still reads its saved preference, and
 that read is explicitly disclosed rather than represented as no preference access.
 These follow-on fixtures have now executed in both accepted ARM 03cf310 installations. Formula 2+12 comparable RSS grows +98,304/+147,456 bytes ZIP/DMG; group 3+20 grows +278,528/+65,536 bytes. Last intervals, source limits and unchanged asset/release evidence are in [VERIFICATION.md](VERIFICATION.md). Formula measured cycles do not render. Physical Spaces and sustained resources remain unverified; existing preview-backing growth is unresolved.
+
+### Independent installed Intel 03cf310 evidence
+
+Intel 0.10 build 67 uses run 37575644941 attempt 2/job 112653589644 and its own ZIP/DMG observations. Formula 2+12 comparable RSS changes **+16,384/+49,152 bytes**, with final three single-cycle intervals **[0, 0, 0] / [0, 0, 0]**. Group 3+20 changes **+937,984/+417,792 bytes**, with final three intervals **[+36,864, −45,056, +266,240] / [0, +16,384, +4,096]**. All four reports have complete samples, unchanged assets and zero final live/retained tracked controllers/content; formula source models release. Formula measured cycles request no rendering, and final-cleanup decreases are separate from equal-live-workload growth.
+
+Both Intel installs preserve the same 180 × 72 edge-positioned formula pin through the real owned chooser's display and Cancel, preserve its source/content and release callbacks. Native constrained-group rollback restores all four live presentations and preserves assets, manifest/index and undo/redo. Same-mode formula/group draft preservation and actual-change dismissal regressions pass independently. Exact installer hashes, baselines, footprint, model/codec/save/GIF scopes and unresolved preview growth are recorded in [VERIFICATION.md](VERIFICATION.md). Neither physical Spaces nor sustained-use acceptance follows from these passes.
