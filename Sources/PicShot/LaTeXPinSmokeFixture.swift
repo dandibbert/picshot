@@ -197,7 +197,7 @@ import PicShotFormulaRenderCore
             try bytes.write(to: evidenceDirectory.appendingPathComponent("latex-pin-export." + format.fileExtension), options: .atomic)
         }
         pin.dismissLaTeXEditor()
-        let chooserEvidence = try await verifySaveChooser(pin, evidenceDirectory: evidenceDirectory)
+        let chooserEvidence = try await verifySaveChooser(pin, id: id, coordinator: coordinator, evidenceDirectory: evidenceDirectory)
         let stableFiles = store.entry(id: id)?.assetFilenames
         // Retaining this old model intentionally proves close clears its owned content/history.
         try coordinator.hideCurrentGroup()
@@ -254,7 +254,7 @@ import PicShotFormulaRenderCore
         return result
     }
     /// Real remote-backed NSSavePanel geometry, not fabricated/cached panel pixels.
-    private static func verifySaveChooser(_ pin: RichPinController, evidenceDirectory: URL) async throws -> [String: Any] {
+    private static func verifySaveChooser(_ pin: RichPinController, id: UUID, coordinator: PinSessionCoordinator, evidenceDirectory: URL) async throws -> [String: Any] {
         guard let window = pin.window, let visible = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame else {
             throw failure("Save chooser placement requires a real screen")
         }
@@ -274,36 +274,68 @@ import PicShotFormulaRenderCore
         try JSONSerialization.data(withJSONObject: sizing, options: [.prettyPrinted, .sortedKeys])
             .write(to: evidenceDirectory.appendingPathComponent("latex-compact-pin-geometry.json"), options: .atomic)
         try require(before == compactFrame, "Native pin did not accept explicit 180x72 edge frame; see latex-compact-pin-geometry.json")
+        try coordinator.flushPresentationChanges()
+        let committedIndex = coordinator.store.index
+        let committedSource = source(coordinator.store, id: id)
+        let committedModel = pin.latexModel, committedRaster = pin.displayedLaTeXRaster
         pin.beginLaTeXSave(.latex)
         defer { pin.dismissLaTeXEditor() }
         guard let panel = pin.latexSavePanel else { throw failure("Formula Save chooser missing") }
         var previousFrame: NSRect?, stableObservations = 0
         for _ in 0..<60 {
             try await Task.sleep(nanoseconds: 50_000_000)
-            if panel.isVisible && panel.sheetParent === window && panel.frame.width > 0 && panel.frame.height > 0 {
+            if panel.isVisible && panel.parent === window && panel.sheetParent == nil && panel.frame.width > 0 && panel.frame.height > 0 {
                 stableObservations = previousFrame == panel.frame ? stableObservations + 1 : 1
                 previousFrame = panel.frame
                 if stableObservations >= 3 { break }
             } else { previousFrame = nil; stableObservations = 0 }
         }
         let chooserFrame = panel.frame
-        try require(stableObservations >= 3 && panel.isVisible && panel.sheetParent === window,
+        var chooserEvidence: [String: Any] = [
+            "status": "observed", "stage": "shown-owned-native-panel",
+            "sourceCommit": Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String ?? "unknown",
+            "nativeWindowGeometryOnly": true, "pixelsCaptured": false,
+            "compactRequestedFrame": frameObject(compactFrame), "stableVisibleFrameObservations": stableObservations,
+            "pinBefore": frameObject(before), "pinAfterShow": frameObject(window.frame), "chooserFrame": frameObject(chooserFrame),
+            "screenVisibleFrame": frameObject(visible), "chooserWasVisible": panel.isVisible,
+            "ownedPanelVerified": panel.parent === window && pin.latexSavePanel === panel,
+            "chooserIsSheet": panel.sheetParent != nil, "fullyOnScreen": visible.contains(chooserFrame),
+            "pinFrameUnchanged": window.frame == before
+        ]
+        let chooserReport = evidenceDirectory.appendingPathComponent("latex-save-chooser-geometry.json")
+        try JSONSerialization.data(withJSONObject: chooserEvidence, options: [.prettyPrinted, .sortedKeys]).write(to: chooserReport, options: .atomic)
+        try require(stableObservations >= 3 && panel.isVisible && panel.parent === window && panel.sheetParent == nil,
                     "Formula Save chooser did not reach stable visible/owned geometry")
         try require(visible.contains(chooserFrame), "Compact edge formula Save chooser extends off-screen")
         try require(window.frame == before, "Showing formula Save chooser moved the pin")
-        pin.dismissLaTeXEditor()
-        for _ in 0..<30 { if !panel.isVisible && window.attachedSheet == nil { break }; try await Task.sleep(nanoseconds: 50_000_000) }
-        try require(!panel.isVisible && window.attachedSheet == nil && pin.latexSavePanel == nil,
-                    "Cancelled formula Save chooser left an orphan sheet")
-        try require(window.frame == before, "Cancelling formula Save chooser moved the pin")
-        func rect(_ frame: NSRect) -> [String: Double] {
-            ["x": Double(frame.minX), "y": Double(frame.minY), "width": Double(frame.width), "height": Double(frame.height)]
+        panel.cancel(nil) // Exercise the real native Cancel response and its owned completion.
+        for _ in 0..<30 {
+            if !panel.isVisible && panel.parent == nil && window.attachedSheet == nil && pin.latexSavePanel == nil { break }
+            try await Task.sleep(nanoseconds: 50_000_000)
         }
-        return ["status": "passed", "nativeWindowGeometryOnly": true, "pixelsCaptured": false,
-                "compactRequestedFrame": rect(compactFrame), "stableVisibleFrameObservations": stableObservations,
-                "pinBefore": rect(before), "pinAfterCancel": rect(window.frame), "chooserFrame": rect(chooserFrame),
-                "screenVisibleFrame": rect(visible), "chooserWasVisible": true, "ownedSheetVerified": true,
-                "fullyOnScreen": true, "pinFrameUnchanged": true, "cancelledWithoutOrphanSheet": true]
+        let noOrphan = !panel.isVisible && panel.parent == nil && window.attachedSheet == nil && pin.latexSavePanel == nil &&
+            !(window.childWindows ?? []).contains { $0 === panel }
+        chooserEvidence["stage"] = "cancelled-owned-native-panel"
+        chooserEvidence["pinAfterCancel"] = frameObject(window.frame)
+        chooserEvidence["cancelledWithoutOrphanPanel"] = noOrphan
+        chooserEvidence["pinRemainedOpen"] = window.isVisible && pin.latexModel?.isClosed == false
+        let sameLivePin = coordinator.richControllers[id] === pin && coordinator.store.entry(id: id)?.isVisible == true
+        let contentIntact = window.contentView === content && content != nil && pin.latexModel === committedModel &&
+            committedRaster != nil && pin.displayedLaTeXRaster === committedRaster && pin.richDocument?.latex?.source == committedSource &&
+            pin.latexModel?.committed?.source == committedSource
+        let sourceIntact = source(coordinator.store, id: id) == committedSource && coordinator.store.index == committedIndex
+        chooserEvidence["sameLivePinOwnedAfterCancel"] = sameLivePin
+        chooserEvidence["contentAndSourceIntactAfterCancel"] = contentIntact && sourceIntact
+        chooserEvidence["chooserCallbacksReleasedAfterCancel"] = !pin.hasLaTeXSavePanelCallbacks
+        try JSONSerialization.data(withJSONObject: chooserEvidence, options: [.prettyPrinted, .sortedKeys]).write(to: chooserReport, options: .atomic)
+        try require(noOrphan, "Cancelled formula Save chooser left an orphan panel")
+        try require(window.frame == before, "Cancelling formula Save chooser moved the pin")
+        try require(window.isVisible && pin.latexModel?.isClosed == false, "Cancelling the chooser closed its owning pin")
+        try require(sameLivePin && contentIntact && sourceIntact, "Native chooser Cancel lost live pin ownership/content or changed committed source")
+        try require(!pin.hasLaTeXSavePanelCallbacks, "Cancelled chooser retained placement callbacks")
+        chooserEvidence["status"] = "passed"
+        try JSONSerialization.data(withJSONObject: chooserEvidence, options: [.prettyPrinted, .sortedKeys]).write(to: chooserReport, options: .atomic)
+        return chooserEvidence
     }
     private static func frameObject(_ frame: NSRect) -> [String: Double] {
         ["x": Double(frame.minX), "y": Double(frame.minY), "width": Double(frame.width), "height": Double(frame.height)]

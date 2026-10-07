@@ -33,6 +33,54 @@ final class PinGroupNativeTransformTests: XCTestCase {
         try f.session.groupTransforms.redo(); XCTAssertEqual(f.store.index, changed)
         XCTAssertEqual(commits, 3)
     }
+    @MainActor func testPositiveSmokeLayoutFitsVisibleFrameBeforeAndAfterFractionalScale() throws {
+        // Includes the 682pt visible height that previously constrained the text pin,
+        // a smaller display, and a display with a negative global origin.
+        let visibleFrames = [NSRect(x: 0, y: 61, width: 1024, height: 682),
+                             NSRect(x: 0, y: 24, width: 640, height: 500),
+                             NSRect(x: -1440, y: -876, width: 1440, height: 876)]
+        for visible in visibleFrames {
+            let frames = try PinGroupTransformSmokeFixture.initialFrames(in: visible)
+            XCTAssertEqual(frames.count, 4)
+            XCTAssertEqual(frames.map(\.size), [NSSize(width: 300, height: 180), NSSize(width: 240, height: 320),
+                                               NSSize(width: 340, height: 160), NSSize(width: 180, height: 120)])
+            XCTAssertTrue(frames.allSatisfy { visible.contains($0) })
+            let entries = frames.map { frame -> PinSessionEntry in
+                var entry = PinSessionEntry(original: PinRasterAsset(filename: UUID().uuidString + ".png", width: 32, height: 16, byteCount: 128))
+                entry.presentation.frame = PinWindowFrame(frame); return entry
+            }
+            let original = PinSessionIndex(entries: entries), selected = Set(entries.prefix(3).map(\.id))
+            let proposed = try PinGroupTransformPlan(index: original, selectedIDs: selected,
+                                                     transform: .moveAndScale(dx: 25, dy: -15, scale: 1.25))
+            XCTAssertTrue(proposed.changes.contains { change in
+                let frame = change.after.frame
+                return [frame.x, frame.y, frame.width, frame.height].contains { $0 != $0.rounded() }
+            }, "The positive fixture must still exercise fractional proposals")
+            for scale in [CGFloat(1), CGFloat(2)] {
+                func aligned(_ frame: NSRect) -> NSRect {
+                    PinGroupBackingGeometry.alignedFrame(frame, toBacking: {
+                        NSRect(x: ($0.minX - visible.minX) * scale, y: ($0.minY - visible.minY) * scale,
+                               width: $0.width * scale, height: $0.height * scale)
+                    }, fromBacking: {
+                        NSRect(x: $0.minX / scale + visible.minX, y: $0.minY / scale + visible.minY,
+                               width: $0.width / scale, height: $0.height / scale)
+                    })
+                }
+                let canonical = try proposed.canonicalizingTargetFrames { PinWindowFrame(aligned($0.rect)) }
+                var index = try canonical.applying(to: original)
+                XCTAssertTrue(canonical.changes.allSatisfy { visible.contains($0.after.frame.rect) })
+                for alignment in PinGroupAlignment.allCases {
+                    let proposal = try PinGroupTransformPlan(index: index, selectedIDs: selected, transform: .align(alignment))
+                    let plan = try PinGroupBackingGeometry.alignmentPlan(proposal, alignment: alignment,
+                                                                        screenFrames: [visible], align: { _, frame in aligned(frame) })
+                    XCTAssertTrue(plan.changes.allSatisfy { visible.contains($0.after.frame.rect) })
+                    for change in plan.changes { XCTAssertEqual(change.after.frame.rect.size, change.before.frame.rect.size) }
+                    index = try plan.applying(to: index)
+                    XCTAssertEqual(index.entry(id: entries[3].id), original.entry(id: entries[3].id))
+                }
+            }
+        }
+    }
     @MainActor func testBackingGridQuantizationAtOneAndTwoTimesWithNegativeOrigins() {
         let origin = NSPoint(x: -1440, y: -900)
         let proposed = NSRect(x: -1300.375, y: -740.625, width: 200.375, height: 100.25)

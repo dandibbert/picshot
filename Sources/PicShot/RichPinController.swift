@@ -71,6 +71,11 @@ actor RichPinFrameDecoder {
     private(set) var latexModel: LaTeXPinModel?
     private var latexPopover: NSPopover?
     private(set) var latexSavePanel: NSSavePanel?
+    private var latexSavePanelObservers: [NSObjectProtocol] = []
+    private var latexSavePanelFitTask: Task<Void, Never>?
+    private var fittingLaTeXSavePanel = false
+    /// Scalar lifecycle evidence; never retains the chooser or its callback targets.
+    var hasLaTeXSavePanelCallbacks: Bool { !latexSavePanelObservers.isEmpty || latexSavePanelFitTask != nil }
     private var latexSaveGeneration = UUID()
     private var latexSaveCancellation: ImageExportCancellation?
     private var latexSaveInput: ImageExportJobInput<Data>?
@@ -381,20 +386,67 @@ actor RichPinFrameDecoder {
         guard !closed, !latexSaveInProgress, latexModel?.working == false,
               let window, window.attachedSheet == nil else { return }
         let panel = NSSavePanel(); panel.nameFieldStringValue = "公式." + format.fileExtension
+        panel.isReleasedWhenClosed = false; panel.hidesOnDeactivate = false
         panel.title = "保存公式新副本"; panel.prompt = "保存新副本"
         panel.message = "请选择尚未使用的文件名；已有文件和保存的公式不会被覆盖。"
         panel.delegate = self
         if let type = UTType(filenameExtension: format.fileExtension) { panel.allowedContentTypes = [type] }
         PinDesktopVisibilityPolicy.inheritSpaceBehavior(from: window, to: panel)
         let generation = UUID(); latexSaveGeneration = generation; latexSavePanel = panel
-        panel.beginSheetModal(for: window) { [weak self, weak panel] response in
+        // A sheet can move a small edge-positioned parent to make room. Use a
+        // retained, independent native chooser instead, with real child ownership
+        // and its own screen-clamped frame; the pin's frame is never modified.
+        panel.begin { [weak self, weak panel] response in
             guard let self, let panel, !self.closed, self.latexSaveGeneration == generation,
                   self.latexSavePanel === panel else { return }
-            self.latexSavePanel = nil; panel.delegate = nil
-            guard response == .OK, let url = panel.url else { return }
-            do { try self.saveLaTeX(format, to: url) }
+            let destination = response == .OK ? panel.url : nil
+            self.detachLaTeXSavePanel(panel)
+            panel.orderOut(nil)
+            guard let destination else { return }
+            do { try self.saveLaTeX(format, to: destination) }
             catch { showError(error) }
         }
+        guard latexSavePanel === panel, latexSaveGeneration == generation else { return }
+        window.addChildWindow(panel, ordered: .above)
+        panel.level = NSWindow.Level(rawValue: max(NSWindow.Level.modalPanel.rawValue, window.level.rawValue + 1))
+        for (observed, names) in [(window, [NSWindow.didMoveNotification, NSWindow.didResizeNotification, NSWindow.didChangeScreenNotification]),
+                                  (panel as NSWindow, [NSWindow.didMoveNotification, NSWindow.didResizeNotification])] {
+            for name in names {
+                latexSavePanelObservers.append(NotificationCenter.default.addObserver(forName: name, object: observed, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.scheduleLaTeXSavePanelFit() }
+                })
+            }
+        }
+        fitLaTeXSavePanel(centerOnPin: true)
+        scheduleLaTeXSavePanelFit()
+    }
+    private func scheduleLaTeXSavePanelFit() {
+        guard !closed, latexSavePanel != nil, !fittingLaTeXSavePanel, latexSavePanelFitTask == nil else { return }
+        latexSavePanelFitTask = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: 30_000_000) } catch { return }
+            guard let self else { return }; self.latexSavePanelFitTask = nil
+            self.fitLaTeXSavePanel()
+        }
+    }
+    private func fitLaTeXSavePanel(centerOnPin: Bool = false) {
+        guard !closed, !fittingLaTeXSavePanel, let panel = latexSavePanel, let parent = window,
+              let visible = parent.screen?.visibleFrame ?? NSScreen.main?.visibleFrame else { return }
+        fittingLaTeXSavePanel = true; defer { fittingLaTeXSavePanel = false }
+        let safe = visible.insetBy(dx: min(8, visible.width / 20), dy: min(8, visible.height / 20))
+        var frame = panel.frame
+        guard frame.width > 0, frame.height > 0, safe.width > 0, safe.height > 0 else { return }
+        frame.size.width = min(frame.width, safe.width); frame.size.height = min(frame.height, safe.height)
+        if centerOnPin { frame.origin = NSPoint(x: parent.frame.midX - frame.width / 2, y: parent.frame.midY - frame.height / 2) }
+        frame.origin.x = max(safe.minX, min(frame.minX, safe.maxX - frame.width))
+        frame.origin.y = max(safe.minY, min(frame.minY, safe.maxY - frame.height))
+        if panel.frame != frame { panel.setFrame(frame, display: true) }
+    }
+    private func detachLaTeXSavePanel(_ panel: NSSavePanel) {
+        latexSavePanelFitTask?.cancel(); latexSavePanelFitTask = nil
+        for observer in latexSavePanelObservers { NotificationCenter.default.removeObserver(observer) }
+        latexSavePanelObservers.removeAll()
+        panel.parent?.removeChildWindow(panel); panel.delegate = nil
+        if latexSavePanel === panel { latexSavePanel = nil }
     }
     /// Picker approval and native publication/cancellation fixtures share this route.
     /// Bind the approved physical destination before any renderer or queue delay.
@@ -447,8 +499,9 @@ actor RichPinFrameDecoder {
     }
     private func cancelLaTeXSave() {
         latexSaveGeneration = UUID()
-        let panel = latexSavePanel; latexSavePanel = nil
-        panel?.delegate = nil; panel?.cancel(nil)
+        if let panel = latexSavePanel {
+            detachLaTeXSavePanel(panel); panel.cancel(nil); panel.orderOut(nil)
+        }
         latexSaveCancellation?.cancel(); latexSaveInput?.clear(); latexSaveTask?.cancel()
         latexSaveCancellation = nil; latexSaveInput = nil; latexSaveTask = nil
         if latexModel?.saving == true { latexModel?.finishSaving(cancelled: true) }
@@ -548,7 +601,12 @@ actor RichPinFrameDecoder {
     private func presentationDidChange() { if !closed && !applyingPresentation { onPresentationChange?(presentation) } }
     func windowDidMove(_ notification: Notification) { presentationDidChange() }
     func windowDidResize(_ notification: Notification) { presentationDidChange() }
-    func windowWillClose(_ notification: Notification) { finishClose() }
+    func windowWillClose(_ notification: Notification) {
+        // An owned save panel can also deliver window-delegate notifications.
+        // Its dismissal must never close/archive the owning pin.
+        guard let closing = notification.object as? NSWindow, closing === window else { return }
+        finishClose()
+    }
     override func close() { finishClose(); super.close() }
     private func finishClose() {
         guard !closed else { return }; closed = true

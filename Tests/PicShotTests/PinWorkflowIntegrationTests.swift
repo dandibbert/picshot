@@ -162,6 +162,8 @@ final class PinWorkflowIntegrationTests: XCTestCase {
         let before = f.store.index
         pin.beginLaTeXSave(.latex)
         let chooser = try XCTUnwrap(pin.latexSavePanel)
+        XCTAssertTrue(chooser.parent === pin.window); XCTAssertNil(chooser.sheetParent)
+        let pinFrame = try XCTUnwrap(pin.window?.frame)
         XCTAssertFalse(pin.canParticipateInGroupTransform)
         XCTAssertThrowsError(try f.session.groupTransforms.transform(.align(.left)))
         f.session.setDesktopVisibility(.allDesktops)
@@ -169,18 +171,78 @@ final class PinWorkflowIntegrationTests: XCTestCase {
         f.session.setDesktopVisibility(.currentDesktop)
         try await Task.sleep(nanoseconds: 100_000_000)
         XCTAssertNil(pin.latexSavePanel)
-        XCTAssertFalse(chooser.isVisible)
+        XCTAssertFalse(chooser.isVisible); XCTAssertNil(chooser.parent)
         XCTAssertNil(pin.window?.attachedSheet)
+        XCTAssertEqual(pin.window?.frame, pinFrame)
+        XCTAssertEqual(pin.latexModel?.isClosed, false)
         XCTAssertEqual(f.store.index, before)
         pin.beginLaTeXSave(.latex)
         let nextChooser = try XCTUnwrap(pin.latexSavePanel)
         try f.session.hideAll()
         try await Task.sleep(nanoseconds: 100_000_000)
         XCTAssertNil(pin.latexSavePanel)
-        XCTAssertFalse(nextChooser.isVisible)
+        XCTAssertFalse(nextChooser.isVisible); XCTAssertNil(nextChooser.parent)
         XCTAssertNil(pin.window?.attachedSheet)
         XCTAssertNil(pin.latexModel)
         XCTAssertFalse(f.session.groupTransforms.canUndo)
+    }
+
+    @MainActor func testNativeOwnedSavePanelCancelKeepsPinFrameAndRepeatedOpenCloseReleasesOwnership() async throws {
+        let f = try fixture(); defer { f.close() }
+        let pin = try XCTUnwrap(f.session.richControllers[f.formulaID]), window = try XCTUnwrap(pin.window)
+        pin.showWindow(nil)
+        let visible = try XCTUnwrap(window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame)
+        var value = pin.presentation
+        value.frame = PinWindowFrame(x: Double(visible.minX + 8), y: Double(visible.maxY - 80), width: 180, height: 72)
+        pin.applyPresentation(value); pin.onPresentationChange?(pin.presentation); try f.session.flushPresentationChanges()
+        let before = window.frame, sourceIndex = f.store.index
+        let content = try XCTUnwrap(window.contentView), model = try XCTUnwrap(pin.latexModel)
+        let raster = try XCTUnwrap(pin.displayedLaTeXRaster)
+        let committedSource = try source(f.store, f.formulaID)
+        let archiveSequence = f.store.index.nextArchiveSequence
+        var closeCount = 0
+        let originalClose = pin.onClose
+        pin.onClose = { closeCount += 1; originalClose?() }
+        for _ in 0..<3 {
+            pin.beginLaTeXSave(.latex)
+            let panel = try XCTUnwrap(pin.latexSavePanel)
+            try await Task.sleep(nanoseconds: 150_000_000)
+            XCTAssertTrue(panel.parent === window); XCTAssertNil(panel.sheetParent)
+            XCTAssertEqual(window.frame, before); XCTAssertTrue(visible.contains(panel.frame))
+            panel.cancel(nil) // The actual native Cancel route, not a synthetic response.
+            for _ in 0..<30 {
+                if pin.latexSavePanel == nil { break }
+                try await Task.sleep(nanoseconds: 20_000_000)
+            }
+            XCTAssertNil(pin.latexSavePanel); XCTAssertNil(panel.parent); XCTAssertFalse(panel.isVisible)
+            XCTAssertEqual(window.frame, before); XCTAssertTrue(window.isVisible)
+            XCTAssertEqual(pin.latexModel?.isClosed, false); XCTAssertEqual(f.store.index, sourceIndex)
+            XCTAssertTrue(f.session.richControllers[f.formulaID] === pin)
+            XCTAssertEqual(f.store.entry(id: f.formulaID)?.isVisible, true)
+            XCTAssertTrue(window.contentView === content); XCTAssertTrue(pin.latexModel === model)
+            XCTAssertTrue(pin.displayedLaTeXRaster === raster)
+            XCTAssertEqual(pin.richDocument?.latex?.source, committedSource)
+            XCTAssertEqual(model.committed?.source, committedSource)
+            XCTAssertEqual(try source(f.store, f.formulaID), committedSource)
+            XCTAssertFalse(pin.hasLaTeXSavePanelCallbacks); XCTAssertEqual(closeCount, 0)
+        }
+        pin.beginLaTeXSave(.latex)
+        let closingPanel = try XCTUnwrap(pin.latexSavePanel)
+        pin.close(); try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertNil(closingPanel.parent); XCTAssertFalse(closingPanel.isVisible)
+        XCTAssertNil(pin.latexSavePanel); XCTAssertNil(pin.latexModel)
+        XCTAssertFalse(pin.hasLaTeXSavePanelCallbacks)
+        XCTAssertNil(f.session.richControllers[f.formulaID]); XCTAssertNil(window.contentView)
+        XCTAssertNil(pin.displayedLaTeXRaster); XCTAssertNil(pin.richDocument)
+        XCTAssertEqual(closeCount, 1)
+        XCTAssertEqual(f.store.entry(id: f.formulaID)?.isVisible, false)
+        XCTAssertEqual(f.store.entry(id: f.formulaID)?.archiveSequence, archiveSequence)
+        XCTAssertEqual(try source(f.store, f.formulaID), committedSource)
+        let archived = f.store.index
+        pin.close(); closingPanel.cancel(nil)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(closeCount, 1); XCTAssertEqual(f.store.index, archived)
+        XCTAssertFalse(pin.hasLaTeXSavePanelCallbacks)
     }
 
     @MainActor func testManagerReloadCannotReplayContextDeselectionOrCoalescedHideShowSelection() async throws {

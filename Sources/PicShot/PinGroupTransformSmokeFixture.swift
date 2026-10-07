@@ -79,7 +79,7 @@ import PicShotCore
         ]
         return ["status": "passed", "selectedPins": 3, "unselectedSentinels": 1,
                 "mixedKinds": ["image", "rotated-image-fixed-zoom", "text"],
-                "stages": ["native-table-multiselect", "native-context-selection", "escape-cancel", "native-move-scale-apply", "atomic-undo-redo", "six-native-alignments", "bounded-hide-show-resource-cycles"],
+                "stages": ["native-table-multiselect", "native-context-selection", "escape-cancel", "native-move-scale-apply", "atomic-undo-redo", "native-window-constraint-rollback", "six-native-alignments", "bounded-hide-show-resource-cycles"],
                 "snapshots": ["pin-group-multiselect.png", "pin-group-transform.png"],
                 "snapshotBackground": PinWorkflowSnapshot.backgroundDescription,
                 "warmupCycles": 3, "cycles": 20, "releaseProbes": probes.count, "retainedControllersOrContent": 0,
@@ -102,11 +102,8 @@ import PicShotCore
         let c = try session.add(rich: PreparedRichPin(document: PinRichDocument(text: PinTextContent(runs: [PinTextRun(text: "组合 C · 原生文字\n只改变窗口，不重新渲染图片")])), title: "组合 C · 文字"))
         let sentinel = try session.add(image: sample, title: "未选择 · 不移动")
         let ids = [a, b, c, sentinel], selected: Set<UUID> = [a, b, c]
-        let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
-        let frames = [NSRect(x: screen.minX + 30, y: screen.minY + 55, width: 300, height: 180),
-                      NSRect(x: screen.minX + 390, y: screen.minY + 130, width: 240, height: 320),
-                      NSRect(x: screen.minX + 90, y: screen.minY + 420, width: 340, height: 160),
-                      NSRect(x: screen.minX + 740, y: screen.minY + 220, width: 180, height: 120)]
+        guard let screen = NSScreen.main?.visibleFrame else { throw failure("Native group fixture requires a connected display") }
+        let frames = try initialFrames(in: screen)
         for (i, id) in ids.enumerated() {
             let value = PinPresentation(frame: PinWindowFrame(frames[i]), zoom: i == 1 ? 2 : i == 2 ? 1 : nil)
             if let pin = session.liveControllers[id] { pin.applyPresentation(value); pin.onPresentationChange?(pin.presentation) }
@@ -114,6 +111,10 @@ import PicShotCore
         }
         try session.flushPresentationChanges()
         let original = store.index, assetHashes = try assets(in: directory)
+        for id in ids {
+            guard let frame = original.entry(id: id)?.presentation.frame.rect else { throw failure("Initial pin missing") }
+            try require(screen.contains(frame), "Initial fixture frame is outside the actual visible screen")
+        }
         let manager = PinGroupsController(store: store, transforms: session.groupTransforms)
         defer { manager.close() }
         manager.showWindow(nil)
@@ -149,6 +150,14 @@ import PicShotCore
         try snapshot(try window(editor), to: evidenceDirectory.appendingPathComponent("pin-group-transform.png"))
         let appliedPlan = try session.groupTransforms.plannedTransform(index: original, selectedIDs: selected,
                                                                       transform: .moveAndScale(dx: 25, dy: -15, scale: 1.25))
+        let proposedPlan = try PinGroupTransformPlan(index: original, selectedIDs: selected,
+                                                     transform: .moveAndScale(dx: 25, dy: -15, scale: 1.25))
+        try require(proposedPlan.changes.contains { change in
+            let frame = change.after.frame
+            return [frame.x, frame.y, frame.width, frame.height].contains { $0 != $0.rounded() }
+        }, "Positive fixture lost fractional proposal coverage")
+        try require(appliedPlan.changes.allSatisfy { screen.contains($0.after.frame.rect) },
+                    "Positive canonical targets exceed the actual visible screen")
         try control(NSButton.self, "pin-group-apply", in: editor.window?.contentView).performClick(nil)
         if session.groupTransforms.editor != nil {
             var diagnostic: [String: Any] = ["status": "failed", "applyOutcome": editor.applyOutcome,
@@ -182,6 +191,8 @@ import PicShotCore
         try control(NSButton.self, "pin-group-redo", in: content).performClick(nil)
         try require(store.index == changed, "One native Redo did not restore all three")
         try await settle()
+        try await constrainedNativeAttempt(session: session, store: store, directory: directory,
+                                           evidenceDirectory: evidenceDirectory, ids: ids, textID: c, screen: screen)
         let align = try control(NSPopUpButton.self, "pin-group-align", in: content)
         var alignmentResiduals: [String: [String: Double]] = [:]
         for (index, alignment) in PinGroupAlignment.allCases.enumerated() {
@@ -200,6 +211,57 @@ import PicShotCore
             try await settle()
         }
         return (selected, assetHashes, alignmentResiduals)
+    }
+    /// Keep the original sizes and 125% operation; fit only the initial spacing.
+    /// Reserve room for translation, pixel-grid rounding and later 3/-2 cycles.
+    static func initialFrames(in visible: NSRect) throws -> [NSRect] {
+        let width = (visible.width - 48 - 25) / 1.25
+        let height = (visible.height - 48) / 1.25
+        try require(width >= 340 && height >= 320, "Visible screen is too small for the unscaled mixed-pin fixture")
+        let x = visible.minX + 24, y = visible.minY + 39
+        var textOffset = min(365, floor(height - 160))
+        if textOffset.truncatingRemainder(dividingBy: 4) == 0 { textOffset -= 1 }
+        return [NSRect(x: x, y: y, width: 300, height: 180),
+                NSRect(x: x + min(360, floor(width - 240)), y: y + min(75, floor(height - 320)), width: 240, height: 320),
+                NSRect(x: x + min(60, floor(width - 340)), y: y + textOffset, width: 340, height: 160),
+                NSRect(x: visible.maxX - 204, y: visible.minY + min(220, visible.height - 144), width: 180, height: 120)]
+    }
+    private static func constrainedNativeAttempt(session: PinSessionCoordinator, store: PinSessionStore, directory: URL,
+                                                  evidenceDirectory: URL, ids: [UUID], textID: UUID, screen: NSRect) async throws {
+        let group = session.groupTransforms, before = store.index
+        let undo = group.history.undoPlans, redo = group.history.redoPlans
+        let manifest = directory.appendingPathComponent("index.json")
+        let manifestBytes = try Data(contentsOf: manifest), assetHashes = try assets(in: directory)
+        guard let textFrame = before.entry(id: textID)?.presentation.frame.rect else { throw failure("Constraint fixture text pin missing") }
+        group.showEditor()
+        guard let editor = group.editor else { throw failure("Constraint inspector missing") }
+        defer { editor.close() }
+        // Deliberately cross the visible top while remaining mostly on this display.
+        // AppKit must constrain the proposal and the exact transaction must reject it.
+        try control(NSTextField.self, "pin-group-dx", in: editor.window?.contentView).stringValue = "0"
+        try control(NSTextField.self, "pin-group-dy", in: editor.window?.contentView).stringValue = String(Double(screen.maxY + 32 - textFrame.maxY))
+        try control(NSTextField.self, "pin-group-scale", in: editor.window?.contentView).stringValue = "100"
+        try control(NSButton.self, "pin-group-apply", in: editor.window?.contentView).performClick(nil)
+        try require(group.editor === editor && editor.applyOutcome == "failed" && editor.lastApplyFailure?.code == "windowConstraint",
+                    "Deliberate native constraint did not reject the complete group")
+        guard let diagnostic = group.lastFailure else { throw failure("Constraint rejection diagnostic missing") }
+        try require(diagnostic.stage == "verify-target" && diagnostic.expected != diagnostic.actual,
+                    "Constraint case did not exercise native target verification")
+        try await settle(); try session.flushPresentationChanges()
+        try require(store.index == before && group.history.undoPlans == undo && group.history.redoPlans == redo,
+                    "Constraint rejection changed the index or history")
+        for id in ids {
+            let actual = session.liveControllers[id]?.presentation ?? session.richControllers[id]?.presentation
+            try require(actual == before.entry(id: id)?.presentation, "Constraint rollback did not restore every selected pin and sentinel")
+        }
+        try require(try Data(contentsOf: manifest) == manifestBytes, "Constraint rejection rewrote the manifest")
+        try require(try assets(in: directory) == assetHashes, "Constraint rejection changed asset bytes")
+        let evidence: [String: Any] = ["status": "passed", "stage": "native-window-constraint-rollback",
+            "transactionFailure": try object(diagnostic), "visibleFrame": try object(PinWindowFrame(screen)),
+            "allFourLivePresentationsRestored": true, "indexUnchanged": true, "manifestBytesUnchanged": true,
+            "undoHistoryUnchanged": true, "redoHistoryUnchanged": true, "assetsUnchanged": true]
+        try JSONSerialization.data(withJSONObject: evidence, options: [.prettyPrinted, .sortedKeys])
+            .write(to: evidenceDirectory.appendingPathComponent("pin-group-window-constraint.json"), options: .atomic)
     }
     private static func contextSelection(_ session: PinSessionCoordinator, id: UUID) throws {
         try autoreleasepool {

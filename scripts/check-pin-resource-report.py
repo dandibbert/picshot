@@ -35,8 +35,10 @@ if kind=='latex':
     assert g['stableVisibleFrameObservations']>=3
     assert g['pinBefore']==g['compactRequestedFrame']==g['pinAfterCancel']
     assert g['pinBefore']['width']==180 and g['pinBefore']['height']==72
-    for key in ('chooserWasVisible','ownedSheetVerified','fullyOnScreen','pinFrameUnchanged','cancelledWithoutOrphanSheet'):
+    for key in ('chooserWasVisible','ownedPanelVerified','fullyOnScreen','pinFrameUnchanged','cancelledWithoutOrphanPanel',
+                'sameLivePinOwnedAfterCancel','contentAndSourceIntactAfterCancel','chooserCallbacksReleasedAfterCancel'):
         assert g[key] is True
+    assert g['chooserIsSheet'] is False and g['pinRemainedOpen'] is True
     f,v=g['chooserFrame'],g['screenVisibleFrame']
     assert f['width']>0 and f['height']>0 and f['x']>=v['x'] and f['y']>=v['y']
     assert f['x']+f['width']<=v['x']+v['width'] and f['y']+f['height']<=v['y']+v['height']
