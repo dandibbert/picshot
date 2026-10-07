@@ -13,6 +13,9 @@ import AppKit
     var imageRect: CGRect = .zero { didSet { needsDisplay = true; window?.invalidateCursorRects(for: self) } }
     var onExit: (() -> Void)?
     var onAnnotate: (() -> Void)?
+    /// Native selection changes only; programmatic linked highlights do not echo back.
+    var onSelectionChange: (([NSRange]) -> Void)?
+    private(set) var linkedSelectionRanges: [NSRange]? = nil
     private(set) var selectedRange: NSRange?
     private(set) var isDraggingText = false
     private var anchorUnit: Int?
@@ -51,9 +54,15 @@ import AppKit
     }
     override func draw(_ dirtyRect: NSRect) {
         guard let document else { return }
+        let ranges = linkedSelectionRanges ?? selectedRange.map { [$0] } ?? []
+        // RecognizedTextDocument's sole initializer sorts its immutable units by source
+        // range.location. Filtering by visible quad preserves that monotonic order, even
+        // for RTL or overlapping geometry, so this cursor never skips an earlier unit.
+        var rangeIndex = 0
         for unit in document.units where unit.quad.bounds.intersects(normalizedRect(dirtyRect)) {
             let outline = path(unit.quad)
-            let selected = selectedRange.map { NSIntersectionRange($0, unit.range).length > 0 } ?? false
+            while rangeIndex < ranges.count, NSMaxRange(ranges[rangeIndex]) <= unit.range.location { rangeIndex += 1 }
+            let selected = rangeIndex < ranges.count && ranges[rangeIndex].location < NSMaxRange(unit.range)
             if selected { NSColor.selectedTextBackgroundColor.withAlphaComponent(0.36).setFill(); outline.fill() }
             NSColor.controlAccentColor.withAlphaComponent(selected ? 0.85 : 0.28).setStroke()
             outline.lineWidth = selected ? 1 : 0.65; outline.stroke()
@@ -155,16 +164,37 @@ import AppKit
         isDraggingText = false; pendingExistingSelectionDrag = false; anchorUnit = nil; mouseDownLocation = nil
     }
     func clearSelection() {
+        linkedSelectionRanges = nil
         selectedRange = nil; keyboardAnchor = nil; keyboardFocus = nil; finishDragging(); needsDisplay = true
         setAccessibilitySelectedText(nil)
+        setAccessibilitySelectedTextRange(NSRange(location: 0, length: 0))
+        onSelectionChange?([])
+    }
+    /// Reuses the same polygon renderer without changing key window or first responder.
+    /// Discontiguous spans stay discontiguous so edited/deleted words are never highlighted.
+    func setLinkedSelection(_ ranges: [NSRange]) {
+        guard let document else { linkedSelectionRanges = nil; return }
+        let valid = ranges.prefix(RecognizedTextDocument.maximumUnits).filter {
+            $0.location >= 0 && $0.length > 0 && $0.location <= document.text.utf16.count &&
+                $0.length <= document.text.utf16.count - $0.location &&
+                document.boundaries.contains($0.location) && document.boundaries.contains(NSMaxRange($0))
+        }.sorted { $0.location < $1.location }
+        linkedSelectionRanges = valid
+        selectedRange = valid.count == 1 ? valid.first : nil
+        keyboardAnchor = selectedRange?.location; keyboardFocus = selectedRange.map(NSMaxRange)
+        finishDragging(); needsDisplay = true
+        setAccessibilitySelectedText(selectedRange.map(document.substring))
+        setAccessibilitySelectedTextRange(selectedRange ?? NSRange(location: 0, length: 0))
     }
     func select(_ range: NSRange) {
         guard let document, range.location >= 0, range.length >= 0, range.location <= document.text.utf16.count,
               range.length <= document.text.utf16.count - range.location,
               document.boundaries.contains(range.location), document.boundaries.contains(NSMaxRange(range)) else { return }
+        linkedSelectionRanges = nil
         selectedRange = range; keyboardAnchor = range.location; keyboardFocus = NSMaxRange(range); needsDisplay = true
         setAccessibilitySelectedText(document.substring(range))
         setAccessibilitySelectedTextRange(range)
+        onSelectionChange?([range])
     }
     @objc func copy(_ sender: Any?) { copySelection(to: .general) }
     @discardableResult func copySelection(to pasteboard: NSPasteboard) -> Bool {
@@ -193,14 +223,16 @@ import AppKit
         else if !extending, old.length > 0 { target = isLeft ? old.location : NSMaxRange(old) }
         else { target = isLeft ? document.boundary(before: focus) : document.boundary(after: focus) }
         let anchor = extending ? (keyboardAnchor ?? old.location) : target
+        linkedSelectionRanges = nil
         selectedRange = NSRange(location: min(anchor, target), length: abs(target - anchor))
         keyboardAnchor = anchor; keyboardFocus = target; needsDisplay = true
         setAccessibilitySelectedText(selectedText)
         if let selectedRange { setAccessibilitySelectedTextRange(selectedRange) }
+        onSelectionChange?(selectedRange.map { [$0] } ?? [])
         return true
     }
     func releaseResources() {
-        document = nil; selectionMenu = nil; menu = nil; onExit = nil; onAnnotate = nil
+        onSelectionChange = nil; document = nil; selectionMenu = nil; menu = nil; onExit = nil; onAnnotate = nil
         window?.invalidateCursorRects(for: self)
     }
 }

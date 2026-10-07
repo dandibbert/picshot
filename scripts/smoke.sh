@@ -6,7 +6,7 @@ export PICSHOT_SMOKE_FORMULA_MODEL_DIR="$PWD/.build/model-fixtures/formula"
 export PICSHOT_SMOKE_FORMULA_INPUT="$PWD/Tests/PicShotMLHelperTests/Fixtures/energy.png"
 export PICSHOT_SMOKE_TABLE_MODEL_DIR="$PWD/.build/model-fixtures/table"
 export PICSHOT_SMOKE_TABLE_INPUT="$PWD/Tests/PicShotTableEngineTests/Fixtures/merged-table.png"
-base="PicShot-0.10.0-macos-$(uname -m)"
+base="PicShot-0.11.0-macos-$(uname -m)"
 work=$(mktemp -d)
 mounted=false
 trap 'if [[ "$mounted" == true ]];then hdiutil detach "$work/mount" || true;fi;rm -rf "$work"' EXIT
@@ -74,6 +74,26 @@ for cycle in composition['cycles']:
     assert cycle['postStopMutationExcluded'] and cycle['temporaryFilesRemaining']==0,cycle
 for key in ['screenCaptureStarted','cameraCaptureStarted','microphoneStarted','permissionRequested']:
     assert composition[key] is False,composition
+ocr=r['pinOCRWorkflow']
+assert ocr['status']=='passed' and ocr['sourceCommit']==sys.argv[3],ocr
+assert ocr['realAppleVisionRan'] and ocr['actualFunctionalVisionCalls'] >= 1,ocr
+assert ocr['finalVisionActiveJobs']==0 and ocr['finalVisionWaitingJobs']==0,ocr
+assert ocr['temporaryDirectoryRemoved'] and ocr['privateDefaultsRemoved'],ocr
+for key in ['standardUserDefaultsChanged','generalPasteboardChanged','screenCaptureStarted','permissionRequests','networkUsed','globalInputPosted']:
+    assert ocr[key] is False,(key,ocr)
+for key in ['controls','sourceLinkAcceptance','coordinatorRestoration']:
+    assert ocr[key]['status']=='passed',ocr[key]
+assert ocr['coordinatorRestoration']['releaseProbeCount']==60,ocr['coordinatorRestoration']
+for key,value in ocr['coordinatorRestoration']['releaseEvidence'].items():
+    if key.startswith('retained'): assert value==0,(key,value)
+resource=ocr['resourceEvidence']
+assert ocr['includeResourceCycles'] and resource['status']=='passed' and resource['observationsComplete'],resource
+assert resource['warmupCycles']==2 and resource['measuredCycles']==12 and resource['completedMeasuredCycles']==12,resource
+assert resource['actualVisionCalls']==14 and ocr['actualResourceVisionCalls']==14,resource
+assert len(resource['settledAfterCycles'])==12 and len(resource['residentLateThreeIntervalGrowthBytes'])==3,resource
+assert resource['livePinsAndResultsAtBaselineAndEveryCycleEnd']==0 and resource['activeJobsAtBaselineAndEveryCycleEnd']==0,resource
+for key,value in resource['releaseEvidence'].items():
+    if key.startswith('retained'): assert value==0,(key,value)
 gif=r['gifResourceEvidence']
 if sys.argv[4]=='zip':
     assert gif['status']=='passed' and gif['profile']=='installed-30-second',gif
@@ -101,5 +121,6 @@ for c in save['resourceCycles']:
     assert c['activeJobs']==0 and c['retainedInputBytes']==0 and c['controllerReleased'] and c['temporaryJobRemoved'],c
 print(json.dumps(r,indent=2))
 PY
+  python3 scripts/check-pin-ocr-report.py "$PWD/dist/evidence/$format/pin-ocr/pin-ocr-workflow.json" "$app" "$(git rev-parse HEAD)" 0.11.0 "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")" --full
   bash scripts/pin-workflows-smoke.sh "$app" "$PWD/dist/evidence/$format/pin-workflows" "$(git rev-parse HEAD)"
 done

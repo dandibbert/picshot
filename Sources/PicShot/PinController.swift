@@ -140,9 +140,25 @@ struct PinImageState {
     private(set) var recognitionWindow: TextResultController?
     private var recognitionTask: Task<Void, Never>?
     private var recognitionGeneration = UUID()
-    private let recognizeForSelection: @Sendable (CGImage) async throws -> RecognitionResult
+    private let recognizeForSelection: PinOCRSession.Recognizer
+    private let defaults: UserDefaults?
+    private let ocrScheduler: PinOCRScheduler?
+    var onAutomaticOCRChange: ((Bool) -> Void)?
+    private(set) var automaticOCREnabled = false
+    private var automaticSelectionDismissed = false
+    private var selectionKey: PinOCRKey?
+    private var recognitionLinkKey: PinOCRKey?
+    private var recognitionPanelGeneration = UUID()
+    private var exportCloseObserver: NSObjectProtocol?
+    private var ocrModeTransition = false
+    private(set) var ocrSourceReadCount = 0
+    private(set) lazy var ocrSession = PinOCRSession(revision: pixelRevision, scheduler: ocrScheduler,
+        imageProvider: { [weak self] in
+            guard let self, !self.closed, !self.temporarilyHidden else { return nil }
+            self.ocrSourceReadCount += 1
+            return self.state.current
+        }, recognize: recognizeForSelection)
     let textSelectionOverlay = PinTextSelectionOverlay()
-    private var textSelectionTask: Task<Void, Never>?
     private var textSelectionGeneration = UUID()
     private var textSelectionControl: NSButton?
     private(set) var textSelectionEnabled = false
@@ -159,14 +175,20 @@ struct PinImageState {
     private(set) var barcodeStatus = ""
     var actionMenu: NSMenu? { canvas.menu }
 
-    convenience init(image: CGImage) {
-        self.init(originalImage: image, currentImage: image, isModified: false)
+    convenience init(image: CGImage, defaults: UserDefaults? = PinOCRPreferences.applicationDefaults) {
+        self.init(originalImage: image, currentImage: image, isModified: false, defaults: defaults)
     }
 
     init(originalImage: CGImage, currentImage: CGImage, isModified: Bool,
-         recognizeForSelection: @escaping @Sendable (CGImage) async throws -> RecognitionResult = { try await RecognitionService.recognize($0) },
+         recognizeForSelection: (@Sendable (CGImage) async throws -> RecognitionResult)? = nil,
+         recognizeWithOptions: PinOCRSession.Recognizer? = nil,
+         defaults: UserDefaults? = PinOCRPreferences.applicationDefaults,
+         ocrScheduler: PinOCRScheduler? = nil,
          recognizeCodes: @escaping @Sendable (CGImage) async throws -> RecognizedBarcodeDocument = { try await RecognitionService.recognizeBarcodes($0) }) {
-        self.recognizeForSelection = recognizeForSelection; self.recognizeCodes = recognizeCodes
+        if let recognizeWithOptions { self.recognizeForSelection = recognizeWithOptions }
+        else if let recognizeForSelection { self.recognizeForSelection = { image, _ in try await recognizeForSelection(image) } }
+        else { self.recognizeForSelection = { try await RecognitionService.recognize($0, options: $1) } }
+        self.recognizeCodes = recognizeCodes; self.defaults = defaults; self.ocrScheduler = ocrScheduler
         image = originalImage
         state = PinImageState(original: originalImage, current: currentImage, isModified: isModified)
         let scale = min(1, 680 / CGFloat(max(currentImage.width, currentImage.height)))
@@ -193,8 +215,11 @@ struct PinImageState {
         canvas.onClose = { [weak self] in self?.close() }
         canvas.onCopy = { [weak self] in self?.copyPin() }
         canvas.onToggleTextSelection = { [weak self] in self?.toggleTextSelection() }
+        panel.onCopyAllText = { [weak self] in self?.copyAllRecognizedText() }
+        panel.onToggleTextSelection = { [weak self] in self?.toggleTextSelection() }
         textSelectionOverlay.onExit = { [weak self] in self?.setTextSelectionEnabled(false) }
         textSelectionOverlay.onAnnotate = { [weak self] in self?.showAnnotations() }
+        textSelectionOverlay.onSelectionChange = { [weak self] ranges in self?.sendSelectionToResult(ranges) }
         canvas.textSelectionOverlay = textSelectionOverlay
         barcodeSelectionOverlay.onExit = { [weak self] in self?.setBarcodeSelectionEnabled(false) }
         barcodeSelectionOverlay.onAnnotate = { [weak self] in self?.showAnnotations() }
@@ -212,6 +237,7 @@ struct PinImageState {
         ])
         panel.initialFirstResponder = canvas
         root.layoutSubtreeIfNeeded(); updateLayout(); updateTitle()
+        ocrSession.onChange = { [weak self] in self?.ocrSessionDidChange() }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -230,7 +256,11 @@ struct PinImageState {
         addItem("识别二维码 / 条码…", action: #selector(toggleBarcodeSelection), to: recognition)
         recognition.addItem(.separator())
         addItem("识别文字…", action: #selector(recognizeText), to: recognition)
-        addItem("直接复制识别文本", action: #selector(copyRecognizedText), to: recognition)
+        let copyAll = addItem("复制全部识别文字", action: #selector(copyRecognizedText), key: "c", to: recognition)
+        copyAll.keyEquivalentModifierMask = [.command, .shift]
+        copyAll.identifier = NSUserInterfaceItemIdentifier("pin.ocr.copyAll")
+        let automatic = addItem("自动识别贴图文字", action: #selector(toggleAutomaticOCR), to: recognition)
+        automatic.identifier = NSUserInterfaceItemIdentifier("pin.ocr.automatic")
         recognition.delegate = self
         addItem("下次直接复制文本", action: #selector(toggleDirectCopy), to: recognition)
         menu.addItem(withTitle: "识别", action: nil, keyEquivalent: "").submenu = recognition
@@ -292,7 +322,8 @@ struct PinImageState {
                 item.state = barcodeSelectionEnabled ? .on : .off
                 item.title = barcodeIsRecognizing ? "正在识别码（取消）" : "识别二维码 / 条码…"
             }
-            if item.action == #selector(toggleDirectCopy) { item.state = TextResultController.copyDirectlyNextTime ? .on : .off }
+            if item.action == #selector(toggleDirectCopy) { item.state = defaults?.bool(forKey: TextResultController.directCopyPreferenceKey) == true ? .on : .off }
+            if item.action == #selector(toggleAutomaticOCR) { item.state = automaticOCREnabled ? .on : .off }
             if item.action == #selector(toggleLock) { item.state = locked ? .on : .off }
             if item.action == #selector(toggleCrop) { item.state = canvas.isCropping ? .on : .off }
             if item.action == #selector(toggleShadow) { item.state = window?.hasShadow == true ? .on : .off }
@@ -319,7 +350,10 @@ struct PinImageState {
         guard !closed, !temporarilyHidden, !exportInProgress else { return }
         if let annotationEditor { annotationEditor.showWindow(nil); annotationEditor.window?.makeKeyAndOrderFront(nil); return }
         guard let anchor = annotationPresentation else { return }
-        setTextSelectionEnabled(false); setBarcodeSelectionEnabled(false)
+        ocrModeTransition = true
+        defer { ocrModeTransition = false; refreshAutomaticOCR() }
+        suspendOCR()
+        setBarcodeSelectionEnabled(false)
         setCropping(false)
         let generation = UUID(); annotationGeneration = generation
         var editingRevision = pixelRevision
@@ -337,7 +371,7 @@ struct PinImageState {
             if apply(image) { self?.annotationEditor?.close() }
         }, onPin: { _ = apply($0) }, onOCR: { [weak self] image in
             guard let self, self.annotationGeneration == generation, self.annotationEditor != nil else { return }
-            self.recognize(image, copyDirectly: false)
+            self.recognizeAnnotationImage(image)
         }, onApply: apply)
         restorePinAfterAnnotations = window?.isVisible == true
         editor.onClose = { [weak self, weak editor] in
@@ -357,10 +391,16 @@ struct PinImageState {
 
     override func showWindow(_ sender: Any?) {
         guard !closed else { return }
+        let wasHidden = temporarilyHidden || window?.isVisible != true
         temporarilyHidden = false
+        if wasHidden { automaticSelectionDismissed = false }
         if let annotationEditor {
             annotationEditor.showWindow(sender); annotationEditor.window?.makeKeyAndOrderFront(sender)
-        } else { super.showWindow(sender) }
+        } else {
+            // Restoring a group must not activate each pin or move keyboard focus.
+            window?.orderFront(sender)
+            refreshAutomaticOCR()
+        }
     }
 
     /// Bring forward the currently visible surface without showing a second copy behind the editor.
@@ -375,11 +415,10 @@ struct PinImageState {
     func hideTemporarily() {
         guard !closed else { return }
         temporarilyHidden = true
+        suspendOCR()
         imageExportController?.cancelExport(); imageExportController = nil
-        setTextSelectionEnabled(false); setBarcodeSelectionEnabled(false)
+        setBarcodeSelectionEnabled(false)
         dismissAnnotations(restoringPin: false)
-        recognitionGeneration = UUID(); recognitionTask?.cancel(); recognitionTask = nil
-        recognitionWindow?.close(); recognitionWindow = nil
         window?.orderOut(nil)
     }
 
@@ -400,63 +439,137 @@ struct PinImageState {
 
     @objc private func toggleTextSelection() { setTextSelectionEnabled(!textSelectionEnabled) }
 
-    /// Explicit per-pin mode; never enabled by restoration, group changes or merely opening a pin.
+    /// Explicit actions may focus the overlay; automatic completion never does.
     func setTextSelectionEnabled(_ enabled: Bool) {
-        if enabled {
-            guard !closed, !temporarilyHidden, annotationEditor == nil, !exportInProgress,
-                  window?.ignoresMouseEvents != true, !textSelectionEnabled else { return }
-        }
-        if enabled { setBarcodeSelectionEnabled(false) }
-        textSelectionGeneration = UUID(); textSelectionTask?.cancel(); textSelectionTask = nil
-        textSelectionIsRecognizing = false; textSelectionEnabled = enabled
-        textSelectionOverlay.document = nil
-        textSelectionOverlay.isHidden = !enabled
-        textSelectionControl?.removeFromSuperview(); textSelectionControl = nil
         if !enabled {
-            textSelectionStatus = ""; textSelectionOverlay.removeFromSuperview()
-            if window?.firstResponder === textSelectionOverlay { window?.makeFirstResponder(canvas) }
+            automaticSelectionDismissed = true
+            disableTextSelection()
             return
         }
-        setCropping(false)
+        guard canRecognize, !textSelectionEnabled else { return }
+        automaticSelectionDismissed = false
+        setBarcodeSelectionEnabled(false); setCropping(false)
+        ocrSession.resume()
+        prepareTextSelection(focus: true)
+        let generation = textSelectionGeneration, key = ocrSession.key
+        ocrSession.request(.selection) { [weak self] result in
+            guard let self, !self.closed, self.canRecognize, self.textSelectionEnabled,
+                  self.textSelectionGeneration == generation, self.ocrSession.key == key else { return }
+            switch result {
+            case .success(let result): self.installSelection(result, key: key, focus: true)
+            case .failure(is CancellationError): self.disableTextSelection()
+            case .failure(let error):
+                self.textSelectionIsRecognizing = false; self.textSelectionStatus = "识别失败"
+                self.textSelectionControl?.title = "识别失败 · 退出"
+                self.textSelectionControl?.toolTip = error.localizedDescription
+            }
+        }
+    }
+
+    private var canRecognize: Bool {
+        !closed && !temporarilyHidden && !ocrModeTransition && annotationEditor == nil && !exportInProgress && window?.ignoresMouseEvents != true
+    }
+    private var automaticOCREligible: Bool {
+        canRecognize && window?.isVisible == true && !canvas.isCropping && !barcodeSelectionEnabled
+    }
+    func applyAutomaticOCR(_ enabled: Bool) {
+        guard !closed else { return }
+        let changed = automaticOCREnabled != enabled
+        automaticOCREnabled = enabled
+        if changed { automaticSelectionDismissed = false }
+        if !enabled {
+            // A changed preference ends background demand, including a queued restore.
+            if changed { suspendOCR() }
+            if canRecognize { ocrSession.resume() }
+        } else { refreshAutomaticOCR() }
+    }
+    @objc private func toggleAutomaticOCR() {
+        let enabled = !automaticOCREnabled
+        if let onAutomaticOCRChange { onAutomaticOCRChange(enabled) }
+        else { applyAutomaticOCR(enabled) }
+    }
+    private func refreshAutomaticOCR() {
+        guard automaticOCREligible else { return }
+        ocrSession.resume()
+        guard automaticOCREnabled, !automaticSelectionDismissed else { return }
+        if let result = ocrSession.cachedResult { installSelection(result, key: ocrSession.key, focus: false) }
+        else { ocrSession.scheduleAutomatic() }
+    }
+    private func ocrSessionDidChange() {
+        let key = ocrSession.key
+        if selectionKey != nil && selectionKey != key {
+            selectionKey = nil; textSelectionOverlay.document = nil
+            textSelectionIsRecognizing = textSelectionEnabled
+        }
+        guard canRecognize, !canvas.isCropping, !barcodeSelectionEnabled else { return }
+        guard let result = ocrSession.cachedResult else {
+            if textSelectionEnabled {
+                textSelectionIsRecognizing = ocrSession.state == .queued || ocrSession.state == .recognizing
+                if ocrSession.state == .failed {
+                    textSelectionStatus = "识别失败"; textSelectionControl?.title = "识别失败 · 退出"
+                } else if textSelectionIsRecognizing {
+                    textSelectionStatus = "识别中"; textSelectionControl?.title = "识别中 · Esc 取消"
+                }
+            }
+            return
+        }
+        if textSelectionEnabled || (automaticOCREnabled && automaticOCREligible && !automaticSelectionDismissed) {
+            installSelection(result, key: key, focus: false)
+        }
+    }
+    private func prepareTextSelection(focus: Bool) {
+        if textSelectionEnabled { return }
+        textSelectionGeneration = UUID(); textSelectionEnabled = true; textSelectionIsRecognizing = true
+        textSelectionStatus = "识别中"
+        textSelectionOverlay.isHidden = false
         textSelectionOverlay.frame = canvas.bounds; textSelectionOverlay.autoresizingMask = [.width, .height]
-        textSelectionOverlay.imageRect = canvas.imageRect
-        canvas.addSubview(textSelectionOverlay)
-        window?.makeFirstResponder(canvas)
+        textSelectionOverlay.imageRect = canvas.imageRect; canvas.addSubview(textSelectionOverlay)
+        if focus { window?.makeFirstResponder(canvas) }
         let control = NSButton(title: "识别中 · Esc 取消", target: self, action: #selector(toggleTextSelection))
         control.controlSize = .small; control.bezelStyle = .rounded
         control.setAccessibilityLabel("退出图片文字选择")
-        control.toolTip = "文字识别完全在本机运行；按 Esc 退出，空格标注"
         if let root = window?.contentView {
             root.addSubview(control); control.translatesAutoresizingMaskIntoConstraints = false
             NSLayoutConstraint.activate([control.topAnchor.constraint(equalTo: root.topAnchor, constant: 5),
                                          control.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -5)])
         }
-        textSelectionControl = control; textSelectionIsRecognizing = true; textSelectionStatus = "识别中"
-        let generation = textSelectionGeneration, revision = pixelRevision, source = state.current
-        let provider = recognizeForSelection
-        textSelectionTask = Task { [weak self] in
-            do {
-                let result = try await provider(source)
-                guard !Task.isCancelled, let self, !self.closed, !self.temporarilyHidden,
-                      self.textSelectionEnabled, self.textSelectionGeneration == generation, self.pixelRevision == revision else { return }
-                self.textSelectionTask = nil; self.textSelectionIsRecognizing = false
-                self.textSelectionOverlay.document = result.document
-                let hasText = result.document?.units.isEmpty == false
-                self.textSelectionStatus = hasText ? (result.document?.isTruncated == true ? "部分文字 · 已达上限" : "拖选文字 · 选中后可拖出") : "未找到可选文字"
-                self.textSelectionControl?.title = hasText ? (result.document?.isTruncated == true ? "部分文字 · 退出" : "选字 · 退出") : "未找到文字 · 退出"
-                self.textSelectionControl?.toolTip = self.textSelectionStatus + "；⌘C 复制，拖动已选文字到其他应用；Esc 退出"
-                self.window?.makeFirstResponder(self.textSelectionOverlay)
-            } catch is CancellationError {
-                guard let self, self.textSelectionGeneration == generation else { return }
-                self.setTextSelectionEnabled(false)
-            } catch {
-                guard !Task.isCancelled, let self, !self.closed, self.textSelectionGeneration == generation else { return }
-                self.textSelectionTask = nil; self.textSelectionIsRecognizing = false
-                self.textSelectionStatus = "识别失败"
-                self.textSelectionControl?.title = "识别失败 · 退出"
-                self.textSelectionControl?.toolTip = error.localizedDescription
-            }
+        textSelectionControl = control
+    }
+    private func installSelection(_ result: RecognitionResult, key: PinOCRKey, focus: Bool) {
+        guard key == ocrSession.key, key.revision == pixelRevision else { return }
+        prepareTextSelection(focus: focus)
+        if selectionKey != key || textSelectionOverlay.document != result.document {
+            selectionKey = key; textSelectionOverlay.document = result.document
         }
+        textSelectionIsRecognizing = false
+        let hasText = result.document?.units.isEmpty == false
+        textSelectionStatus = hasText ? (result.document?.isTruncated == true ? "部分文字 · 已达上限" : "拖选文字 · 选中后可拖出") : "未找到可选文字"
+        textSelectionControl?.title = hasText ? (result.document?.isTruncated == true ? "部分文字 · 退出" : "选字 · 退出") : "未找到文字 · 退出"
+        textSelectionControl?.toolTip = textSelectionStatus + "；⌘C 复制所选，⌘⇧C 复制全部；Esc 退出"
+        if focus { window?.makeFirstResponder(textSelectionOverlay) }
+    }
+    private func disableTextSelection() {
+        textSelectionGeneration = UUID(); textSelectionEnabled = false; textSelectionIsRecognizing = false
+        ocrSession.cancelRequest(for: .selection)
+        selectionKey = nil; textSelectionOverlay.document = nil; textSelectionOverlay.isHidden = true
+        textSelectionControl?.removeFromSuperview(); textSelectionControl = nil; textSelectionStatus = ""
+        textSelectionOverlay.removeFromSuperview()
+        if window?.firstResponder === textSelectionOverlay { window?.makeFirstResponder(canvas) }
+    }
+    private func closeRecognitionWindow() {
+        recognitionGeneration = UUID(); recognitionPanelGeneration = UUID()
+        recognitionTask?.cancel(); recognitionTask = nil; recognitionLinkKey = nil
+        recognitionWindow?.onSourceSelection = nil; recognitionWindow?.onClose = nil
+        recognitionWindow?.close(); recognitionWindow = nil
+    }
+    private func suspendOCR() {
+        disableTextSelection(); closeRecognitionWindow(); ocrSession.suspend()
+    }
+    private func sendSelectionToResult(_ ranges: [NSRange]) {
+        guard canRecognize, let panel = recognitionWindow, let document = textSelectionOverlay.document,
+              selectionKey == ocrSession.key, recognitionLinkKey == ocrSession.key,
+              ocrSession.cachedResult?.document == document, panel.resultDocument == document else { return }
+        panel.selectSourceRanges(ranges, document: document)
     }
 
     @objc private func toggleBarcodeSelection() { setBarcodeSelectionEnabled(!barcodeSelectionEnabled) }
@@ -466,7 +579,7 @@ struct PinImageState {
         if enabled {
             guard !closed, !temporarilyHidden, annotationEditor == nil, !exportInProgress,
                   window?.ignoresMouseEvents != true, !barcodeSelectionEnabled else { return }
-            setTextSelectionEnabled(false)
+            suspendOCR()
         }
         barcodeGeneration = UUID(); barcodeTask?.cancel(); barcodeTask = nil
         barcodeIsRecognizing = false; barcodeSelectionEnabled = enabled
@@ -476,6 +589,7 @@ struct PinImageState {
         if !enabled {
             barcodeStatus = ""; barcodeSelectionOverlay.removeFromSuperview()
             if window?.firstResponder === barcodeSelectionOverlay { window?.makeFirstResponder(canvas) }
+            refreshAutomaticOCR()
             return
         }
         setCropping(false)
@@ -539,11 +653,77 @@ struct PinImageState {
         }
     }
 
-    @objc private func toggleDirectCopy() { UserDefaults.standard.set(!TextResultController.copyDirectlyNextTime, forKey: TextResultController.directCopyPreferenceKey) }
-    @objc private func recognizeText() { recognize(state.current, copyDirectly: false) }
-    @objc private func copyRecognizedText() { recognize(state.current, copyDirectly: true) }
-    private func recognize(_ image: CGImage, copyDirectly: Bool) {
-        guard !closed, !temporarilyHidden else { return }
+    @objc private func toggleDirectCopy() {
+        guard let defaults else { return }
+        defaults.set(!defaults.bool(forKey: TextResultController.directCopyPreferenceKey), forKey: TextResultController.directCopyPreferenceKey)
+    }
+    @objc private func recognizeText() { showRecognizedText() }
+    @objc private func copyRecognizedText() { copyAllRecognizedText() }
+    func showRecognizedText() { recognizeCurrentPin(copyDirectly: defaults?.bool(forKey: TextResultController.directCopyPreferenceKey) == true, pasteboard: .general) }
+    func copyAllRecognizedText(to pasteboard: NSPasteboard = .general) { recognizeCurrentPin(copyDirectly: true, pasteboard: pasteboard) }
+
+    private func recognizeCurrentPin(copyDirectly: Bool, pasteboard: NSPasteboard) {
+        guard canRecognize, !canvas.isCropping, !barcodeSelectionEnabled else { return }
+        recognitionTask?.cancel(); recognitionTask = nil
+        let generation = UUID(); recognitionGeneration = generation
+        ocrSession.resume()
+        let session = ocrSession, key = session.key
+        recognitionTask = Task { [weak self] in
+            do {
+                let result = try await session.result(for: copyDirectly ? .copyAll : .resultWindow)
+                guard !Task.isCancelled, let self, self.canRecognize, self.recognitionGeneration == generation,
+                      self.pixelRevision == key.revision, session.key == key else { return }
+                self.recognitionTask = nil
+                if copyDirectly {
+                    if !result.displayText.isEmpty { TextResultController.copyToPasteboard(result.displayText, pasteboard: pasteboard) }
+                    return
+                }
+                self.presentRecognitionResult(result, key: key)
+            } catch is CancellationError {} catch {
+                guard !Task.isCancelled, self?.canRecognize == true, self?.recognitionGeneration == generation else { return }
+                self?.recognitionTask = nil; showError(error)
+            }
+        }
+    }
+    private func presentRecognitionResult(_ result: RecognitionResult, key: PinOCRKey) {
+        recognitionWindow?.onClose = nil; recognitionWindow?.close()
+        let session = ocrSession, panelGeneration = UUID()
+        recognitionPanelGeneration = panelGeneration
+        automaticSelectionDismissed = false
+        installSelection(result, key: key, focus: false)
+        let panel = TextResultController(result: result, options: key.options, onRecognize: { [weak self, weak session] options in
+            guard let session, self?.canRecognize == true, self?.pixelRevision == key.revision,
+                  self?.recognitionPanelGeneration == panelGeneration else { throw CancellationError() }
+            self?.recognitionLinkKey = nil
+            self?.automaticSelectionDismissed = false
+            self?.prepareTextSelection(focus: false)
+            let result = try await session.result(for: .resultWindow, options: options)
+            guard !Task.isCancelled, let self, self.canRecognize, self.pixelRevision == key.revision,
+                  self.recognitionPanelGeneration == panelGeneration, session.key.options == options else { throw CancellationError() }
+            self.recognitionLinkKey = session.key
+            return result
+        }, defaults: defaults)
+        recognitionWindow = panel; recognitionLinkKey = key
+        panel.onSourceSelection = { [weak self, weak panel] document, ranges in
+            guard let self, let panel, self.recognitionWindow === panel, self.canRecognize,
+                  self.pixelRevision == key.revision, self.recognitionLinkKey == self.ocrSession.key,
+                  self.selectionKey == self.ocrSession.key, self.ocrSession.cachedResult?.document == document,
+                  self.textSelectionOverlay.document == document else { return }
+            self.textSelectionOverlay.setLinkedSelection(ranges)
+        }
+        panel.onClose = { [weak self, weak panel] in
+            guard let self, self.recognitionWindow === panel else { return }
+            self.recognitionWindow = nil; self.recognitionLinkKey = nil
+        }
+        if let document = textSelectionOverlay.document, selectionKey == key {
+            panel.selectSourceRanges(textSelectionOverlay.selectedRange.map { [$0] } ?? [], document: document)
+        }
+        PinDesktopVisibilityPolicy.apply(desktopVisibility, to: panel.window)
+        panel.showWindow(nil); panel.window?.makeKeyAndOrderFront(nil)
+    }
+    /// The annotation preview is an unsaved, independent source and cannot use the pin's cache.
+    private func recognizeAnnotationImage(_ image: CGImage) {
+        guard !closed, !temporarilyHidden, annotationEditor != nil else { return }
         recognitionTask?.cancel()
         let generation = UUID(); recognitionGeneration = generation
         recognitionTask = Task { [weak self] in
@@ -551,15 +731,15 @@ struct PinImageState {
                 let result = try await RecognitionService.recognize(image)
                 guard !Task.isCancelled, let self, !self.closed, self.recognitionGeneration == generation else { return }
                 self.recognitionTask = nil
-                if (copyDirectly || TextResultController.copyDirectlyNextTime), !result.displayText.isEmpty {
+                if self.defaults?.bool(forKey: TextResultController.directCopyPreferenceKey) == true, !result.displayText.isEmpty {
                     TextResultController.copyToPasteboard(result.displayText); return
                 }
                 self.recognitionWindow?.close()
-                let resultWindow = TextResultController(text: result.displayText, sourceImage: image)
-                resultWindow.onClose = { [weak self] in self?.recognitionWindow = nil }
-                self.recognitionWindow = resultWindow
-                PinDesktopVisibilityPolicy.apply(self.desktopVisibility, to: resultWindow.window)
-                resultWindow.showWindow(nil); resultWindow.window?.makeKeyAndOrderFront(nil)
+                let panel = TextResultController(result: result, sourceImage: image, defaults: self.defaults)
+                panel.onClose = { [weak self] in self?.recognitionWindow = nil }
+                self.recognitionWindow = panel
+                PinDesktopVisibilityPolicy.apply(self.desktopVisibility, to: panel.window)
+                panel.showWindow(nil); panel.window?.makeKeyAndOrderFront(nil)
             } catch is CancellationError {} catch {
                 guard !Task.isCancelled, self?.closed == false, self?.recognitionGeneration == generation else { return }
                 self?.recognitionTask = nil; showError(error)
@@ -597,10 +777,12 @@ struct PinImageState {
     private func acceptImageState(_ next: PinImageState) throws {
         try onPixelChange?(next.current, !next.isModified)
         let previousSize = CGSize(width: state.current.width, height: state.current.height)
+        ocrModeTransition = true
+        defer { ocrModeTransition = false; refreshAutomaticOCR() }
         state = next; pixelRevision &+= 1
-        setTextSelectionEnabled(false); setBarcodeSelectionEnabled(false)
-        recognitionGeneration = UUID(); recognitionTask?.cancel(); recognitionTask = nil
-        recognitionWindow?.close(); recognitionWindow = nil
+        suspendOCR(); ocrSession.update(revision: pixelRevision)
+        automaticSelectionDismissed = false
+        setBarcodeSelectionEnabled(false)
         setCropping(false); canvas.image = state.current
         if fixedZoom == nil, !locked, previousSize != CGSize(width: state.current.width, height: state.current.height), let window {
             let screen = window.screen?.visibleFrame ?? window.frame
@@ -623,11 +805,13 @@ struct PinImageState {
         else { setCropping(!canvas.isCropping) }
     }
     private func setCropping(_ value: Bool) {
-        if value { setTextSelectionEnabled(false); setBarcodeSelectionEnabled(false) }
-        canvas.isCropping = value; canvas.selection = nil
+        canvas.isCropping = value
+        if value { suspendOCR(); setBarcodeSelectionEnabled(false) }
+        canvas.selection = nil
         canvas.toolTip = value ? "拖动选择，按 Return 裁剪，Esc 取消" : nil
         if value { window?.makeFirstResponder(canvas) }
         updateTitle()
+        if !value { refreshAutomaticOCR() }
     }
     @objc private func copyPin() { copyImage(state.current) }
     @objc private func copyOriginal() { copyImage(image) }
@@ -636,9 +820,24 @@ struct PinImageState {
     private func save(original: Bool) {
         guard !closed, !temporarilyHidden, let window else { return }
         if exportInProgress { imageExportController?.window?.makeKeyAndOrderFront(nil); return }
-        setTextSelectionEnabled(false); setBarcodeSelectionEnabled(false); setCropping(false)
+        ocrModeTransition = true
+        defer { ocrModeTransition = false; refreshAutomaticOCR() }
+        suspendOCR(); setBarcodeSelectionEnabled(false); setCropping(false)
+        // Disable eligibility before creating the owned export window.
+        ocrSession.suspend()
         imageExportController = ImageExportController.present(image: original ? image : state.current, from: window,
                                                               suggestedName: original ? "PicShot-original" : "PicShot-pin")
+        if let exportCloseObserver { NotificationCenter.default.removeObserver(exportCloseObserver) }; exportCloseObserver = nil
+        if let exportWindow = imageExportController?.window {
+            exportCloseObserver = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: exportWindow, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.imageExportController = nil
+                    if let observer = self.exportCloseObserver { NotificationCenter.default.removeObserver(observer) }; self.exportCloseObserver = nil
+                    self.refreshAutomaticOCR()
+                }
+            }
+        } else { refreshAutomaticOCR() }
     }
 
     @objc private func selectOpacity(_ sender: NSMenuItem) {
@@ -656,7 +855,7 @@ struct PinImageState {
         if locked { window?.styleMask.remove(.resizable) } else { window?.styleMask.insert(.resizable) }
         updateTitle(); presentationDidChange()
     }
-    @objc private func clickThrough() { setTextSelectionEnabled(false); setBarcodeSelectionEnabled(false); setCropping(false); annotationEditor?.close(); window?.ignoresMouseEvents = true; presentationDidChange() }
+    @objc private func clickThrough() { window?.ignoresMouseEvents = true; suspendOCR(); setBarcodeSelectionEnabled(false); setCropping(false); annotationEditor?.close(); presentationDidChange() }
     @objc private func closePin() { close() }
 
     /// Metadata-only: never reconstruct a controller or decode/render content.
@@ -689,9 +888,9 @@ struct PinImageState {
         fixedZoom = value.zoom.map { CGFloat($0) }
         locked = value.locked; window?.isMovable = !locked
         if locked { window?.styleMask.remove(.resizable) } else { window?.styleMask.insert(.resizable) }
-        if value.clickThrough { setTextSelectionEnabled(false); setBarcodeSelectionEnabled(false) }
         window?.ignoresMouseEvents = value.clickThrough
-        updateLayout(); updateTitle()
+        if value.clickThrough { suspendOCR(); setBarcodeSelectionEnabled(false) }
+        updateLayout(); updateTitle(); refreshAutomaticOCR()
     }
     private func presentationDidChange() {
         guard !closed, !applyingPresentation else { return }
@@ -712,8 +911,9 @@ struct PinImageState {
     func windowDidResize(_ notification: Notification) { updateLayout(); updateTitle(); presentationDidChange() }
     func windowWillClose(_ notification: Notification) {
         guard !closed else { return }; closed = true
+        if let exportCloseObserver { NotificationCenter.default.removeObserver(exportCloseObserver) }; exportCloseObserver = nil
         imageExportController?.cancelExport(); imageExportController = nil
-        setTextSelectionEnabled(false); textSelectionOverlay.releaseResources()
+        disableTextSelection(); ocrSession.close(); textSelectionOverlay.releaseResources()
         setBarcodeSelectionEnabled(false); barcodeSelectionOverlay.releaseResources()
         recognitionGeneration = UUID(); recognitionTask?.cancel(); recognitionTask = nil
         dismissAnnotations(restoringPin: false)
@@ -723,7 +923,8 @@ struct PinImageState {
         canvas.textSelectionOverlay = nil; canvas.barcodeSelectionOverlay = nil
         let completion = onClose
         onClose = nil; onPixelChange = nil; onPresentationChange = nil; onToggleGroupSelection = nil; onShowGroupTransform = nil
-        onDesktopVisibilityChange = nil; desktopVisibilityMenu.invalidate()
+        onDesktopVisibilityChange = nil; onAutomaticOCRChange = nil; desktopVisibilityMenu.invalidate()
+        (window as? PinPanel)?.onCopyAllText = nil; (window as? PinPanel)?.onToggleTextSelection = nil
         completion?()
         // AppKit can keep the last closed utility panel cached after this controller dies.
         // Pins are single-use: sever its view/image graph without changing ARC ownership.
@@ -757,6 +958,18 @@ struct PinImageState {
 
 /// Borderless pins still need keyboard focus for Space, Escape, and crop confirmation.
 @MainActor final class PinPanel: NSPanel {
+    var onCopyAllText: (() -> Void)?
+    var onToggleTextSelection: (() -> Void)?
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.modifierFlags.intersection([.command, .shift, .control, .option]) == [.command, .shift] {
+            switch event.charactersIgnoringModifiers?.lowercased() {
+            case "c": if let onCopyAllText { onCopyAllText(); return true }
+            case "t": if let onToggleTextSelection { onToggleTextSelection(); return true }
+            default: break
+            }
+        }
+        return super.performKeyEquivalent(with: event)
+    }
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
     override func cancelOperation(_ sender: Any?) { close() }

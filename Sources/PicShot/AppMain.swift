@@ -28,6 +28,7 @@ import ImageIO
         workflow.onSettings = { [weak self] parent in self?.settings(); self?.settingsController?.selectCategory(.save); self?.settingsController?.showAbove(parent) }
         return workflow
     }()
+    private lazy var pinOCRPreferences = PinOCRPreferences(defaults: smoke == nil ? .standard : nil)
     var pins:[PinController]=[]
     var pinSession:PinSessionCoordinator?
     var pinSessionLoadError:Error?
@@ -52,7 +53,7 @@ import ImageIO
         super.init()
         // Smoke must neither read nor write the user's saved session or preferences.
         if smoke == nil {
-            do {pinSession=PinSessionCoordinator(store:try PinSessionStore());pinSession?.onError={showError($0)}}
+            do {pinSession=PinSessionCoordinator(store:try PinSessionStore(),ocrPreferences:pinOCRPreferences);pinSession?.onError={showError($0)}}
             catch {pinSessionLoadError=error}
         }
     }
@@ -366,7 +367,19 @@ import ImageIO
         if let pinSession {do{try pinSession.add(image:image)}catch{showError(error)};return}
         let bytes=pins.reduce(0){$0+$1.image.bytesPerRow*$1.image.height}
         guard pins.count<20,bytes+image.bytesPerRow*image.height<400_000_000 else{showError(PicShotError.message("贴图已达到内存保护上限，请关闭一些贴图后重试"));return}
-        let c=PinController(image:image);pins.append(c);c.showWindow(nil)
+        let c=PinController(image:image,defaults:smoke == nil ? .standard : nil)
+        c.applyAutomaticOCR(pinOCRPreferences.automaticallyRecognizeText)
+        c.onAutomaticOCRChange = { [weak self] enabled in self?.setAutomaticPinOCR(enabled) }
+        pins.append(c);c.showWindow(nil)
+    }
+    private func setAutomaticPinOCR(_ enabled: Bool) {
+        pinOCRPreferences.select(enabled); pinSession?.setAutomaticOCR(enabled)
+        pins.forEach { $0.applyAutomaticOCR(enabled) }
+    }
+    private func reloadPinPreferences() {
+        pinSession?.reloadDesktopVisibility(); pinSession?.reloadOCRPreferences()
+        pinOCRPreferences.reload()
+        pins.forEach { $0.applyAutomaticOCR(pinOCRPreferences.automaticallyRecognizeText) }
     }
     @objc func showPins(){
         do{try pinSession?.showCurrentGroup()}catch{showError(error)}
@@ -461,13 +474,13 @@ import ImageIO
                 let result=try await RecognitionService.recognize(image)
                 if let id=recordID{try self.history.updateText(result.document?.isTruncated == true ? result.displayText : result.text,id:id)}
                 let text=result.displayText
-                if TextResultController.copyDirectlyNextTime && !text.isEmpty {
+                if self.smoke == nil && TextResultController.copyDirectlyNextTime && !text.isEmpty {
                     TextResultController.copyToPasteboard(text);return
                 }
                 let barcodeAction: (() -> Void)? = result.barcodeDocument.map { document in
                     { [weak self] in self?.showBarcodeResults(image, document: document) }
                 }
-                let controller=TextResultController(text:text,sourceImage:image,onTranslate:{[weak self] text in self?.translate(text)},onBarcodes:barcodeAction)
+                let controller=TextResultController(result:result,sourceImage:image,onTranslate:{[weak self] text in self?.translate(text)},onBarcodes:barcodeAction,defaults:self.smoke == nil ? .standard : nil)
                 self.retain(controller);controller.showWindow(nil);NSApp.activate(ignoringOtherApps:true)
             }catch{showError(error)}
         }
@@ -519,7 +532,7 @@ import ImageIO
         // Editing an existing global combination must not trigger capture behind Settings.
         let unavailable=hotKeys?.failures ?? []
         hotKeys?.register(HotKeyConfiguration(shortcuts:[]))
-        let controller=SettingsController(onChange:{[weak self] in self?.pinSession?.reloadDesktopVisibility();do{try self?.history.prune()}catch{showError(error)}},unavailableShortcuts:unavailable,onManageCapturePresets:{[weak self] in self?.manageCapturePresets()})
+        let controller=SettingsController(onChange:{[weak self] in self?.reloadPinPreferences();do{try self?.history.prune()}catch{showError(error)}},unavailableShortcuts:unavailable,onManageCapturePresets:{[weak self] in self?.manageCapturePresets()})
         settingsController=controller;retain(controller);controller.showWindow(nil);NSApp.activate(ignoringOtherApps:true)
     }
     func refreshHotkeys(){

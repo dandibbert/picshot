@@ -6,6 +6,7 @@ import PicShotCore
 @MainActor final class PinSessionCoordinator {
     static let maximumLivePins = 20
     let store: PinSessionStore
+    let ocrPreferences: PinOCRPreferences
     let desktopVisibilityService: PinDesktopVisibilityService
     var desktopVisibility: PinDesktopVisibility { desktopVisibilityService.mode }
     lazy var groupTransforms = PinGroupTransformController(session: self)
@@ -23,6 +24,7 @@ import PicShotCore
     var onError: ((Error) -> Void)?
     private let screens: @MainActor () -> [CGRect]
     private let presentWindows: Bool
+    private let makeImageController: @MainActor (CGImage, CGImage, Bool) -> PinController
     private let debounceNanoseconds: UInt64
     private var pendingPresentations: [UUID: PinPresentation] = [:]
     private var presentationSaveTask: Task<Void, Never>?
@@ -30,9 +32,17 @@ import PicShotCore
 
     init(store: PinSessionStore, presentWindows: Bool = true,
          desktopVisibilityService: PinDesktopVisibilityService? = nil,
+         ocrPreferences: PinOCRPreferences? = nil,
+         makeImageController: (@MainActor (CGImage, CGImage, Bool) -> PinController)? = nil,
          debounceNanoseconds: UInt64 = 250_000_000,
          screens: @escaping @MainActor () -> [CGRect] = { NSScreen.screens.map(\.visibleFrame) }) {
         self.store = store; self.presentWindows = presentWindows
+        let preferences = ocrPreferences ?? PinOCRPreferences()
+        self.ocrPreferences = preferences
+        let defaults = preferences.defaults
+        self.makeImageController = makeImageController ?? { original, current, modified in
+            PinController(originalImage: original, currentImage: current, isModified: modified, defaults: defaults)
+        }
         self.desktopVisibilityService = desktopVisibilityService ?? PinDesktopVisibilityService(
             defaults: ProcessInfo.processInfo.environment["PICSHOT_SMOKE_REPORT"] == nil ? .standard : nil)
         self.debounceNanoseconds = debounceNanoseconds; self.screens = screens
@@ -58,6 +68,18 @@ import PicShotCore
         for controller in richControllers.values { controller.applyDesktopVisibility(desktopVisibility) }
     }
 
+    /// Only already-live image pins are updated; hidden groups remain unloaded.
+    func setAutomaticOCR(_ enabled: Bool) {
+        guard !terminated else { return }
+        ocrPreferences.select(enabled)
+        liveControllers.values.forEach { $0.applyAutomaticOCR(enabled) }
+    }
+    func reloadOCRPreferences() {
+        guard !terminated else { return }
+        ocrPreferences.reload()
+        liveControllers.values.forEach { $0.applyAutomaticOCR(ocrPreferences.automaticallyRecognizeText) }
+    }
+
     /// Call only at launch. A disabled preference and smoke mode are strict no-op paths.
     func restoreOnLaunch(enabled: Bool, isSmoke: Bool) throws {
         guard enabled, !isSmoke, !terminated else { return }
@@ -69,7 +91,7 @@ import PicShotCore
     @discardableResult func add(image: CGImage, title: String = "贴图") throws -> UUID {
         guard !terminated else { throw PinSessionError.missingPin }
         guard livePinCount < Self.maximumLivePins else { throw PinSessionError.capacityExceeded }
-        let controller = PinController(image: image)
+        let controller = makeImageController(image, image, false)
         let entry: PinSessionEntry
         do {
             entry = try store.add(image: image, title: title, presentation: controller.presentation,
@@ -244,7 +266,7 @@ import PicShotCore
         guard let original = store.image(id: entry.id, original: true) else { throw PinSessionError.invalidImage }
         let modified = entry.original.filename != entry.current.filename
         guard let current = modified ? store.image(id: entry.id) : original else { throw PinSessionError.invalidImage }
-        let controller = PinController(originalImage: original, currentImage: current, isModified: modified)
+        let controller = makeImageController(original, current, modified)
         if let recovered = store.recoveredPresentation(id: entry.id, screens: screens()) {
             controller.applyPresentation(recovered)
         }
@@ -252,6 +274,11 @@ import PicShotCore
         present(controller)
     }
     private func connect(_ controller: PinController, id: UUID) {
+        controller.applyAutomaticOCR(ocrPreferences.automaticallyRecognizeText)
+        controller.onAutomaticOCRChange = { [weak self, weak controller] enabled in
+            guard let self, let controller, self.liveControllers[id] === controller else { return }
+            self.setAutomaticOCR(enabled)
+        }
         controller.applyDesktopVisibility(desktopVisibility)
         controller.onDesktopVisibilityChange = { [weak self, weak controller] mode in
             guard let self, let controller, self.liveControllers[id] === controller else { return }
@@ -320,7 +347,7 @@ import PicShotCore
     }
     private func present(_ controller: PinController) {
         guard presentWindows else { return }
-        controller.bringForward()
+        controller.showWindow(nil); controller.window?.orderFrontRegardless()
     }
     private func recover(_ controller: PinController) {
         var value = controller.presentation.normalized(screens: screens().map { PinWindowFrame($0) })

@@ -22,6 +22,7 @@ import PicShotCore
     private let screenshotCursor = NSButton(checkboxWithTitle: "屏幕截图包含鼠标指针", target: nil, action: nil)
     let saveWorkflowView: SaveWorkflowSettingsView
     let pinDesktopVisibility = NSPopUpButton(frame: .zero, pullsDown: false)
+    let automaticPinOCR = NSButton(checkboxWithTitle: "自动识别贴图文字", target: nil, action: nil)
     private let restorePins = NSButton(checkboxWithTitle: "启动时恢复上次显示的贴图组", target: nil, action: nil)
     private(set) var selectedCategory: SettingsCategory = .appearance
 
@@ -56,6 +57,9 @@ import PicShotCore
         let desktopMode = safeMode ? PinDesktopVisibility.defaultMode : .read(from: defaults)
         pinDesktopVisibility.selectItem(at: PinDesktopVisibility.allCases.firstIndex(of: desktopMode) ?? 0)
         restorePins.state = !safeMode && defaults.bool(forKey: PinSessionStore.restorePreferenceKey) ? .on : .off
+        automaticPinOCR.identifier = NSUserInterfaceItemIdentifier("settings.pinAutomaticOCR")
+        automaticPinOCR.state = !safeMode && defaults.bool(forKey: PinOCRPreferences.automaticPreferenceKey) ? .on : .off
+        automaticPinOCR.toolTip = "本机识别；不会自动弹窗、复制或抢占键盘焦点"
         let retention = safeMode ? HistoryRetentionPreferences() : .read(from: defaults)
         for value in [retention.days, retention.count, retention.megabytes] {
             let field = NSTextField(string: String(value)); field.alignment = .right
@@ -132,9 +136,10 @@ import PicShotCore
             addGroup("快速保存与自动副本", rows: [saveWorkflowView])
             addNote("快速保存使用 PNG；导出窗口中的快速保存使用当前实际编码格式。已有文件只允许保留两者、更改名称或取消，不提供覆盖替换。")
         case .pins:
-            addGroup("启动与会话", rows: [restorePins, note("默认关闭。贴图自动保存在本机；关闭贴图会将它归档，隐藏和切换贴图组保留会话状态。")])
-            addGroup("桌面显示", rows: [row("所有贴图显示在", control: pinDesktopVisibility), note(PinDesktopVisibility.explanation)])
-            addNote("恢复上次关闭的贴图按关闭顺序重新打开；旧归档仍可在“贴图组与历史”中选择打开。")
+            addGroup("贴图行为", rows: [restorePins, automaticPinOCR, row("所有贴图显示在", control: pinDesktopVisibility)])
+            addNote("恢复会话与自动识别默认关闭。贴图保存在本机；关闭会归档，隐藏与切组保留会话。自动识别只处理显示中的图片，不弹窗、不复制、不切换焦点。")
+            addNote("⌘⇧T 选择图片文字；⌘C 复制所选文字；⌘⇧C 复制全部识别文字；Esc 退出选字。")
+            addNote(PinDesktopVisibility.explanation)
             addNote("含归档最多保存 20 项、1 亿工作像素、512 MiB；最多同时显示 20 项。恢复当前组还可找回鼠标穿透、低透明度或屏幕外的贴图。")
         case .history:
             addGroup("历史保留上限", rows: [row("最多天数", control: retentionFields[0], suffix: "天"), row("最多截图", control: retentionFields[1], suffix: "张"), row("最大磁盘空间", control: retentionFields[2], suffix: "MB")])
@@ -230,6 +235,7 @@ import PicShotCore
         _ = retention.save(to: defaults)
         ScreenshotPreferences.save(ScreenshotCaptureOptions(delay: ScreenshotDelay(rawValue: screenshotDelay.selectedTag()) ?? .none, showsCursor: screenshotCursor.state == .on), to: defaults)
         defaults.set(restorePins.state == .on, forKey: PinSessionStore.restorePreferenceKey)
+        defaults.set(automaticPinOCR.state == .on, forKey: PinOCRPreferences.automaticPreferenceKey)
         let desktopModes = PinDesktopVisibility.allCases
         if desktopModes.indices.contains(pinDesktopVisibility.indexOfSelectedItem) {
             desktopModes[pinDesktopVisibility.indexOfSelectedItem].save(to: defaults)

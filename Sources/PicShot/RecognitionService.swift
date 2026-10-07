@@ -263,7 +263,8 @@ private final class RecognitionCancellation: @unchecked Sendable {
 
 }
 
-@MainActor final class TextResultController: NSWindowController, NSWindowDelegate {
+@MainActor final class TextResultController: NSWindowController, NSWindowDelegate, NSTextViewDelegate, NSTextStorageDelegate {
+    typealias RecognitionProvider = @MainActor (RecognitionOptions) async throws -> RecognitionResult
     static let directCopyPreferenceKey = "ocr.copyDirectlyNextTime"
     static var copyDirectlyNextTime: Bool { UserDefaults.standard.bool(forKey: directCopyPreferenceKey) }
     static func copyToPasteboard(_ text: String, pasteboard: NSPasteboard = .general) {
@@ -271,26 +272,52 @@ private final class RecognitionCancellation: @unchecked Sendable {
     }
 
     var onClose: (() -> Void)?
+    /// Bind with a weak pin capture and its image revision; this callback never activates a window.
+    var onSourceSelection: ((RecognizedTextDocument, [NSRange]) -> Void)?
     private let textView = NSTextView()
     private let languagePicker = NSPopUpButton()
     private let layoutPicker = NSPopUpButton(frame: .zero, pullsDown: true)
     private let directCopy = NSButton(checkboxWithTitle: "下次直接复制文本", target: nil, action: nil)
     private let copyButton = NSButton(title: "复制", target: nil, action: nil)
     private let progress = NSProgressIndicator()
+    private let sourceStatus = NSTextField(labelWithString: "原图关联已暂停")
+    private let sourceButton = NSButton(title: "原图", target: nil, action: nil)
+    private let sourcePreview = TextResultSourcePreview()
+    private var projection: RecognizedTextProjection
+    private var synchronizingSelection = false
+    private var replacingText = false
+    private var onRecognize: RecognitionProvider?
+    private var recognitionOptions: RecognitionOptions
     private var onTranslate: ((String) -> Void)?
     private var onBarcodes: (() -> Void)?
     private var sourceImage: CGImage?
-    private let defaults: UserDefaults
+    private let defaults: UserDefaults?
     private var recognitionTask: Task<Void, Never>?
     private var generation = UUID()
     private var exportPanel: NSSavePanel?
     private var closed = false
     var resultText: String { textView.string }
     var offersLanguageSelection: Bool { !languagePicker.isHidden }
+    var resultDocument: RecognizedTextDocument? { projection.document }
+    var selectedSourceRanges: [NSRange] { projection.sourceRanges(for: textView.selectedRanges.map(\.rangeValue)) }
+    var sourceLinkingLimitReached: Bool { projection.mappingLimitReached }
+    var isSourcePreviewVisible: Bool { !sourcePreview.isHidden }
+
+    convenience init(result: RecognitionResult, title: String = "识别文字", sourceImage: CGImage? = nil,
+                     options: RecognitionOptions = RecognitionOptions(), onRecognize: RecognitionProvider? = nil,
+                     onTranslate: ((String) -> Void)? = nil, onBarcodes: (() -> Void)? = nil, defaults: UserDefaults? = .standard) {
+        // Geometry is valid only for the exact OCR prefix, never for barcode/status appendices.
+        let document = result.document.flatMap { $0.text.utf16.elementsEqual(result.text.utf16) ? $0 : nil }
+        self.init(text: result.displayText, title: title, sourceImage: sourceImage, document: document,
+                  options: options, onRecognize: onRecognize, onTranslate: onTranslate, onBarcodes: onBarcodes, defaults: defaults)
+    }
 
     init(text: String, title: String = "识别文字", sourceImage: CGImage? = nil,
-         onTranslate: ((String) -> Void)? = nil, onBarcodes: (() -> Void)? = nil, defaults: UserDefaults = .standard) {
+         document: RecognizedTextDocument? = nil, options: RecognitionOptions = RecognitionOptions(), onRecognize: RecognitionProvider? = nil,
+         onTranslate: ((String) -> Void)? = nil, onBarcodes: (() -> Void)? = nil, defaults: UserDefaults? = .standard) {
         self.onTranslate = onTranslate; self.onBarcodes = onBarcodes; self.sourceImage = sourceImage; self.defaults = defaults
+        self.onRecognize = onRecognize; recognitionOptions = options
+        projection = RecognizedTextProjection(text: text, document: document)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 470, height: 310),
                               styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         super.init(window: window)
@@ -308,6 +335,23 @@ private final class RecognitionCancellation: @unchecked Sendable {
         textView.autoresizingMask = [.width]; textView.textContainer?.widthTracksTextView = true
         textView.setAccessibilityLabel("识别结果，可编辑")
         scroll.documentView = textView
+        textView.delegate = self; textView.textStorage?.delegate = self
+        sourcePreview.image = sourceImage; sourcePreview.orientation = options.orientation; sourcePreview.overlay.document = document
+        sourcePreview.isHidden = true
+        sourcePreview.overlay.onSelectionChange = { [weak self] ranges in
+            guard let self, !self.closed, !self.synchronizingSelection, let document = self.projection.document else { return }
+            self.selectSourceRanges(ranges, document: document)
+            self.onSourceSelection?(document, ranges)
+        }
+        sourcePreview.overlay.onExit = { [weak self] in self?.setSourcePreviewVisible(false) }
+        sourceButton.controlSize = .small; sourceButton.bezelStyle = .inline
+        sourceButton.setButtonType(.toggle); sourceButton.target = self; sourceButton.action = #selector(toggleSourcePreview)
+        sourceButton.setAccessibilityLabel("显示或隐藏原图文字位置")
+        sourceButton.isHidden = sourceImage == nil || document == nil
+        sourceStatus.font = .systemFont(ofSize: 10); sourceStatus.textColor = .secondaryLabelColor
+        sourceStatus.toolTip = "编辑内容超过原图关联上限（131072 个 UTF-16 单元或 4096 段），文本仍可编辑和复制；重新识别可恢复关联。"
+        sourceStatus.setAccessibilityLabel("编辑内容超过上限，原图关联已暂停")
+        sourceStatus.isHidden = !projection.mappingLimitReached
 
         languagePicker.controlSize = .small; languagePicker.bezelStyle = .inline
         languagePicker.target = self; languagePicker.action = #selector(changeLanguage)
@@ -320,11 +364,11 @@ private final class RecognitionCancellation: @unchecked Sendable {
         layoutPicker.menu?.addItem(withTitle: "删除多余空行", action: #selector(removeEmptyLines), keyEquivalent: "").target = self
         layoutPicker.setAccessibilityLabel("文本排版")
         progress.style = .spinning; progress.controlSize = .small; progress.isDisplayedWhenStopped = false
-        let options = NSStackView(views: [languagePicker, progress, NSView(), layoutPicker])
+        let options = NSStackView(views: [languagePicker, progress, sourceButton, sourceStatus, NSView(), layoutPicker])
         options.orientation = .horizontal; options.spacing = 6
 
         directCopy.controlSize = .small; directCopy.target = self; directCopy.action = #selector(changeDirectCopy)
-        directCopy.state = defaults.bool(forKey: Self.directCopyPreferenceKey) ? .on : .off
+        directCopy.state = (defaults?.bool(forKey: Self.directCopyPreferenceKey) ?? false) ? .on : .off
         directCopy.toolTip = "以后识别成功后直接复制；可在贴图的“识别”菜单中关闭"
         let more = NSPopUpButton(frame: .zero, pullsDown: true); more.controlSize = .small; more.bezelStyle = .inline
         more.addItem(withTitle: "更多")
@@ -334,15 +378,21 @@ private final class RecognitionCancellation: @unchecked Sendable {
         copyButton.target = self; copyButton.action = #selector(copyAll); copyButton.bezelStyle = .rounded
         copyButton.keyEquivalent = "\r"; copyButton.setAccessibilityLabel("复制识别文本")
         let bottom = NSStackView(views: [directCopy, NSView(), more, copyButton]); bottom.orientation = .horizontal; bottom.spacing = 8
-        for view in [scroll, options, bottom] { root.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        let body = NSStackView(views: [scroll, sourcePreview]); body.orientation = .horizontal
+        body.alignment = .top; body.spacing = 8; body.detachesHiddenViews = true
+        scroll.heightAnchor.constraint(equalTo: body.heightAnchor).isActive = true
+        sourcePreview.heightAnchor.constraint(equalTo: body.heightAnchor).isActive = true
+        sourcePreview.translatesAutoresizingMaskIntoConstraints = false
+        sourcePreview.widthAnchor.constraint(equalToConstant: 260).isActive = true
+        for view in [body, options, bottom] { root.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
-            scroll.topAnchor.constraint(equalTo: root.topAnchor, constant: 18),
-            scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 20),
-            scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -20),
-            scroll.bottomAnchor.constraint(equalTo: options.topAnchor, constant: -8),
-            options.leadingAnchor.constraint(equalTo: scroll.leadingAnchor), options.trailingAnchor.constraint(equalTo: scroll.trailingAnchor),
+            body.topAnchor.constraint(equalTo: root.topAnchor, constant: 18),
+            body.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 20),
+            body.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -20),
+            body.bottomAnchor.constraint(equalTo: options.topAnchor, constant: -8),
+            options.leadingAnchor.constraint(equalTo: body.leadingAnchor), options.trailingAnchor.constraint(equalTo: body.trailingAnchor),
             options.heightAnchor.constraint(equalToConstant: 24), options.bottomAnchor.constraint(equalTo: bottom.topAnchor, constant: -8),
-            bottom.leadingAnchor.constraint(equalTo: scroll.leadingAnchor), bottom.trailingAnchor.constraint(equalTo: scroll.trailingAnchor),
+            bottom.leadingAnchor.constraint(equalTo: body.leadingAnchor), bottom.trailingAnchor.constraint(equalTo: body.trailingAnchor),
             bottom.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -16), bottom.heightAnchor.constraint(equalToConstant: 28),
             copyButton.widthAnchor.constraint(equalToConstant: 66), progress.widthAnchor.constraint(equalToConstant: 16)
         ])
@@ -351,8 +401,8 @@ private final class RecognitionCancellation: @unchecked Sendable {
     required init?(coder: NSCoder) { fatalError("init(coder:) unavailable") }
 
     private func configureLanguages() {
-        // A label that cannot change recognition is intentionally absent without its source image.
-        guard sourceImage != nil, let languages = try? RecognitionService.supportedLanguages(), !languages.isEmpty else {
+        // Language selection is available for a retained image or an injected shared session.
+        guard sourceImage != nil || onRecognize != nil, let languages = try? RecognitionService.supportedLanguages(), !languages.isEmpty else {
             languagePicker.isHidden = true; return
         }
         languagePicker.addItem(withTitle: "自动识别语言")
@@ -361,19 +411,29 @@ private final class RecognitionCancellation: @unchecked Sendable {
             languagePicker.addItem(withTitle: locale.localizedString(forIdentifier: identifier) ?? identifier)
             languagePicker.lastItem?.representedObject = identifier
         }
+        if let language = recognitionOptions.language,
+           let index = languagePicker.itemArray.firstIndex(where: { ($0.representedObject as? String) == language }) { languagePicker.selectItem(at: index) }
     }
     @objc private func changeLanguage() {
-        guard let sourceImage, !closed else { return }
+        guard !closed else { return }
+        let provider: RecognitionProvider
+        if let onRecognize { provider = onRecognize }
+        else if let sourceImage { provider = { try await RecognitionService.recognize(sourceImage, options: $0) } }
+        else { return }
         recognitionTask?.cancel(); generation = UUID()
         let requestGeneration = generation
-        let options = RecognitionOptions(language: languagePicker.selectedItem?.representedObject as? String)
+        recognitionOptions.language = languagePicker.selectedItem?.representedObject as? String
+        let options = recognitionOptions
         setRecognizing(true)
         recognitionTask = Task { [weak self] in
             do {
-                let result = try await RecognitionService.recognize(sourceImage, options: options)
+                let result = try await provider(options)
                 guard !Task.isCancelled, let self, !self.closed, self.generation == requestGeneration else { return }
-                self.textView.string = result.displayText; self.recognitionTask = nil; self.setRecognizing(false)
-            } catch is CancellationError {} catch {
+                self.install(result); self.recognitionTask = nil; self.setRecognizing(false)
+            } catch is CancellationError {
+                guard let self, !self.closed, self.generation == requestGeneration else { return }
+                self.recognitionTask = nil; self.setRecognizing(false)
+            } catch {
                 guard !Task.isCancelled, let self, !self.closed, self.generation == requestGeneration else { return }
                 self.recognitionTask = nil; self.setRecognizing(false); showError(error)
             }
@@ -383,13 +443,91 @@ private final class RecognitionCancellation: @unchecked Sendable {
         textView.isEditable = !active; copyButton.isEnabled = !active; layoutPicker.isEnabled = !active
         if active { progress.startAnimation(nil) } else { progress.stopAnimation(nil) }
     }
-    @objc private func changeDirectCopy() { defaults.set(directCopy.state == .on, forKey: Self.directCopyPreferenceKey) }
-    @objc private func joinLines() { textView.string = Self.joinedLines(textView.string) }
-    @objc private func removeEmptyLines() {
-        textView.string = textView.string.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.joined(separator: "\n")
-    }
+    @objc private func changeDirectCopy() { defaults?.set(directCopy.state == .on, forKey: Self.directCopyPreferenceKey) }
+    @objc private func joinLines() { synchronizeText(); projection.joinLines(); installProjectedText() }
+    @objc private func removeEmptyLines() { synchronizeText(); projection.removeEmptyLines(); installProjectedText() }
     static func joinedLines(_ text: String) -> String {
-        text.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }.joined(separator: " ")
+        var projection = RecognizedTextProjection(text: text); projection.joinLines(); return projection.text
+    }
+
+    /// Used by shared pin sessions and by explicit language reruns. No window activation or copy.
+    func applyRecognitionResult(_ result: RecognitionResult) {
+        guard !closed else { return }
+        generation = UUID(); recognitionTask?.cancel(); recognitionTask = nil; setRecognizing(false)
+        install(result)
+    }
+    private func install(_ result: RecognitionResult) {
+        let document = result.document.flatMap { $0.text.utf16.elementsEqual(result.text.utf16) ? $0 : nil }
+        projection = RecognizedTextProjection(text: result.displayText, document: document)
+        synchronizingSelection = true
+        sourcePreview.overlay.document = document
+        synchronizingSelection = false
+        sourceButton.isHidden = sourceImage == nil || document == nil
+        if sourceButton.isHidden { setSourcePreviewVisible(false) }
+        installProjectedText()
+    }
+    private func installProjectedText() {
+        replacingText = true; synchronizingSelection = true
+        textView.string = projection.text; textView.setSelectedRange(NSRange(location: 0, length: 0))
+        textView.undoManager?.removeAllActions()
+        replacingText = false; synchronizingSelection = false
+        sourceStatus.isHidden = !projection.mappingLimitReached
+        publishSelection()
+    }
+    private func synchronizeText() {
+        if !projection.text.utf16.elementsEqual(textView.string.utf16) { projection.invalidate(to: textView.string) }
+    }
+    func textStorage(_ textStorage: NSTextStorage, didProcessEditing editedMask: NSTextStorage.EditActions, range editedRange: NSRange, changeInLength delta: Int) {
+        guard !closed, !replacingText, editedMask.contains(.editedCharacters) else { return }
+        let current = textStorage.string, newLength = current.utf16.count
+        if projection.mappingLimitReached || newLength > RecognizedTextProjection.maximumMappedUTF16Count {
+            projection.invalidate(to: current); publishSelection(); return
+        }
+        let oldLength = editedRange.length - delta
+        guard editedRange.location >= 0, editedRange.length >= 0, editedRange.location <= newLength,
+              editedRange.length <= newLength - editedRange.location, oldLength >= 0 else {
+            projection.invalidate(to: current); return
+        }
+        let replacement = (current as NSString).substring(with: editedRange)
+        if !projection.replace(NSRange(location: editedRange.location, length: oldLength), with: replacement) ||
+            !projection.text.utf16.elementsEqual(current.utf16) { projection.invalidate(to: current) }
+        // TextKit can adjust selection after this delegate; selection notification publishes later.
+        sourcePreview.overlay.setLinkedSelection([])
+        if let document = projection.document { onSourceSelection?(document, []) }
+    }
+    func textViewDidChangeSelection(_ notification: Notification) { publishSelection() }
+    func textDidChange(_ notification: Notification) { synchronizeText(); publishSelection() }
+    private func publishSelection() {
+        guard !closed, !synchronizingSelection else { return }
+        synchronizeText()
+        sourceStatus.isHidden = !projection.mappingLimitReached
+        let ranges = selectedSourceRanges
+        sourcePreview.overlay.setLinkedSelection(ranges)
+        if let document = projection.document { onSourceSelection?(document, ranges) }
+    }
+    /// Accepts only the exact document currently displayed. A stale pin revision cannot relink it.
+    func selectSourceRanges(_ ranges: [NSRange], document: RecognizedTextDocument) {
+        guard !closed, !synchronizingSelection, projection.document == document else { return }
+        synchronizeText()
+        let output = projection.outputRanges(for: ranges)
+        synchronizingSelection = true
+        textView.setSelectedRanges((output.isEmpty ? [NSRange(location: 0, length: 0)] : output).map { NSValue(range: $0) },
+                                   affinity: .downstream, stillSelecting: false)
+        if let first = output.first { textView.scrollRangeToVisible(first) }
+        sourcePreview.overlay.setLinkedSelection(projection.sourceRanges(for: output))
+        synchronizingSelection = false
+    }
+    @objc private func toggleSourcePreview() { setSourcePreviewVisible(!isSourcePreviewVisible) }
+    func setSourcePreviewVisible(_ visible: Bool) {
+        let show = visible && sourceImage != nil && projection.document != nil && !closed
+        guard show != isSourcePreviewVisible else { return }
+        sourcePreview.isHidden = !show; sourceButton.state = show ? .on : .off
+        if let window {
+            var frame = window.frame
+            frame.size.width = max(show ? 658 : 390, frame.width + (show ? 268 : -268))
+            window.contentMinSize = NSSize(width: show ? 658 : 390, height: 260)
+            window.setFrame(frame, display: true)
+        }
     }
     @objc private func showBarcodes() { guard !closed else { return }; onBarcodes?() }
     @objc private func translateText() { onTranslate?(textView.string) }
@@ -409,9 +547,62 @@ private final class RecognitionCancellation: @unchecked Sendable {
     private func finishClose() {
         guard !closed else { return }; closed = true
         generation = UUID(); recognitionTask?.cancel(); recognitionTask = nil
-        exportPanel?.cancel(nil); exportPanel = nil; sourceImage = nil; onTranslate = nil; onBarcodes = nil
+        exportPanel?.cancel(nil); exportPanel = nil; sourceImage = nil; onTranslate = nil; onBarcodes = nil; onRecognize = nil
+        if let document = projection.document { onSourceSelection?(document, []) }
+        onSourceSelection = nil
+        sourcePreview.releaseResources()
+        textView.delegate = nil; textView.textStorage?.delegate = nil
+        projection = RecognizedTextProjection(text: "")
         let callback = onClose; onClose = nil; callback?()
         window?.makeFirstResponder(nil); textView.string = ""
         window?.contentView = nil; window?.delegate = nil
     }
+}
+
+
+/// Small optional result-window preview. Geometry, hit testing, keyboard and drag behavior
+/// remain in PinTextSelectionOverlay, shared with the existing pin selection surface.
+@MainActor private final class TextResultSourcePreview: NSView {
+    var image: CGImage? { didSet { needsLayout = true; needsDisplay = true } }
+    var orientation: CGImagePropertyOrientation = .up { didSet { needsLayout = true; needsDisplay = true } }
+    let overlay = PinTextSelectionOverlay()
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect); addSubview(overlay)
+        setAccessibilityLabel("识别文字原图")
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) unavailable") }
+    override func layout() {
+        super.layout(); overlay.frame = bounds
+        guard let image else { overlay.imageRect = .zero; return }
+        let swapsAxes: Bool
+        switch orientation { case .left, .right, .leftMirrored, .rightMirrored: swapsAxes = true; default: swapsAxes = false }
+        let width = CGFloat(swapsAxes ? image.height : image.width), height = CGFloat(swapsAxes ? image.width : image.height)
+        let scale = min(bounds.width / width, bounds.height / height)
+        let size = CGSize(width: width * scale, height: height * scale)
+        overlay.imageRect = CGRect(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2, width: size.width, height: size.height)
+    }
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.controlBackgroundColor.setFill(); bounds.fill()
+        guard let image, let context = NSGraphicsContext.current?.cgContext else { return }
+        let rect = overlay.imageRect
+        guard rect.width > 0, rect.height > 0 else { return }
+        context.saveGState(); defer { context.restoreGState() }
+        context.translateBy(x: rect.minX, y: rect.minY); context.scaleBy(x: rect.width, y: rect.height)
+        // Orient during drawing, keeping a single retained raster and Vision's oriented coordinates.
+        let transform: CGAffineTransform
+        switch orientation {
+        case .up: transform = .identity
+        case .upMirrored: transform = CGAffineTransform(a: -1, b: 0, c: 0, d: 1, tx: 1, ty: 0)
+        case .down: transform = CGAffineTransform(a: -1, b: 0, c: 0, d: -1, tx: 1, ty: 1)
+        case .downMirrored: transform = CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: 1)
+        case .leftMirrored: transform = CGAffineTransform(a: 0, b: -1, c: -1, d: 0, tx: 1, ty: 1)
+        case .right: transform = CGAffineTransform(a: 0, b: -1, c: 1, d: 0, tx: 0, ty: 1)
+        case .rightMirrored: transform = CGAffineTransform(a: 0, b: 1, c: 1, d: 0, tx: 0, ty: 0)
+        case .left: transform = CGAffineTransform(a: 0, b: 1, c: -1, d: 0, tx: 1, ty: 0)
+        @unknown default: transform = .identity
+        }
+        context.concatenate(transform); context.interpolationQuality = .high
+        context.draw(image, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+    }
+    func releaseResources() { image = nil; overlay.releaseResources(); overlay.removeFromSuperview() }
 }

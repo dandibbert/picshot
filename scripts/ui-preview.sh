@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-ditto -x -k "dist/PicShot-0.10.0-macos-$(uname -m).zip" "$work"
+ditto -x -k "dist/PicShot-0.11.0-macos-$(uname -m).zip" "$work"
 app="$work/PicShot.app"
 codesign --verify --deep --strict "$app"
 mkdir -p dist/evidence/ui
@@ -34,8 +34,23 @@ assert save['maximumSaveJobs']==2 and save['estimatedRetainedInputBudgetBytes']=
 assert len(save['resourceCycles'])==10 and sum(not x['warmup'] for x in save['resourceCycles'])==8,save
 for c in save['resourceCycles']:
     assert c['activeJobs']==0 and c['retainedInputBytes']==0 and c['controllerReleased'] and c['temporaryJobRemoved'],c
+ocr=r['pinOCRWorkflow']
+assert ocr['status']=='passed' and ocr['sourceCommit']==sys.argv[2],ocr
+assert ocr['realAppleVisionRan'] and ocr['actualFunctionalVisionCalls'] >= 1,ocr
+assert ocr['finalVisionActiveJobs']==0 and ocr['finalVisionWaitingJobs']==0,ocr
+assert ocr['temporaryDirectoryRemoved'] and ocr['privateDefaultsRemoved'],ocr
+for key in ['standardUserDefaultsChanged','generalPasteboardChanged','screenCaptureStarted','permissionRequests','networkUsed','globalInputPosted']:
+    assert ocr[key] is False,(key,ocr)
+for key in ['controls','sourceLinkAcceptance','coordinatorRestoration']:
+    assert ocr[key]['status']=='passed',ocr[key]
+assert ocr['coordinatorRestoration']['releaseProbeCount']==60,ocr['coordinatorRestoration']
+for key,value in ocr['coordinatorRestoration']['releaseEvidence'].items():
+    if key.startswith('retained'): assert value==0,(key,value)
+assert not ocr['includeResourceCycles'] and ocr['resourceEvidence']['status']=='not-run',ocr
 print(json.dumps(r,indent=2))
 PY
+
+python3 scripts/check-pin-ocr-report.py "$PWD/dist/evidence/ui/pin-ocr/pin-ocr-workflow.json" "$app" "$(git rev-parse HEAD)" 0.11.0 "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")"
 
 # Source-specific pin UI gates from the same installed ZIP, each in its own process.
 bash scripts/pin-workflows-smoke.sh "$app" "$PWD/dist/evidence/ui/pin-workflows" "$(git rev-parse HEAD)"
