@@ -71,7 +71,7 @@ enum NumberedCalloutAcceptanceFixture {
             }
             evidence.checks["allFourEdgePalettesVisibleAndImageAnchored"] = true
             for _ in 0..<6 {
-                try await verifyUncommittedCommentClose(captured)
+                try await verifyUncommittedCommentClose(captured, diagnosticsDirectory: evidenceDirectory)
                 evidence.closedControllerCount += 1; evidence.releasedControllerCount += 1
             }
             try require(try digest(source) == originalDigest, "Fixture changed original pixels")
@@ -82,6 +82,9 @@ enum NumberedCalloutAcceptanceFixture {
             return evidence
         } catch {
             evidence.status = "failed"; evidence.error = error.localizedDescription
+            if let closeFailure = error as? NumberedCalloutCloseFailure, let filename = closeFailure.diagnosticFilename {
+                evidence.files.append(filename)
+            }
             try? JSONEncoder().encode(evidence).write(to: reportURL, options: .atomic)
             throw error
         }
@@ -121,9 +124,11 @@ enum NumberedCalloutAcceptanceFixture {
     /// This lifecycle is synchronous until the release check. Drain its native
     /// autoreleases and end every strong local's scope before inspecting weak
     /// ownership, rather than depending on the installed app's event-loop pool.
-    static func verifyUncommittedCommentClose(_ capture: CapturedImage, frozenPresentation: Bool = true) async throws {
+    static func verifyUncommittedCommentClose(_ capture: CapturedImage, frozenPresentation: Bool = true,
+                                             diagnosticsDirectory: URL? = nil) async throws {
         weak var weakEditor: ImageEditorController?
         weak var weakInput: InlineAnnotationTextView?
+        var closeProbe: NumberedCalloutCloseProbe?
         try autoreleasepool {
             let editor = ImageEditorController(image: capture.image, presentation: frozenPresentation ? capture.presentation : nil,
                 onSave: { _ in }, onPin: { _ in }, onOCR: { _ in }, onApply: { _ in false }, copyAction: { _ in })
@@ -141,7 +146,9 @@ enum NumberedCalloutAcceptanceFixture {
             input.insertText("中 English 👩🏽‍💻", replacementRange: NSRange(location: 0, length: 0))
             try require(input.string == "中 English 👩🏽‍💻" && canvas.annotations[0].numberComment.isEmpty,
                         "Repeated cycle did not leave uncommitted text")
+            closeProbe = NumberedCalloutCloseProbe(editor: editor, input: input, undoManager: manager)
             editor.close()
+            closeProbe?.didClose()
             try require(editor.isClosed && editor.window?.contentView == nil && editor.window?.delegate == nil,
                         "Owned window did not detach on close")
             try require(canvas.activeNumberCommentInput == nil && canvas.retainedPresentationRaster == nil,
@@ -151,8 +158,169 @@ enum NumberedCalloutAcceptanceFixture {
                         "Close did not discard comment editing and its local undo history")
         }
         try await Task.sleep(nanoseconds: 10_000_000)
-        try require(weakEditor == nil, "Repeated cycle controller remained retained after scoped close")
-        try require(weakInput == nil, "Repeated cycle comment input remained retained after scoped close")
+        let controllerReleased = weakEditor == nil, inputReleased = weakInput == nil
+        if !controllerReleased || !inputReleased {
+            // Freeze acceptance before any diagnostic observation/intervention.
+            // A later release or a passing variant must never turn this into a pass.
+            let message = !controllerReleased ? "Repeated cycle controller remained retained after scoped close"
+                : "Repeated cycle comment input remained retained after scoped close"
+            var diagnosticFilename: String?
+            if let directory = diagnosticsDirectory, let probe = closeProbe {
+                let url = directory.appendingPathComponent("annotation-callout-close-diagnostics.json")
+                do {
+                    try await diagnoseCommentClose(capture, frozenPresentation: frozenPresentation, original: probe, to: url)
+                    diagnosticFilename = url.lastPathComponent
+                } catch {
+                    if let data = try? Data(contentsOf: url),
+                       var report = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+                        report["status"] = "interrupted"; report["diagnosticError"] = error.localizedDescription
+                        if let updated = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
+                            try? updated.write(to: url, options: .atomic)
+                        }
+                        diagnosticFilename = url.lastPathComponent
+                    }
+                }
+            }
+            throw NumberedCalloutCloseFailure(message: message, diagnosticFilename: diagnosticFilename)
+        }
+    }
+
+    /// Diagnostic-only controls. These run only after a frozen acceptance failure.
+    /// None changes production editing or supplies acceptance evidence.
+    private enum CloseIntervention: String, CaseIterable {
+        case nonInlinedControl, untypedCallout, minimalNativeTextView, cancelDeferredPerforms, endUndoGroups, closeSpellDocument
+        case disableTextChecking, discardMarkedText, retireEditableInput, detachTextContainer, combined
+
+        func apply(to input: InlineAnnotationTextView, undoManager: UndoManager) {
+            if self == .endUndoGroups || self == .combined {
+                for _ in 0..<32 {
+                    guard undoManager.groupingLevel > 0 else { break }
+                    undoManager.endUndoGrouping()
+                }
+                undoManager.removeAllActions()
+            }
+            if self == .disableTextChecking || self == .combined {
+                input.enabledTextCheckingTypes = 0
+                input.isContinuousSpellCheckingEnabled = false; input.isGrammarCheckingEnabled = false
+                input.isAutomaticSpellingCorrectionEnabled = false; input.isAutomaticTextCompletionEnabled = false
+            }
+            if self == .closeSpellDocument || self == .combined {
+                NSSpellChecker.shared.closeSpellDocument(withTag: input.spellCheckerDocumentTag)
+            }
+            if self == .discardMarkedText || self == .combined {
+                input.unmarkText(); input.inputContext?.discardMarkedText()
+            }
+            if self == .retireEditableInput || self == .combined {
+                input.isEditable = false; input.isSelectable = false
+            }
+            if self == .detachTextContainer || self == .combined { input.textContainer?.textView = nil }
+            if self == .cancelDeferredPerforms || self == .combined {
+                NSObject.cancelPreviousPerformRequests(withTarget: input)
+            }
+        }
+    }
+
+    @inline(never)
+    private static func diagnosticCloseCycle(_ capture: CapturedImage, frozenPresentation: Bool,
+                                            intervention: CloseIntervention) throws -> NumberedCalloutCloseProbe {
+        if intervention == .minimalNativeTextView { return try diagnosticNativeTextClose() }
+        return try autoreleasepool {
+            let editor = ImageEditorController(image: capture.image, presentation: frozenPresentation ? capture.presentation : nil,
+                onSave: { _ in }, onPin: { _ in }, onOCR: { _ in }, onApply: { _ in false }, copyAction: { _ in })
+            defer { editor.close() }
+            editor.window?.appearance = NSAppearance(named: .aqua)
+            editor.showWindow(nil); editor.window?.makeKeyAndOrderFront(nil)
+            let canvas = editor.annotationCanvas
+            try choose(.number, editor); try click(canvas, CGPoint(x: 50, y: 50))
+            try press("annotation.numberComment", editor)
+            let input = try unwrap(canvas.activeNumberCommentInput, "Diagnostic comment input missing")
+            let manager = try unwrap(input.undoManager, "Diagnostic local undo manager missing")
+            try require(editor.window?.firstResponder === input, "Diagnostic input did not become first responder")
+            if intervention != .untypedCallout {
+                input.insertText("中 English 👩🏽‍💻", replacementRange: NSRange(location: 0, length: 0))
+                try require(input.string == "中 English 👩🏽‍💻" && canvas.annotations[0].numberComment.isEmpty,
+                            "Diagnostic cycle did not leave uncommitted text")
+            }
+            let probe = NumberedCalloutCloseProbe(editor: editor, input: input, undoManager: manager)
+            editor.close(); probe.didClose()
+            intervention.apply(to: input, undoManager: manager)
+            return probe
+        }
+    }
+
+    @inline(never)
+    private static func diagnosticNativeTextClose() throws -> NumberedCalloutCloseProbe {
+        try autoreleasepool {
+            let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 400, height: 200),
+                styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            defer { window.close() }
+            let content = NSView(frame: CGRect(x: 0, y: 0, width: 400, height: 200))
+            let input = NSTextView(frame: CGRect(x: 10, y: 10, width: 300, height: 100))
+            input.isRichText = false; input.allowsUndo = true
+            content.addSubview(input); window.contentView = content; window.makeKeyAndOrderFront(nil)
+            try require(window.makeFirstResponder(input), "Minimal native input could not become first responder")
+            let manager = try unwrap(input.undoManager, "Minimal native input has no undo manager")
+            input.insertText("中 English 👩🏽‍💻", replacementRange: NSRange(location: 0, length: 0))
+            let probe = NumberedCalloutCloseProbe(editor: nil, input: input, undoManager: manager)
+            window.makeFirstResponder(nil); input.breakUndoCoalescing(); input.allowsUndo = false
+            manager.removeAllActions(); input.delegate = nil; input.removeFromSuperview()
+            window.contentView = nil; window.close(); probe.didClose()
+            return probe
+        }
+    }
+
+    private static func diagnoseCommentClose(_ capture: CapturedImage, frozenPresentation: Bool,
+                                            original: NumberedCalloutCloseProbe, to url: URL) async throws {
+        let deadline = ProcessInfo.processInfo.systemUptime + 20
+        var rows: [[String: Any]] = []
+        var probes: [(name: String, probe: NumberedCalloutCloseProbe)] = [("originalFailure", original)]
+        func persist(status: String) throws {
+            let report: [String: Any] = ["status": status, "acceptanceStatus": "failed", "acceptanceThresholdMilliseconds": 10,
+                "diagnosticOnly": true, "laterReleaseChangesAcceptance": false, "maximumDiagnosticEditors": CloseIntervention.allCases.count,
+                "maximumConcurrentOwnedEditors": 1, "diagnosticDeadlineSeconds": 20, "observations": rows,
+                "maximumTrackedInputs": CloseIntervention.allCases.count + 1,
+                "maximumObservationRows": 3 + CloseIntervention.allCases.count * 4,
+                "remainingInputVariantsAtLastWrite": probes.compactMap { $0.probe.input != nil ? $0.name : nil },
+                "scope": "Owned synthetic typed inputs only; public-API controls, weak object probes and scalar state. No text, screenshots, global input, permissions or preferences. No whole-process leak conclusion."]
+            try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: url, options: .atomic)
+        }
+        func observe(_ probe: NumberedCalloutCloseProbe, name: String, at target: Int) {
+            var row = probe.observation()
+            row["variant"] = name; row["targetMilliseconds"] = target
+            row["remainingInputVariants"] = probes.compactMap { $0.probe.input != nil ? $0.name : nil }
+            row["remainingEditorVariants"] = probes.compactMap { $0.probe.editor != nil ? $0.name : nil }
+            rows.append(row)
+        }
+        observe(original, name: "originalFailure", at: 10); try persist(status: "running")
+        for target in [100, 1000] {
+            try await waitForDiagnosticSample(original, targetMilliseconds: target, deadline: deadline)
+            observe(original, name: "originalFailure", at: target); try persist(status: "running")
+        }
+        for intervention in CloseIntervention.allCases {
+            guard ProcessInfo.processInfo.systemUptime < deadline else { try persist(status: "deadline-reached"); return }
+            do {
+                let probe = try diagnosticCloseCycle(capture, frozenPresentation: frozenPresentation, intervention: intervention)
+                probes.append((intervention.rawValue, probe))
+                for target in [10, 100, 1000] {
+                    try await waitForDiagnosticSample(probe, targetMilliseconds: target, deadline: deadline)
+                    observe(probe, name: intervention.rawValue, at: target); try persist(status: "running")
+                }
+            } catch {
+                rows.append(["variant": intervention.rawValue, "error": error.localizedDescription])
+                try persist(status: "running")
+                if Task.isCancelled { throw error }
+            }
+        }
+        try persist(status: "completed")
+    }
+
+    private static func waitForDiagnosticSample(_ probe: NumberedCalloutCloseProbe, targetMilliseconds: Int,
+                                                deadline: Double) async throws {
+        let now = ProcessInfo.processInfo.systemUptime
+        let target = probe.closedAt + Double(targetMilliseconds) / 1000
+        guard target <= deadline && now < deadline else { throw failure("Comment close diagnostic deadline reached") }
+        if target > now { try await Task.sleep(nanoseconds: UInt64((target - now) * 1_000_000_000)) }
     }
 
     private static func exercise(_ editor: ImageEditorController, directory: URL,
@@ -498,6 +666,93 @@ enum NumberedCalloutAcceptanceFixture {
     private static func require(_ condition: Bool, _ message: String) throws { if !condition { throw failure(message) } }
     private static func unwrap<T>(_ value: T?, _ message: String) throws -> T { guard let value else { throw failure(message) }; return value }
     private static func failure(_ message: String) -> Error { PicShotError.message("Numbered callout fixture: \(message)") }
+}
+
+private struct NumberedCalloutCloseFailure: LocalizedError {
+    let message: String
+    let diagnosticFilename: String?
+    var errorDescription: String? { "Numbered callout fixture: \(message)" }
+}
+
+/// Never owns a tracked object. Stored state contains only scalar values.
+@MainActor
+private final class NumberedCalloutCloseProbe {
+    weak var editor: ImageEditorController?
+    weak var input: NSTextView?
+    weak var window: NSWindow?
+    weak var box: NSView?
+    weak var session: AnyObject?
+    weak var undoManager: UndoManager?
+    weak var textStorage: NSTextStorage?
+    weak var layoutManager: NSLayoutManager?
+    weak var textLayoutManager: NSTextLayoutManager?
+    weak var textContainer: NSTextContainer?
+    weak var activeInputContext: NSTextInputContext?
+    private let beforeClose: [String: Any]
+    private var afterClose: [String: Any] = [:]
+    private(set) var closedAt = ProcessInfo.processInfo.systemUptime
+
+    init(editor: ImageEditorController?, input: NSTextView, undoManager: UndoManager) {
+        self.editor = editor; self.input = input; window = input.window; box = input.superview
+        session = input.delegate; self.undoManager = undoManager
+        textStorage = input.textStorage; textContainer = input.textContainer
+        textLayoutManager = input.textLayoutManager
+        // Never read NSTextView.layoutManager or NSTextContainer.layoutManager:
+        // those accessors can change a TextKit 2 view to compatibility mode.
+        if input.textLayoutManager == nil { layoutManager = input.textStorage?.layoutManagers.first }
+        if let context = NSTextInputContext.current, (context.client as AnyObject) === input { activeInputContext = context }
+        beforeClose = Self.scalarState(input, undoManager: undoManager)
+    }
+
+    func didClose() {
+        closedAt = ProcessInfo.processInfo.systemUptime
+        if let input { afterClose = Self.scalarState(input, undoManager: undoManager) }
+    }
+
+    func observation() -> [String: Any] {
+        autoreleasepool {
+            var result: [String: Any] = [
+                "actualMillisecondsAfterClose": (ProcessInfo.processInfo.systemUptime - closedAt) * 1000,
+                "editorRetained": editor != nil, "inputRetained": input != nil, "windowRetained": window != nil,
+                "boxRetained": box != nil, "sessionRetained": session != nil, "undoManagerRetained": undoManager != nil,
+                "textStorageRetained": textStorage != nil, "layoutManagerRetained": layoutManager != nil,
+                "textLayoutManagerRetained": textLayoutManager != nil, "textContainerRetained": textContainer != nil,
+                "inputContextRetained": activeInputContext != nil,
+                "beforeClose": beforeClose, "immediatelyAfterClose": afterClose
+            ]
+            if let input { result["retainedInputState"] = Self.scalarState(input, undoManager: undoManager) }
+            if let window {
+                var state: [String: Any] = ["visible": window.isVisible, "contentViewPresent": window.contentView != nil,
+                    "delegatePresent": window.delegate != nil, "controllerPresent": window.windowController != nil,
+                    "initialFirstResponderPresent": window.initialFirstResponder != nil,
+                    "firstResponderPresent": window.firstResponder != nil]
+                if let input {
+                    state["firstResponderIsInput"] = window.firstResponder === input
+                    state["initialFirstResponderIsInput"] = window.initialFirstResponder === input
+                }
+                result["retainedWindowState"] = state
+            }
+            return result
+        }
+    }
+
+    private static func scalarState(_ input: NSTextView, undoManager: UndoManager?) -> [String: Any] {
+        ["windowPresent": input.window != nil, "superviewPresent": input.superview != nil,
+         "nextResponderPresent": input.nextResponder != nil, "delegatePresent": input.delegate != nil,
+         "isWindowFirstResponder": input.window?.firstResponder === input,
+         "isWindowInitialFirstResponder": input.window?.initialFirstResponder === input,
+         "isCurrentInputContextClient": (NSTextInputContext.current?.client as AnyObject?) === input,
+         "hasMarkedText": input.hasMarkedText(), "isEditable": input.isEditable, "isSelectable": input.isSelectable,
+         "allowsUndo": input.allowsUndo, "undoGroupingLevel": undoManager?.groupingLevel ?? -1,
+         "undoCanUndo": undoManager?.canUndo ?? false, "undoCanRedo": undoManager?.canRedo ?? false,
+         "enabledTextCheckingTypes": input.enabledTextCheckingTypes,
+         "continuousSpelling": input.isContinuousSpellCheckingEnabled, "grammarChecking": input.isGrammarCheckingEnabled,
+         "automaticSpellingCorrection": input.isAutomaticSpellingCorrectionEnabled,
+         "automaticCompletion": input.isAutomaticTextCompletionEnabled,
+         "usesTextLayoutManager": input.textLayoutManager != nil,
+         "stronglyReferencesTextStorage": type(of: input).stronglyReferencesTextStorage,
+         "containerReferencesInput": input.textContainer?.textView === input]
+    }
 }
 
 /// Deliberately substitutes the copy destination; it verifies responder routing
