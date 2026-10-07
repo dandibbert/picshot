@@ -1,8 +1,16 @@
 # Verification evidence and release boundary
 
-## Accepted ARM 0.12 at 2754b779 build 77
+## Current acceptance: ARM 0.13 and Intel 0.11
 
-**ARM 0.12.0/build 77**, full source [2754b77954415a8273c14a7fe5245330bec39996](https://github.com/dandibbert/picshot/commit/2754b77954415a8273c14a7fe5245330bec39996), passes terminal-success [job 112730667449](https://github.com/dandibbert/picshot/actions/runs/37602641265/job/112730667449) in run 37602641265. Intel remains accepted 0.11.0/build 69 at 3f013417; do not transfer ARM evidence. Current records below supplement every preserved older measurement/requirement. Acceptance is separate from Library persistence/user delivery. ARM DMG/ZIP replacements are confirmed at Library version 10 and the same guide at version 18, 92,739 bytes, SHA-256 `77c28c90b6cbe0ba3efc5f9fff072ca3d90b4daa56d2ac9df72afd791c6fe0c8`. All three files were saved; delivery was confirmed at 10:22:57 UTC on 7 October. Intel's first ordinary-suite attempt reached the unchanged 420-second cap after 1,157 cases without an assertion failure; no pass is claimed, and one unchanged-source retry is pending.
+**ARM 0.13.0/build 85 at [fa4cb0ad742e89c9235cfea2eef6b5d7840a78a9](https://github.com/dandibbert/picshot/commit/fa4cb0ad742e89c9235cfea2eef6b5d7840a78a9) has passed native and actual installed ZIP/DMG acceptance**, with terminal-success [ARM job 112836654128](https://github.com/dandibbert/picshot/actions/runs/37634321240/job/112836654128) in [run 37634321240](https://github.com/dandibbert/picshot/actions/runs/37634321240). All 1,391 discovered/selected ordinary tests complete: **1,388 passed + 3 documented pre-model skips**, zero failures. Two disjoint ordinary processes cover 684/707 cases in 227.110/169.333 s; focused processes pass 462/440, **902 total**, in 218.953/160.274 s. Each retains the original 420-second cap. **12 actual-weight model tests pass** after weights are supplied. Full/focused/model suites overlap and are not an additive distinct-test total.
+
+Both installed formats independently pass exact-source startup/visible UI, annotation modules and separate 2+12 annotation resources, prior applicable feature/model and cleanup gates. Narrow ARM ANN-03/04/05/07 classifications become Code; ANN-06 lacks standalone-arrow comments and ANN-08 lacks a cross-document global counter, so both stay Partial. ARM's 124 behavior rows are **56 Code / 57 Partial / 11 Missing**. Intel remains independently accepted **0.11.0/build 69/source 3f013417: 50 Code / 61 Partial / 13 Missing**. Intel fa4 fails the existing synthetic GIF readiness assertion in its first 462-test focused process; the second focused, ordinary/full, model and final installed stages are unrun. Early Intel annotation success does not replace those missing gates. The nine macOS-context rows remain **4 Partial / 0 Missing / 4 Platform / 1 permissions note**, and all **133 original IDs, requirements, acceptance checks and citations remain**. Code is a source classification, not a complete-parity or physical-device acceptance claim.
+
+**ARM 0.13 persistence and delivery are separately confirmed.** ARM DMG and ZIP were saved at Library version 11 and the same complete guide at version 19 (116,686 bytes; SHA-256 `3ba567e3116035cac00720fb6219eab78edd89b4e6a779a5e5b7a092b57d1cf7`). DMG and guide were delivered at **15:02:56 UTC on 7 October 2026**; the ZIP save is confirmed, but that message did not deliver the ZIP. This persistence/delivery record is distinct from native/package acceptance. Intel remains the previously accepted/delivered 0.11/build 69. The 0.12 and earlier records below retain their historical source/workload scope. Production decoding is unchanged; ordinary-export backing growth remains unresolved, with final installed existing-format RSS growth +12,976,128 ZIP / +16,564,224 DMG bytes and positive final intervals. Physical Retina/multiple displays/Spaces/TCC/external applications, broad-input quality, sustained stability and full PixPin parity remain open.
+
+## Historical accepted ARM 0.12 at 2754b779 build 77
+
+**ARM 0.12.0/build 77**, full source [2754b77954415a8273c14a7fe5245330bec39996](https://github.com/dandibbert/picshot/commit/2754b77954415a8273c14a7fe5245330bec39996), passes terminal-success [job 112730667449](https://github.com/dandibbert/picshot/actions/runs/37602641265/job/112730667449) in run 37602641265. Intel remains accepted 0.11.0/build 69 at 3f013417; do not transfer ARM evidence. These historical 0.12 records supplement the preserved older measurements/requirements. Acceptance is separate from Library persistence/user delivery. ARM DMG/ZIP replacements are confirmed at Library version 10 and the same guide at version 18, 92,739 bytes, SHA-256 `77c28c90b6cbe0ba3efc5f9fff072ca3d90b4daa56d2ac9df72afd791c6fe0c8`. All three files were saved; delivery was confirmed at 10:22:57 UTC on 7 October. Intel's original main job 112730667468 reached the unchanged 420-second ordinary-suite cap after 1,157 cases without an assertion failure. Unchanged-source main-job rerun 112745231497 in run 37602641265 failed with a GIF readiness assertion and a focused-suite 420-second timeout after 514 completed cases. The separate diagnostic retry 112745231096 had 134 tests, one GIF readiness failure and no timing matrix. Both retries failed; neither is pending or establishes Intel 0.12 acceptance.
 
 Downloaded QA artifact **11475281086** contains ordinary/focused/model logs and `evidence/zip` plus `evidence/dmg`. Ordinary tests: **1,321 total, 1,318 passed, 3 intentional pre-model skips, zero failures**. Focused: **850 passed**. Actual-model stage: **12 passed**, zero failures. Wrapper durations **338.553/311.747 seconds**, exit 0, original **420-second** caps, no forced signal or truncated logs. Suites overlap. Runtime: **macOS 15.7.9 (24G830), Xcode 16.4, SDK 15.5**; minimum macOS 14 runtime remains unverified.
 
@@ -102,7 +110,7 @@ Limits remain 20 MP and 8192 pixels per side, 3–512 pixels per seed side, 24 r
 
 ## Retained accepted 0.11 and earlier versioned history
 
-ARM 0.11 below is historical; Intel 0.11 is still the current independently accepted Intel baseline. Every earlier version/hash/run/resource scope remains intact and does not substitute for the current ARM 0.12 evidence.
+ARM 0.11 below is historical; Intel 0.11 is still the current independently accepted Intel baseline. Every earlier version/hash/run/resource scope remains intact and does not substitute for the current ARM 0.13 evidence.
 
 
 Reviewed **7 October 2026**. **Accepted ARM and Intel are 0.11.0/build 69 at [3f013417](https://github.com/dandibbert/picshot/commit/3f013417a4bc4e88faa70f0db2ceb61ad2a82b20)**, with independent terminal-success [ARM job 112669106502](https://github.com/dandibbert/picshot/actions/runs/37583758175/job/112669106502) and [Intel job 112669106178](https://github.com/dandibbert/picshot/actions/runs/37583758175/job/112669106178) in run 37583758175. Both architectures have their own exact-source 1,239 ordinary/781 focused/12 real-model and actual ZIP/DMG evidence below. Both architectures’ DMG/ZIP replacements are confirmed at Library version 9, and the combined guide is confirmed at version 17, SHA-256 045b8e5a7254f044eb705619969e658109a039b13c5fb5bd153492398ee88fa3. All saves succeeded with local metadata applied; saving was verified separately from native/package gates. Historical ARM/Intel 0.10, b44c1fb and undelivered ac8 records remain preserved. Native/package acceptance is not full parity, real-device acceptance or leak freedom. All **133 requirements** remain in [PARITY.md](PARITY.md).
@@ -884,3 +892,292 @@ The unchanged repeated-run regression envelopes are **384 MiB sampled peak growt
 User-TCC grant/deny/revoke/relaunch; real application capture; physical multi-monitor/mixed Retina/negative-origin/display-removal flows; complete capture → annotate → copy/export → pin → OCR → history paths; system/microphone audio sync and sustained recording; real camera selection/disconnect/indicator shutdown and overlay exclusion; Retina/user-desktop annotation effects; visible-preview force-kill, power loss and storage-removal recovery; long scrolling and prolonged resource use; broad multilingual/table/formula/inpainting/barcode quality; real Apple language download/translation; independent Office/export interoperability; sustained isolated-GIF resource behavior and every remaining parity-row requirement. Historical 0.6 introduced the narrow arcs/polylines, image-pin text selection and scroll-editing evidence above, with the final localized/composited window snapshots. App-identical Intel 0.6 passed its own final pipeline and both installed formats; physical external-app drag, direct Copy and >800 px scaled-preview equality remain unverified. ARM and Intel 0.7 presets/export/barcode work now pass their independent native and both-format installed gates; actual AX/real-device acceptance remains open. Click/scroll/keystroke effects, transparent/broader animation input, broader exceptional GIF cleanup and sustained codec resources remain open alongside all other Missing/Partial features; the specific outer-trim regression has source-qualified b44c1fb evidence. ARM/Intel 0.8 adds verified still WebP/AVIF and bounded recording WebP as qualified above; ARM/Intel b44c1fb Save/Retry and scoped GIF-stage changes now have independent native acceptance; broader real-device/exceptional cases and sustained resources remain open.
 
 CI does not grant the user's OS permissions or modify permission databases. Packages are ad-hoc signed and **not notarized**; integrity checks do not establish publisher identity or Gatekeeper acceptance. Missing/Partial requirements remain in scope. No full-parity, zero-leak, universal latency or whole-device memory claim is made.
+
+## Accepted ARM 0.13 verification at fa4cb0ad
+
+This local documentation proposal records completed exact-source ARM native/package acceptance and the separately confirmed Library saves and DMG/guide delivery above. Every older version/source/resource record remains intact except the explicitly corrected Intel 0.12 retry outcome. Current application source is [fa4cb0ad742e89c9235cfea2eef6b5d7840a78a9](https://github.com/dandibbert/picshot/commit/fa4cb0ad742e89c9235cfea2eef6b5d7840a78a9), 0.13.0/build 85. Earlier 7c2f/build 84 observations below retain their historical source boundary. Terminal-success ARM job 112836654128, run 37634321240, macOS 15.7.9 (24G830), Xcode 16.4/macOS SDK 15.5. The preceding confirmed delivery was ARM 0.12/build 77 at 2754b779 and Intel 0.11/build 69 at 3f013417.
+
+### Exact artifacts and independent final gates
+
+| Architecture | ZIP filename/bytes/SHA-256 | DMG filename/bytes/SHA-256 | Metadata filename/bytes/SHA-256 |
+| --- | --- | --- | --- |
+| ARM | PicShot-0.13.0-macos-arm64.zip; 17,868,864 bytes; SHA-256 cd09788278f67166824a5047d630a4ba72f4e4a9b601fe785bbfd1eb673a223e | PicShot-0.13.0-macos-arm64.dmg; 20,648,215 bytes; SHA-256 dcce2c0e948949e454876b4f6b41ca073a9efaa18c9a6977b88872249571729c | PicShot-0.13.0-macos-arm64.build-info.json; 177 bytes; SHA-256 a70f9931654a020cce9fce302512de9dfaaae900a3226d204d38f2b701f671bf |
+| Intel | No accepted 0.13 package; current accepted 0.11 bytes retained above | No accepted 0.13 package; current accepted 0.11 bytes retained above | No accepted 0.13 artifact identity |
+
+Actual bytes/sidecars, ZIP CRC, DMG verification, embedded/external metadata equality, Info.plist full source/version/build, Mach-O and signing: Actual ARM files recomputed to the stated bytes/SHA-256; ZIP CRC passes; ZIP embedded metadata equals external 177-byte metadata; Info.plist agrees on full source, version 0.13.0/build 85 and macOS 14 minimum. Native packaging log verifies the DMG checksum and the successful smoke workflow checks installed architecture/ad-hoc signature/startup. These are integrity/source checks, not Developer ID, notarization or Gatekeeper acceptance. Minimum macOS 14, Developer ID/notarization/Gatekeeper and real-device acceptance require direct evidence. Library persistence/delivery is separate from all native/package checks.
+
+Full and focused selections each use two deterministic disjoint class-grouped processes from actual `swift test list --skip-build` discovery, each bounded at 420 seconds; overall job 60 minutes. It is not one shared-process whole-suite run. Preserve discovery/plan hashes, exact selected IDs, filters, unique start/completion coverage, untruncated logs, unchanged limits and only the three explicitly permitted pre-model skips. Failed/partial shards do not form a pass. Full/focused overlap, so totals are not additive.
+
+| Architecture/suite | Discovery/plan | Process 0 count/skips/failures/time/exit | Process 1 count/skips/failures/time/exit | Exact coverage |
+| --- | --- | --- | --- | --- |
+| ARM full | fa4: 1,391 discovered/selected. Discovery SHA-256 `34f3ba02decce880bce9af3ff2c016c665a01ad0897cf6ee84889dc4347641af`; full plan SHA-256 `08887742d48f84743b0b7299e14fa35dfb3b3f1e2842a111ab3de121d4a50fab` | 684 selected: 683 passed, 1 named pre-model skip, 0 failures; 227.110 s; exit 0; original 420 s cap; no forced signal/truncation | 707 selected: 705 passed, 2 named pre-model skips, 0 failures; 169.333 s; exit 0; original 420 s cap; no forced signal/truncation | 1,391/1,391 selected IDs completed once: 1,388 passed and exactly 3 approved pre-model skips, zero failures; two disjoint processes |
+| ARM focused | fa4: 1,391 discovered; 902 selected. Discovery SHA-256 `34f3ba02decce880bce9af3ff2c016c665a01ad0897cf6ee84889dc4347641af`; plan SHA-256 `577b1bac6b0e81664acb248d8096606a7ba3f1962cd7b04bad4c6d456626fd35` | 462 passed, 0 skipped/failed; 218.953 s; exit 0; original 420 s cap; no forced signal/truncation | 440 passed, 0 skipped/failed; 160.274 s; exit 0; original 420 s cap; no forced signal/truncation | 902/902 selected IDs passed once across disjoint processes; no skips. Discovery count is not ordinary-suite acceptance |
+| Intel full | Unrun after first focused-process failure | Unrun | Unrun | No ordinary/full acceptance |
+| Intel focused | First 462-case process reached an existing synthetic GIF readiness failure | Failed; no replacement or relaxed threshold counted as a pass | Unrun | No full focused acceptance |
+
+Actual-weight models: ARM model-inference.log records 12 tests passed, zero failures/skips, 32.234 s Selected tests elapsed; real formula/table/smart-erase weights were supplied. These overlap ordinary/focused suites; Intel model stage unrun. Each actual ZIP/DMG's startup/visible UI/LaunchServices, prior annotation/recognition/OCR/mosaic/save/codec/pin/group/recording/model/recovery/cleanup gates: ARM actual ZIP and DMG each have source-bound launch.json status passed and native checker success for OCR, automatic mosaic, annotation inventory/native assertions and prior evidence fields, including models/save/codec/pin/group/recording/cleanup. Own-child recovery is separately passed. Own-app AX remains skipped for missing existing Accessibility permission; full GIF stress remains ZIP-only. Preserve architecture-specific evidence, existing AX/no-permission skips and ZIP-only full GIF stress.
+
+### Early ARM and Intel annotation evidence and their limits
+
+The supplied early combined report binds source 7c2f7e71481e8da2bdcace4353268aba67c922cd, version 0.13.0/build 84 and its child reports. Freehand, text/line and callout status are passed; `includeResourceCycles=false`, resource status is not-run and measured/render cycles are zero. This is an early functional result only. The callout report is 12,083 bytes, SHA-256 `03f3d7ccaab8d8a6df9ed49e56b9c35955adbbecf7e5231f4d7def8b1dcb081a`, also bound by the combined report's hash inventory. Twelve controllers close/release. Save-active-comment, owned-window text focus/undo/copy, zoom geometry, source preservation, native Apply/PNG, four edges and repeated cleanup checks are true. No screenshot visual review is newly claimed by this documentation recovery.
+
+Contract identity is `owned-graph-prompt_native-input-deadline-v2`, with scheduled owner check 10 ms, poll interval 10 ms and separate strict per-input/context deadline 2,000 ms. All six rapid-cycle reports track required owner/text backing and a context; TextKit 2 is tracked, TextKit 1 is not. All synchronous and prompt owner/backing survivor counts are zero. Times below are milliseconds after the corresponding close, computed from raw monotonic fields; first-observed nil is an observation bound, not exact destruction latency.
+
+| Cycle | Actual prompt time | Last observed retained | First observed nil |
+| --- | --- | --- | --- |
+| 1 | 53.311625 | 865.111167 | 1210.922167 |
+| 2 | 34.721458 | 770.775125 | 1117.224083 |
+| 3 | 34.678750 | 726.938708 | 1144.222458 |
+| 4 | 35.407542 | 799.140250 | 811.650750 |
+| 5 | 36.450708 | 500.929083 | 513.058417 |
+| 6 | 37.494208 | 492.573458 | 503.677750 |
+
+Peak pending inputs/contexts are three each, final counts zero, with zero retained owned-graph objects in all aggregate samples. New cycles overlap earlier retirement; observed close-to-close intervals include editor construction/typing, so nominal 10 ms polling does not mean a new editor every 10 ms. The six-cycle workload is a fixture bound, not an application-wide quota. `zeroLeakClaim=false`; resource cycles are absent.
+
+Historical boundary: e981/build 81 failed both combined annotation gates, with ARM dark-blend failure and both typed-close failures after six initial editors. 906 corrected reversal/teardown ordering and passed ARM highlighter but still failed early input lifetime. 307e824ac4654931f7c4caeb0a8e33a961f2e685/run 37626674223 failed both old scheduled-10-ms all-object gates. Its 12 cases × 3 samples per architecture showed owners gone first, native input/context alive at nominal 10/100 ms and gone by nominal 1,000 ms even for plain AppKit/untyped controls; only isolated/combined container disconnection released the storage/TextKit-2-layout/container graph from the first sample. The last nominal-one-second observations were 1,059.996625 ms ARM / 1,052.013021 ms Intel. The 20-second diagnostic neither identifies a native retainer nor establishes indefinite graph leakage or whole-process stability. Later release never converts that failed old contract into a pass. [AnnotationCalloutClose307.md](AnnotationCalloutClose307.md) preserves the original source/artifact boundary.
+
+At 7c2f terminal comment close captures accepted text/geometry before disconnecting the text container. The two-phase contract is intentionally different: prompt application-owner/backing lifetime versus separately bounded framework input/context retirement. Final native regression, external checker and each actual installed-format result must agree on its name, object graph, actual monotonic times and deadlines; never hide the change as a longer old sleep. Early ARM success does not transfer to Intel or final ZIP/DMG.
+
+- Final identity/source/checker/architecture/install agreement: Both final installed ARM reports pass owned-graph-prompt_native-input-deadline-v2; combined launch reports bind the same callout child reports and 40-file inventory. The external installed checker validates native flags, contract/timing/resource fields and integrity; it is not a second renderer
+- Final synchronous/prompt owner/backing probes and actual elapsed times: Every final ZIP/DMG synchronous and actual prompt sample has zero retained owners/text-system objects; exact per-cycle actual elapsed times appear in the final lifecycle table below. Nominal scheduled delay remains 10 ms, not an exact physical elapsed promise
+- Final per-input/context close/deadline/last-retained/first-nil samples and strict result: Every input/context first-nil observation is below its own strict 2,000-ms deadline; exact close/deadline/last-retained/first-nil fields appear below. First-observed nil bounds sampled retirement, not exact destruction latency
+- Final six-cycle cadence/pending identities/overlap/peak/end-zero evidence: Both formats complete six rapid typed closes with overlapping pending identities, 12 total closed/released controllers; ZIP peak input/context 3/3, DMG 4/4, both final 0/0. Cadence and pending identities are separately tabulated below; six is a fixture bound, not an application-wide quota
+
+### Latest source and superseded native stages
+
+7c2f ARM's first focused process executed 462 tests and failed two assertions in one invalid-cycle test because the emitted `1 through 6` wording did not match the expected `1...6`. Remaining focused/full/model/final-installed stages did not run. The 7c2f Intel job was superseded during debug compilation. These source-qualified stage outcomes do not invalidate the separately recorded early functional observations, and those observations do not establish acceptance.
+
+Latest candidate [fa4cb0ad742e89c9235cfea2eef6b5d7840a78a9](https://github.com/dandibbert/picshot/commit/fa4cb0ad742e89c9235cfea2eef6b5d7840a78a9), [run 37634321240](https://github.com/dandibbert/picshot/actions/runs/37634321240), applies the one-line message correction to `Close fixture requires 1...6 cycles`. It does not change the deadline or weaken the assertion. Current-source ARM focused coverage and both early UI modules now pass as recorded in the verified partial-evidence section. ARM ordinary/full coverage now passes as recorded below. Its ARM actual-model and both final installed gates subsequently passed, as recorded above. Intel failed its first focused process; only the four source-qualified ARM row classifications change.
+
+### Independent Intel early 7c2f lifecycle observations
+
+Intel's supplied combined report independently binds the same 7c2f source/version 0.13.0/build 84, all three passing modules and `includeResourceCycles=false`. Its callout report is 12,193 bytes, SHA-256 `c671fb5f7f8a17c66dfe68158eb0dc38c807ca995fc78f5df927fea9ab633f77`, bound by the combined 40-file hash inventory. All 12 controllers close/release, six rapid cycles satisfy the same explicitly named v2 contract, all synchronous/prompt owner and text-backing counts are zero, peak pending inputs/contexts are two each, and final counts are zero. This is independent early Intel functional evidence, not final installer, full native or resource acceptance.
+
+| Cycle | Actual prompt after close ms | Last observed retained ms | First observed nil ms |
+| --- | --- | --- | --- |
+| 1 | 48.103685 | 632.377935 | 1184.727924 |
+| 2 | 52.157932 | 604.507921 | 1070.760687 |
+| 3 | 50.458258 | 516.711024 | 1001.291005 |
+| 4 | 43.785482 | 528.365463 | 996.217224 |
+| 5 | 42.109911 | 509.961672 | 520.538153 |
+| 6 | 43.390088 | 494.484535 | 504.854736 |
+
+Actual prompt observations span 42.109911–52.157932 ms and first-observed nil spans 504.854736–1184.727924 ms. The same sampling, framework-retirement, cycle-cadence and zero-leak limitations apply independently. Source-qualified early results are never transferred to fa4cb0ad or final actual ZIP/DMG.
+
+### Required final functional evidence
+
+Final 40-file inventory/child report binding/SHA-256/PNG integrity/native flags/checker: Both final reports pass with includeResourceCycles=true, all three native modules passed, exactly 40 file hashes per format, byte-exact nested child binding and verified PNG integrity. Combined/callout/launch hashes are tabulated below; native checker success appears twice in smoke.log. Inventory and hash integrity are not an independent renderer or independent semantic image comparison; semantics are asserted natively.
+
+Freehand final tests, visuals, mouse-up/Shift/zoom/smoothing/limits/legacy/redaction/eraser/cancel and PNG results: Both final ARM freehand modules pass pencil/highlighter/point-limit/four-edge controls and PNG checks: draft exclusion, mouse-up endpoint, mid-stroke Shift, smoothing history, visible tiny marks, two undo/redo rounds, reversal ink/blending, bounds/disclosed simplification, cancel/tool-switch and release. Full native suite covers analytic reversal, zoom/legacy/redaction/eraser behavior; physical strokes and broad readability remain unverified. Text/line continued multilingual input/outline/background/wrap/rotation/zoom/cancel/redo, five endpoint forms/caps/joins/short or degenerate paths/opacity/eraser bounds/PNG: Both final ARM text-line modules pass continued multilingual inline editing, independent outline/background, identity/rotation, native endpoint/stroke controls, four-node edits, draft/cancel/redo preservation, once-composited opacity and exact PNG roundtrip in light/dark/edges. Native suite covers five endpoint forms/caps/joins/short or degenerate paths and eraser bounds. Active input remains unrotated; physical Retina/broad typography remain open. Numbered manual values/decimal-alpha-Roman/document independence/renumber/delete-gap/undo/exhaustion/comment-leader association/move-resize-rotate/cancel/save pixels: Both final ARM callout reports pass manual seven, per-document numbering, alphabetic/Roman values, multilingual comments, exhaustion, renumber/delete/undo, associated leader move/resize/rotate/cancel, Apply and exact PNG/canvas checks; standalone-arrow comments and global cross-document numbering remain absent.
+
+Save-active-comment/text-focused copy-undo/anisotropic zoom geometry: Both final formats set activeCommentSaveAndCommandSPreparedPixelsPreserveMosaicGate, windowTextUndoRedoCopyAndCancelStayWithTextResponder and resizedCommentPreservesImageGeometryAcrossZoomAndResize true. Three reversal and two typed-close regressions, actual discovered IDs and results: All five discovered regressions pass in exact-source ARM native logs: AnnotationFreehandTests/testSmoothedReversalDarkPixelsBlendOnceAndPreserveOutside, testSmoothedReversalRetainsAnalyticTurnAcrossAxesAndDirections, testUnequalCollinearReturnUsesQuadraticExtremumAndNotControlPoint; NumberedCalloutInteractionTests/testTypedCommentCloseReleasesFrozenAndNormalEditorsRepeatedly and testTypedCommentCloseReleasesInputWithWindowAndUndoManagersStillOwned. They are suite members, not additional totals. Light/dark/four-edge geometry and actual screenshot review: Light/dark/four-edge native geometry assertions and screenshot PNG/hash integrity pass. This ledger finalization does not add an independent human-style visual-review claim; screenshot semantics are asserted by native fixtures. Controlled clipboard responders do not establish external-app interoperability. Physical input/Retina/TCC remains untested.
+
+### Final installed ARM annotation resource workload
+
+Final ZIP and DMG each complete two warmups plus twelve measured show/direct-vector-inject/preview/flatten/close cycles on one immutable 720×480 source, five marks and 45 points. Resource injection is not native-gesture/input evidence. Limits: one owned editor, 128 points/mark, 256 points total, 128 UTF-16 units/mark, fixed raster and cooperative 120 seconds. These are small-fixture bounds, not maximum product-capacity tests.
+
+Equal endpoints retain one source and zero editors/output rasters/active jobs; no measured-loop PNG or screenshots, 150 ms settle. Preserve two warmups, all twelve settled endpoints, 14 render hashes/release probes, source before/after hashes, sample failures/successes/timer ticks/peaks/duration and separate final cleanup. Recompute deltas; never combine unlike phases.
+
+| Install | RSS baseline → measured end; delta bytes | Last three RSS increments bytes | Footprint baseline → end; delta; late increments bytes | Sampler / elapsed / separate cleanup |
+| --- | --- | --- | --- | --- |
+| ZIP | 800,473,088 → 798,769,152; -1,703,936 | 0 / 0 / 0 | 136,614,720 → 136,598,336; -16,384; late 0 / 0 / 0 | 106/106 successful RSS/footprint, 91 timer + 15 boundary; peaks 801,554,432/138,154,816; measured 4.410971667 s, total 5.363016625 s; cleanup RSS/footprint 0/0 |
+| DMG | 801,832,960 → 800,030,720; -1,802,240 | -884,736 / 0 / -245,760 | 155,406,976 → 155,259,520; -147,456; late 0 / 0 / -98,304 | 97/97 successful RSS/footprint, 82 timer + 15 boundary; peaks 803,487,744/156,996,224; measured 3.940179667 s, total 4.765176083 s; cleanup RSS/footprint 0/0 |
+
+Intel 0.13 installed annotation resource gates were unrun after its native failure; no ARM values are transferred to Intel.
+
+Full raw resource evidence: All two warmup and twelve measured settled readings, format-specific sampling/cleanup, 14 render hashes/probes, immutable source and lifecycle fields are retained in the final tables and source-bound reports below. Baseline includes earlier combined-process work, not idle application/annotation-only total. The 50 ms sampler retains counts/peaks/endpoints and may miss transients; it excludes WindowServer/GPU. Renderer/CoreText/AppKit caches are not fixture-owned object retention. No pressure/purge/global-setting intervention; `stabilityAssessed=false`. Zero weak references or declining RSS is not plateau, leak freedom, high-resolution or sustained-use proof.
+
+Other exact-source workload/resource/cancellation/cleanup observations, including known ordinary-export backing growth: See the separate exact-source installed workload table below; existing PNG/JPEG/BMP/PDF growth remains positive in both formats and must not be replaced by the negative annotation delta. All older resource measurements retain their source/process/workload/version scope. Production image decoder default is unchanged. fa72569b/run37611362395 has validated matrices but three failed assertions in one lifetime test per 152-test native group; later test-only correction result: ARM native validation at fa4cb0ad: all 14 ImageDecodeTerminationLatchTests pass, including testUnlaunchedAndFailedLaunchReleaseWithoutCallback. This source/architecture-specific result neither retroactively passes fa72569b nor validates Intel or promotes the production decoder. Fixed order/cache/signature timing confound latency attribution and candidate whole-UI peak footprint is higher on both architectures; no universal win or production memory fix. The 37.791 ms late Intel callback does not prove strict three-second readiness.
+
+Final source-qualified row decisions/counts with all 133 original requirements/checks/citations: ARM ANN-03/04/05/07 narrowly become Code: 56 Code/57 Partial/11 Missing behavior rows. ANN-06/08 remain Partial. Intel accepted 0.11 remains 50/61/13. All 133 IDs and original requirements/checks/citations survive. Final Library persistence/delivery, preserving the existing guide identity: Confirmed ARM DMG/ZIP Library version 11; same complete guide identity version 19, 116,686 bytes, SHA-256 3ba567e3116035cac00720fb6219eab78edd89b4e6a779a5e5b7a092b57d1cf7. DMG and guide delivered at 15:02:56 UTC on 7 October 2026. ZIP saved, but not included in that delivery message. This ledger proposal itself has not been published. No full PixPin parity, broad-input quality, physical Retina/multiple displays/Spaces/external-app or sustained-resource claim is implied.
+
+
+
+
+### Final installed report bindings and annotation lifecycle derivation
+
+Every value in this section belongs to ARM fa4cb0ad, 0.13.0/build 85, and its named installed format. Evidence paths are `qa/evidence/{zip,dmg}/annotation-details/annotation-details.json`, the referenced module files, and each format's `launch.json` in the exact-run artifact. Recomputed 40-file inventories and child-report equality pass independently for each format. PNG integrity is not a second renderer or a semantic visual review.
+
+| Install | Combined annotation report SHA-256 | Callout report SHA-256 | Launch report SHA-256 |
+| --- | --- | --- | --- |
+| ZIP | 6351eb010ea0a6cade28aac44fb21ed07e268678ad39cc5791d449a2f6d6915b | dc520b4c37a31c98ada69b9af5543689ba33a590c7931aa5c131c152caa1848c | 565a70c7d4ca520d6ebda80cf80a721ab88eff8334b5506e89e3892e7ae8d1bd |
+| DMG | 258ae3bf033ec812a4f8d611179829f77d742d2d33f14eb6e2ca40639c781d89 | 208506fadcc261a80fa8f408f1e0f028e00989c60829c97fd366b07b1d59e1bd | dc3224bd6a0617e43b0ca56db9981cf5033b47d5783f3f51e23b92bcbdd76c25 |
+
+The callout contract remains `owned-graph-prompt_native-input-deadline-v2`: synchronous and scheduled-10-ms application owner/text-backing checks; separately polled native input/context retirement under each close's strict 2,000-ms monotonic deadline. Every cycle tracks the required owner/backing graph and context, including TextKit 2 (not TextKit 1). All synchronous/prompt survivors are zero. Both installed modules close/release twelve controllers. Times below are derived from the raw monotonic fields; “first nil” is a sampling bound, not exact destruction time.
+
+| Install | Cycle | Close, fixture clock ms | Deadline, same clock ms | Synchronous check after close ms | Actual prompt after close ms | Last retained after close ms | First observed nil after close ms |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| ZIP | 1 | 357.324292 | 2357.324292 | 12.523000 | 28.290375 | 654.483250 | 969.673708 |
+| ZIP | 2 | 677.274833 | 2677.274833 | 9.987000 | 22.937917 | 649.723167 | 1010.955875 |
+| ZIP | 3 | 970.951667 | 2970.951667 | 15.478542 | 40.855875 | 717.279042 | 1012.093708 |
+| ZIP | 4 | 1292.408542 | 3292.408542 | 18.307708 | 34.589458 | 690.636833 | 703.156042 |
+| ZIP | 5 | 1651.483708 | 3651.483708 | 16.950958 | 36.747000 | 491.182083 | 507.100542 |
+| ZIP | 6 | 1959.637625 | 3959.637625 | 8.982625 | 23.407750 | 499.230000 | 515.921792 |
+| DMG | 1 | 236.859833 | 2236.859833 | 9.107833 | 20.624417 | 473.683917 | 693.890125 |
+| DMG | 2 | 463.200375 | 2463.200375 | 11.003875 | 23.186250 | 467.549583 | 698.524917 |
+| DMG | 3 | 690.166917 | 2690.166917 | 8.241167 | 20.376833 | 727.104500 | 740.232958 |
+| DMG | 4 | 910.244500 | 2910.244500 | 9.901667 | 20.505458 | 507.026917 | 520.155375 |
+| DMG | 5 | 1141.286750 | 3141.286750 | 8.285333 | 20.438542 | 496.288542 | 507.996333 |
+| DMG | 6 | 1392.388792 | 3392.388792 | 11.348625 | 24.882625 | 489.679625 | 502.557375 |
+
+ZIP: close-to-close intervals 319.950542, 293.676833, 321.456875, 359.075167, 308.153917 ms; peak pending inputs/contexts 3/3, final 0/0. Prompt pending cycle identities are 1; 1,2; 1,2,3; 2,3,4; 3,4,5; 4,5,6; final sample 2475.559417 ms has empty input/context sets. Every aggregate sample retains zero owned-graph objects.
+
+DMG: close-to-close intervals 226.340542, 226.966542, 220.077583, 231.042250, 251.102042 ms; peak pending inputs/contexts 4/4, final 0/0. Prompt pending cycle identities are 1; 1,2; 1,2,3; 2,3,4; 3,4,5; 3,4,5,6; final sample 1894.946167 ms has empty input/context sets. Every aggregate sample retains zero owned-graph objects.
+
+The new editor's construction/typing contributes to each interval; nominal 10-ms polling never means one new editor every 10 ms. Six rapid cycles are a bounded fixture, not a global live-input quota. No retainer attribution or whole-process stability follows. Historical 307 failures remain failures under their older contract.
+
+### All settled annotation resource endpoints
+
+One immutable 720×480 / 1,382,400-byte source remains at each baseline/end; five marks/45 points are directly injected, not entered through native gestures. Limits are one owned editor, 128 points/mark, 256 points total, 128 UTF-16 units/mark and a cooperative 120-second fixture deadline. Preview/flatten/close runs use 150-ms settling, no PNG encodes/screenshots in the measured loop. The functional/native-input phase is separate.
+
+| Install | Settled endpoint | RSS bytes | Footprint bytes |
+| --- | --- | --- | --- |
+| ZIP | warmup 1 | 800,473,088 | 139,154,240 |
+| ZIP | warmup 2 | 800,473,088 | 136,614,720 |
+| ZIP | measured 1 | 800,473,088 | 136,614,720 |
+| ZIP | measured 2 | 800,489,472 | 136,614,720 |
+| ZIP | measured 3 | 799,801,344 | 136,614,720 |
+| ZIP | measured 4 | 798,916,608 | 136,614,720 |
+| ZIP | measured 5 | 798,916,608 | 136,614,720 |
+| ZIP | measured 6 | 798,769,152 | 136,598,336 |
+| ZIP | measured 7 | 798,769,152 | 136,598,336 |
+| ZIP | measured 8 | 798,769,152 | 136,598,336 |
+| ZIP | measured 9 | 798,769,152 | 136,598,336 |
+| ZIP | measured 10 | 798,769,152 | 136,598,336 |
+| ZIP | measured 11 | 798,769,152 | 136,598,336 |
+| ZIP | measured 12 | 798,769,152 | 136,598,336 |
+| DMG | warmup 1 | 801,832,960 | 161,059,456 |
+| DMG | warmup 2 | 801,832,960 | 155,406,976 |
+| DMG | measured 1 | 801,832,960 | 155,406,976 |
+| DMG | measured 2 | 801,849,344 | 155,357,824 |
+| DMG | measured 3 | 801,849,344 | 155,357,824 |
+| DMG | measured 4 | 801,849,344 | 155,325,056 |
+| DMG | measured 5 | 801,849,344 | 155,357,824 |
+| DMG | measured 6 | 801,849,344 | 155,357,824 |
+| DMG | measured 7 | 801,849,344 | 155,357,824 |
+| DMG | measured 8 | 801,849,344 | 155,357,824 |
+| DMG | measured 9 | 801,161,216 | 155,357,824 |
+| DMG | measured 10 | 800,276,480 | 155,357,824 |
+| DMG | measured 11 | 800,276,480 | 155,357,824 |
+| DMG | measured 12 | 800,030,720 | 155,259,520 |
+
+Each format has 2 warmup +12 measured release probes, all zero retained controllers/canvases/content, and all 14 end states retain exactly one fixed input with zero editors/output rasters/jobs. Source pre/post SHA-256 is `8742f3effbae16bd19fa1fe568aae9dcf12b0d0c2f7e0a40559a92cbc7743800`; all 14 render hashes per format are `a0909abfa68d6f9c378d9cd2001254b4f091e963dd0246f48e70da66b3f49e6f`. Final cleanup RSS/footprint deltas are zero in both. Warmup sampler counts are separately 19/19 RSS/footprint, 15 timer +4 boundary ZIP; 17/17, 13+4 DMG. Warmup peaks are 801,980,416/152,441,664 ZIP and 803,373,056/165,139,072 DMG bytes. Measured counters/peaks appear above; sample failures are zero in all four sampling phases.
+
+The 50-ms sampler retains counts/peaks, not raw timer samples, and may miss transients. Absolute baselines follow earlier combined acceptance work, not clean idle-app or annotation-only total memory. Renderer/CoreText/AppKit caches are outside fixture-owned weak-reference accounting. No pressure, purge or system-setting intervention occurred. `stabilityAssessed=false`, `zeroLeakClaim=false`; negative net values and zero tracked objects do not prove a plateau, native allocator ownership, large-image acceptance or sustained leak freedom.
+
+### Other final-source installed resource scopes and continuing backing growth
+
+All deltas below are bytes at the stated comparable endpoint. Different phases/processes/workloads cannot be added, averaged or attributed to a common allocator. Save uses the first measured job's before-state through the last measured after-state; each warmup remains outside that interval.
+
+| Install | Workload | RSS delta bytes | Late RSS scope / bytes | Footprint delta bytes | Workload boundary |
+| --- | --- | --- | --- | --- | --- |
+| ZIP | Automatic mosaic | +16,384 | +16,384 / +49,152 / -98,304 | -1,228,800 | 2+12 actual matcher/Apply/close; one input, zero editors/jobs; extra cleanup RSS/footprint 0/-1,310,720 |
+| ZIP | Pin OCR | +212,992 | -98,304 / +196,608 / -32,768 | +1,540,096 | 2+12 actual Vision; 14 calls/cache reuses; zero pins/results/jobs; extra cleanup RSS/footprint 0/0 |
+| ZIP | Pin group | +737,280 | 0 / 0 / 0 | +65,536 | 3+20 transforms/undo/inspector/hide/show; four live pins; asset digests unchanged; extra cleanup RSS/footprint -17,285,120/-180,288 |
+| ZIP | Formula pins | +114,688 | -49,152 / 0 / 0 | +163,840 | 2+12 hide/show/close/restore; same live formula endpoint; zero renders in measured loop; cleanup separate |
+| ZIP | Editor/pin lifecycle | +65,536 | last ten 0 | not recorded in this lifecycle metric | 10+40; windows 7→7; zero tracked retained app/content/window objects |
+| ZIP | Save jobs | +327,680 | separate 8 small jobs | +262,144 | 2 warmups +8 measured; jobs, retained input, controllers and owned temporary files clear |
+| ZIP | Static WebP/AVIF | +22,822,912 | no separated phases/warmup | +245,760 | 768×576; 3 cycles/format plus quality/cancel; combined encode/preview/independent-decode/publication |
+| ZIP | PNG/JPEG/BMP/PDF | +12,976,128 | last interval +2,621,440 | -851,968 | 1440×900; 1+4 combined encode/preview/save/cleanup; observed, no stability assessment |
+| ZIP | Full GIF | +16,384 | last interval +16,384 | +229,376 | 1+4, 30 seconds/360 frames at 480×270; export plus serial independent decode; separate cancellation/cleanup. DMG full stress unrun |
+| DMG | Automatic mosaic | +98,304 | 0 / 0 / 0 | -1,638,400 | 2+12 actual matcher/Apply/close; one input, zero editors/jobs; extra cleanup RSS/footprint 0/0 |
+| DMG | Pin OCR | +2,031,616 | +163,840 / +65,536 / +65,536 | +3,194,880 | 2+12 actual Vision; 14 calls/cache reuses; zero pins/results/jobs; extra cleanup RSS/footprint 0/-2,080,768 |
+| DMG | Pin group | +770,048 | -16,384 / 0 / 0 | +327,680 | 3+20 transforms/undo/inspector/hide/show; four live pins; asset digests unchanged; extra cleanup RSS/footprint -17,285,120/-131,072 |
+| DMG | Formula pins | +16,384 | 0 / 0 / 0 | +163,840 | 2+12 hide/show/close/restore; same live formula endpoint; zero renders in measured loop; cleanup separate |
+| DMG | Editor/pin lifecycle | -98,304 | last ten 0 | not recorded in this lifecycle metric | 10+40; windows 7→7; zero tracked retained app/content/window objects |
+| DMG | Save jobs | +360,448 | separate 8 small jobs | +360,448 | 2 warmups +8 measured; jobs, retained input, controllers and owned temporary files clear |
+| DMG | Static WebP/AVIF | +23,789,568 | no separated phases/warmup | +212,992 | 768×576; 3 cycles/format plus quality/cancel; combined encode/preview/independent-decode/publication |
+| DMG | PNG/JPEG/BMP/PDF | +16,564,224 | last interval +4,358,144 | +4,440,064 | 1440×900; 1+4 combined encode/preview/save/cleanup; observed, no stability assessment |
+
+Final existing-format RSS baselines/endpoints are 475,660,288→488,636,416 ZIP and 469,090,304→485,654,528 DMG; growth is +12,976,128 / +16,564,224 bytes (+12.375 / +15.796875 MiB). Last intervals still add +2,621,440 / +4,358,144 bytes. Footprint changes are −851,968 / +4,440,064 bytes, with last intervals −2,834,432 / +2,080,768. Status is observational. Application-owned cleanup and negative annotation changes do not resolve ordinary-export preview/backing accumulation. The separate current-source 33-process diagnostic below narrows operations but identifies no native allocation owner or demonstrated pressure reclamation; production decoding is unchanged.
+
+| Install | Model child | Parent-polled sampled RSS peak bytes | 100 ms RSS samples | Exit | Temporary cleanup |
+| --- | --- | --- | --- | --- | --- |
+| ZIP | formula | 392,790,016 | 10 | 0 | confirmed |
+| ZIP | table | 211,648,512 | 12 | 0 | confirmed |
+| ZIP | smartErase | 1,645,985,792 | 172 | 0 | confirmed |
+| DMG | formula | 320,585,728 | 14 | 0 | confirmed |
+| DMG | table | 231,964,672 | 15 | 0 | confirmed |
+| DMG | smartErase | 1,882,783,744 | 181 | 0 | confirmed |
+
+Every listed model child exits 0 with confirmed temporary cleanup. Parent 100-ms sampling may miss transients and excludes GPU/WindowServer/system services. ZIP-only full GIF stress includes a separate short 1920×1080/12-frame sample, which is not maximum-area/frame-count or sustained evidence; DMG's full GIF resource profile is explicitly not run. Formula pin resource cycles do not perform rendering; group resources retain four live pins until separate cleanup. Physical 1× native displays and synthetic owned events do not establish Retina, multi-monitor/Spaces, TCC or external-app interaction. No full PixPin parity or broad-input quality is claimed.
+
+
+## Additional source-qualified fa4cb0ad evidence and diagnostic boundaries
+
+All observations in this section belong to source `fa4cb0ad742e89c9235cfea2eef6b5d7840a78a9`; annotation packages report 0.13.0/build 85. These results are separate from earlier 7c2f/build 84 and all historical installed measurements. Final ARM acceptance is recorded above. These early/diagnostic observations remain separately scoped and do not substitute for installed evidence or establish persistence.
+
+### ARM discovery-bound focused pass
+
+`critical-tests-report.json` records **902 selected / 902 passed / zero skipped**, from **1,391 discovered tests**. Two disjoint native processes pass: **462 in 218.953 seconds**, then **440 in 160.274 seconds**. Both bounded-runner reports exit 0 at the original 420-second limit, without forced signal or log truncation. Discovery exits 0 in 5.086 seconds under its 60-second limit. The report, plan, raw discovery and both shard-log hashes agree. The discovered total is inventory, not an ordinary-suite pass or an additive focused-plus-full count.
+
+- Focused report SHA-256: `2a7bcd83b35fe06e81d5e56c8fe6d0307c98f79eb5fd26d0f908a13e6896c30e`
+- Discovery log SHA-256: `34f3ba02decce880bce9af3ff2c016c665a01ad0897cf6ee84889dc4347641af`
+- Focused plan SHA-256: `577b1bac6b0e81664acb248d8096606a7ba3f1962cd7b04bad4c6d456626fd35`
+- Process 0/1 log SHA-256: `b495bc3f01f7eff93ccb52615ef024601c0a0d820a4df457ed876b8bbff630b6` / `3eaa3f96566339d765795263dac4fa03a81026ccea285b13d47580921eb094c3`
+
+### Independent build-85 early annotation results
+
+Both current-source early combined reports pass freehand, text/line and callouts, bind their respective 40-file hash inventories, and record `includeResourceCycles=false` with resources not run. Their callout reports each record 12 closed/released controllers and six rapid cycles under `owned-graph-prompt_native-input-deadline-v2`. All synchronous/prompt owner and text-system survivor counts are zero. Contract polling remains 10 ms, the scheduled owner check remains nominally 10 ms with actual times recorded, and native input/context retirement has the separate strict per-cycle 2,000 ms deadline. Final installed ZIP/DMG results are separately recorded above; these early modules performed no resource cycles.
+
+| Architecture | Actual prompt after close range ms | First observed nil range ms | Peak input/context | Final input/context | Callout report SHA-256 |
+| --- | --- | --- | --- | --- | --- |
+| ARM | 20.300958–34.286500 | 504.005542–912.717042 | 3 / 3 | 0 / 0 | `3765e82831accec881e049f6d2b1bb839c75e9caae9d99f0f926daabbcb68b16` |
+| Intel | 37.440164–65.332363 | 511.345398–1478.849134 | 3 / 3 | 0 / 0 | `007cba7620ee7c8c01b57384d6cecec40f5056fb251297144790b3e920318d54` |
+
+ARM and Intel callout reports are 12,413 and 12,489 bytes respectively. Their combined-report SHA-256 values are `d790a165188708c700537529c98ef31d53b46c856ef757ccd89f440a7ce2b4a6` and `3e9418a4a286fb19aaf9bf12cee4d61b203142f5c42a1a67150d9edb3ad862c0`. Per-cycle close/prompt/last-retained/first-nil values remain in the copied reports and the derived partial-evidence manifest. Observed nil times are sampling upper bounds, not exact deallocation latency; cycle construction/typing prevents interpretation as one new editor per 10 ms. Neither bounded object release nor an early gate proves process-memory stability.
+
+### ARM backing attribution remains unresolved
+
+The independent diagnostic artifact is **11489506659**, archive SHA-256 `5b6ab8bf626c42b561d6f742c35cc6fbb0f6ce9335dd375c2aa0c4a3c8a87ffb` (archive identity verified by the parent). The reviewed derived metrics bind all 33 source fields and duplicate launch reports. These are **27 image-backing plus 6 codec controls in 33 fresh app processes**, each with two warmups; 31 controls have 12 measured cycles and two extended AVIF controls have 48: **66 warmups + 468 measured invocations**. Every reported image is **768×576**, using 3,072-byte rows and 1,769,472-byte RGBA stride/reference storage where applicable, **1.6875 MiB**, not a 4K/5K/full-screen or maximum-size workload.
+
+Runtime is ARM64 macOS 15.7.9 (24G830). The 50 ms sampler records 3,121 RSS and 3,121 footprint samples across whole runs, zero recorded failures, 65–228 samples/control and approximately 3.20–11.32 seconds/control. Whole-run counts include warmup and final waits; per-cycle counters must not be added again. This is not Intel evidence or final installed ZIP/DMG resource acceptance.
+
+The following values are **RSS / physical-footprint / volatile-resident growth in MiB after two warmups, at the last measured settled cycle**. RSS/footprint use the fixture's recorded trends; volatile resident uses explicit `TASK_VM_INFO_PURGEABLE` boundaries. These are separately timed, non-atomic observations. Codec recorded trends differ slightly from separately timed backing snapshots; both remain in the derived data rather than silently substituting one for the other.
+
+| Format | Production preview | Independent full decode / PDF page render |
+| --- | --- | --- |
+| PNG | +20.515625 / +0.265686 / +20.250000 | −3.171875 / −0.078125 / +0.000000 |
+| JPG | +20.546875 / +0.296936 / +20.250000 | −3.140625 / −0.046875 / +0.000000 |
+| BMP | +20.437500 / +0.140625 / +20.250000 | +0.156250 / +0.109375 / +0.000000 |
+| PDF | +20.593750 / +0.343811 / +20.250000 | +17.281250 / +0.140686 / +20.265625 |
+| WebP | +23.562500 / +0.234436 / +20.250000 | +0.359375 / −0.062500 / +0.000000 |
+| AVIF | +0.515625 / +7.093750 / +0.000000 | +0.531250 / +7.093750 / +0.000000 |
+
+Native export includes metadata verification and production preview from a persistent snapshot, excluding independent validation/publication. PNG/JPG/BMP/PDF export respectively retains **+22.328125/+20.546875/+25.640625/+24.250000 MiB RSS**, **+1.734436/+0.296936/+3.640625/+0.671936 MiB footprint**, and **+20.25 MiB volatile resident in every format**. Every non-AVIF preview/native-export final-three interval adds exactly **1.6875 MiB volatile resident**. Independent PDF page rendering, fresh-Data PDF preview and WebP decoded-pixel rasterization have the same continuing late growth; accumulated volatile memory survives the additional 0.5-second wait. Volatile classification is observed accounting; actual reclamation under memory pressure was not measured.
+
+Source-create, snapshot-only and persistent synthetic-source raster/digest have zero volatile growth, with RSS growth +0.140625/+0.171875/+1.609375 MiB respectively. WebP full decode with fresh Data adds +3.3125 MiB RSS and zero volatile growth; adding decoded-pixel raster/digest gives +20.25 MiB volatile growth for either fresh or reused Data. This distinguishes materialization from fresh-buffer allocation in this fixture without identifying the allocator owner. PNG/WebP source-local cache removal each runs 14 times including warmup; immediate volatile/nonvolatile-ledger changes are zero, immediate RSS/footprint changes are zero or +16 KiB, and cumulative +20.25/+20.265625 MiB volatile growth remains. No cache-removal remedy is demonstrated.
+
+Codec controls have broader operations than the backing decoder controls: decode-only builds a synthetic reference, reads fresh immutable bytes, full-decodes, rasterizes both rasters and compares every channel at ≤2 tolerance. Export-only retains production PNG staging/preview and helper-preview PNG decode. Combined runs both; export/combined publish, read identical bytes and remove the output.
+
+| Codec workload | RSS / footprint / volatile resident MiB |
+| --- | --- |
+| WebP export-only | +21.421875 / −0.109314 / +20.250000 |
+| WebP decode-only | +28.406250 / +0.281311 / +20.250000 |
+| WebP combined | +49.140625 / −0.171875 / +40.484375 |
+| AVIF export-only | +23.203125 / +0.234375 / +20.250000 |
+| AVIF decode-only | +25.968750 / +6.578125 / +20.250000 |
+| AVIF combined | +45.140625 / −3.031189 / +40.484375 |
+
+Export-only/decode-only each adds 1.6875 MiB volatile in every last-three interval. Combined late increments are WebP [3.375, 3.359375, 3.375] / AVIF [3.375, 3.375, 3.359375] MiB, and +40.484375 MiB persists at the delayed sample. These workloads must not be described as independent backing decode alone.
+
+In four backing AVIF controls, nonvolatile ledger starts at 7.484375 MiB after warmup, rises to 10.859375/14.234375 in measured cycles 1/2, stays 14.234375 through cycle 12 or 48, then falls **6.75 MiB** at the final wait to 7.484375 with matching footprint decline and no RSS decline. Delayed footprint growth remains +0.34375 MiB for the two 12-cycle controls, +0.875 preview / +0.890625 full-decode for 48 cycles; volatile-resident growth is zero in these backing AVIF controls. Codec AVIF decode-only also loses 6.75 MiB footprint/nonvolatile ledger during the final wait but retains +20.25 MiB volatile growth. That temporary nonvolatile decrease does not reclaim preview/PDF or codec raster accumulation.
+
+All 450 image-backing invocations report fixture/autorelease-scope exit and matching work counts; final controller/queue/helper/temp-media counts are zero, while declared persistent source/snapshot/input references intentionally remain. All 84 codec invocations release the weak fixture payload and end with zero controller/queue/task/files and inactive helper. All 56 export invocations confirm child exit/temp-directory removal; all 56 independent decodes compare every pixel/alpha. These are service-level controls with **zero UI controllers created**, not additional UI lifetime proof or ownership accounting for all native allocations.
+
+Serialized Mach records return status 0 and 93 requested natural fields with 16 KiB pages. Ordinary `TASK_VM_INFO` lacks the unqueried volatile fields; explicit `TASK_VM_INFO_PURGEABLE` adds them but does not separately expose its internal query status. Calls are separate and counters process-wide; unavailable values stay missing. This does not locate allocation ownership, prove a plateau or zero leaks, measure actual pressure reclamation, or include GPU/WindowServer/other processes/instantaneous peaks/different images/large inputs/other OS versions/long sessions. Production decoding is unchanged; optional child experiments remain diagnostic.
+
+The complete source/process/format-qualified review and byte-exact derivations are retained under the proposal's reference/evidence files. The installed resource tables above use their own actual ZIP/DMG reports; these independent diagnostics do not fill or replace them.
+
+
+### ARM full native pass and current Intel failure
+
+At fa4cb0ad, ARM's complete native report selects all 1,391 discovered IDs: **1,388 passed, exactly three documented pre-model skips, zero failures**. Process 0 completes 684 tests (683 passed plus the formula-weight skip) in **227.110 s**; process 1 completes 707 (705 passed plus the smart-erase/table-weight skips) in **169.333 s**. Both original 420-second bounded processes exit 0 without forced signals or truncation. Selected IDs are disjoint/complete and discovery/plan/shard hashes agree. Ordinary and focused stages overlap and their totals must not be added.
+
+The three permitted skipped IDs are PicShotEraseHelperTests.SmartEraseEngineTests/testRealCoreMLRemovesMarkedObjectAndPreservesOutsidePixels; PicShotMLHelperTests.FormulaEngineTests/testActualWeightsRecognizeFormulaFixtures; and PicShotTableEngineTests.RecordedModelOutputTests/testNativeHelperWithRealWeightsWhenConfigured. The later detailed model-inference.log independently records 12 actual-weight tests passed, zero failures/skips; both final installed gates are separately verified above. Pre-model skips remain skips and are not retroactively relabeled passes.
+
+Full report SHA-256 is `ec6b460de0455002c7fdcc84efdeb8358ebcbaae4447cf459b1ef216e60ef56d`; full plan is `08887742d48f84743b0b7299e14fa35dfb3b3f1e2842a111ab3de121d4a50fab`. Process 0/1 log hashes are `99785e3ed178c9c130dbcf702e3ad9bec0e4a67046ade3ab353c1dcf0e51c097` / `5aebf0da9257cfafcff583c7f125104d74ca5d39c0c91432ff7cbaf3632b9f3c`. The discovery hash matches the focused plan's earlier recorded inventory.
+
+The raw ARM process-1 log records **all 14 ImageDecodeTerminationLatchTests passed**, including `testUnlaunchedAndFailedLaunchReleaseWithoutCallback`. This establishes current ARM native validation for the later cleanup correction; fa72569b still has its historical three failed assertions in that case. It establishes no Intel latch pass, production-default decoder change, universal latency/memory improvement or backing-growth fix.
+
+Intel fa4cb0ad fails only the existing synthetic GIF readiness assertion in its first 462-test focused process, according to the verified parent status update. The second focused, ordinary/full, model and final-installed stages are unrun. The independently passing Intel early UI report remains partial evidence; it cannot substitute for this failed native gate or borrow ARM's coverage. Latest accepted Intel remains 0.11.0/build 69/source3f013417. ARM final actual ZIP/DMG, model detail, exact bytes and resources have passed. ARM DMG/ZIP saves at version 11 and guide version 19 are confirmed separately; DMG and guide delivery at 15:02:56 UTC on 7 October 2026 is confirmed, with no ZIP delivery claimed for that message.
