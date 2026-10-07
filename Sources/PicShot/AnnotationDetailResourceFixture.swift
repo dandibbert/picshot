@@ -158,13 +158,21 @@ enum AnnotationDetailResourceFixture {
     }
 
     private static func annotations() throws -> [ImageAnnotation] {
-        var pencil = ImageAnnotation(tool: .freehand, points: (0..<24).map {
-            CGPoint(x: CGFloat(28 + $0 * 12), y: CGFloat(390 + ($0 % 4) * 10))
-        })
+        var pencilPoints: [CGPoint] = []
+        for index in 0..<24 {
+            let x: CGFloat = CGFloat(28 + index * 12)
+            let y: CGFloat = CGFloat(390 + (index % 4) * 10)
+            pencilPoints.append(CGPoint(x: x, y: y))
+        }
+        var pencil = ImageAnnotation(tool: .freehand, points: pencilPoints)
         pencil.lineWidth = 6; pencil.freehandSmoothing = true
-        var marker = ImageAnnotation(tool: .highlighter, points: (0..<16).map {
-            CGPoint(x: CGFloat(35 + $0 * 18), y: CGFloat(300 + ($0 % 3) * 8))
-        })
+        var markerPoints: [CGPoint] = []
+        for index in 0..<16 {
+            let x: CGFloat = CGFloat(35 + index * 18)
+            let y: CGFloat = CGFloat(300 + (index % 3) * 8)
+            markerPoints.append(CGPoint(x: x, y: y))
+        }
+        var marker = ImageAnnotation(tool: .highlighter, points: markerPoints)
         marker.lineWidth = 24; marker.freehandSmoothing = true
         marker.highlighterMode = .freehand; marker.highlighterBlend = .multiply
         marker.color = CGColor(srgbRed: 1, green: 0.8, blue: 0.12, alpha: 1)
