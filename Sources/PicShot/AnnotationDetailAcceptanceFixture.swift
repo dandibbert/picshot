@@ -25,15 +25,40 @@ enum AnnotationDetailAcceptanceFixture {
         }
         try write()
         do {
-            let freehand = try await AnnotationFreehandPreviewFixture.verify(evidenceDirectory: evidenceDirectory.appendingPathComponent("freehand"))
-            guard freehand["status"] as? String == "passed" else { throw PicShotError.message("Freehand native checks did not pass") }
-            report["freehand"] = freehand; try write()
-            let textLine = try await AnnotationTextLinePreviewFixture.verify(evidenceDirectory: evidenceDirectory.appendingPathComponent("text-line"))
-            guard textLine["status"] as? String == "passed" else { throw PicShotError.message("Text/line native checks did not pass") }
-            report["textLine"] = textLine; try write()
-            let value = try await NumberedCalloutAcceptanceFixture.verify(evidenceDirectory: evidenceDirectory.appendingPathComponent("callouts"))
-            guard value.status == "passed" else { throw PicShotError.message("Numbered callout native checks did not pass") }
-            report["callouts"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(value))
+            // Each fixture closes its owned windows on failure. Retain independent
+            // diagnostics from the other modules while keeping the combined gate
+            // failed; cancellation never starts another module or resource cycle.
+            var failures: [String] = []
+            do {
+                let child = try await AnnotationFreehandPreviewFixture.verify(evidenceDirectory: evidenceDirectory.appendingPathComponent("freehand"))
+                guard child["status"] as? String == "passed" else { throw PicShotError.message("Freehand native checks did not pass") }
+                report["freehand"] = child
+            } catch {
+                if Task.isCancelled || error is CancellationError { throw error }
+                failures.append(error.localizedDescription); report["freehand"] = ["status": "failed", "error": error.localizedDescription]
+            }
+            try write()
+            do {
+                let child = try await AnnotationTextLinePreviewFixture.verify(evidenceDirectory: evidenceDirectory.appendingPathComponent("text-line"))
+                guard child["status"] as? String == "passed" else { throw PicShotError.message("Text/line native checks did not pass") }
+                report["textLine"] = child
+            } catch {
+                if Task.isCancelled || error is CancellationError { throw error }
+                failures.append(error.localizedDescription); report["textLine"] = ["status": "failed", "error": error.localizedDescription]
+            }
+            try write()
+            do {
+                let child = try await NumberedCalloutAcceptanceFixture.verify(evidenceDirectory: evidenceDirectory.appendingPathComponent("callouts"))
+                guard child.status == "passed" else { throw PicShotError.message("Numbered callout native checks did not pass") }
+                report["callouts"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(child))
+            } catch {
+                if Task.isCancelled || error is CancellationError { throw error }
+                failures.append(error.localizedDescription); report["callouts"] = ["status": "failed", "error": error.localizedDescription]
+            }
+            try write()
+            guard failures.isEmpty else { throw PicShotError.message(failures.joined(separator: "; ")) }
+            let freehand = report["freehand"] as? [String: Any] ?? [:]
+            let textLine = report["textLine"] as? [String: Any] ?? [:]
             if includeResourceCycles {
                 report["resourceEvidence"] = try await AnnotationDetailResourceFixture.verify()
             } else {

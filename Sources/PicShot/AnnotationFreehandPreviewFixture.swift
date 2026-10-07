@@ -172,11 +172,26 @@ enum AnnotationFreehandPreviewFixture {
         let y: CGFloat = 130, end = CGFloat(canvas.image.width) - 40
         try stroke(canvas, [CGPoint(x: 40, y: y), CGPoint(x: end, y: y), CGPoint(x: 40, y: y)])
         guard let mark = canvas.annotations.first, mark.highlighterMode == .freehand, mark.highlighterBlend == .multiply else { throw failure("Highlighter modes were not applied") }
-        let multiply = try digest(raster(canvas))
+        let multiplyImage = try raster(canvas), multiply = try digest(multiplyImage)
         try choose(.select, editor); try clickCanvas(canvas, CGPoint(x: 70, y: y))
+        let selectedBefore = canvas.selectedAnnotation
+        let modelBefore = canvas.annotations.first { $0.id == mark.id }
         try picker("annotation.highlighterBlend", title: AnnotationHighlighterBlend.translucent.title, editor)
-        let translucent = try digest(raster(canvas))
+        let selectedAfter = canvas.selectedAnnotation
+        let modelAfter = canvas.annotations.first { $0.id == mark.id }
+        let translucentImage = try raster(canvas), translucent = try digest(translucentImage)
+        let selectionMatches = selectedBefore?.id == mark.id && selectedAfter?.id == mark.id
+        let modelModesMatch = modelBefore?.highlighterBlend == .multiply && modelAfter?.highlighterBlend == .translucent
+            && modelBefore?.highlighterMode == .freehand && modelAfter?.highlighterMode == .freehand
+        if multiply == translucent || !selectionMatches || !modelModesMatch {
+            try writeHighlighterDiagnostic(canvas, expected: mark, before: modelBefore, after: modelAfter,
+                selectedBefore: selectedBefore, selectedAfter: selectedAfter, multiply: multiplyImage,
+                translucent: translucentImage, y: y, directory: directory)
+        }
+        // Keep the original acceptance condition and failure. Diagnostics do not turn
+        // an unchanged raster into a successful blend check or alter production drawing.
         guard multiply != translucent else { throw failure("Blend control did not change dark background pixels") }
+        guard selectionMatches, modelModesMatch else { throw failure("Blend control did not edit the expected selected highlighter model") }
         try undo(canvas); guard try digest(raster(canvas)) == multiply else { throw failure("Blend undo changed pixels") }
         try undo(canvas, redo: true); guard try digest(raster(canvas)) == translucent else { throw failure("Blend redo changed pixels") }
         try choose(.highlighter, editor)
@@ -190,6 +205,79 @@ enum AnnotationFreehandPreviewFixture {
         try await snapshot(editor, filename: "ui-annotation-highlighter-dark.png", controls: ["annotation.highlighterMode", "annotation.highlighterBlend", "annotation.pencilSmoothing", "annotation.pencilConstraint"], directory: directory)
         return ["nativeControlsReachable": true, "freehandAndRectangleReachable": true, "blendChangesDarkPixels": true,
                 "selectedBlendUndoRedoExact": true, "rectangleHidesStrokeOnlyControls": true]
+    }
+
+    /// Failure-only, bounded evidence: two existing <=4MP rasters, 8 pixel probes,
+    /// <=16 model samples and <=32 path elements. This is fixture instrumentation.
+    private static func writeHighlighterDiagnostic(_ canvas: ImageEditorCanvas, expected: ImageAnnotation,
+        before: ImageAnnotation?, after: ImageAnnotation?, selectedBefore: ImageAnnotation?, selectedAfter: ImageAnnotation?,
+        multiply: CGImage, translucent: CGImage, y: CGFloat, directory: URL) throws {
+        func geometry(_ annotation: ImageAnnotation?) -> [String: Any] {
+            guard let annotation else { return ["missing": true] }
+            let path = annotation.freehandPath, ink = annotation.freehandInkPath()
+            var elements: [[String: Any]] = [], elementCount = 0
+            path.applyWithBlock { pointer in
+                let element = pointer.pointee
+                elementCount += 1
+                guard elements.count < 32 else { return }
+                let count: Int
+                switch element.type {
+                case .moveToPoint, .addLineToPoint: count = 1
+                case .addQuadCurveToPoint: count = 2
+                case .addCurveToPoint: count = 3
+                case .closeSubpath: count = 0
+                @unknown default: count = 0
+                }
+                elements.append(["type": Int(element.type.rawValue),
+                                 "points": (0..<count).map { NSStringFromPoint(element.points[$0]) }])
+            }
+            return ["id": annotation.id.uuidString, "tool": annotation.tool.rawValue,
+                    "highlighterMode": annotation.highlighterMode.rawValue, "blend": annotation.highlighterBlend.rawValue,
+                    "smoothing": annotation.freehandSmoothing, "constraintDegrees": annotation.freehandConstraint.rawValue,
+                    "pointCount": annotation.points.count, "points": Array(annotation.points.prefix(16)).map(NSStringFromPoint),
+                    "cornerCount": annotation.freehandCorners.count, "corners": Array(annotation.freehandCorners.prefix(16)),
+                    "lineWidth": Double(annotation.lineWidth), "effectiveWidth": Double(annotation.effectiveFreehandWidth),
+                    "opacity": Double(annotation.opacity), "colorComponents": (annotation.color.components ?? []).map { Double($0) },
+                    "rotation": Double(annotation.rotation), "localBounds": NSStringFromRect(annotation.localBounds),
+                    "strokeBounds": NSStringFromRect(path.boundingBox), "strokeBoundsOfPath": NSStringFromRect(path.boundingBoxOfPath),
+                    "inkBounds": NSStringFromRect(ink.boundingBoxOfPath), "inkIsEmpty": ink.isEmpty,
+                    "pathElementCount": elementCount, "pathElements": elements]
+        }
+        let width = CGFloat(canvas.image.width)
+        let locations: [(String, CGPoint)] = [
+            ("selection-white", CGPoint(x: 70, y: y)),
+            ("white-near-boundary", CGPoint(x: width / 2 - 16, y: y)),
+            ("dark-near-boundary", CGPoint(x: width / 2 + 8, y: y)),
+            ("dark-quarter-stroke", CGPoint(x: width * 0.625, y: y)),
+            ("dark-smoothed-turn", CGPoint(x: width * 0.75 - 20, y: y)),
+            ("dark-original-turn", CGPoint(x: width - 40, y: y)),
+            ("white-off-stroke", CGPoint(x: 70, y: y + 20)),
+            ("dark-off-stroke", CGPoint(x: width * 0.625, y: y + 20))
+        ]
+        let samples: [[String: Any]] = try locations.map { name, point in
+            let beforePoint = before.map { point.applying($0.transform.inverted()) } ?? point
+            let afterPoint = after.map { point.applying($0.transform.inverted()) } ?? point
+            return ["name": name, "point": NSStringFromPoint(point),
+                    "sourceRGBA": try pixel(canvas.image, point), "multiplyRGBA": try pixel(multiply, point),
+                    "translucentRGBA": try pixel(translucent, point),
+                    "beforeInkContains": before?.freehandInkPath().contains(beforePoint) ?? false,
+                    "afterInkContains": after?.freehandInkPath().contains(afterPoint) ?? false]
+        }
+        let beforeName = "highlighter-blend-before.png", afterName = "highlighter-blend-after.png"
+        try checkSize(multiply.width, multiply.height); try checkSize(translucent.width, translucent.height)
+        try multiply.writePNG(to: directory.appendingPathComponent(beforeName))
+        try translucent.writePNG(to: directory.appendingPathComponent(afterName))
+        let report: [String: Any] = [
+            "schemaVersion": 1, "status": "failed", "diagnosticOnly": true,
+            "expectedID": expected.id.uuidString, "selectedBeforeID": selectedBefore?.id.uuidString ?? "none",
+            "selectedAfterID": selectedAfter?.id.uuidString ?? "none", "activeTool": canvas.tool.rawValue,
+            "annotationCount": canvas.annotations.count, "width": canvas.image.width, "height": canvas.image.height,
+            "sourceSHA256": try digest(canvas.image), "multiplySHA256": try digest(multiply), "translucentSHA256": try digest(translucent),
+            "before": geometry(before), "after": geometry(after), "selectedBefore": geometry(selectedBefore), "selectedAfter": geometry(selectedAfter),
+            "samples": samples, "files": [beforeName, afterName], "maximumRasterPixels": maximumPixels,
+            "scope": "Original synthetic highlighter fixture; diagnostic probes do not change model or rendering"]
+        try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+            .write(to: directory.appendingPathComponent("highlighter-blend-diagnostic.json"), options: .atomic)
     }
 
     private static func withEditor(_ captured: CapturedImage, name: String, directory: URL,
