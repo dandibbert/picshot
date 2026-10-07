@@ -1,5 +1,110 @@
 # Verification evidence and release boundary
 
+## Accepted ARM 0.12 at 2754b779 build 77
+
+**ARM 0.12.0/build 77**, full source [2754b77954415a8273c14a7fe5245330bec39996](https://github.com/dandibbert/picshot/commit/2754b77954415a8273c14a7fe5245330bec39996), passes terminal-success [job 112730667449](https://github.com/dandibbert/picshot/actions/runs/37602641265/job/112730667449) in run 37602641265. Intel remains accepted 0.11.0/build 69 at 3f013417; do not transfer ARM evidence. Current records below supplement every preserved older measurement/requirement. Acceptance is separate from Library persistence/user delivery. ARM DMG/ZIP replacements are confirmed at Library version 10 and the same guide at version 18, 92,739 bytes, SHA-256 `77c28c90b6cbe0ba3efc5f9fff072ca3d90b4daa56d2ac9df72afd791c6fe0c8`. All three files were saved; delivery was confirmed at 10:22:57 UTC on 7 October. Intel's first ordinary-suite attempt reached the unchanged 420-second cap after 1,157 cases without an assertion failure; no pass is claimed, and one unchanged-source retry is pending.
+
+Downloaded QA artifact **11475281086** contains ordinary/focused/model logs and `evidence/zip` plus `evidence/dmg`. Ordinary tests: **1,321 total, 1,318 passed, 3 intentional pre-model skips, zero failures**. Focused: **850 passed**. Actual-model stage: **12 passed**, zero failures. Wrapper durations **338.553/311.747 seconds**, exit 0, original **420-second** caps, no forced signal or truncated logs. Suites overlap. Runtime: **macOS 15.7.9 (24G830), Xcode 16.4, SDK 15.5**; minimum macOS 14 runtime remains unverified.
+
+### Exact ARM package bytes
+
+| File | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `PicShot-0.12.0-macos-arm64.zip` | 17,544,811 | `911bb785a133f7edeb1f5f919f7c465067cc2ec1dada1689f927edd14ba064a2` |
+| `PicShot-0.12.0-macos-arm64.dmg` | 20,291,019 | `ecc4f7885934836696e6d9354237a5131a26688dcb5a51fcd100f3ae773b02fe` |
+| `PicShot-0.12.0-macos-arm64.build-info.json` | 177 | `d387e3b0e392641eb12489064a8c25e0ac052111548fb2e9c12084fff78b2f6b` |
+
+Actual sidecars match downloaded bytes; ZIP CRC passes, embedded/external build-info are byte-identical, Info.plist is 0.12.0/build 77, source matches, and main Mach-O is arm64. Packaging and both installed gates pass. Ad-hoc signing remains distinct from Developer ID/notarization/Gatekeeper/publisher identity. ZIP artifact is 11475211247, DMG is 11474957329.
+
+Both actual installed formats independently pass no-argument LaunchServices/visible windows, automatic mosaic, capture/recognition, Save/Retry/owned panels, signed codecs and actual models, managed formula pins/group transforms/desktop policy, pin OCR/source links, recording composition and animated WebP. Own-child recording recovery passes separately. Actual own-app AX remains `skipped-no-existing-accessibility-permission`. Full GIF stress is ZIP-only. Physical desktop/TCC/foreign apps are not implied.
+
+### Automatic mosaic functional and independent pixel scope
+
+Each installed `automatic-mosaic/automatic-mosaic-workflow.json` identifies the exact source/version/build and has **12 real functional matches plus 14 separate resource matches**. The full independent checker passes for each artifact; all eight PNG hashes were checked. Authored 720×480 premultiplied sRGB source uses actual CoreText name/icon/color/alpha. Top-left seed `(31,37,144,48)`, exact repeat `(287,123,144,48)`, small color variant `(497,301,144,48)`, glyph-change decoy `(59,329,144,48)`. Source pre/post hash is `51dcb18f5d893c33659a6cd21d19a65d5f8eb6f4bab39a6d81cc253847afa311`.
+
+Seed/select/Find and direct menu entry, candidate navigation/exclusion/reinclusion/manual correction, untouched model before Apply, synchronized/local additions/deletion, one-step Apply undo/redo, linked IDs/history, crop/edit/cancel/close invalidation, native control target-action/hit testing, four-corner geometry, current-candidate visibility and pending-output protection/restoration pass. Light/dark/edge evidence accompanies each actual format. Four stale callbacks contain real completed matches held until invalidation; **active scan cancellation was not established here** (`activeScanCancellationVerifiedHere=false`). No global events, general pasteboard, live capture, network or new permission is used.
+
+Independent actual PNG checks use authored rectangles, decode/CRC/hash and recompute pixels rather than trusting reported masks. Redact/redact-excluded approve 20,736/13,824 pixels, opaque `(0,0,0,255)`; blur changes 20,736 and pixelate 7,757 approved pixels. **All four outputs have zero exterior mismatches in each install**, including decoy/exclusion. Blur/pixelation remain cosmetic. Original editor raster and undo survive until close; saved originals are separate.
+
+### Automatic mosaic small resources
+
+Each install independently performs **2 warmups + 12 measured** native seed/select/match/review/Apply/flatten/Close cycles; one fixed 720×480 raster/matcher/counter persists at comparable endpoints, zero live editors/jobs, no measured-loop PNG or screenshot, 150 ms settling. Baseline belongs to a combined acceptance process after earlier fixtures, not idle app cost or mosaic-only total RSS.
+
+| Install | RSS baseline → end / delta bytes | Last three single-cycle RSS deltas | Footprint baseline → end / delta bytes | Last three footprint deltas | RSS / footprint sampled peaks bytes | Measured seconds |
+| --- | --- | --- | --- | --- | --- | ---: |
+| ZIP | 595,935,232 → 595,968,000 / +32,768 | +0 / +32,768 / +0 | 136,515,584 → 135,221,248 / -1,294,336 | +0 / +32,768 / +0 | 601,292,800 / 141,889,536 | 5.398079 |
+| DMG | 590,217,216 → 590,364,672 / +147,456 | +32,768 / +0 / +65,536 | 141,119,360 → 139,939,712 / -1,179,648 | +0 / +32,768 / +98,304 | 595,574,784 / 146,493,312 | 5.465267 |
+
+ZIP/DMG each has zero failed RSS/footprint observations: **122/124** successful samples per metric, **107/109** timer ticks and **15/15** boundary samples. All 14 weak release probes per format have zero retained controller/canvas/content/review; all endpoints have zero active wrappers/jobs. Additional final cleanup changes RSS and footprint by zero. **RSS still grows +32,768/+147,456 bytes; final DMG RSS interval +65,536. `stabilityAssessed=false`.** 50 ms samples may miss transients and exclude WindowServer/GPU; no plateau, zero leaks or sustained stability is established. No allocator purge or pressure/system-setting change is used.
+
+All twelve settled endpoints, raw bytes:
+
+| Cycle | ZIP RSS | ZIP footprint | DMG RSS | DMG footprint |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 595,935,232 | 135,303,168 | 590,217,216 | 139,808,640 |
+| 2 | 595,935,232 | 135,303,168 | 590,217,216 | 139,775,872 |
+| 3 | 595,935,232 | 135,303,168 | 590,217,216 | 139,775,872 |
+| 4 | 595,935,232 | 135,303,168 | 590,217,216 | 139,775,872 |
+| 5 | 595,935,232 | 135,270,400 | 590,217,216 | 139,759,488 |
+| 6 | 595,935,232 | 136,564,736 | 590,217,216 | 139,792,256 |
+| 7 | 595,935,232 | 135,254,016 | 590,217,216 | 139,792,256 |
+| 8 | 595,935,232 | 135,221,248 | 590,266,368 | 139,841,408 |
+| 9 | 595,935,232 | 135,188,480 | 590,266,368 | 139,808,640 |
+| 10 | 595,935,232 | 135,188,480 | 590,299,136 | 139,808,640 |
+| 11 | 595,968,000 | 135,221,248 | 590,299,136 | 139,841,408 |
+| 12 | 595,968,000 | 135,221,248 | 590,364,672 | 139,939,712 |
+
+### Separate one-shot 4K and 5K Release matches
+
+After small-cycle measurement, each artifact performs one real match at 3840×2160 and one at 5120×2880. Seed `(31,47,144,48)`; exact `(1919,1081,144,48)`; other target `(3681,2089,144,48)` in 4K or `(4961,2809,144,48)` in 5K; decoy `(113,157,144,48)`. Each returns exactly two expected targets, scores 1 and 0.9132862288722637, no decoy/truncation, source byte identity unchanged and original 8-second deadline preserved. Source bytes 33,177,600/58,982,400, template 27,648, examined origins 7,811,761/14,099,841. Scratch budget is 100,663,296 bytes (96 MiB), excluding original source, CGContext internals and UI/WindowServer allocations.
+
+| Install / input | Construction seconds | Admission/conversion/full search seconds |
+| --- | ---: | ---: |
+| ZIP / 4K | 0.026702208 | 0.125831625 |
+| ZIP / 5K | 0.045696458 | 0.224045833 |
+| DMG / 4K | 0.027111708 | 0.121826125 |
+| DMG / 5K | 0.047249917 | 0.226947625 |
+
+4K source pre/post SHA-256 is `8765bbe00a7777a47398aa3d3e4d268fa4055c76ad1f7eed3455a59e952caf5e`; 5K is `1aefa60a203e5fcd27cc2ae2aa337b69297da58f20bda2df21a4002cafc75699`. These allocations are outside the 2+12 small loop. **One-shot timings are not sustained throughput, maximum-size acceptance or a large-image leak test.**
+
+### Other exact-source resources and unresolved growth
+
+| Workload / comparable scope | ZIP RSS change bytes | DMG RSS change bytes | Boundary |
+| --- | ---: | ---: | --- |
+| OCR 2+12 actual-Vision cycles | +1,753,088 | +4,358,144 | 14 resource Vision calls/cache reuses; zero live pin/result/job endpoints |
+| Formula 2+12 hide/show/close/restore | +147,456 | +196,608 | same one-live-pin endpoint; zero measured renders |
+| Group 3+20 numeric transform/undo/inspector/hide/show | +98,304 | +229,376 | same four live pins; assets unchanged |
+| Editor/pin 10+40 lifecycle | -49,152 | -163,840 | last ten +16,384/+32,768; windows 7→7; tracked objects release |
+| Save 2+8 small real jobs | +360,448 | +393,216 | jobs/input/controller/owned temporary cleanup |
+| Static WebP/AVIF 768×576, three per format | +26,984,448 | +23,625,728 | combined encode/preview/decode/quality/save/cancel; no separate warmup/phases |
+| PNG/JPEG/BMP/PDF 1440×900, 1+4 | +11,354,112 | +21,250,048 | observed; final RSS intervals −11,223,040/+7,815,168; no stability claim |
+| Full GIF export plus decode 1+4 | +16,384 | Not run | ZIP only; 30 seconds/360 frames at 480×270; last interval 0; exit/cancel/cleanup |
+
+ZIP OCR RSS late increments **+65,536 / +98,304 / +65,536**, footprint change **+1,196,032**, extra cleanup footprint **-16,384** (RSS 0). Formula late RSS **+0 / +147,456 / +0**, footprint **+131,072**; group late RSS **+0 / +0 / +0**, footprint **+344,064**. Final group cleanup RSS **-17,383,424** is separate from the live four-pin endpoint. Save footprint change **+245,760**; static-codec footprint **+737,344**; existing-format footprint **+2,162,688**.
+
+ZIP model-child parent-polled sampled RSS peaks, formula/table/smart erase: **393,396,224 / 219,955,200 / 1,683,423,232 bytes**. Each exits 0 and confirms temporary cleanup; 100 ms sampling may miss transients, excluding system services/GPU.
+
+DMG OCR RSS late increments **+81,920 / +458,752 / +196,608**, footprint change **+1,884,224**, extra cleanup footprint **-1,703,936** (RSS 0). Formula late RSS **+0 / +0 / +147,456**, footprint **+212,992**; group late RSS **+0 / +0 / +0**, footprint **+311,296**. Final group cleanup RSS **-17,383,424** is separate from the live four-pin endpoint. Save footprint change **+294,912**; static-codec footprint **-1,114,112**; existing-format footprint **+114,752**.
+
+DMG model-child parent-polled sampled RSS peaks, formula/table/smart erase: **305,348,608 / 200,671,232 / 1,909,293,056 bytes**. Each exits 0 and confirms temporary cleanup; 100 ms sampling may miss transients, excluding system services/GPU.
+
+**Known ordinary-export preview backing growth remains unresolved:** net retained RSS +11,354,112 ZIP / +21,250,048 DMG bytes; DMG's final interval is +7,815,168. Application-owned cleanup and a negative last ZIP interval do not establish native allocation ownership, a plateau or zero leaks. OCR also retains positive RSS and positive late intervals. Metrics from unlike source/process/workload/phase cannot be added or averaged. Production decoder default is unchanged; separate timing diagnostics do not become an app memory remedy. GIF's separate 1920×1080/12-frame case remains a short sample, not maximum area/frame count or sustained evidence.
+
+### Classification and retained scope
+
+ARM ANN-15/16 become Code only for the complete stated same-size/orientation matching, review/manual correction, linked synchronization and undo behavior with exact-source installed proof. ARM behavior counts **52 Code / 61 Partial / 11 Missing**; Intel current 0.11 remains **50/61/13**. Nine macOS rows remain 4 Partial / 4 Platform / 1 permissions note. All 133 IDs, original requirements/checks and official citations remain. Code categories and test states are independent, not completion percentages.
+
+Limits remain 20 MP and 8192 pixels per side, 3–512 pixels per seed side, 24 results plus seed with a 25-region review cap, 512 raw candidates, 384 million reserved comparisons, 200 linked marks, one admitted worker with no raster-retaining queue, an eight-second cooperative conversion/search/publication deadline, and 96 MiB algorithm-owned scratch excluding source/CoreGraphics/total RSS. Raw/work/time overflow visibly refuses; completed-search truncation is flagged. Blur/pixelation are cosmetic; solid redaction flattens approved pixels opaque, editor original/undo remain until close. No semantic OCR or arbitrary scale/rotation/font/subpixel/compression/overlap guarantee is made. Both physical backings are 1×; actual Retina/multi-monitor/Spaces/desktop/TCC/external apps and sustained stability remain open.
+
+### Earlier candidate and diagnostic boundary
+
+69f0c4d3 compiled/packaged both architectures but failed strict native geometry. ARM 6579 diagnosed synthetic pointer 31→30.999999999999996 expansion to 145×49; direct matcher geometry was correct. Later interior-pixel gestures/strict seed assertion preserve matcher/export tolerances; stale linked-correction deletion has its own regression. Efeae716/3c898422 early ARM UI/export/control passes were partial, not full acceptance. Complex sorting/CGFloat.infinity test compiler fixes retained assertions; 5ab01891 is an earlier candidate, not current accepted bytes. Independent 6529 / run 37596012807 creates no installers; independent ARM timing 134 tests passed and Intel diagnostic failed, with retry outside this accepted application boundary. These separate diagnostics are not required to delay accepted ARM 0.12 or promote untested Intel packages.
+
+## Retained accepted 0.11 and earlier versioned history
+
+ARM 0.11 below is historical; Intel 0.11 is still the current independently accepted Intel baseline. Every earlier version/hash/run/resource scope remains intact and does not substitute for the current ARM 0.12 evidence.
+
+
 Reviewed **7 October 2026**. **Accepted ARM and Intel are 0.11.0/build 69 at [3f013417](https://github.com/dandibbert/picshot/commit/3f013417a4bc4e88faa70f0db2ceb61ad2a82b20)**, with independent terminal-success [ARM job 112669106502](https://github.com/dandibbert/picshot/actions/runs/37583758175/job/112669106502) and [Intel job 112669106178](https://github.com/dandibbert/picshot/actions/runs/37583758175/job/112669106178) in run 37583758175. Both architectures have their own exact-source 1,239 ordinary/781 focused/12 real-model and actual ZIP/DMG evidence below. Both architectures’ DMG/ZIP replacements are confirmed at Library version 9, and the combined guide is confirmed at version 17, SHA-256 045b8e5a7254f044eb705619969e658109a039b13c5fb5bd153492398ee88fa3. All saves succeeded with local metadata applied; saving was verified separately from native/package gates. Historical ARM/Intel 0.10, b44c1fb and undelivered ac8 records remain preserved. Native/package acceptance is not full parity, real-device acceptance or leak freedom. All **133 requirements** remain in [PARITY.md](PARITY.md).
 
 The earlier ARM 0.5 delivery at [87eaedf16aaf6c2df2001d35ce08af2762ac33c2](https://github.com/dandibbert/picshot/commit/87eaedf16aaf6c2df2001d35ce08af2762ac33c2), delivered at 15:57 UTC, passed [run 37489170662](https://github.com/dandibbert/picshot/actions/runs/37489170662), [build/package job 112357029365](https://github.com/dandibbert/picshot/actions/runs/37489170662/job/112357029365) and [attribution job 112357029582](https://github.com/dandibbert/picshot/actions/runs/37489170662/job/112357029582). Intel 2043254 changes only `.github/workflows/macos.yml` from that application source. Its annotation effects, camera/live annotations, recovery and corrected isolated GIF export remain included in 0.6. [04999d0](https://github.com/dandibbert/picshot/commit/04999d0fd92a00e11bcbbfd2c9fe813f8ea9f11d), [run 37471951304](https://github.com/dandibbert/picshot/actions/runs/37471951304), remains an earlier both-architecture functionality checkpoint. Results and measurements apply only to their identified source, artifact, process and fixture; identical application code does not make differently packaged bytes or measurements interchangeable. Current ARM 0.7 evidence is recorded separately below; older measurements retain their original provenance.

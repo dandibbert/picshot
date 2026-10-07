@@ -5,10 +5,16 @@ is an opt-in, `@MainActor`, asynchronous installed-app fixture. The default for
 `includeResourceCycles` is `true`. It uses the production matcher, editor canvas,
 native controls, linked annotation model, history, and flattened renderer.
 
-The 0.12 implementation and native XCTest are **awaiting native compilation and
-acceptance**. AppKit, CoreText, CoreGraphics, WindowServer, and a macOS SDK are
-required. The Python checker and its synthetic tamper tests pass independently on Linux.
-Synthetic Python reports are only checker inputs and are never native evidence.
+ARM 0.12.0/build 77 at **2754b77954415a8273c14a7fe5245330bec39996** passes
+[native and actual installed ZIP/DMG acceptance](https://github.com/dandibbert/picshot/actions/runs/37602641265/job/112730667449).
+Its 1,321 ordinary tests include 3 intentional pre-model skips, and all 850
+focused and 12 actual-model tests pass; stages overlap. Both installed formats
+pass this full fixture and the independent PNG checker. Intel 0.12 remains
+unaccepted pending its own complete gates. Source-specific resource observations
+and limits are recorded in [VERIFICATION.md](VERIFICATION.md).
+AppKit, CoreText, CoreGraphics, WindowServer, and a macOS SDK are required for the
+native fixture. The Linux checker and nine tamper tests also pass, but synthetic
+Python reports are only checker inputs and are never native evidence.
 
 ## Entry points and ownership
 

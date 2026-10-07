@@ -1,6 +1,6 @@
 # Automatic matching mosaic
 
-This 0.12 candidate implements local repeated-region matching and an editable review flow for ANN-15/16. Native compilation, installed interaction and resource acceptance are pending. The accepted installers remain 0.11 at 3f013417; this document is not a new release or full-parity claim.
+Accepted ARM 0.12.0/build 77 at [2754b779](https://github.com/dandibbert/picshot/commit/2754b77954415a8273c14a7fe5245330bec39996) implements local repeated-region matching and an editable review flow for ANN-15/16. Its [native and installed ZIP/DMG gates passed](https://github.com/dandibbert/picshot/actions/runs/37602641265/job/112730667449). Intel remains at accepted 0.11 until its independent 0.12 gates pass. This is a bounded implementation and acceptance statement, not full PixPin parity or general matching-accuracy certification.
 
 ## Flow
 
@@ -24,4 +24,6 @@ Contiguous regions of one matching addition use a single pre-group raster for fi
 
 ## Acceptance
 
-[AutomaticMosaicWorkflowVerification.md](AutomaticMosaicWorkflowVerification.md) defines the native controls, independent PNG pixel checker, cancellation boundaries, 2+12 small-resource cycles and separate one-shot 4K/5K release timings. The ordinary/focused/model and actual ZIP/DMG gates from previous versions remain required. Exact source-specific results will be added after execution; authored tests and Python checker passes alone do not establish macOS correctness, physical Retina coverage, broad matching quality or leak freedom.
+[AutomaticMosaicWorkflowVerification.md](AutomaticMosaicWorkflowVerification.md) defines the native controls, independent PNG pixel checker, cancellation boundaries, 2+12 small-resource cycles and separate one-shot 4K/5K release timings. ARM 2754b779 passes 1,321 ordinary tests (1,318 passed and 3 intentional pre-model skips), 850 focused tests, 12 actual-model tests and both installed formats; stages overlap. Each installed format performs 12 functional matches, 14 resource matches and two separate large-image matches. Independent PNG checks find zero changed exterior pixels in all four exports.
+
+After two warmups, twelve 720×480 native match/review/apply/close cycles retain 32,768 bytes ZIP / 147,456 bytes DMG RSS; positive late intervals remain. Tracked editor/review objects and jobs return to zero, but this is not proof of a plateau or zero leaks. One-shot 4K conversion/search takes 0.122–0.126 seconds and 5K takes 0.224–0.227 seconds, separately from source construction and small-image resource cycles. Physical Retina/TCC capture, arbitrary matching quality and sustained large-image behavior remain unverified. The existing production preview-backing growth also remains unresolved; see [VERIFICATION.md](VERIFICATION.md).

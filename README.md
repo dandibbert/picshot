@@ -24,6 +24,7 @@ The `dist/` folder contains a `.app`, drag-to-Applications DMG, ZIP, checksums, 
 - New-install configurable shortcuts: ⌃1 region capture, ⌃2 clipboard pin, ⌃3 restore the last closed pin, ⌃⌘H history. Existing saved mappings are preserved
 - Double-click a history item to annotate; right-click to pin, copy, OCR, star or trash
 - The editor provides byte-derived PNG/JPEG/TIFF/BMP/PDF/WebP/AVIF export previews and flattened outputs, solid redaction, blur and pixelation. Blur/pixelation are cosmetic; use opaque redaction for secrets
+- ARM 0.12 adds offline same-size repeated-region matching with explicit review, manual correction, synchronized masks and undo; see [automatic mosaic](docs/AutomaticMosaic.md). Intel remains at verified 0.11 until its independent 0.12 gates pass
 - Save and Naming settings provide quick-save, exact-byte save-and-copy, collision-safe names and default-off final-action PNG copies; see [save workflows](docs/SaveWorkflow.md)
 - Pins float over apps; the menu restores click-through pins. Image pins support selectable local OCR, optional default-off automatic recognition, source-linked text results and multiple barcode regions; see [pin OCR](docs/PinOCRWorkflow.md)
 - Named region/delay presets are stored locally; changed displays invalidate stale presets. UI-element selection uses existing Accessibility access and otherwise falls back to manual selection
