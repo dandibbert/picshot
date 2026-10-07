@@ -1,13 +1,13 @@
 # Verification evidence and release boundary
 
-Reviewed **7 October 2026**. **ARM 0.9.0 build 52 is accepted at [b44c1fb0ecc71fbe652ed3c74e377e8f3ea8ba27](https://github.com/dandibbert/picshot/commit/b44c1fb0ecc71fbe652ed3c74e377e8f3ea8ba27)**, with terminal success in [run 37547871044 / ARM job 112556128669](https://github.com/dandibbert/picshot/actions/runs/37547871044/job/112556128669) and verified ZIP/DMG installer replacements. **Intel 0.9 remains pending; available Intel is still independently accepted 0.8 7df562b.** No ARM result or old Intel hash is substituted for Intel 0.9. Earlier failures and measurements remain source-labeled history. The full **133-row scope** remains in [PARITY.md](PARITY.md); native/package acceptance is not full parity, all-device acceptance or leak freedom.
+Reviewed **7 October 2026**. **ARM and Intel 0.9.0 build 52 are independently accepted at [b44c1fb0ecc71fbe652ed3c74e377e8f3ea8ba27](https://github.com/dandibbert/picshot/commit/b44c1fb0ecc71fbe652ed3c74e377e8f3ea8ba27)** in [run 37547871044](https://github.com/dandibbert/picshot/actions/runs/37547871044), with terminal-success [ARM job 112556128669](https://github.com/dandibbert/picshot/actions/runs/37547871044/job/112556128669) and [Intel job 112556128799](https://github.com/dandibbert/picshot/actions/runs/37547871044/job/112556128799). Both architecture installer replacements are confirmed; Intel's confirmation is 00:28 UTC. Each result uses its actual ZIP/DMG and own measurements. Earlier candidate failures and diagnostics remain source-labeled history. The **133-row scope** remains in [PARITY.md](PARITY.md); native/package acceptance is not full parity, whole-device acceptance or leak freedom. Diagnostic-only follow-up source 7c3e76c does not replace these accepted installers or change their app source.
 
 The earlier ARM 0.5 delivery at [87eaedf16aaf6c2df2001d35ce08af2762ac33c2](https://github.com/dandibbert/picshot/commit/87eaedf16aaf6c2df2001d35ce08af2762ac33c2), delivered at 15:57 UTC, passed [run 37489170662](https://github.com/dandibbert/picshot/actions/runs/37489170662), [build/package job 112357029365](https://github.com/dandibbert/picshot/actions/runs/37489170662/job/112357029365) and [attribution job 112357029582](https://github.com/dandibbert/picshot/actions/runs/37489170662/job/112357029582). Intel 2043254 changes only `.github/workflows/macos.yml` from that application source. Its annotation effects, camera/live annotations, recovery and corrected isolated GIF export remain included in 0.6. [04999d0](https://github.com/dandibbert/picshot/commit/04999d0fd92a00e11bcbbfd2c9fe813f8ea9f11d), [run 37471951304](https://github.com/dandibbert/picshot/actions/runs/37471951304), remains an earlier both-architecture functionality checkpoint. Results and measurements apply only to their identified source, artifact, process and fixture; identical application code does not make differently packaged bytes or measurements interchangeable. Current ARM 0.7 evidence is recorded separately below; older measurements retain their original provenance.
 
 
-## Accepted ARM 0.9 at b44c1fb; Intel 0.9 pending
+## Accepted ARM and Intel 0.9 at b44c1fb
 
-Downloaded final ARM logs report **1,080 ordinary tests: 1,077 passed, 3 intentional pre-weight model skips and zero failures; 635 focused passed; 12 actual-model tests passed**. The selected groups overlap and are not additive distinct-test totals. Both installed ZIP/DMG pass architecture/signature, no-argument LaunchServices, visible owned UI, save/naming/Retry, codecs, signed models, interaction, recording composition/recovery and cleanup gates. **Full GIF resource/cancellation runs from ZIP only.** Native evidence is macOS 15.7.9 (24G830); macOS 14 runtime remains untested. Packages remain ad-hoc signed and not notarized.
+Downloaded final logs on each architecture independently report **1,080 ordinary tests: 1,077 passed, 3 intentional pre-weight model skips and zero failures; 635 focused passed; 12 actual-model tests passed**. The selected groups overlap and are not additive distinct-test totals. Both installed ZIP/DMG on each architecture pass architecture/signature, no-argument LaunchServices, visible owned UI, save/naming/Retry, codecs, signed models, interaction, recording composition/recovery and cleanup gates. **Full GIF resource/cancellation runs from ZIP only.** Native evidence is macOS 15.7.9 (24G830); macOS 14 runtime remains untested. Packages remain ad-hoc signed and not notarized.
 
 ### Exact ARM 0.9 bytes
 
@@ -19,7 +19,20 @@ Downloaded sidecars match both actual installers and both build-info copies. Met
 | `PicShot-0.9.0-macos-arm64.zip` | 16,184,932 | `956bd7aaa906307ad7fc3b3d1a3d3da63502694e66f3aa1f36304036e721ad8d` |
 | `PicShot-0.9.0-macos-arm64.build-info.json` | 176 | `3cc3049cec51954f29167b416bb9f5100ba889d51953a26f3ff40e1cf77979a8` |
 
-### Final ARM UI, save and exceptional GIF scope
+
+### Exact Intel 0.9 bytes and independent gates
+
+The independent Intel logs report **1,080 ordinary tests: 1,077 passed, 3 intentional pre-weight skips, zero failures; 635 focused passed; 12 actual-model passed**. Both installed formats pass startup and source-specific owned-panel, Save/Retry, codecs, models and existing feature/recovery gates. Final Intel focused logs independently pass frozen export bytes, parent movement/close and real-child late-exit/cross-format recovery; ARM is not used as Intel execution evidence.
+
+Every downloaded Intel installer/build-info sidecar matches actual bytes, and duplicate metadata copies match. Metadata identifies source b44c1fb, 0.9.0, x86_64, macOS 14 minimum, ad-hoc signing and no notarization. Tests run on macOS 15.7.9 (24G830), not macOS 14.
+
+| File | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `PicShot-0.9.0-macos-x86_64.dmg` | 21,913,370 | `9cdb5ee2ae1cae1b77ddd263f6e8bfc27a10d3c5f149a7d458164fdf0b64d387` |
+| `PicShot-0.9.0-macos-x86_64.zip` | 18,689,723 | `5cd57817a28a7aaa5036e4c7b4a8f44bfc6bea847fd875a4230a04e1beddcb1e` |
+| `PicShot-0.9.0-macos-x86_64.build-info.json` | 177 | `8607d650dba9799aef6f3995943afedc36db9e2767fd8a27a3d19f1377e0fd48` |
+
+### Final ARM/Intel UI, save and exceptional GIF scope
 
 Production export UI now uses **owned child panels rather than AppKit sheets**. Native tests verify frozen export bytes despite later editor edits, panel placement after parent movement, parent-close cancellation/release, cancel preserving the parent and toolbar hierarchy/alignment. Both installed save reports pass light/dark settings, template rejection/preview, folder/picker cancellation, actual flattened quick-save pixels, Keep Both/Cancel, source preservation, quiet finalized-action copies, exact saved PNG bytes on a private pasteboard and injected copy-failure file preservation. This is source-specific synthetic/native evidence, not general external-app clipboard or physical-user acceptance.
 
@@ -39,17 +52,34 @@ All values below identify b44c1fb installed bytes. They are sampled observations
 
 The combined codec sample does not attribute its retained RSS to encoder, decoder or UI, nor prove a production memory fix relative to differently scoped older runs. Volatile PNG/WebP/PDF preview/raster backing remains a separate unresolved concern. Model helper parent-polled peaks, ZIP/DMG respectively, are **321,110,016/304,037,888 bytes formula**, **223,805,440/225,116,160 bytes table**, and **1,627,324,416/1,840,103,424 bytes smart erase**; all exit 0 and cleanup is confirmed. Sampling can miss transient peaks and excludes framework/GPU/other processes. These child peaks must not replace main-process workload measurements.
 
+
+### Final installed Intel resources: separate evidence, continuing growth
+
+Each Intel workload has its own baseline and must not inherit ARM deltas. Parent samples and child samples remain separate scopes; the complete GIF resource profile is **ZIP-only**.
+
+| Intel workload | ZIP RSS change MiB | DMG RSS change MiB | Scope and final interval |
+| --- | ---: | ---: | --- |
+| Editor/pin lifecycle | +0.80078125 | +0.82421875 | 10 warm-ups + 40 measured; final 10 cycles +0.078125 / +0.1875; windows 7 → 7 and zero retained tracked content/windows |
+| Save workflow | −1.8359375 | −1.80078125 | 2 warm-ups + 8 small actual jobs; footprint +0.12109375 / +0.03125; tracked jobs/input and owned temporary files cleaned |
+| Static WebP/AVIF combined | +23.81640625 | +16.13671875 | No separated warm-up or encode/preview/independent-decode phases; footprint −2.35546875 / −3.1875 |
+| Existing PNG/JPEG/BMP/PDF | +29.7421875 | +43.1015625 | 1 warm-up + 4 measured; final RSS interval +10.69140625 / +6.390625; footprint +0.90234375 / +2.84375 |
+| Full GIF export plus decode | +0.16015625 | Not run | ZIP: 1 warm-up + 4 measured; last RSS interval +0.01953125; real helper exits/cancellation/cleanup pass |
+
+The existing-format RSS deltas across the four cycles are **2,719,744 / 10,608,640 / 19,976,192 / 31,186,944 bytes ZIP**, and **15,491,072 / 28,176,384 / 38,494,208 / 45,195,264 bytes DMG**, each relative to its post-warm-up baseline. Growth continues through both final intervals despite sessions/jobs/owned-file cleanup. **This remains unresolved; successful cleanup, small footprint changes, or source14c's distinct AVIF delayed drop do not establish stable memory or zero leaks.**
+
+Intel model parent-polled peaks, ZIP/DMG respectively, are **300,613,632/300,126,208 bytes formula**, **185,884,672/186,892,288 bytes table**, and **1,031,409,664/1,020,493,824 bytes smart erase**. All report child exit/cleanup confirmed. GIF children self-sample **47.46484375–47.578125 MiB** during the four-cycle ZIP profile; the separate 1920 × 1080/12-frame child self-peak is **133.00390625 MiB**. Different sampling schedules/process scopes cannot be added as a simultaneous system peak. This short high-resolution case is not maximum square area/frame count or sustained-use acceptance.
+
 ### Earlier de4/e4 checkpoints remain history
 
-The prior de4b24a run stopped ARM before app compilation in the bounded-command Python stage (`wrapper_error` hid its underlying report), while Intel exposed a Swift/Darwin API-name collision. [e4e41ba30b0c0d2bfff9cfe14fcf70eeeb0fcf4d](https://github.com/dandibbert/picshot/commit/e4e41ba30b0c0d2bfff9cfe14fcf70eeeb0fcf4d), [run 37545701554](https://github.com/dandibbert/picshot/actions/runs/37545701554), used kevent64 and exposed fuller runner diagnostics. Its earlier compiling/packaging snapshot was not an accepted release and is not the current ARM state. Final acceptance belongs only to b44c1fb; failed/incomplete candidates are not retroactively changed to passes.
+The prior de4b24a run stopped ARM before app compilation in the bounded-command Python stage (`wrapper_error` hid its underlying report), while Intel exposed a Swift/Darwin API-name collision. [e4e41ba30b0c0d2bfff9cfe14fcf70eeeb0fcf4d](https://github.com/dandibbert/picshot/commit/e4e41ba30b0c0d2bfff9cfe14fcf70eeeb0fcf4d), [run 37545701554](https://github.com/dandibbert/picshot/actions/runs/37545701554), used kevent64 and exposed fuller runner diagnostics. Its earlier compiling/packaging snapshot was not an accepted release and is not the current accepted app state. Final acceptance belongs only to b44c1fb; failed/incomplete candidates are not retroactively changed to passes.
 
 ### Earlier 14c: early successes and failed focused suites
 
-[14c09d510247ae700ccdf143994d75b0cbb5f057](https://github.com/dandibbert/picshot/commit/14c09d510247ae700ccdf143994d75b0cbb5f057), [run 37541917737](https://github.com/dandibbert/picshot/actions/runs/37541917737), compiled on both architectures and passed early UI/backing-control stages. [ARM job 112536699632](https://github.com/dandibbert/picshot/actions/runs/37541917737/job/112536699632) then reported **631 focused tests, 35 failures (11 unexpected)**; [Intel job 112536699321](https://github.com/dandibbert/picshot/actions/runs/37541917737/job/112536699321) reported **631 tests, 34 failures (10 unexpected)**. These are failure counts, not a count of failed tests. Neither focused stage passed; final b44c1fb corrections now have their own ARM results, without changing this history.
+[14c09d510247ae700ccdf143994d75b0cbb5f057](https://github.com/dandibbert/picshot/commit/14c09d510247ae700ccdf143994d75b0cbb5f057), [run 37541917737](https://github.com/dandibbert/picshot/actions/runs/37541917737), compiled on both architectures and passed early UI/backing-control stages. [ARM job 112536699632](https://github.com/dandibbert/picshot/actions/runs/37541917737/job/112536699632) then reported **631 focused tests, 35 failures (11 unexpected)**; [Intel job 112536699321](https://github.com/dandibbert/picshot/actions/runs/37541917737/job/112536699321) reported **631 tests, 34 failures (10 unexpected)**. These are failure counts, not a count of failed tests. Neither focused stage passed; final b44c1fb corrections now have their own independent ARM/Intel results, without changing this history.
 
 The inspected ARM `preview.json` identifies 14c and `uiPreviewOnly=true`. Its save-workflow report records light/dark settings preview, invalid-template/folder-cancel checks, flattened quick-save pixels, Keep Both/Cancel collision behavior, source preservation, private PNG clipboard equality, injected copy-failure preservation and quiet final-action automatic copies. Two warm-ups and eight small measured jobs end without tracked active jobs/retained input, with controller release/temporary cleanup observed. No general clipboard, live desktop, network or user preferences are used. These narrow early checks are not full acceptance, sustained resources or a zero-leak result. Intel is not assigned uninspected per-field results from the ARM artifact.
 
-### Accepted ARM SaveWorkflow scope and remaining gaps
+### Accepted ARM/Intel SaveWorkflow scope and remaining gaps
 
 Implemented routes: editor **Quick Save PNG**, **Save PNG and Copy**, **Save and Naming settings**; export-sheet **Quick Save** and **Save and Copy** for the prepared actual format, including current/original pin export routes. Settings drafts require **Save Settings**. A manual first-use folder selection can establish one remembered base directory; it is not per-destination profiles or general picker history.
 
@@ -61,11 +91,11 @@ Publication remains **save-new-copy**. Ask collisions offer Keep Both, another n
 
 Configured limits: **two jobs/controllers, 256 MiB estimated retained inputs/artifacts, 128 MiB encoded artifact, eight relative folder levels, 1,024-byte full path, 180-byte rendered component and 10,000 Keep Both attempts**, with a five-minute cooperative deadline. Native calls can finish after cancellation while queued inputs are cleared. These are safeguards, not whole-process RSS ceilings. See [SaveWorkflow.md](SaveWorkflow.md) for reachability, privacy and remaining acceptance.
 
-### Accepted ARM Retry and scoped GIF cleanup
+### Accepted ARM/Intel Retry and scoped GIF cleanup
 
-Accepted ARM b44c1fb adds visible Retry and cancellable shared GIF/WebP/AVIF-child admission waiting up to **300 seconds**, with stale-generation/close suppression. Delayed-cleanup doubles test scheduling, not actual codecs; genuine-helper and repeated/interrupted native UI evidence must remain separate. Final ARM acceptance is b44c1fb, not e4e41ba; Intel 0.9 remains pending.
+Accepted ARM/Intel b44c1fb adds visible Retry and cancellable shared GIF/WebP/AVIF-child admission waiting up to **300 seconds**, with stale-generation/close suppression. Delayed-cleanup doubles test scheduling, not actual codecs; genuine-helper and repeated/interrupted native UI evidence must remain separate. Independent final ARM/Intel acceptance is b44c1fb, not e4e41ba.
 
-The verified 0.8 `exitUnconfirmed` outer-trim residue remains historical. Accepted ARM `OwnedVideoExportStage` separates caller trim from sibling helper jobs with identity-bound ownership; a surviving child keeps its independent source while caller staging can be cleaned. Unknown/replaced entries deliberately block deletion. The real-child late-exit test injects stop actions and exercises subsequent WebP/AVIF admission, source preservation and cleanup; it passes in the final b44c1fb focused suite. The assertion is limited to that workload and ownership scope; earlier failures remain history.
+The verified 0.8 `exitUnconfirmed` outer-trim residue remains historical. Accepted ARM/Intel `OwnedVideoExportStage` separates caller trim from sibling helper jobs with identity-bound ownership; a surviving child keeps its independent source while caller staging can be cleaned. Unknown/replaced entries deliberately block deletion. The real-child late-exit test injects stop actions and exercises subsequent WebP/AVIF admission, source preservation and cleanup; it passes in the final b44c1fb focused suite. The assertion is limited to that workload and ownership scope; earlier failures remain history.
 
 ### Source71b diagnostics remain independent evidence
 
@@ -88,7 +118,7 @@ ARM AVIF's distinct 48-cycle nonvolatile ledger adds 6.75 MiB early and loses th
 
 ### Ledger consequence
 
-No category changes: **48 Code / 61 Partial / 15 Missing** across 124 behavior rows plus nine unchanged adaptation notes, preserving **133 IDs**, original requirements/acceptance checks and official citations. EXP-05/06 now have accepted ARM implementation and native evidence but retain material feature gaps. EXP-04 keeps Code status with b44c1fb Retry/owned-panel evidence. Intel 0.9 remains pending.
+No category changes: **48 Code / 61 Partial / 15 Missing** across 124 behavior rows plus nine unchanged adaptation notes, preserving **133 IDs**, original requirements/acceptance checks and official citations. EXP-05/06 now have independently accepted ARM/Intel implementation and native evidence but retain material feature gaps. EXP-04 keeps Code status with b44c1fb Retry/owned-panel evidence. Both architecture results are now independently verified.
 
 ## Historical accepted ARM and Intel 0.8 at 7df562b
 
@@ -149,7 +179,7 @@ Native animation/container tests cover source-boundary sampling, variable millis
 
 At 7df562b, the inherited exceptional GIF path remained unresolved: after stop escalation returns **`exitUnconfirmed`**, the outer `.picshot-trim-*` directory is deliberately preserved. Eventual helper recovery removes its nested owned GIF job but does not own the outer selected clip, which can remain on disk. Ordinary confirmed cancellation passes and does not prove cleanup of this condition. The WebP path uses an independently copied private helper input, allowing outer trim cleanup without deleting a still-running helper's files. No complete exceptional-GIF-cleanup claim is made.
 
-Save/queued-child/explicit-Retry and owned GIF-stage changes were not part of accepted 7df562b. Final ARM b44c1fb now has its own acceptance recorded above; those passes do not change this older build or its measurements. Intel 0.9 remains pending. The tested outer-trim fix does not imply all-crash or foreign-file cleanup guarantees.
+Save/queued-child/explicit-Retry and owned GIF-stage changes were not part of accepted 7df562b. Final ARM/Intel b44c1fb now have their own acceptance recorded above; those passes do not change this older build or its measurements. Both architecture results are now independently verified. The tested outer-trim fix does not imply all-crash or foreign-file cleanup guarantees.
 
 ### Existing lifecycle and ledger boundary
 
@@ -532,6 +562,6 @@ The unchanged repeated-run regression envelopes are **384 MiB sampled peak growt
 
 ## Still requires real-device and full-scope acceptance
 
-User-TCC grant/deny/revoke/relaunch; real application capture; physical multi-monitor/mixed Retina/negative-origin/display-removal flows; complete capture → annotate → copy/export → pin → OCR → history paths; system/microphone audio sync and sustained recording; real camera selection/disconnect/indicator shutdown and overlay exclusion; Retina/user-desktop annotation effects; visible-preview force-kill, power loss and storage-removal recovery; long scrolling and prolonged resource use; broad multilingual/table/formula/inpainting/barcode quality; real Apple language download/translation; independent Office/export interoperability; sustained isolated-GIF resource behavior and every remaining parity-row requirement. Historical 0.6 introduced the narrow arcs/polylines, image-pin text selection and scroll-editing evidence above, with the final localized/composited window snapshots. App-identical Intel 0.6 passed its own final pipeline and both installed formats; physical external-app drag, direct Copy and >800 px scaled-preview equality remain unverified. ARM and Intel 0.7 presets/export/barcode work now pass their independent native and both-format installed gates; actual AX/real-device acceptance remains open. Click/scroll/keystroke effects, transparent/broader animation input, the exceptional GIF outer-trim residue, sustained codec resources and all other Missing/Partial features remain unfinished scope. ARM/Intel 0.8 adds verified still WebP/AVIF and bounded recording WebP as qualified above; ARM b44c1fb Save/Retry and scoped GIF-stage changes now have native acceptance; Intel 0.9 and broader real-device/exceptional cases remain open.
+User-TCC grant/deny/revoke/relaunch; real application capture; physical multi-monitor/mixed Retina/negative-origin/display-removal flows; complete capture → annotate → copy/export → pin → OCR → history paths; system/microphone audio sync and sustained recording; real camera selection/disconnect/indicator shutdown and overlay exclusion; Retina/user-desktop annotation effects; visible-preview force-kill, power loss and storage-removal recovery; long scrolling and prolonged resource use; broad multilingual/table/formula/inpainting/barcode quality; real Apple language download/translation; independent Office/export interoperability; sustained isolated-GIF resource behavior and every remaining parity-row requirement. Historical 0.6 introduced the narrow arcs/polylines, image-pin text selection and scroll-editing evidence above, with the final localized/composited window snapshots. App-identical Intel 0.6 passed its own final pipeline and both installed formats; physical external-app drag, direct Copy and >800 px scaled-preview equality remain unverified. ARM and Intel 0.7 presets/export/barcode work now pass their independent native and both-format installed gates; actual AX/real-device acceptance remains open. Click/scroll/keystroke effects, transparent/broader animation input, broader exceptional GIF cleanup and sustained codec resources remain open alongside all other Missing/Partial features; the specific outer-trim regression has source-qualified b44c1fb evidence. ARM/Intel 0.8 adds verified still WebP/AVIF and bounded recording WebP as qualified above; ARM/Intel b44c1fb Save/Retry and scoped GIF-stage changes now have independent native acceptance; broader real-device/exceptional cases and sustained resources remain open.
 
 CI does not grant the user's OS permissions or modify permission databases. Packages are ad-hoc signed and **not notarized**; integrity checks do not establish publisher identity or Gatekeeper acceptance. Missing/Partial requirements remain in scope. No full-parity, zero-leak, universal latency or whole-device memory claim is made.

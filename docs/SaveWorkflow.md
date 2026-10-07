@@ -2,7 +2,7 @@
 
 ## Version boundary
 
-This guide describes **ARM 0.9 b44c1fb0ecc71fbe652ed3c74e377e8f3ea8ba27**, whose full native/model and both installed-format gates pass. Intel 0.9 remains pending; its available 0.8 does not acquire the new behavior by documentation alone. Earlier candidate failures remain historical in [VERIFICATION.md](VERIFICATION.md).
+This guide describes **ARM/Intel 0.9 b44c1fb0ecc71fbe652ed3c74e377e8f3ea8ba27**, whose independent full native/model pipelines and both installed-format gates pass on each architecture. No architecture inherits the other's execution evidence or resource observations. Earlier candidate failures remain historical in [VERIFICATION.md](VERIFICATION.md).
 
 ## Entry points
 
@@ -51,4 +51,4 @@ Cancellation clears queued work where possible; a synchronous native call may fi
 
 ## Acceptance boundary
 
-ARM final-source tests and both installed formats pass native settings/toolbar/owned-panel, invocation, picker/collision cancellation, copy failure, queued cancellation and owned cleanup checks. The export panel follows its parent while holding frozen bytes; parent closure cancels/detaches it. Real target-app paste, physical workflows, broad filesystems and sustained resources remain separate from synthetic fixtures. Intel requires its own completed 0.9 pipeline. See [VERIFICATION.md](VERIFICATION.md) for exact counts, bytes and resource observations.
+ARM and Intel final-source tests and both installed formats independently pass native settings/toolbar/owned-panel, invocation, picker/collision cancellation, copy failure, queued cancellation and owned cleanup checks. The export panel follows its parent while holding frozen bytes; parent closure cancels/detaches it. Real target-app paste, physical workflows, broad filesystems and sustained resources remain separate from synthetic fixtures. The Intel pipeline is complete; its existing-format preview workload still shows positive final RSS intervals despite tracked cleanup, so no overall-stability or zero-leak claim is made. See [VERIFICATION.md](VERIFICATION.md) for exact counts, bytes and resource observations.
