@@ -137,7 +137,7 @@ enum ImageDecodeHelperAttributionFixture {
             } catch { failedReport["failedChild"] = try? object(child.snapshot()); throw error }
         }
         let beforeParentDraw = try observe()
-        let draw = try autoreleasepool { try draw(mode: mode, png: input.png, raw: raw, reference: input.reference, destination: destination, providers: providers) }
+        let draw: ImageDecodeParentDraw = try autoreleasepool { try Self.draw(mode: mode, png: input.png, raw: raw, reference: input.reference, destination: destination, providers: providers) }
         raw = nil
         let afterPool = try observe()
         let fullLifecycleSeconds = ProcessInfo.processInfo.systemUptime - started
