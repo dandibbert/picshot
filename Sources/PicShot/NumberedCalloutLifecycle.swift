@@ -94,7 +94,7 @@ final class NumberedCalloutReleaseMonitor {
     private var probes: [NumberedCalloutClosedInputProbe] = []
     private(set) var evidence: NumberedCalloutLifecycleEvidence
     init(expectedCycles: Int) throws {
-        guard (1...6).contains(expectedCycles) else { throw Self.failure("Close fixture requires 1 through 6 cycles") }
+        guard (1...6).contains(expectedCycles) else { throw Self.failure("Close fixture requires 1...6 cycles") }
         evidence = NumberedCalloutLifecycleEvidence(expectedCycles: expectedCycles)
     }
 
