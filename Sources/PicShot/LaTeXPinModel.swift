@@ -179,7 +179,7 @@ enum LaTeXPinRaster {
                 Button("撤销修改") { model.undo() }.disabled(!model.canUndo)
                 Spacer()
                 if model.working || model.saving { ProgressView().controlSize(.small); Button("停止") { model.cancel() } }
-                Button("取消") { model.discardDraft(); dismiss() }.keyboardShortcut(.cancelAction)
+                Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("更新贴图") { model.apply() }.disabled(!model.canApply).keyboardShortcut(.return, modifiers: .command)
             }
         }.padding(14).frame(width: 460)

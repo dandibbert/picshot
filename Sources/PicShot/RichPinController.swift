@@ -347,16 +347,32 @@ actor RichPinFrameDecoder {
         guard !closed, let model = latexModel else { return }
         if latexPopover?.isShown == true { return }
         let popover = NSPopover(); popover.behavior = .semitransient; popover.delegate = self
-        popover.contentViewController = NSHostingController(rootView: LaTeXPinEditorView(model: model, dismiss: { [weak self] in self?.latexPopover?.close() }))
+        popover.contentViewController = NSHostingController(rootView: LaTeXPinEditorView(model: model, dismiss: { [weak self, weak popover] in
+            guard let self, let popover, self.latexPopover === popover else { return }
+            self.dismissLaTeXEditor()
+        }))
         latexPopover = popover
         window?.makeKeyAndOrderFront(nil)
         popover.show(relativeTo: imageView.bounds, of: imageView, preferredEdge: .maxY)
     }
     func popoverDidClose(_ notification: Notification) {
-        latexModel?.discardDraft(); latexPopover?.delegate = nil; latexPopover?.contentViewController = nil; latexPopover = nil
+        guard let popover = notification.object as? NSPopover, latexPopover === popover else { return }
+        releaseLaTeXPopover(close: false)
+        latexModel?.discardDraft()
     }
     /// Called before moving a pin between Space policies; never leave a detached editor/render.
-    func dismissLaTeXEditor() { cancelLaTeXSave(); latexModel?.discardDraft(); latexPopover?.close() }
+    func dismissLaTeXEditor() {
+        releaseLaTeXPopover(close: true)
+        cancelLaTeXSave(); latexModel?.discardDraft()
+    }
+    private func releaseLaTeXPopover(close: Bool) {
+        guard let popover = latexPopover else { return }
+        // Detach ownership before any native callback. A Space policy change can
+        // interrupt AppKit's closing animation, so teardown cannot depend on it.
+        latexPopover = nil; popover.delegate = nil
+        if close { popover.animates = false; popover.close() }
+        popover.contentViewController = nil
+    }
     @objc private func undoLaTeX() { latexModel?.undo(); editLaTeX() }
     @objc private func copyLaTeXFormat(_ item: NSMenuItem) {
         let formats: [FormulaRenderFormat] = [.png, .svg, .mathML, .pdf]
@@ -615,7 +631,7 @@ actor RichPinFrameDecoder {
         onDesktopVisibilityChange = nil; desktopVisibilityMenu.invalidate()
         cancelLaTeXSave()
         latexModel?.close(); latexModel = nil
-        latexPopover?.delegate = nil; latexPopover?.close(); latexPopover?.contentViewController = nil; latexPopover = nil
+        releaseLaTeXPopover(close: true)
         pausePlayback()
         if let decoder { Task { await decoder.release() } }; decoder = nil
         callback?()

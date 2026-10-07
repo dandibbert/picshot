@@ -12,9 +12,17 @@ final class PinWorkflowIntegrationTests: XCTestCase {
         let pin = try XCTUnwrap(f.session.richControllers[f.formulaID])
         let model = try XCTUnwrap(pin.latexModel)
         let before = f.store.index
+        var firstPopover: NSPopover?
+        let observer = NotificationCenter.default.addObserver(forName: NSPopover.willShowNotification, object: nil, queue: .main) { notification in
+            MainActor.assumeIsolated {
+                if firstPopover == nil { firstPopover = notification.object as? NSPopover }
+            }
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
         pin.showWindow(nil); pin.editLaTeX()
         try await Task.sleep(nanoseconds: 80_000_000)
         let editor = try XCTUnwrap(pin.latexEditorContentView)
+        let oldPopover = try XCTUnwrap(firstPopover)
         model.source = "unsaved draft"
         f.session.setDesktopVisibility(.allDesktops)
         f.session.reloadDesktopVisibility()
@@ -22,6 +30,8 @@ final class PinWorkflowIntegrationTests: XCTestCase {
         XCTAssertTrue(pin.latexEditorContentView === editor)
         XCTAssertTrue(pin.hasActiveLaTeXEditorOrRender)
         f.session.setDesktopVisibility(.currentDesktop)
+        XCTAssertNil(pin.latexEditorContentView, "Programmatic dismissal releases ownership without waiting for an animation callback")
+        XCTAssertNil(oldPopover.contentViewController)
         try await Task.sleep(nanoseconds: 80_000_000)
         XCTAssertEqual(model.source, "x")
         XCTAssertNil(pin.latexEditorContentView)
@@ -30,6 +40,17 @@ final class PinWorkflowIntegrationTests: XCTestCase {
         XCTAssertEqual(f.store.index, before)
         XCTAssertFalse(pin.window?.collectionBehavior.contains(.canJoinAllSpaces) == true)
         XCTAssertFalse(pin.window?.collectionBehavior.contains(.moveToActiveSpace) == true)
+        pin.editLaTeX()
+        try await Task.sleep(nanoseconds: 80_000_000)
+        let replacement = try XCTUnwrap(pin.latexEditorContentView)
+        XCTAssertFalse(replacement === editor)
+        model.source = "new unsaved draft"
+        pin.popoverDidClose(Notification(name: NSPopover.didCloseNotification, object: oldPopover))
+        XCTAssertTrue(pin.latexEditorContentView === replacement, "An old close callback must not clear a replacement editor")
+        XCTAssertEqual(model.source, "new unsaved draft")
+        pin.dismissLaTeXEditor()
+        XCTAssertNil(pin.latexEditorContentView)
+        XCTAssertEqual(model.source, "x")
     }
 
     @MainActor func testPreparedFormulaCommitAndPendingMetadataFlushPreserveEachOther() throws {
