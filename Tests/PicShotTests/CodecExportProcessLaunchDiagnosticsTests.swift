@@ -64,8 +64,7 @@ final class CodecExportProcessLaunchDiagnosticsTests: XCTestCase {
     }
 
     func testEmittedReadinessPreservesFailureAfterLateLaunchAndWrite() throws {
-        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
-        let evidence = try CodecGIFReadinessEvidence(root: root)
+        let evidence = CodecGIFReadinessEvidence()
         evidence.beginWait(deadline: Date().addingTimeInterval(3))
         evidence.launchDiagnostics.record(.processRunStarted)
         evidence.endWait(progressCount: 0)
@@ -79,7 +78,9 @@ final class CodecExportProcessLaunchDiagnosticsTests: XCTestCase {
         let frozen = try XCTUnwrap(payload["launchAtReadiness"] as? [String: Any])
         let final = try XCTUnwrap(payload["launchAfterTaskJoin"] as? [String: Any])
         XCTAssertTrue(try XCTUnwrap(payload["parentStartedUptimeSeconds"] as? Double).isFinite)
-        XCTAssertEqual(payload["schema"] as? String, "picshot-codec-gif-readiness-v2")
+        XCTAssertEqual(payload["schema"] as? String, "picshot-codec-gif-readiness-v3")
+        XCTAssertEqual(payload["childTraceStatus"] as? String, "notCollectedForShellFixture")
+        XCTAssertEqual(payload["syntheticFixture"] as? String, "systemShellReadPrintfExecSleep")
         XCTAssertEqual(wait["progressCountAtAssertion"] as? Int, 0)
         XCTAssertEqual(frozen["childLaunched"] as? Bool, false)
         XCTAssertEqual(frozen["requestState"] as? String, "notAttempted")

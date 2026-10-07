@@ -1,4 +1,4 @@
-"""Fabricated schema tests only. No test here is macOS/native memory evidence."""
+"""Schema tests and a historical native preview excerpt, never fresh macOS acceptance."""
 import copy
 import hashlib
 import importlib.util
@@ -14,8 +14,22 @@ SPEC.loader.exec_module(CHECK)
 COMMIT = 'a'*40
 
 
+def backing(index):
+    rows={}
+    for i,(name,flavor) in enumerate([('standard','TASK_VM_INFO'),('purgeable','TASK_VM_INFO_PURGEABLE')]):
+        values=dict(resident_size=10_000_100+index*1000,phys_footprint=8_000_100+index*700)
+        if name=='purgeable':
+            values.update(purgeable_volatile_resident=2_000_000+index*300,
+                          purgeable_volatile_virtual=4_000_000+index*500,purgeable_volatile_pmap=0)
+        rows[name]=dict(flavor=flavor,kernelReturn=0,requestedNaturalCount=104,returnedNaturalCount=104,
+                        observedAtUptimeSeconds=1000+index+i*0.001,pageSizeBytes=16384,regionCount=12,
+                        bytes=values,ledgerBytes=dict(ledger_purgeable_volatile=-1))
+    return rows
+
+
 def mem(index):
-    return dict(residentBytes=10_000_000+index*1000, physicalFootprintBytes=8_000_000+index*700)
+    return dict(residentBytes=10_000_000+index*1000, physicalFootprintBytes=8_000_000+index*700,
+                backingAccounting=backing(index))
 
 
 def stats():
@@ -46,7 +60,7 @@ def cycle(profile, index, phase):
     output_height = height+(3*step if axis == 'vertical' else 0)
     sources = [dict(name=f'frame-{i}.png', bytes=1000+i, sha256=hashlib.sha256(str(i).encode()).hexdigest()) for i in range(4)]
     preview = dict(outputWidth=output_width, outputHeight=output_height, zoom=4.0, displayScale=0.5,
-                   visibleRect=[0.0,0.0,100.0,100.0], latestOutputRanges=[[3*step,3*step+(height if axis=='vertical' else width)]],
+                   visibleRect=[0.0,0.0,100.0,100.0], latestOutputRanges=[[(3+i)*step,(4+i)*step] for i in range(4)],
                    tileWidth=50, tileHeight=50, activeJobs=0, pendingJobs=0, cachedTiles=1, sourceReferences=4,
                    resolutionLabel='Sampled detail, sources at most 2048 px')
     end = copy.deepcopy(preview)
@@ -72,12 +86,14 @@ def cycle(profile, index, phase):
 def report(app, executable):
     warmups = [cycle(CHECK.PROFILES[i%4],i+1,'warmup') for i in range(8)]
     cycles = [cycle(CHECK.PROFILES[i%4],i+1,'measured') for i in range(16)]
-    value = dict(schemaVersion=1,status='passed',sourceCommit=COMMIT,version='0.14.0',buildVersion='140',
+    value = dict(schemaVersion=2,status='passed',sourceCommit=COMMIT,version='0.14.0',buildVersion='140',
                  bundlePath=str(app),processIdentifier=123,architecture='arm64',buildMode='release',
                  warmupCycles=8,measuredCycles=16,acceptedFramesPerCycle=4,overallDeadlineSeconds=240,
                  sampleIntervalSeconds=0.05,settlingDelaySeconds=0.15,workload='direct setup with real production pipeline',
                  fullOutputRastersInResourceLoop=0,giantMasterPageRasters=0,memoryIsObservational=True,
                  memoryScope='Main process sampled RSS and footprint, excluding GPU and WindowServer',
+                 backingAccountingScope='TASK_VM_INFO then TASK_VM_INFO_PURGEABLE; not atomic across flavors',
+                 backingAccountingSampling='Boundary-only actual kernel accounting; separate from the unchanged 50 ms sampler',
                  backingCaveat='ImageIO volatile backing may survive; injected viewports omit production full-display backing',
                  ownershipScope='One source raster and sampled pipeline references, excluding transient decoder allocations',
                  limits=copy.deepcopy(CHECK.LIMITS),executableSHA256=hashlib.sha256(executable).hexdigest(),
@@ -261,6 +277,38 @@ class ResourceReportTests(unittest.TestCase):
         self.report['cycles'][0]['preview']['end']['latestOutputRanges'][0][0]+=1
         self.reject()
 
+    def test_historical_native_four_source_preview_regression(self):
+        fixture=Path(__file__).with_name('fixtures')/'scroll-manual-preview-0361-arm.json'
+        reduced=json.loads(fixture.read_bytes())
+        self.assertEqual(reduced['sourceCommit'],'0361a7eb1fe9c9ab39732853852b50a6d690a15a')
+        self.assertEqual(reduced['sourceReportSHA256'],'6c2ef3a770db51ec57410c4452f2f2b599b104dfd703acb21043679d3ee8c6d5')
+        self.assertEqual(len(reduced['samples']),4)
+        for row,profile in zip(reduced['samples'],CHECK.PROFILES):
+            self.assertEqual((row['profile'],row['width'],row['height'],row['axis']),profile)
+            for view in row['preview'].values():
+                CHECK.preview(view,row['width'],row['height'],row['axis'])
+
+    def test_viewport_partition_rejects_gaps_overlaps_merges_and_reordering(self):
+        original=copy.deepcopy(self.report['cycles'][0]['preview']['end']['latestOutputRanges'])
+        hostile=[
+            [original[0], [original[1][0]+1,original[1][1]], *original[2:]],
+            [original[0], [original[1][0]-1,original[1][1]], *original[2:]],
+            [[original[0][0],original[-1][1]]],
+            list(reversed(original)),
+            [original[0],original[0],*original[2:]],
+            [[original[0][0],original[0][0]],*original[1:]],
+            [[True,original[0][1]],*original[1:]],
+            [[-1,original[0][1]],*original[1:]],
+            [[original[0][0],original[0][1]+1],[original[1][0]+1,original[1][1]],*original[2:]],
+            [*original[:-1],[original[-1][0],original[-1][1]-1]],
+        ]
+        for ranges in hostile:
+            with self.subTest(ranges=ranges):
+                self.report['cycles'][0]['preview']['end']['latestOutputRanges']=ranges
+                self.reject()
+        self.report['cycles'][0]['preview']['end']['latestOutputRanges']=original
+        self.validate()
+
     def test_preview_must_navigate(self):
         self.report['cycles'][0]['preview']['end']=copy.deepcopy(self.report['cycles'][0]['preview']['beginning'])
         self.reject()
@@ -286,6 +334,65 @@ class ResourceReportTests(unittest.TestCase):
 
     def test_deadline_not_relaxed(self):
         self.report['overallDeadlineSeconds']=600
+        self.reject()
+
+    def test_backing_zero_and_signed_ledger_values_are_preserved(self):
+        point=self.report['cycles'][0]['settledAfterClose']['backingAccounting']['purgeable']
+        self.assertEqual(point['bytes']['purgeable_volatile_pmap'],0)
+        self.assertEqual(point['ledgerBytes']['ledger_purgeable_volatile'],-1)
+        self.validate()
+
+    def test_old_schema_cannot_supply_new_accounting_evidence(self):
+        self.report['schemaVersion']=1
+        self.reject()
+
+    def test_missing_purgeable_accounting_field_rejected(self):
+        del self.report['cycles'][0]['before']['backingAccounting']['purgeable']['bytes']['purgeable_volatile_resident']
+        self.reject()
+
+    def test_failed_purgeable_kernel_call_rejected(self):
+        self.report['cycles'][0]['before']['backingAccounting']['purgeable']['kernelReturn']=5
+        self.reject()
+
+    def test_short_purgeable_result_without_fields_rejected(self):
+        point=self.report['cycles'][0]['before']['backingAccounting']['purgeable']
+        point['returnedNaturalCount']=1
+        point['bytes']={}
+        self.reject()
+
+    def test_short_purgeable_result_cannot_claim_complete_fields(self):
+        self.report['cycles'][0]['before']['backingAccounting']['purgeable']['returnedNaturalCount']=1
+        self.reject()
+
+    def test_purgeable_returned_count_cannot_exceed_request(self):
+        self.report['cycles'][0]['before']['backingAccounting']['purgeable']['returnedNaturalCount']=105
+        self.reject()
+
+    def test_purgeable_reading_is_not_inferred_from_other_flavor(self):
+        point=self.report['cycles'][0]['before']['backingAccounting']
+        point['purgeable']=copy.deepcopy(point['standard'])
+        self.reject()
+
+    def test_standard_flavor_cannot_claim_volatile_queries(self):
+        self.report['cycles'][0]['before']['backingAccounting']['standard']['bytes']['purgeable_volatile_resident']=0
+        self.reject()
+
+    def test_negative_or_boolean_volatile_bytes_rejected(self):
+        for value in (-1,True):
+            with self.subTest(value=value):
+                self.report['cycles'][0]['before']['backingAccounting']['purgeable']['bytes']['purgeable_volatile_resident']=value
+                self.reject()
+
+    def test_nonfinite_backing_timestamp_rejected(self):
+        self.report['cycles'][0]['before']['backingAccounting']['purgeable']['observedAtUptimeSeconds']=float('inf')
+        self.reject()
+
+    def test_backing_flavor_observation_order_rejected(self):
+        self.report['cycles'][0]['before']['backingAccounting']['purgeable']['observedAtUptimeSeconds']=1.0
+        self.reject()
+
+    def test_rss_footprint_difference_is_not_assigned_to_volatile_bytes(self):
+        self.report['purgeabilityInferredFromRSSFootprintGap']=True
         self.reject()
 
     def test_nonfinite_memory_rejected(self):

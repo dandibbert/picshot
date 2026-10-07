@@ -1,0 +1,336 @@
+{
+  "purpose": "Historical preview-schema regression only; not current-source acceptance evidence",
+  "sourceCommit": "0361a7eb1fe9c9ab39732853852b50a6d690a15a",
+  "sourceRunID": "37651214964",
+  "sourceReportSHA256": "6c2ef3a770db51ec57410c4452f2f2b599b104dfd703acb21043679d3ee8c6d5",
+  "samples": [
+    {
+      "profile": "4k-vertical",
+      "width": 3840,
+      "height": 2160,
+      "axis": "vertical",
+      "preview": {
+        "beginning": {
+          "activeJobs": 0,
+          "cachedTiles": 1,
+          "displayScale": 0.35,
+          "latestOutputRanges": [
+            [
+              1620,
+              2160
+            ],
+            [
+              2160,
+              2700
+            ],
+            [
+              2700,
+              3240
+            ],
+            [
+              3240,
+              3780
+            ]
+          ],
+          "outputHeight": 3780,
+          "outputWidth": 3840,
+          "pendingJobs": 0,
+          "resolutionLabel": "采样预览 35% · 源≤2048 px · 青框：最新视口",
+          "sourceReferences": 4,
+          "tileHeight": 380,
+          "tileWidth": 672,
+          "visibleRect": [
+            960,
+            541.4285714285714,
+            1920,
+            1082.857142857143
+          ],
+          "zoom": 3.4907651715039574
+        },
+        "end": {
+          "activeJobs": 0,
+          "cachedTiles": 1,
+          "displayScale": 0.35,
+          "latestOutputRanges": [
+            [
+              1620,
+              2160
+            ],
+            [
+              2160,
+              2700
+            ],
+            [
+              2700,
+              3240
+            ],
+            [
+              3240,
+              3780
+            ]
+          ],
+          "outputHeight": 3780,
+          "outputWidth": 3840,
+          "pendingJobs": 0,
+          "resolutionLabel": "采样预览 35% · 源≤2048 px · 青框：最新视口",
+          "sourceReferences": 4,
+          "tileHeight": 380,
+          "tileWidth": 672,
+          "visibleRect": [
+            960,
+            2155.7142857142853,
+            1920,
+            1082.857142857143
+          ],
+          "zoom": 3.4907651715039574
+        }
+      }
+    },
+    {
+      "profile": "4k-horizontal",
+      "width": 3840,
+      "height": 2160,
+      "axis": "horizontal",
+      "preview": {
+        "beginning": {
+          "activeJobs": 0,
+          "cachedTiles": 1,
+          "displayScale": 0.3314814814814815,
+          "latestOutputRanges": [
+            [
+              2880,
+              3840
+            ],
+            [
+              3840,
+              4800
+            ],
+            [
+              4800,
+              5760
+            ],
+            [
+              5760,
+              6720
+            ]
+          ],
+          "outputHeight": 2160,
+          "outputWidth": 6720,
+          "pendingJobs": 0,
+          "resolutionLabel": "采样预览 33% · 源≤2048 px · 青框：最新视口",
+          "sourceReferences": 4,
+          "tileHeight": 358,
+          "tileWidth": 711,
+          "visibleRect": [
+            1070.9497206703911,
+            540,
+            2141.8994413407822,
+            1080
+          ],
+          "zoom": 3.137402190923318
+        },
+        "end": {
+          "activeJobs": 0,
+          "cachedTiles": 1,
+          "displayScale": 0.3314814814814815,
+          "latestOutputRanges": [
+            [
+              2880,
+              3840
+            ],
+            [
+              3840,
+              4800
+            ],
+            [
+              4800,
+              5760
+            ],
+            [
+              5760,
+              6720
+            ]
+          ],
+          "outputHeight": 2160,
+          "outputWidth": 6720,
+          "pendingJobs": 0,
+          "resolutionLabel": "采样预览 33% · 源≤2048 px · 青框：最新视口",
+          "sourceReferences": 4,
+          "tileHeight": 358,
+          "tileWidth": 711,
+          "visibleRect": [
+            3507.150837988827,
+            540,
+            2141.8994413407822,
+            1080
+          ],
+          "zoom": 3.137402190923318
+        }
+      }
+    },
+    {
+      "profile": "5k-vertical",
+      "width": 5120,
+      "height": 2880,
+      "axis": "vertical",
+      "preview": {
+        "beginning": {
+          "activeJobs": 0,
+          "cachedTiles": 1,
+          "displayScale": 0.2625,
+          "latestOutputRanges": [
+            [
+              2160,
+              2880
+            ],
+            [
+              2880,
+              3600
+            ],
+            [
+              3600,
+              4320
+            ],
+            [
+              4320,
+              5040
+            ]
+          ],
+          "outputHeight": 5040,
+          "outputWidth": 5120,
+          "pendingJobs": 0,
+          "resolutionLabel": "采样预览 26% · 源≤2048 px · 青框：最新视口",
+          "sourceReferences": 4,
+          "tileHeight": 380,
+          "tileWidth": 672,
+          "visibleRect": [
+            1280,
+            721.9047619047619,
+            2560,
+            1443.8095238095239
+          ],
+          "zoom": 3.4907651715039583
+        },
+        "end": {
+          "activeJobs": 0,
+          "cachedTiles": 1,
+          "displayScale": 0.2625,
+          "latestOutputRanges": [
+            [
+              2160,
+              2880
+            ],
+            [
+              2880,
+              3600
+            ],
+            [
+              3600,
+              4320
+            ],
+            [
+              4320,
+              5040
+            ]
+          ],
+          "outputHeight": 5040,
+          "outputWidth": 5120,
+          "pendingJobs": 0,
+          "resolutionLabel": "采样预览 26% · 源≤2048 px · 青框：最新视口",
+          "sourceReferences": 4,
+          "tileHeight": 380,
+          "tileWidth": 672,
+          "visibleRect": [
+            1280,
+            2874.285714285714,
+            2560,
+            1443.8095238095239
+          ],
+          "zoom": 3.4907651715039583
+        }
+      }
+    },
+    {
+      "profile": "5k-horizontal",
+      "width": 5120,
+      "height": 2880,
+      "axis": "horizontal",
+      "preview": {
+        "beginning": {
+          "activeJobs": 0,
+          "cachedTiles": 1,
+          "displayScale": 0.24861111111111112,
+          "latestOutputRanges": [
+            [
+              3840,
+              5120
+            ],
+            [
+              5120,
+              6400
+            ],
+            [
+              6400,
+              7680
+            ],
+            [
+              7680,
+              8960
+            ]
+          ],
+          "outputHeight": 2880,
+          "outputWidth": 8960,
+          "pendingJobs": 0,
+          "resolutionLabel": "采样预览 25% · 源≤2048 px · 青框：最新视口",
+          "sourceReferences": 4,
+          "tileHeight": 358,
+          "tileWidth": 711,
+          "visibleRect": [
+            1427.9329608938547,
+            720,
+            2855.8659217877093,
+            1440
+          ],
+          "zoom": 3.137402190923318
+        },
+        "end": {
+          "activeJobs": 0,
+          "cachedTiles": 1,
+          "displayScale": 0.24861111111111112,
+          "latestOutputRanges": [
+            [
+              3840,
+              5120
+            ],
+            [
+              5120,
+              6400
+            ],
+            [
+              6400,
+              7680
+            ],
+            [
+              7680,
+              8960
+            ]
+          ],
+          "outputHeight": 2880,
+          "outputWidth": 8960,
+          "pendingJobs": 0,
+          "resolutionLabel": "采样预览 25% · 源≤2048 px · 青框：最新视口",
+          "sourceReferences": 4,
+          "tileHeight": 358,
+          "tileWidth": 711,
+          "visibleRect": [
+            4676.2011173184355,
+            720,
+            2855.8659217877093,
+            1440
+          ],
+          "zoom": 3.137402190923318
+        }
+      }
+    }
+  ]
+}

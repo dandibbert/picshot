@@ -9,6 +9,11 @@ import PicShotFormulaRenderCore
         let url=URL(fileURLWithPath:report);let directory=url.deletingLastPathComponent()
         do{
             try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
+            if let payload = try await ScrollMemoryAttributionFixture.runIfRequested(evidenceDirectory: directory, detailRenderer: ScrollMemoryAttributionCurrentDetail.render) {
+                try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]).write(to: url, options: .atomic)
+                try? FileManager.default.removeItem(at: history.directory)
+                NSApp.terminate(nil); return
+            }
             if ProcessInfo.processInfo.environment["PICSHOT_MANUAL_SCROLL_ONLY"] == "1" {
                 var payload = try await ScrollManualCaptureSmokeFixture.verify(evidenceDirectory: directory, includeLargeFrames: true)
                 if ProcessInfo.processInfo.environment["PICSHOT_MANUAL_SCROLL_RESOURCES"] == "1" {

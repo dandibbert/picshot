@@ -25,7 +25,7 @@ enum ScrollManualResourceFixture {
         let start = ProcessInfo.processInfo.systemUptime, deadline = start + deadlineSeconds
         let reportURL = evidenceDirectory.appendingPathComponent(reportName)
         var report: [String: Any] = [
-            "schemaVersion": 1, "status": "running",
+            "schemaVersion": 2, "status": "running",
             "sourceCommit": Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String ?? "unknown",
             "version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown",
             "buildVersion": Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown",
@@ -42,6 +42,9 @@ enum ScrollManualResourceFixture {
             "networkUsed": false, "generalPasteboardUsed": false, "standardDefaultsWritten": false,
             "memoryPressureOrSystemSettingsChanged": false, "allocatorPurgeAttempted": false,
             "physicalDisplayOrExternalApplicationVerified": false,
+            "backingAccountingScope": ImageBackingTaskVMReading.scope,
+            "backingAccountingSampling": "Boundary-only TASK_VM_INFO and TASK_VM_INFO_PURGEABLE at every existing before/settled/baseline/final point; separate non-atomic calls from the unchanged 50 ms RSS/footprint sampler. These observations do not identify image ownership or prove reclaimability.",
+            "purgeabilityInferredFromRSSFootprintGap": false,
             "memoryScope": "Main-process sampled Mach RSS and physical footprint; excludes WindowServer, GPU and other processes. Timer maxima can miss native transients and are not kernel lifetime peaks.",
             "backingCaveat": "ImageIO may retain volatile decoded backing beyond lexical release. RSS and footprint differ; owned-state release is not overall memory stability. Production screen crops may retain full-display backing; injected viewports do not measure that path.",
             "ownershipScope": "The fixture retains at most one procedural viewport, reused across stable captures; driver references may alias it. Sampled ownership counters cover the pending driver raster, accepted grayscale, overview, preview tile/jobs and provider call; they do not count transient normalization buffers, ImageIO decoder backing or framework caches.",
@@ -369,7 +372,19 @@ enum ScrollManualResourceFixture {
         try require((reading.residentBytes ?? 0) > 0 && (reading.physicalFootprintBytes ?? 0) > 0
                     && reading.residentBytes! <= UInt64(Int64.max) && reading.physicalFootprintBytes! <= UInt64(Int64.max),
                     "RSS/physical-footprint sample unavailable")
-        return try object(reading)
+        // Read the kernel's purgeable accounting directly. The RSS/footprint gap
+        // is never substituted for any of these values. Existing timer sampling
+        // remains unchanged; these two additional calls occur only at boundaries.
+        let backing = ImageBackingMemoryReading.current()
+        try require(backing.standard.kernelReturn == 0 && backing.purgeable.kernelReturn == 0
+                    && (backing.residentBytes ?? 0) > 0 && (backing.physicalFootprintBytes ?? 0) > 0
+                    && backing.purgeable.bytes["purgeable_volatile_resident"] != nil
+                    && backing.purgeable.bytes["purgeable_volatile_virtual"] != nil
+                    && backing.purgeable.bytes["purgeable_volatile_pmap"] != nil,
+                    "TASK_VM_INFO/PURGEABLE boundary accounting unavailable or short; fields were not replaced with zero")
+        var result = try object(reading)
+        result["backingAccounting"] = try object(backing)
+        return result
     }
     private static func statistics(_ sampler: GIFResourceMemorySampler) throws -> [String: Any] {
         let s = sampler.snapshot(), total = s.timerTickCount + s.boundarySampleCount

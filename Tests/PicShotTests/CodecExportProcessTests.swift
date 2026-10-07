@@ -64,15 +64,15 @@ final class CodecExportProcessTests: XCTestCase {
     func testSharedLeaseRejectsCodecWhileGIFChildRunsAndReleasesAfterConfirmedCancel() async throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let source = root.appendingPathComponent("source.mp4"); try Data([1]).write(to: source)
-        let pythonURL = URL(fileURLWithPath: "/usr/bin/python3")
-        guard FileManager.default.isExecutableFile(atPath: pythonURL.path) else { throw CodecProcessTestSupportError.failed("System python3 required for explicitly synthetic protocol test") }
-        let evidence = try CodecGIFReadinessEvidence(root: root)
+        let fixtureURL = CodecGIFLeaseFixture.executableURL
+        guard FileManager.default.isExecutableFile(atPath: fixtureURL.path) else { throw CodecProcessTestSupportError.failed("System shell required for explicitly synthetic protocol test") }
+        let evidence = CodecGIFReadinessEvidence()
         var finalSnapshot: GIFExportProcessSnapshot?
         defer { evidence.emit(finalSnapshot: finalSnapshot) }
         let gif = GIFExportProcessService(configuration: .init(executable: {
             evidence.record("executableClosureEntered")
-            return pythonURL
-        }, arguments: evidence.pythonArguments, wallSeconds: 5,
+            return fixtureURL
+        }, arguments: CodecGIFLeaseFixture.arguments, wallSeconds: 5,
             launchDiagnosticsForTesting: evidence.launchDiagnostics))
         let progress = GIFProcessTestProgress()
         evidence.record("beforeTaskCreation")

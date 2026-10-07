@@ -28,7 +28,8 @@ LIMITS = dict(framePixels=24_000_000, outputPixels=60_000_000, outputDimension=3
 FALSE_FIELDS = {'nativeControlEventsInResourceLoop', 'stabilityAssessed', 'zeroLeakClaim',
                 'screenCaptureStarted', 'permissionRequests', 'globalInputPosted', 'networkUsed',
                 'generalPasteboardUsed', 'standardDefaultsWritten', 'memoryPressureOrSystemSettingsChanged',
-                'allocatorPurgeAttempted', 'physicalDisplayOrExternalApplicationVerified'}
+                'allocatorPurgeAttempted', 'physicalDisplayOrExternalApplicationVerified',
+                'purgeabilityInferredFromRSSFootprintGap'}
 TRUE_CYCLE_FIELDS = {'acceptedSourcesImmutable', 'stationarySuppressed', 'uncertainSeamRejected',
                     'pauseDrained', 'pauseStoppedSampling', 'sameSizeMovePreservedSources', 'retryKeptAnchor',
                     'cancelOverlappedProvider', 'cancelDrained', 'resetRemovedSpool', 'closedObjectsReleased'}
@@ -106,10 +107,63 @@ def file_sha(path):
     return digest.hexdigest()
 
 
+BACKING_BYTE_FIELDS = {'virtual_size', 'resident_size', 'resident_size_peak', 'device', 'device_peak',
+                       'internal', 'internal_peak', 'external', 'external_peak', 'reusable', 'reusable_peak',
+                       'compressed', 'compressed_peak', 'compressed_lifetime', 'phys_footprint'}
+VOLATILE_FIELDS = {'purgeable_volatile_resident', 'purgeable_volatile_virtual', 'purgeable_volatile_pmap'}
+BACKING_LEDGER_FIELDS = {'ledger_phys_footprint_peak', 'ledger_purgeable_nonvolatile',
+                         'ledger_purgeable_novolatile_compressed', 'ledger_purgeable_volatile',
+                         'ledger_purgeable_volatile_compressed', 'ledger_tag_media_footprint',
+                         'ledger_tag_media_footprint_compressed', 'ledger_tag_media_nofootprint',
+                         'ledger_tag_media_nofootprint_compressed', 'ledger_tag_graphics_footprint',
+                         'ledger_tag_graphics_footprint_compressed', 'ledger_tag_graphics_nofootprint',
+                         'ledger_tag_graphics_nofootprint_compressed'}
+
+
+def backing_memory(value):
+    keys(value, {'standard', 'purgeable'})
+    for name, flavor in [('standard', 'TASK_VM_INFO'), ('purgeable', 'TASK_VM_INFO_PURGEABLE')]:
+        row = value[name]
+        # Optional metadata is omitted if unavailable, never invented as zero.
+        required = {'flavor', 'kernelReturn', 'requestedNaturalCount', 'returnedNaturalCount',
+                    'observedAtUptimeSeconds', 'bytes', 'ledgerBytes'}
+        need(type(row) is dict and required <= set(row) <= required | {'pageSizeBytes', 'regionCount'},
+             'unexpected backing-accounting fields')
+        need(row['flavor'] == flavor and integer(row['kernelReturn'], -2**31, 2**31-1) == 0,
+             'kernel backing-accounting call failed/wrong flavor')
+        requested = integer(row['requestedNaturalCount'], 1, 4096)
+        integer(row['returnedNaturalCount'], 1, requested)
+        number(row['observedAtUptimeSeconds'], 1e-12)
+        if 'pageSizeBytes' in row:
+            integer(row['pageSizeBytes'], 1, 2**31-1)
+        if 'regionCount' in row:
+            integer(row['regionCount'], 0, 2**31-1)
+        fields = row['bytes']
+        allowed = BACKING_BYTE_FIELDS | (VOLATILE_FIELDS if name == 'purgeable' else set())
+        mandatory = {'resident_size', 'phys_footprint'} | (VOLATILE_FIELDS if name == 'purgeable' else set())
+        need(type(fields) is dict and mandatory <= set(fields) <= allowed, 'missing/unknown backing byte fields')
+        for count in fields.values():
+            integer(count, 0, 2**64-1)
+        integer(fields['resident_size'], 1, 2**64-1)
+        integer(fields['phys_footprint'], 1, 2**64-1)
+        need(type(row['ledgerBytes']) is dict and set(row['ledgerBytes']) <= BACKING_LEDGER_FIELDS,
+             'unknown backing ledger fields')
+        for count in row['ledgerBytes'].values():
+            integer(count, -2**63, 2**63-1)
+        # Necessary byte-count consistency without guessing SDK-specific offsets.
+        # Every recorded byte/ledger value is a distinct 64-bit struct field;
+        # optional page/region metadata consists of distinct 32-bit fields.
+        minimum_bytes = 8*(len(fields)+len(row['ledgerBytes'])) + 4*sum(key in row for key in ('pageSizeBytes','regionCount'))
+        need(row['returnedNaturalCount']*4 >= minimum_bytes, 'backing returned count cannot hold reported fields')
+    need(value['standard']['observedAtUptimeSeconds'] <= value['purgeable']['observedAtUptimeSeconds'],
+         'backing flavor observation order differs')
+
+
 def memory(point):
-    keys(point, {item[0] for item in MEMORY_FIELDS})
-    for value in point.values():
-        integer(value, 1)
+    keys(point, {item[0] for item in MEMORY_FIELDS} | {'backingAccounting'})
+    for field, _, _ in MEMORY_FIELDS:
+        integer(point[field], 1)
+    backing_memory(point['backingAccounting'])
 
 
 def sampled(stats):
@@ -166,9 +220,19 @@ def preview(value, width, height, axis):
     need(tile_width*tile_height <= LIMITS['previewTilePixels'], 'tile exceeds cap')
     for field, expected in [('activeJobs', 0), ('pendingJobs', 0), ('cachedTiles', 1), ('sourceReferences', 4)]:
         need(integer(value[field]) == expected, 'preview did not settle')
-    ranges = array(value['latestOutputRanges'], 1)
-    last = array(ranges[0], 2)
-    need([integer(item) for item in last] == [3*step, 3*step+(height if axis == 'vertical' else width)], 'latest viewport geometry differs')
+    # The viewport is projected through all four immutable source strips. Its
+    # coverage is contiguous, but the projection preserves each source boundary.
+    length = height if axis == 'vertical' else width
+    expected_ranges = [[3*step, length]] + [[length+i*step, length+(i+1)*step] for i in range(3)]
+    ranges = array(value['latestOutputRanges'], 4)
+    for band in ranges:
+        array(band, 2)
+        start, end = (integer(item, 0, length+3*step) for item in band)
+        need(start < end, 'latest viewport has an empty/reversed band')
+    need(ranges == expected_ranges, 'latest viewport source partition differs')
+    need(ranges[0][0] == 3*step and ranges[-1][1] == 3*step+length
+         and all(left[1] == right[0] for left, right in zip(ranges, ranges[1:]))
+         and sum(end-start for start, end in ranges) == length, 'latest viewport coverage differs')
     string(value['resolutionLabel'])
 
 
@@ -245,7 +309,7 @@ def validate(report, *, expected_commit, expected_version, expected_build, insta
               'architecture', 'buildMode', 'warmupCycles', 'measuredCycles', 'acceptedFramesPerCycle',
               'overallDeadlineSeconds', 'sampleIntervalSeconds', 'settlingDelaySeconds', 'workload',
               'fullOutputRastersInResourceLoop', 'giantMasterPageRasters', 'memoryIsObservational',
-              'memoryScope', 'backingCaveat', 'ownershipScope', 'limits', 'executableSHA256', 'functionalReportSHA256', 'beforeWarmup',
+              'memoryScope', 'backingCaveat', 'ownershipScope', 'backingAccountingScope', 'backingAccountingSampling', 'limits', 'executableSHA256', 'functionalReportSHA256', 'beforeWarmup',
               'warmups', 'warmupSampledMemory', 'baselineAfterWarmup', 'cycles', 'sampledMemory', 'finalAfterCleanup',
               'profileMemory', 'completedWarmupCycles', 'completedMeasuredCycles', 'observationsComplete', 'elapsedSeconds'}
     fields |= FALSE_FIELDS
@@ -253,7 +317,7 @@ def validate(report, *, expected_commit, expected_version, expected_build, insta
         fields |= {prefix+suffix for suffix in ('GrowthFromWarmupBytes', 'EveryIntervalGrowthBytes',
                                               'LateThreeIntervalGrowthBytes', 'CleanupDeltaBytes')}
     keys(report, fields)
-    need(integer(report['schemaVersion']) == 1 and report['status'] == 'passed', 'resource report failed/unsupported')
+    need(integer(report['schemaVersion']) == 2 and report['status'] == 'passed', 'resource report failed/unsupported')
     need((report['sourceCommit'], report['version'], report['buildVersion']) ==
          (expected_commit, expected_version, expected_build), 'source/version/build mismatch')
     app = Path(installed_app).resolve(strict=True)
@@ -279,8 +343,10 @@ def validate(report, *, expected_commit, expected_version, expected_build, insta
     for field in FALSE_FIELDS:
         need(report[field] is False, 'unsupported side effect/claim: '+field)
     need(report['memoryIsObservational'] is True and report['observationsComplete'] is True, 'scope or observation incomplete')
-    for field in ('memoryScope', 'backingCaveat', 'ownershipScope', 'workload'):
+    for field in ('memoryScope', 'backingCaveat', 'ownershipScope', 'workload', 'backingAccountingScope', 'backingAccountingSampling'):
         string(report[field])
+    need('TASK_VM_INFO_PURGEABLE' in report['backingAccountingScope'] and 'not atomic' in report['backingAccountingScope'], 'backing scope missing actual flavor/non-atomic caveat')
+    need('Boundary-only' in report['backingAccountingSampling'] and '50 ms' in report['backingAccountingSampling'], 'backing boundary/timer scope missing')
     need('ImageIO' in report['backingCaveat'] and 'volatile' in report['backingCaveat'] and 'full-display' in report['backingCaveat'], 'ImageIO/display backing caveat missing')
     keys(report['limits'], LIMITS)
     for key, expected in LIMITS.items():
