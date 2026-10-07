@@ -14,6 +14,7 @@ import json
 import math
 import os
 from pathlib import Path
+import select
 import selectors
 import signal
 import subprocess
@@ -61,20 +62,85 @@ def write_report(path, report):
     temporary.replace(path)
 
 
-def group_exists(pgid):
-    try:
-        os.killpg(pgid, 0)
-        return True
-    except ProcessLookupError:
-        return False
+def live_group_members(pgid):
+    """Prove whether a group has executable members; fail closed on probe errors."""
+    result = subprocess.run(
+        ["ps", "-A", "-o", "pgid=,stat="],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True,
+        check=True, timeout=0.5,
+    )
+    for line in result.stdout.splitlines():
+        group, state = line.split()
+        if int(group) == pgid and not state.startswith("Z"):
+            return True
+    return False
 
 
-def signal_group(pgid, signum):
-    try:
-        os.killpg(pgid, signum)
-        return True
-    except ProcessLookupError:
+class ProcessGroup:
+    """Keep the unreaped leader as an identity anchor until all signalling ends."""
+
+    def __init__(self, process):
+        self.process = process
+        self.retired = False
+        self.exited = False
+        self.watcher = None
+
+    def leader_exited(self):
+        if not self.exited:
+            if hasattr(os, "waitid"):
+                self.exited = os.waitid(
+                    os.P_PID, self.process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT
+                ) is not None
+            else:
+                # Python before 3.13 does not expose waitid on macOS. A kqueue
+                # exit watch observes the child without reaping/releasing its PID.
+                if self.watcher is None:
+                    self.watcher = select.kqueue()
+                    try:
+                        self.watcher.control([select.kevent(
+                            self.process.pid, filter=select.KQ_FILTER_PROC,
+                            flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                            fflags=select.KQ_NOTE_EXIT,
+                        )], 0, 0)
+                    except ProcessLookupError:
+                        self.exited = True  # Our child exited before registration.
+                if not self.exited:
+                    self.exited = bool(self.watcher.control(None, 1, 0))
+        return self.exited
+
+    def alive(self):
+        if self.retired:
+            return False
+        if not self.leader_exited():
+            return True
+        if live_group_members(self.process.pid):
+            return True
+        self.retired = True
         return False
+
+    def send(self, signum):
+        if self.retired:
+            return False
+        try:
+            os.killpg(self.process.pid, signum)
+            return True
+        except ProcessLookupError:
+            self.retired = True
+            return False
+        except PermissionError:
+            # Darwin killpg1 filters out zombies and may return EPERM for a
+            # zombie-only group. EPERM alone never proves the group is dead.
+            # https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_sig.c
+            if live_group_members(self.process.pid):
+                raise
+            self.retired = True
+            return False
+
+    def close(self):
+        # Never touch this numeric PGID after reaping releases the leader PID.
+        self.retired = True
+        if self.watcher is not None:
+            self.watcher.close()
 
 
 def run(args):
@@ -112,6 +178,7 @@ def run(args):
         for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
     }
     process = None
+    group = None
     termination_started = None
     kill_at = None
     reason = None
@@ -132,32 +199,33 @@ def run(args):
                 report.update(status="spawn_error", error=str(error))
                 exit_code = 127
             else:
+                group = ProcessGroup(process)
                 report.update(status="running", pid=process.pid)
                 write_report(args.report, report)
                 os.set_blocking(process.stdout.fileno(), False)
                 selector.register(process.stdout, selectors.EVENT_READ)
                 while True:
                     now = time.monotonic()
-                    returncode = process.poll()
+                    leader_exited = group.leader_exited()
                     if reason is None:
                         if received_signals:
                             reason = "cancelled"
                             report["cancel_signal"] = received_signals[0]
                         elif now - start >= args.timeout_seconds:
                             reason = "timeout"
-                        elif returncode is not None:
+                        elif leader_exited:
                             reason = "exited"
-                            report["descendant_cleanup"] = group_exists(process.pid)
+                            report["descendant_cleanup"] = group.alive()
                     if reason is not None and termination_started is None:
                         # Even a normally exiting parent may leave descendants
                         # holding the output pipe (or running with it closed).
                         termination_started = now
-                        report["sigterm_sent"] = signal_group(process.pid, signal.SIGTERM)
+                        report["sigterm_sent"] = group.send(signal.SIGTERM)
                         report.update(status="terminating", termination_reason=reason)
                         write_report(args.report, report)
                     if termination_started is not None and kill_at is None:
                         if now - termination_started >= args.grace_seconds or len(received_signals) > 1:
-                            report["sigkill_sent"] = signal_group(process.pid, signal.SIGKILL)
+                            report["sigkill_sent"] = group.send(signal.SIGKILL)
                             kill_at = now
                             write_report(args.report, report)
 
@@ -182,13 +250,15 @@ def run(args):
                         report["log_truncated"] = report["output_bytes"] > report["log_bytes"]
 
                     if reason is not None:
-                        if process.poll() is not None and not selector.get_map() and not group_exists(process.pid):
+                        if group.leader_exited() and not selector.get_map() and not group.alive():
                             break
-                        # Zombies may retain a process-group ID until reaped by
-                        # their new parent. Never wait indefinitely for them, or
-                        # for a pipe inherited by a process that detached itself.
+                        # Bound cleanup even for a detached pipe holder, but
+                        # never claim success with observed live group members.
                         if kill_at is not None and time.monotonic() - kill_at >= 0.5:
+                            if group.alive():
+                                raise RuntimeError("process group still has live members after SIGKILL")
                             break
+                group.close()
                 report["child_returncode"] = process.wait(timeout=1)
                 report["status"] = reason
                 if reason == "timeout":
@@ -202,30 +272,56 @@ def run(args):
         report.update(status="wrapper_error", error=f"{type(error).__name__}: {error}")
         exit_code = 125
     finally:
-        # Also clean up after an I/O/reporting error. Preserve TERM -> KILL even
-        # if the leader has already exited but its children are still alive.
+        def cleanup_error(error):
+            nonlocal exit_code
+            message = f"{type(error).__name__}: {error}"
+            report.setdefault("cleanup_errors", []).append(message)
+            report.update(status="wrapper_error")
+            report.setdefault("error", message)
+            exit_code = 125
+
+        # Each stage is independent: a failed probe/TERM must not prevent KILL,
+        # a bounded wait, the final report, or restoration of signal handlers.
         if process is not None:
-            if group_exists(process.pid):
-                if termination_started is None:
-                    termination_started = time.monotonic()
-                    report["sigterm_sent"] = signal_group(process.pid, signal.SIGTERM)
-                if kill_at is None:
-                    while group_exists(process.pid) and time.monotonic() - termination_started < args.grace_seconds:
-                        process.poll()
-                        time.sleep(0.05)
-                    report["sigkill_sent"] = signal_group(process.pid, signal.SIGKILL)
-                else:
-                    signal_group(process.pid, signal.SIGKILL)
+            if group is not None:
+                if not group.retired and kill_at is None:
+                    if termination_started is None:
+                        termination_started = time.monotonic()
+                        try:
+                            report["sigterm_sent"] = group.send(signal.SIGTERM)
+                        except Exception as error:
+                            cleanup_error(error)
+                    try:
+                        while time.monotonic() - termination_started < args.grace_seconds:
+                            if not group.alive():
+                                break
+                            time.sleep(0.05)
+                    except Exception as error:
+                        cleanup_error(error)
+                    try:
+                        report["sigkill_sent"] = group.send(signal.SIGKILL)
+                    except Exception as error:
+                        cleanup_error(error)
+                try:
+                    group.close()
+                except Exception as error:
+                    cleanup_error(error)
             try:
                 report["child_returncode"] = process.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                report.update(status="wrapper_error", error="child did not exit after SIGKILL")
-                exit_code = 125
+            except Exception as error:
+                cleanup_error(error)
             if process.stdout is not None:
-                process.stdout.close()
+                try:
+                    process.stdout.close()
+                except Exception as error:
+                    cleanup_error(error)
         report.update(exit_code=exit_code, duration_seconds=round(time.monotonic() - start, 3))
         try:
-            write_report(args.report, report)
+            try:
+                write_report(args.report, report)
+            except Exception as error:
+                cleanup_error(error)
+                report["exit_code"] = exit_code
             print("\n[bounded-command] " + json.dumps(report, sort_keys=True), file=sys.stderr, flush=True)
         finally:
             for signum, handler in previous_handlers.items():

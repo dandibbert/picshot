@@ -10,8 +10,21 @@ concurrency:
   group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[pin-workflows]') && 'pins-010' || contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
   cancel-in-progress: true
 jobs:
+  runner-check:
+    if: ${{ contains(github.event.head_commit.message || '', '[runner-only]') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Verify bounded cleanup and cancellation on native macOS
+        timeout-minutes: 2
+        run: python3 -m unittest discover -s scripts/tests -p test_run_bounded_command.py -v
   build:
-    if: ${{ (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') && !contains(github.event.head_commit.message || '', '[codec-attribution]') }}
+    if: ${{ (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') && !contains(github.event.head_commit.message || '', '[codec-attribution]') && !contains(github.event.head_commit.message || '', '[runner-only]') }}
     strategy:
       fail-fast: false
       matrix:
