@@ -4,8 +4,8 @@ import Darwin
 import PicShotCodecCore
 @testable import PicShotCodecHelper
 
-/// These tests call only the pure decode seam and private job APIs. Calling
-/// run() here would install a process-wide _exit watchdog in the XCTest runner.
+/// Pure seams plus bounded launches of the real separate helper executable.
+/// Never call run() in-process: its _exit watchdog belongs only in the child.
 final class ImageDecodeDiagnosticTests: XCTestCase {
     func testExplicitDiagnosticSelectorIsRejectedByNormalExportEntryValidation() throws {
         XCTAssertEqual(ImageDecodeDiagnosticLimits.argument, "--image-draw-decode-diagnostic-v1")
@@ -118,6 +118,130 @@ final class ImageDecodeDiagnosticTests: XCTestCase {
             else { XCTAssertEqual(phases, ["imageCreated", "rasterDrawn", "afterContextRelease"]) }
             XCTAssertFalse(job.outputExists(), "Cancelled real decode must never publish decoded.rgba")
         }
+    }
+
+    func testRealHelperLaunchAcceptsStagedAndPhysicalCWDWithJobTMPDIR() throws {
+        for physicalSpelling in [false, true] {
+            let job = try ImageDecodeDiagnosticJob.create(png: fixturePNG(), mode: .decode, check: {})
+            let process = Process()
+            defer { if !process.isRunning { XCTAssertTrue(job.removeAfterExit()) } }
+            let pointer = try XCTUnwrap(job.directory.path.withCString { realpath($0, nil) })
+            let physical = URL(fileURLWithPath: String(cString: pointer), isDirectory: true)
+            free(pointer)
+            let normalized = physical.standardizedFileURL
+            var stagedInfo = stat(), physicalInfo = stat()
+            XCTAssertEqual(stat(job.directory.path, &stagedInfo), 0)
+            XCTAssertEqual(stat(physical.path, &physicalInfo), 0)
+            XCTAssertEqual(stagedInfo.st_dev, physicalInfo.st_dev); XCTAssertEqual(stagedInfo.st_ino, physicalInfo.st_ino)
+            // Reproduce the old guard when the native temp directory has the
+            // /private/var spelling; keep caller-supplied path checks strict.
+            if physical.path != normalized.resolvingSymlinksInPath().path {
+                XCTAssertThrowsError(try ImageDecodeDiagnosticJob.validate(directory: physical, expectedParent: getpid()))
+            }
+            let launchDirectory = physicalSpelling ? physical : job.directory
+            print("Image decode cwd regression: staged=\(job.directory.path), physical=\(physical.path), normalized=\(normalized.path), launch=\(launchDirectory.path)")
+            let result = try runRealDiagnostic(process, job: job, directory: launchDirectory)
+            XCTAssertEqual(process.terminationReason, .exit); XCTAssertEqual(process.terminationStatus, 0)
+            let terminal = try XCTUnwrap(result.last)
+            XCTAssertEqual(terminal.kind, .result, terminal.error?.rawValue ?? "missing result")
+            XCTAssertEqual(result.filter { $0.phase == "beforePNGRead" }.count, 1)
+            XCTAssertEqual(result.filter { $0.phase == "rasterDrawn" }.count, 1)
+            let expected = expectedPixels()
+            let digest = try XCTUnwrap(terminal.rawSHA256)
+            XCTAssertEqual(digest, ImageDecodeDiagnosticLimits.digest(expected))
+            XCTAssertEqual(try job.readRaw(sha256: digest, check: {}), expected)
+        }
+    }
+
+    func testRealHelperCWDAdmissionStillRejectsParentAndTokenMismatch() throws {
+        for field in ["parentPID", "token"] {
+            let job = try ImageDecodeDiagnosticJob.create(png: fixturePNG(), mode: .decode, check: {})
+            let process = Process()
+            defer { if !process.isRunning { XCTAssertTrue(job.removeAfterExit()) } }
+            let requestURL = job.directory.appendingPathComponent("request.json")
+            var request = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: requestURL)) as? [String: Any])
+            if field == "parentPID" { request[field] = Int(getpid()) + 1 }
+            else { request[field] = UUID().uuidString }
+            try JSONSerialization.data(withJSONObject: request).write(to: requestURL)
+            let result = try runRealDiagnostic(process, job: job, directory: job.directory)
+            XCTAssertEqual(process.terminationReason, .exit); XCTAssertEqual(process.terminationStatus, 1)
+            XCTAssertEqual(result.count, 1)
+            XCTAssertEqual(result.last?.kind, .error); XCTAssertEqual(result.last?.error, .invalidJob)
+            XCTAssertFalse(job.outputExists())
+        }
+    }
+
+    private func realHelperExecutable() throws -> URL {
+        if let path = ProcessInfo.processInfo.environment["PICSHOT_CODEC_HELPER_PATH"] {
+            return URL(fileURLWithPath: path)
+        }
+        let bundle = Bundle(for: ImageDecodeDiagnosticTests.self).bundleURL
+        let candidates = [bundle.deletingLastPathComponent().appendingPathComponent("PicShotCodecHelper"),
+            URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent().appendingPathComponent("PicShotCodecHelper")]
+        return try XCTUnwrap(candidates.first { FileManager.default.isExecutableFile(atPath: $0.path) }, "Build the real PicShotCodecHelper for the cwd regression gate")
+    }
+
+    private func runRealDiagnostic(_ process: Process, job: ImageDecodeDiagnosticJob, directory: URL) throws -> [ImageDecodeDiagnosticEvent] {
+        let input = Pipe(), output = Pipe(), errors = Pipe()
+        process.executableURL = try realHelperExecutable(); process.arguments = [ImageDecodeDiagnosticLimits.argument]
+        process.currentDirectoryURL = directory
+        // Match the packaged parent supervisor, including its per-job TMPDIR.
+        process.environment = ["HOME": NSHomeDirectory(), "TMPDIR": job.directory.path, "LANG": "en_US.UTF-8"]
+        process.standardInput = input; process.standardOutput = output; process.standardError = errors
+        for fd in [output.fileHandleForReading.fileDescriptor, errors.fileHandleForReading.fileDescriptor] {
+            let flags = fcntl(fd, F_GETFL)
+            guard flags >= 0, fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0 else { throw ImageDecodeDiagnosticError.invalidProtocol }
+        }
+        defer {
+            if process.isRunning {
+                _ = kill(process.processIdentifier, SIGKILL)
+                let confirm = ProcessInfo.processInfo.systemUptime + 2
+                while process.isRunning && ProcessInfo.processInfo.systemUptime < confirm { Thread.sleep(forTimeInterval: 0.005) }
+                if !process.isRunning { process.waitUntilExit() }
+                else { XCTFail("Owned diagnostic child exit unconfirmed; preserve its job directory") }
+            }
+            try? input.fileHandleForReading.close(); try? input.fileHandleForWriting.close()
+            try? output.fileHandleForReading.close(); try? output.fileHandleForWriting.close()
+            try? errors.fileHandleForReading.close(); try? errors.fileHandleForWriting.close()
+        }
+        try process.run()
+        try? input.fileHandleForReading.close(); try? output.fileHandleForWriting.close(); try? errors.fileHandleForWriting.close()
+        let deadline = ProcessInfo.processInfo.systemUptime + ImageDecodeDiagnosticLimits.exitSeconds
+        var decoder = ImageDecodeDiagnosticEventDecoder(), events: [ImageDecodeDiagnosticEvent] = []
+        var buffer = [UInt8](repeating: 0, count: 4_096), stdoutClosed = false, stderrClosed = false, stderrBytes = 0
+        func drain(_ fd: Int32, isError: Bool) throws {
+            for _ in 0..<40 {
+                let n = Darwin.read(fd, &buffer, buffer.count)
+                if n == 0 { if isError { stderrClosed = true } else { stdoutClosed = true }; return }
+                if n < 0 {
+                    guard errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK else { throw ImageDecodeDiagnosticError.invalidProtocol }
+                    return
+                }
+                if isError {
+                    stderrBytes += n
+                    guard stderrBytes <= ImageDecodeDiagnosticLimits.stderrBytes else { throw ImageDecodeDiagnosticError.invalidProtocol }
+                } else {
+                    let batch = try decoder.consume(Data(buffer.prefix(n)))
+                    guard batch.allSatisfy({ $0.childPID == process.processIdentifier }) else { throw ImageDecodeDiagnosticError.invalidProtocol }
+                    events += batch
+                }
+            }
+        }
+        while process.isRunning && ProcessInfo.processInfo.systemUptime < deadline {
+            if !stdoutClosed { try drain(output.fileHandleForReading.fileDescriptor, isError: false) }
+            if !stderrClosed { try drain(errors.fileHandleForReading.fileDescriptor, isError: true) }
+            if process.isRunning { Thread.sleep(forTimeInterval: 0.005) }
+        }
+        guard !process.isRunning else { throw ImageDecodeDiagnosticError.exitUnconfirmed }
+        process.waitUntilExit()
+        let drainDeadline = ProcessInfo.processInfo.systemUptime + 0.5
+        while (!stdoutClosed || !stderrClosed) && ProcessInfo.processInfo.systemUptime < drainDeadline {
+            if !stdoutClosed { try drain(output.fileHandleForReading.fileDescriptor, isError: false) }
+            if !stderrClosed { try drain(errors.fileHandleForReading.fileDescriptor, isError: true) }
+            if !stdoutClosed || !stderrClosed { Thread.sleep(forTimeInterval: 0.005) }
+        }
+        guard stdoutClosed, stderrClosed else { throw ImageDecodeDiagnosticError.invalidProtocol }
+        try decoder.finish(); return events
     }
 
     private func expectedPixels() -> Data {

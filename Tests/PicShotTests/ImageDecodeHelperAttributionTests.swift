@@ -5,6 +5,35 @@ import PicShotCodecCore
 
 @MainActor
 final class ImageDecodeHelperAttributionTests: XCTestCase {
+    func testChildAdmissionErrorSurvivesOnlyConfirmedNormalErrorExit() throws {
+        var event = ImageDecodeDiagnosticEvent(kind: .error, phase: "failed", childPID: 123)
+        event.error = .invalidJob
+        XCTAssertEqual(try ImageDecodeDiagnosticProcess.terminalFailure(event, normalExit: true, status: 1), .invalidJob)
+        XCTAssertThrowsError(try ImageDecodeDiagnosticProcess.terminalFailure(event, normalExit: false, status: 9))
+        XCTAssertThrowsError(try ImageDecodeDiagnosticProcess.terminalFailure(event, normalExit: true, status: 0))
+        event.error = nil
+        XCTAssertThrowsError(try ImageDecodeDiagnosticProcess.terminalFailure(event, normalExit: true, status: 1))
+    }
+    func testChildErrorCannotExcuseInvalidPhaseOrder() throws {
+        var admission = ImageDecodeDiagnosticEventSequence(holdsAfterDecode: false)
+        var error = ImageDecodeDiagnosticEvent(kind: .error, phase: "failed", childPID: 123); error.error = .invalidJob
+        try admission.consume(error)
+        XCTAssertThrowsError(try admission.consume(error))
+        var invalid = ImageDecodeDiagnosticEventSequence(holdsAfterDecode: false)
+        XCTAssertThrowsError(try invalid.consume(.init(kind: .phase, phase: "rasterDrawn", childPID: 123)))
+        var valid = ImageDecodeDiagnosticEventSequence(holdsAfterDecode: false)
+        for phase in ["beforePNGRead", "imageCreated", "rasterDrawn", "afterContextRelease", "outputClosed", "afterDecodePool"] {
+            try valid.consume(.init(kind: .phase, phase: phase, childPID: 123))
+        }
+        try valid.consume(.init(kind: .result, phase: "complete", childPID: 123))
+        var held = ImageDecodeDiagnosticEventSequence(holdsAfterDecode: true)
+        for phase in ["beforePNGRead", "imageCreated", "rasterDrawn", "afterContextRelease"] {
+            try held.consume(.init(kind: .phase, phase: phase, childPID: 123))
+        }
+        try held.consume(.init(kind: .ready, phase: "heldAfterDecode", childPID: 123))
+        XCTAssertThrowsError(try held.consume(.init(kind: .result, phase: "complete", childPID: 123)))
+        try held.consume(error)
+    }
     func testExplicitSelectorsAndFixedBounds() async throws {
         XCTAssertNil(try ImageDecodeHelperAttributionFixture.request(environment: [:]))
         let missing = try await ImageDecodeHelperAttributionFixture.runIfRequested(evidenceDirectory: FileManager.default.temporaryDirectory, environment: [:])

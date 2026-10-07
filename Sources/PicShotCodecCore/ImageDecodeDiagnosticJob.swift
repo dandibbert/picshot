@@ -29,6 +29,20 @@ public struct ImageDecodeDiagnosticJob: @unchecked Sendable {
             throw error
         }
     }
+    /// Admit the OS-provided cwd through Foundation's normalized spelling, then
+    /// bind it to an independently opened current-directory descriptor. Darwin
+    /// getcwd may expose /private/var while Foundation standardization uses /var.
+    /// Normalizing caller-supplied paths is deliberately not part of validate().
+    public static func validateCurrentWorkingDirectory(expectedParent: Int32) throws -> Self {
+        let fd = Darwin.open(".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { throw ImageDecodeDiagnosticError.invalidJob }; defer { Darwin.close(fd) }
+        var current = stat()
+        guard fstat(fd, &current) == 0, ImageDecodeFileIdentity.privateDirectory(current) else { throw ImageDecodeDiagnosticError.invalidJob }
+        let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true).standardizedFileURL
+        let job = try validate(directory: cwd, expectedParent: expectedParent)
+        guard job.identity.sameObject(current) else { throw ImageDecodeDiagnosticError.invalidJob }
+        return job
+    }
     public static func validate(directory: URL, expectedParent: Int32) throws -> Self {
         let identity = try directoryIdentity(directory)
         let fd = try openDirectory(directory, identity: identity); defer { Darwin.close(fd) }

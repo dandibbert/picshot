@@ -23,7 +23,7 @@ enum ImageDecodeDiagnostic {
             for fd in [STDIN_FILENO, STDOUT_FILENO] {
                 let flags = fcntl(fd, F_GETFL); guard flags >= 0, fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0 else { throw ImageDecodeDiagnosticError.invalidProtocol }
             }
-            let files = try ImageDecodeDiagnosticJob.validate(directory: URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true), expectedParent: parent)
+            let files = try ImageDecodeDiagnosticJob.validateCurrentWorkingDirectory(expectedParent: parent)
             job = files
             DispatchQueue.global(qos: .utility).async {
                 do {

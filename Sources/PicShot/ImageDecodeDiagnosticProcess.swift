@@ -32,6 +32,12 @@ final class ImageDecodeDiagnosticProcess: @unchecked Sendable {
     private var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
     func snapshot() -> ImageDecodeProcessMetrics { lock.lock(); defer { lock.unlock() }; return metrics }
     private func update(_ f: (inout ImageDecodeProcessMetrics) -> Void) { lock.lock(); f(&metrics); lock.unlock() }
+    /// Called only after real exit, pipe EOF and strict event decoding/ordering.
+    static func terminalFailure(_ event: ImageDecodeDiagnosticEvent?, normalExit: Bool, status: Int32) throws -> ImageDecodeDiagnosticError? {
+        guard let event, event.kind == .error else { return nil }
+        guard normalExit, status == 1, event.phase == "failed", let error = event.error else { throw ImageDecodeDiagnosticError.invalidProtocol }
+        return error
+    }
     func run(png: Data, armDeadline: Double) throws -> Data? {
         let started = ProcessInfo.processInfo.systemUptime
         defer { update { $0.elapsedSeconds = ProcessInfo.processInfo.systemUptime - started } }
@@ -99,6 +105,7 @@ final class ImageDecodeDiagnosticProcess: @unchecked Sendable {
             try? input.fileHandleForReading.close(); try? output.fileHandleForWriting.close(); try? errors.fileHandleForWriting.close()
             update { $0.childLaunched = true; $0.childPID = child.processIdentifier; $0.lastStage = "childRunning" }
             var decoder = ImageDecodeDiagnosticEventDecoder(), outClosed = false, errClosed = false
+            var sequence = ImageDecodeDiagnosticEventSequence(holdsAfterDecode: mode != .decode)
             var failure: ImageDecodeDiagnosticError?, stoppingAt: Double?, terminal: ImageDecodeDiagnosticEvent?
             var buffer = [UInt8](repeating: 0, count: 4_096)
             func drain(_ fd: Int32, stderr: Bool) {
@@ -114,6 +121,7 @@ final class ImageDecodeDiagnosticProcess: @unchecked Sendable {
                         do {
                             for event in try decoder.consume(Data(buffer.prefix(n))) {
                                 guard event.childPID == child.processIdentifier else { throw ImageDecodeDiagnosticError.invalidProtocol }
+                                try sequence.consume(event)
                                 let parentReading = ImageDecodeMemoryReading.current()
                                 guard parentReading.usable else { throw ImageDecodeDiagnosticError.failed }
                                 let pair = ImageDecodeChildPhase(child: event, parentAtReceipt: parentReading, childObservedRunning: child.isRunning,
@@ -168,6 +176,8 @@ final class ImageDecodeDiagnosticProcess: @unchecked Sendable {
             try decoder.finish()
             if mode != .decode {
                 if let failure, failure != .cancelled && failure != .deadline { throw failure }
+                if let error = try Self.terminalFailure(terminal, normalExit: child.terminationReason == .exit, status: child.terminationStatus),
+                   !snapshot().sawPostDecodeReady || (error != .cancelled && error != .deadline) { throw error }
                 guard child.terminationReason == .exit, child.terminationStatus == 1,
                       snapshot().sawPostDecodeReady, !files.outputExists(), let terminal, terminal.kind == .error,
                       terminal.error == .cancelled || terminal.error == .deadline else { throw ImageDecodeDiagnosticError.invalidProtocol }
@@ -181,6 +191,7 @@ final class ImageDecodeDiagnosticProcess: @unchecked Sendable {
                 return nil
             }
             if let failure { throw failure }; try check()
+            if let error = try Self.terminalFailure(terminal, normalExit: child.terminationReason == .exit, status: child.terminationStatus) { throw error }
             guard child.terminationReason == .exit, child.terminationStatus == 0, let terminal, terminal.kind == .result,
                   let digest = terminal.rawSHA256, let peaks = terminal.peaks,
                   peaks.residentBytes <= ImageDecodeDiagnosticLimits.residentWatchdogBytes,
@@ -193,6 +204,32 @@ final class ImageDecodeDiagnosticProcess: @unchecked Sendable {
         } catch {
             update { $0.outcome = ((error as? ImageDecodeDiagnosticError) ?? .failed).rawValue }
             throw error
+        }
+    }
+}
+
+/// Errors may terminate any valid prefix, including admission before PNG read.
+/// A valid error code never excuses an out-of-order or malformed event stream.
+struct ImageDecodeDiagnosticEventSequence {
+    private let phases: [String]
+    private var index = 0, finished = false
+    init(holdsAfterDecode: Bool) {
+        phases = ["beforePNGRead", "imageCreated", "rasterDrawn", "afterContextRelease"] +
+            (holdsAfterDecode ? ["heldAfterDecode"] : ["outputClosed", "afterDecodePool"])
+    }
+    mutating func consume(_ event: ImageDecodeDiagnosticEvent) throws {
+        guard !finished else { throw ImageDecodeDiagnosticError.invalidProtocol }
+        switch event.kind {
+        case .phase, .ready:
+            guard index < phases.count, event.phase == phases[index],
+                  (event.kind == .ready) == (event.phase == "heldAfterDecode") else { throw ImageDecodeDiagnosticError.invalidProtocol }
+            index += 1
+        case .result:
+            guard index == phases.count, phases.last == "afterDecodePool", event.phase == "complete" else { throw ImageDecodeDiagnosticError.invalidProtocol }
+            finished = true
+        case .error:
+            guard event.phase == "failed", event.error != nil else { throw ImageDecodeDiagnosticError.invalidProtocol }
+            finished = true
         }
     }
 }
