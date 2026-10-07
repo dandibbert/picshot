@@ -17,7 +17,7 @@ final class AutomaticMosaicReviewTests: XCTestCase {
     }
 
     func testInvalidAndNonFiniteCoordinatesNeverConvertToInt() {
-        let invalid = [CGRect(x: .infinity, y: 1, width: 5, height: 5), CGRect(x: .nan, y: 1, width: 5, height: 5),
+        let invalid = [CGRect(x: CGFloat.infinity, y: 1, width: 5, height: 5), CGRect(x: CGFloat.nan, y: 1, width: 5, height: 5),
                        CGRect(x: -1, y: 1, width: 5, height: 5), CGRect(x: 1, y: 239, width: 5, height: 5),
                        CGRect(x: 1, y: 1, width: 2, height: 5), CGRect(x: 1e30, y: 1, width: 5, height: 5)]
         for rect in invalid { XCTAssertNil(AutomaticMosaicCoordinates.pixelRect(rect, imageHeight: 241)) }
