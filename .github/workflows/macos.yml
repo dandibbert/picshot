@@ -651,7 +651,7 @@ jobs:
         timeout-minutes: 31
         run: |
           set -o pipefail
-          bash scripts/manual-hash-comparison.sh "$PWD/dist/PicShot.app" "$PWD/dist/evidence/manual-hash" "$GITHUB_SHA" 2>&1 | tee dist/manual-hash-comparison.log
+          bash scripts/manual-hash-comparison.sh "$PWD/dist/PicShot.app" "$PWD/dist/evidence/manual-hash" "$GITHUB_SHA" direct-conversion 2>&1 | tee dist/manual-hash-comparison.log
       - name: Preserve native evidence without installer publication
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

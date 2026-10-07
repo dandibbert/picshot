@@ -30,6 +30,7 @@ final class ManualScrollScreenDriver: ManualScrollDriver {
     private var invalidated = false
     private let observationStrategy: ManualScrollObservationStrategy
     private var reusableObservation: ManualScrollReusableObservation?
+    private var vImageObservation: ManualScrollVImageObservation?
 
     var targetPoint: CGPoint { CGPoint(x: displayBounds.minX + region.midX, y: displayBounds.minY + region.midY) }
     var pixelSize: CGSize? { expectedPixelSize }
@@ -93,7 +94,11 @@ final class ManualScrollScreenDriver: ManualScrollDriver {
         if strategy == .reusableFullFrame, reusableObservation == nil {
             reusableObservation = ManualScrollReusableObservation()
         }
+        if strategy == .vImageFullFrame, vImageObservation == nil {
+            vImageObservation = ManualScrollVImageObservation()
+        }
         let reusable = reusableObservation
+        let vImage = vImageObservation
         let worker = Task.detached(priority: .userInitiated) {
             switch strategy {
             case .fullFrame: return try Self.observation(image)
@@ -101,6 +106,9 @@ final class ManualScrollScreenDriver: ManualScrollDriver {
             case .reusableFullFrame:
                 guard let reusable else { throw ScrollStitchError.invalidPixels }
                 return try reusable.observation(image)
+            case .vImageFullFrame:
+                guard let vImage else { throw ScrollStitchError.invalidPixels }
+                return try vImage.observation(image)
             }
         }
         let result = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
@@ -122,8 +130,10 @@ final class ManualScrollScreenDriver: ManualScrollDriver {
     func discardPendingCapture() { pendingImage = nil }
     // Ordinary discard also runs between observations. Keep the reusable bitmap
     // there; release it when the owner observes that pause/recovery has drained.
-    func releaseObservationResources() { reusableObservation = nil }
-    var normalizationBufferBytesForVerification: Int { reusableObservation?.allocatedByteCount ?? 0 }
+    func releaseObservationResources() { reusableObservation = nil; vImageObservation = nil }
+    var normalizationBufferBytesForVerification: Int {
+        (reusableObservation?.allocatedByteCount ?? 0) + (vImageObservation?.allocatedByteCount ?? 0)
+    }
     func invalidate() { invalidated = true; discardPendingCapture(); releaseObservationResources() }
 
     /// Caller must be paused with no pending operation. No accepted source is changed.

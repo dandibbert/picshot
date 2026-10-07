@@ -286,7 +286,8 @@ enum ScrollManualResourceFixture {
         try require(source.captures == capturesAtCancel && source.activeProviders == 0, "Late provider ran after close")
         let settled = try memory(); sampler.stop()
         if let diagnosticSink {
-            let expectedPeak = observationStrategy == .reusableFullFrame ? width * height * 4 : 0
+            let ownsWorkspace = observationStrategy == .reusableFullFrame || observationStrategy == .vImageFullFrame
+            let expectedPeak = ownsWorkspace ? width * height * 4 : 0
             try require(observations.normalizationPeakBytes == expectedPeak && observations.normalizationSamples > 0,
                         "Diagnostic normalization workspace was not observed at its expected bound")
             diagnosticSink(["index": index, "phase": phase, "profile": name,

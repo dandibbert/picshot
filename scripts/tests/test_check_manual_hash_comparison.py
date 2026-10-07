@@ -57,7 +57,7 @@ class ComparisonTests(unittest.TestCase):
             operatingSystem='Synthetic test OS',smokeEntryBeforeFunctional=FIX.mem(-2),afterFunctionalBeforeResource=FIX.mem(-1),cycles=[])
         for row in resource['warmups']+resource['cycles']:
             context['cycles'].append(dict(index=row['index'],phase=row['phase'],profile=row['profile'],strategy=strategy,
-                peakNormalizationBufferBytes=row['width']*row['height']*4 if strategy=='reusable-full-frame' else 0,
+                peakNormalizationBufferBytes=row['width']*row['height']*4 if strategy in CHECK.WORKSPACE_STRATEGIES else 0,
                 normalizationSamples=40,normalizationReleases=[dict(stage=x,normalizationBufferBytes=0) for x in CHECK.RELEASES],
                 normalizationBufferBytesAfterClose=0))
         resource['diagnosticHashComparison']=context;enrich(resource)
@@ -71,7 +71,7 @@ class ComparisonTests(unittest.TestCase):
     def check(self,args,kwargs): return CHECK.validate_cell(*args,**kwargs)
 
     def test_all_three_full_workload_cells_compare(self):
-        cells=[self.check(*self.fixture(s,100+i))for i,s in enumerate(CHECK.STRATEGIES)]
+        cells=[self.check(*self.fixture(s,100+i))for i,s in enumerate(CHECK.SUITES['context-reuse'])]
         result=CHECK.compare_cells(cells,FIX.COMMIT)
         self.assertEqual(result['status'],'observed');self.assertFalse(result['installerAcceptance'])
         self.assertFalse(result['cells'][0]['processStartMemoryCaptured'])
@@ -111,7 +111,7 @@ class ComparisonTests(unittest.TestCase):
         with self.assertRaises(ValueError):self.check(args,kwargs)
 
     def test_matrix_requires_equal_runtime_counts_digests_and_distinct_processes(self):
-        original=[self.check(*self.fixture(s,100+i))for i,s in enumerate(CHECK.STRATEGIES)]
+        original=[self.check(*self.fixture(s,100+i))for i,s in enumerate(CHECK.SUITES['context-reuse'])]
         changes={'processIdentifier':100,'architecture':'x86_64','operatingSystem':'different','executableSHA256':'f'*64,
                  'captureCounts':[],'sourceByteDigests':[],'largeOutputDigests':[]}
         for field,value in changes.items():
@@ -119,10 +119,74 @@ class ComparisonTests(unittest.TestCase):
             with self.subTest(field=field):self.assertEqual(CHECK.compare_cells(cells,FIX.COMMIT)['status'],'incomplete')
 
     def test_one_failed_cell_preserves_other_observations_but_cannot_complete_matrix(self):
-        cells=[self.check(*self.fixture(s,100+i))for i,s in enumerate(CHECK.STRATEGIES)]
+        cells=[self.check(*self.fixture(s,100+i))for i,s in enumerate(CHECK.SUITES['context-reuse'])]
         cells[0]=dict(strategy=CHECK.STRATEGIES[0],status='failed',error='240 second timeout')
         result=CHECK.compare_cells(cells,FIX.COMMIT)
         self.assertEqual(result['status'],'incomplete');self.assertEqual(result['cells'][1]['status'],'observed')
+
+    def test_direct_conversion_requires_exact_pair_and_records_selected_suite(self):
+        cells=[self.check(*self.fixture(s,100+i))for i,s in enumerate(CHECK.SUITES['direct-conversion'])]
+        result=CHECK.compare_cells(cells,FIX.COMMIT,'direct-conversion')
+        self.assertEqual(result['status'],'observed')
+        self.assertEqual(result['selectedStrategies'],['full-frame','vimage-full-frame'])
+        self.assertEqual(result['suite'],'direct-conversion')
+        self.assertIn('fixed full-frame, vimage-full-frame;',result['ordering'])
+        self.assertNotIn('pooled-full-frame',result['ordering'])
+        for wrong in [cells[::-1],cells[:1],cells+[self.check(*self.fixture('pooled-full-frame',777))],
+                      [cells[0],self.check(*self.fixture('reusable-full-frame',888))]]:
+            with self.assertRaises(ValueError):CHECK.compare_cells(wrong,FIX.COMMIT,'direct-conversion')
+        with self.assertRaises(ValueError):CHECK.compare_cells(cells,FIX.COMMIT)
+        with self.assertRaises(ValueError):CHECK.compare_cells(cells,FIX.COMMIT,'unknown')
+
+    def test_vimage_workspace_cannot_be_zero_or_exceed_nominal_bound(self):
+        for peak in [0,3840*2160*4+1]:
+            args,kwargs=self.fixture('vimage-full-frame')
+            args[0]['diagnosticHashComparison']['cycles'][0]['peakNormalizationBufferBytes']=peak
+            with self.assertRaises(ValueError):self.check(args,kwargs)
+
+    def test_native_timeout_reason_precedes_success_schema_and_retains_partial_counts(self):
+        for measured,reason in [(4,'First source not accepted'),(2,'Moved source not accepted'),(3,'Stable source 4 not accepted')]:
+            args,kwargs=self.fixture();resource=args[0]
+            resource.update(status='failed',observationsComplete=False,error=reason,elapsedSeconds=240.03)
+            resource['cycles']=resource['cycles'][:measured]
+            del resource['completedMeasuredCycles'];del resource['finalAfterCleanup']
+            kwargs['app']=self.root/'absent-app'
+            with self.assertRaises(CHECK.IncompleteResource) as raised:self.check(args,kwargs)
+            self.assertIn(reason,str(raised.exception));self.assertNotIn('unexpected object keys',str(raised.exception))
+            p=raised.exception.partial
+            self.assertEqual(p['status'],'failed');self.assertTrue(p['unvalidated']);self.assertTrue(p['deadlineReached'])
+            self.assertEqual(p['recordedCompletedWarmupCycles'],8);self.assertEqual(p['recordedCompletedMeasuredCycles'],measured)
+
+    def test_cli_native_failure_is_never_promoted_or_hidden_by_absent_other_files(self):
+        directory=self.root/'failed';directory.mkdir()
+        (directory/'scroll-manual-resource.json').write_text(json.dumps(dict(status='failed',error='Resource fixture deadline exceeded',
+            elapsedSeconds=240.04,overallDeadlineSeconds=240,warmups=[{}]*8,cycles=[{}]*2)))
+        command=['python3',str(HERE.parent/'check-manual-hash-comparison.py'),'cell',str(directory),str(self.root/'missing-app'),FIX.COMMIT,'full-frame','--launcher-exit-code','0']
+        result=subprocess.run(command,capture_output=True,text=True)
+        self.assertEqual(result.returncode,1,result.stderr)
+        report=json.loads(result.stdout)
+        self.assertEqual(report['resourceStatus'],'failed');self.assertFalse(report['observationsComplete'])
+        self.assertEqual(report['nativeFailureReason'],'Resource fixture deadline exceeded')
+        self.assertEqual(report['partialEvidence']['recordedCompletedMeasuredCycles'],2)
+        self.assertIn('Partial evidence is not accepted',report['error'])
+
+    def test_direct_cli_rejects_unselected_third_cell(self):
+        directory=self.root/'matrix';directory.mkdir()
+        for i,strategy in enumerate(CHECK.SUITES['context-reuse']):
+            cell=directory/strategy;cell.mkdir()
+            (cell/'checked-cell.json').write_text(json.dumps(self.check(*self.fixture(strategy,100+i))))
+        result=subprocess.run(['python3',str(HERE.parent/'check-manual-hash-comparison.py'),'matrix',str(directory),FIX.COMMIT,'--suite','direct-conversion'],capture_output=True,text=True)
+        self.assertEqual(result.returncode,1,result.stderr)
+        self.assertIn('unselected candidate cells present',json.loads(result.stdout)['error'])
+
+    def test_shell_direct_conversion_runs_only_two_cells_after_confirmed_peer_failure(self):
+        self.mock_shell(exit_confirmed=True,suite='direct-conversion')
+
+    def test_shell_unknown_suite_fails_before_launch(self):
+        evidence=self.root/'never-created'
+        result=subprocess.run(['bash',str(HERE.parent/'manual-hash-comparison.sh'),str(self.app),str(evidence),FIX.COMMIT,'typo'],capture_output=True,text=True)
+        self.assertEqual(result.returncode,64);self.assertFalse(evidence.exists())
+        self.assertIn('Unknown manual-hash suite',result.stderr)
 
     def test_shell_continues_after_confirmed_failure_and_retains_incomplete_matrix(self):
         self.mock_shell(exit_confirmed=True)
@@ -130,7 +194,8 @@ class ComparisonTests(unittest.TestCase):
     def test_shell_blocks_peers_if_owned_exit_is_not_confirmed(self):
         self.mock_shell(exit_confirmed=False)
 
-    def mock_shell(self, exit_confirmed):
+    def mock_shell(self, exit_confirmed, suite=None):
+        selected=CHECK.SUITES[suite or 'context-reuse']
         # Mock only the orchestration layer: no real app/codesign/Swift is run.
         repo=self.root/'mock-repo';(repo/'scripts').mkdir(parents=True)
         shutil.copyfile(HERE.parent/'manual-hash-comparison.sh',repo/'scripts/manual-hash-comparison.sh')
@@ -152,13 +217,15 @@ root=pathlib.Path(sys.argv[2]);cells=[json.loads(p.read_text())for p in root.glo
 print(json.dumps({'status':'incomplete','cells':cells}));sys.exit(1)
 ''')
         evidence=repo/'evidence';env=dict(os.environ,PATH=str(fakebin)+os.pathsep+os.environ['PATH'],MOCK_EXIT_CONFIRMED='1' if exit_confirmed else '0')
-        result=subprocess.run(['bash',str(repo/'scripts/manual-hash-comparison.sh'),str(self.app),str(evidence),FIX.COMMIT],env=env,capture_output=True,text=True)
+        command=['bash',str(repo/'scripts/manual-hash-comparison.sh'),str(self.app),str(evidence),FIX.COMMIT]
+        if suite is not None: command.append(suite)
+        result=subprocess.run(command,env=env,capture_output=True,text=True)
         self.assertEqual(result.returncode,1,result.stderr)
-        self.assertEqual((evidence/'calls.txt').read_text().splitlines(),list(CHECK.STRATEGIES) if exit_confirmed else ['full-frame'])
+        self.assertEqual((evidence/'calls.txt').read_text().splitlines(),list(selected) if exit_confirmed else ['full-frame'])
         comparison=json.loads((evidence/'comparison.json').read_text())
-        self.assertEqual(comparison['status'],'incomplete');self.assertEqual(len(comparison['cells']),3)
+        self.assertEqual(comparison['status'],'incomplete');self.assertEqual(len(comparison['cells']),len(selected))
         if not exit_confirmed:
-            self.assertEqual(sum(c['status']=='blocked' for c in comparison['cells']),2)
+            self.assertEqual(sum(c['status']=='blocked' for c in comparison['cells']),len(selected)-1)
 
 
 if __name__=='__main__':unittest.main()

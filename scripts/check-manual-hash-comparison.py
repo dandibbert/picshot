@@ -4,6 +4,7 @@ import argparse
 import copy
 import importlib.util
 import json
+import math
 from pathlib import Path
 import plistlib
 import sys
@@ -12,7 +13,12 @@ import uuid
 SPEC = importlib.util.spec_from_file_location('manual_resource_check', Path(__file__).with_name('check-scroll-manual-resource-report.py'))
 BASE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(BASE)
-STRATEGIES = ('full-frame', 'pooled-full-frame', 'reusable-full-frame')
+SUITES = {
+    'context-reuse': ('full-frame', 'pooled-full-frame', 'reusable-full-frame'),
+    'direct-conversion': ('full-frame', 'vimage-full-frame'),
+}
+STRATEGIES = ('full-frame', 'pooled-full-frame', 'reusable-full-frame', 'vimage-full-frame')
+WORKSPACE_STRATEGIES = {'reusable-full-frame', 'vimage-full-frame'}
 RELEASES = ('first-pause', 'second-pause', 'recoverable-seam', 'accepted-3-pause', 'accepted-4-pause', 'cancel', 'reset')
 CONTEXT_FIELDS = {'strategy', 'diagnosticOnly', 'productionDefaultStrategy', 'processStartMemoryCaptured',
                   'measurementStartScope', 'runIdentifier', 'operatingSystem', 'smokeEntryBeforeFunctional',
@@ -30,6 +36,9 @@ def points(point):
         result[key] = BASE.integer(p['bytes'][key], 0, 2**64-1)
     for key in LEDGERS:
         result[key] = BASE.integer(p['ledgerBytes'][key], -2**63, 2**63-1)
+    # A derived ledger sum, not an additional kernel field or ownership claim.
+    result['derivedVolatileLedgerResidentPlusCompressedBytes'] = (
+        result['ledger_purgeable_volatile'] + result['ledger_purgeable_volatile_compressed'])
     return result
 
 
@@ -37,8 +46,45 @@ def delta(a, b):
     return {key: b[key]-a[key] for key in a}
 
 
+def partial_resource_evidence(resource):
+    """Describe failed native output without validating it as completed evidence."""
+    BASE.need(type(resource) is dict, 'native resource report is not an object')
+    def finite_number(value):
+        return value if type(value) in (int, float) and math.isfinite(value) else None
+    elapsed = finite_number(resource.get('elapsedSeconds'))
+    cap = finite_number(resource.get('overallDeadlineSeconds'))
+    return {'unvalidated': True, 'status': resource.get('status'),
+            'nativeFailureReason': resource.get('error') if isinstance(resource.get('error'), str) else None,
+            'elapsedSeconds': elapsed, 'overallDeadlineSeconds': cap,
+            'deadlineReached': elapsed >= cap if elapsed is not None and cap is not None else None,
+            'recordedCompletedWarmupCycles': len(resource['warmups']) if type(resource.get('warmups')) is list else None,
+            'recordedCompletedMeasuredCycles': len(resource['cycles']) if type(resource.get('cycles')) is list else None,
+            'requiredWarmupCycles': 8, 'requiredMeasuredCycles': 16}
+
+
+class IncompleteResource(ValueError):
+    def __init__(self, resource):
+        self.partial = partial_resource_evidence(resource)
+        p = self.partial
+        reason = p['nativeFailureReason'] or 'no native failure reason recorded'
+        timing = f"elapsed {p['elapsedSeconds']}s, declared cap {p['overallDeadlineSeconds']}s"
+        if p['deadlineReached'] is True:
+            timing += ' (resource deadline reached)'
+        super().__init__(f"Native resource status={p['status']}: {reason}; recorded completed cycles "
+                         f"{p['recordedCompletedWarmupCycles']}/8 warmup + "
+                         f"{p['recordedCompletedMeasuredCycles']}/16 measured; {timing}. "
+                         "Partial evidence is not accepted.")
+
+
+def require_completed_resource(resource):
+    BASE.need(type(resource) is dict, 'native resource report is not an object')
+    if resource.get('status') != 'passed':
+        raise IncompleteResource(resource)
+
+
 def validate_cell(resource, functional, launch, lifecycle, entry, *, app, commit, strategy, functional_sha, launcher_exit_code):
     BASE.need(strategy in STRATEGIES, 'unknown strategy')
+    require_completed_resource(resource)
     BASE.need(launcher_exit_code == 0, 'launcher did not complete successfully')
     app = Path(app).resolve(strict=True)
     info = plistlib.loads((app/'Contents/Info.plist').read_bytes())
@@ -80,7 +126,7 @@ def validate_cell(resource, functional, launch, lifecycle, entry, *, app, commit
         BASE.keys(diagnostic, {'index','phase','profile','strategy','peakNormalizationBufferBytes','normalizationSamples',
                                'normalizationReleases','normalizationBufferBytesAfterClose'})
         BASE.need(all(diagnostic[k] == row[k] for k in ('index','phase','profile')) and diagnostic['strategy'] == strategy, 'normalization cycle identity differs')
-        expected = row['width'] * row['height'] * 4 if strategy == 'reusable-full-frame' else 0
+        expected = row['width'] * row['height'] * 4 if strategy in WORKSPACE_STRATEGIES else 0
         BASE.need(BASE.integer(diagnostic['peakNormalizationBufferBytes']) == expected, 'normalization peak differs from bounded workspace')
         BASE.integer(diagnostic['normalizationSamples'], 1)
         releases = BASE.array(diagnostic['normalizationReleases'], len(RELEASES))
@@ -113,27 +159,32 @@ def validate_cell(resource, functional, launch, lifecycle, entry, *, app, commit
             'largeOutputDigests':digests,'zeroLeakClaim':False}
 
 
-def compare_cells(cells, commit):
-    BASE.need(len(cells) == 3 and [c.get('strategy') for c in cells] == list(STRATEGIES), 'three ordered candidate cells required')
+def compare_cells(cells, commit, suite='context-reuse'):
+    BASE.need(suite in SUITES, 'unknown comparison suite')
+    selected = SUITES[suite]
+    BASE.need(len(cells) == len(selected) and [c.get('strategy') for c in cells] == list(selected),
+              'suite requires exact ordered cells: ' + ', '.join(selected))
     issues = [f"{c['strategy']}: {c.get('error',c.get('status'))}" for c in cells if c.get('status') != 'observed']
     result = {'schemaVersion':1,'sourceCommit':commit,'diagnosticOnly':True,'installerAcceptance':False,
-              'productionDefaultStrategy':'full-frame','cells':cells,'zeroLeakClaim':False,
-              'ordering':'fixed full-frame, pooled-full-frame, reusable-full-frame; timing/order may confound comparisons',
+              'productionDefaultStrategy':'full-frame','suite':suite,'selectedStrategies':list(selected),'cells':cells,'zeroLeakClaim':False,
+              'ordering':'fixed ' + ', '.join(selected) + '; timing/order may confound comparisons',
               'scope':'Same executable and full E2E work counts; actual backing accounting does not establish reclaimability or unlimited-run stability'}
     if not issues:
         for field in ('sourceCommit','executableSHA256','architecture','operatingSystem','buildMode','captureCounts','sourceByteDigests','largeOutputDigests'):
             if any(c[field] != cells[0][field] for c in cells[1:]): issues.append('paired equality failed: '+field)
         if cells[0]['sourceCommit'] != commit: issues.append('matrix source identity differs')
-        if len({c['processIdentifier'] for c in cells}) != 3: issues.append('distinct process IDs not established')
-        if len({c['runIdentifier'] for c in cells}) != 3: issues.append('distinct invocation IDs not established')
+        if len({c['processIdentifier'] for c in cells}) != len(selected): issues.append('distinct process IDs not established')
+        if len({c['runIdentifier'] for c in cells}) != len(selected): issues.append('distinct invocation IDs not established')
     result.update(status='incomplete' if issues else 'observed', observationsComplete=not issues, issues=issues,
                   matchingWorkloadAndRuntime=not issues)
     return result
 
 
 def cell_from_files(directory, app, commit, strategy, launcher_exit_code):
+    resource = BASE.read_json(directory/'scroll-manual-resource.json')
+    require_completed_resource(resource)
     functional, digest = BASE.read_json_with_sha(directory/'scroll-manual-continuous.json')
-    return validate_cell(BASE.read_json(directory/'scroll-manual-resource.json'),functional,
+    return validate_cell(resource,functional,
                          BASE.read_json(directory/'launch.json'),BASE.read_json(directory/'launch.json.launcher.json'),
                          BASE.read_json(directory/'manual-hash-entry.json'),app=app,commit=commit,strategy=strategy,
                          functional_sha=digest,launcher_exit_code=launcher_exit_code)
@@ -144,26 +195,32 @@ def main():
     cell=sub.add_parser('cell');cell.add_argument('directory',type=Path);cell.add_argument('app',type=Path);cell.add_argument('commit')
     cell.add_argument('strategy',choices=STRATEGIES);cell.add_argument('--launcher-exit-code',type=int,required=True)
     matrix=sub.add_parser('matrix');matrix.add_argument('directory',type=Path);matrix.add_argument('commit')
+    matrix.add_argument('--suite', choices=SUITES, default='context-reuse')
     args=parser.parse_args()
     try:
         if args.command=='cell':
             result=cell_from_files(args.directory,args.app,args.commit,args.strategy,args.launcher_exit_code)
         else:
+            selected = SUITES[args.suite]
+            actual = {p.parent.name for p in args.directory.glob('*/checked-cell.json')}
+            BASE.need(not (actual - set(selected)), 'unselected candidate cells present: ' + ', '.join(sorted(actual - set(selected))))
             cells=[]
-            for strategy in STRATEGIES:
+            for strategy in selected:
                 try: cells.append(BASE.read_json(args.directory/strategy/'checked-cell.json'))
                 except (ValueError,OSError,KeyError,TypeError) as error:
                     cells.append({'strategy':strategy,'status':'missing','error':str(error)})
-            result=compare_cells(cells,args.commit)
+            result=compare_cells(cells,args.commit,args.suite)
     except (ValueError,OSError,KeyError,TypeError,OverflowError,RecursionError) as error:
         result={'status':'failed','observationsComplete':False,'error':str(error),'diagnosticOnly':True}
         if args.command=='cell':
             result.update(strategy=args.strategy,launcherExitCode=args.launcher_exit_code)
+            if isinstance(error, IncompleteResource):
+                result['resourceStatus']=error.partial['status']
+                result['nativeFailureReason']=error.partial['nativeFailureReason']
+                result['partialEvidence']=error.partial
             try:
                 partial=BASE.read_json(args.directory/'scroll-manual-resource.json')
-                result['partialEvidence']={'unvalidated':True,'status':partial.get('status'),'error':partial.get('error'),
-                    'elapsedSeconds':partial.get('elapsedSeconds'),'warmupRows':len(partial.get('warmups',[])),
-                    'measuredRows':len(partial.get('cycles',[]))}
+                result['partialEvidence']=partial_resource_evidence(partial)
             except (ValueError,OSError,KeyError,TypeError): pass
     print(json.dumps(result,indent=2,sort_keys=True))
     return 0 if result['status']=='observed' else 1

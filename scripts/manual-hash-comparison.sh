@@ -1,9 +1,14 @@
 #!/bin/bash
-# Three full-workload diagnostic processes. No installer or production-default change.
+# Explicit full-workload diagnostic suites. No installer or production-default change.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-[[ $# -eq 3 ]] || { echo 'Usage: manual-hash-comparison.sh APP NEW_EVIDENCE COMMIT' >&2; exit 64; }
-app="$1"; root="$2"; expected="$3"
+[[ $# -eq 3 || $# -eq 4 ]] || { echo 'Usage: manual-hash-comparison.sh APP NEW_EVIDENCE COMMIT [context-reuse|direct-conversion]' >&2; exit 64; }
+app="$1"; root="$2"; expected="$3"; suite="${4:-context-reuse}"
+case "$suite" in
+  context-reuse) strategies=(full-frame pooled-full-frame reusable-full-frame) ;;
+  direct-conversion) strategies=(full-frame vimage-full-frame) ;;
+  *) echo "Unknown manual-hash suite: $suite" >&2; exit 64 ;;
+esac
 [[ "$app" == /* && "$root" == /* && ! -e "$root" && "$expected" =~ ^[0-9a-f]{40}$ ]] || exit 64
 codesign --verify --deep --strict "$app"
 python3 - "$app" "$expected" <<'PY'
@@ -14,7 +19,7 @@ PY
 mkdir -p "$(dirname "$root")"
 mkdir "$root"
 blocked=''
-for strategy in full-frame pooled-full-frame reusable-full-frame; do
+for strategy in "${strategies[@]}"; do
   directory="$root/$strategy"
   mkdir "$directory"
   if [[ -n "$blocked" ]]; then
@@ -52,5 +57,5 @@ PY
     blocked="Owned application exit was not confirmed after $strategy; later processes were not launched"
   fi
 done
-python3 scripts/check-manual-hash-comparison.py matrix "$root" "$expected" > "$root/comparison.json"
-echo "All three manual-hash E2E cells completed comparable diagnostic observations"
+python3 scripts/check-manual-hash-comparison.py matrix "$root" "$expected" --suite "$suite" > "$root/comparison.json"
+echo "All ${#strategies[@]} cells in $suite completed comparable full-workload diagnostic observations"

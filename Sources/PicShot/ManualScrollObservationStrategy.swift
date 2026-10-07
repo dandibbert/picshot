@@ -9,6 +9,7 @@ enum ManualScrollObservationStrategy: String, CaseIterable, Sendable {
     case fullFrame = "full-frame"
     case pooledFullFrame = "pooled-full-frame"
     case reusableFullFrame = "reusable-full-frame"
+    case vImageFullFrame = "vimage-full-frame"
 
     static func diagnosticSelection(environment: [String: String]) throws -> Self {
         guard let raw = environment["PICSHOT_MANUAL_HASH_STRATEGY"] else { return .fullFrame }

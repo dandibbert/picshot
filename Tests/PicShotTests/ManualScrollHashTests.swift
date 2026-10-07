@@ -5,8 +5,24 @@ import ImageIO
 import PicShotCore
 @testable import PicShot
 
+private protocol HashNormalizationWorkspace: AnyObject, Sendable {
+    var allocatedByteCount: Int { get }
+    func observation(_ image: CGImage) throws -> ManualScrollObservation
+    func withNormalizedPixels<Result>(_ image: CGImage,
+        _ consume: (UnsafeRawBufferPointer) throws -> Result) throws -> Result
+}
+
+extension ManualScrollReusableObservation: HashNormalizationWorkspace { }
+extension ManualScrollVImageObservation: HashNormalizationWorkspace { }
+
 @MainActor
 final class ManualScrollHashTests: XCTestCase {
+    private var workspaceFactories: [() -> any HashNormalizationWorkspace] {
+        let reusable: () -> any HashNormalizationWorkspace = { ManualScrollReusableObservation() }
+        let vImage: () -> any HashNormalizationWorkspace = { ManualScrollVImageObservation() }
+        return [reusable, vImage]
+    }
+
     func testDiagnosticSelectionIsExplicitAndRejectsUnknownValues() throws {
         XCTAssertEqual(try ManualScrollObservationStrategy.diagnosticSelection(environment: [:]), .fullFrame)
         for strategy in ManualScrollObservationStrategy.allCases {
@@ -17,118 +33,184 @@ final class ManualScrollHashTests: XCTestCase {
             ["PICSHOT_MANUAL_HASH_STRATEGY": "raw-provider"]))
     }
 
-    func testReusableContextMatchesEveryReferenceByteAcrossFormatsAndSourceColorSpaces() throws {
-        let width = 37, height = 131
-        let workspace = ManualScrollReusableObservation()
-        let spaces = [try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB)), CGColorSpaceCreateDeviceRGB(),
-                      try XCTUnwrap(CGColorSpace(name: CGColorSpace.displayP3))]
-        var images: [(String, CGImage)] = []
-        for (index, space) in spaces.enumerated() {
-            for format in [Format.rgba, .bgra, .straightRGBA] {
-                images.append(("space\(index)-\(format)", try image(width: width, height: height, space: space, format: format)))
+    func testBothWorkspacesMatchEveryReferenceByteAcrossFormatsAndSourceColorSpaces() throws {
+        for makeWorkspace in workspaceFactories {
+            let width = 37, height = 131
+            let workspace = makeWorkspace()
+            let spaces: [CGColorSpace] = [try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB)), CGColorSpaceCreateDeviceRGB(),
+                          try XCTUnwrap(CGColorSpace(name: CGColorSpace.displayP3))]
+            var images: [(String, CGImage)] = []
+            let formats: [Format] = [.rgba, .bgra, .argb, .straightRGBA, .straightARGB, .skipFirst, .skipLast]
+            for (index, space) in spaces.enumerated() {
+                for format in formats {
+                    images.append(("space\(index)-\(format)", try image(width: width, height: height, space: space, format: format)))
+                }
             }
-        }
-        images.append(("gray-padded", try grayImage(width: width, height: height)))
-        images.append(("indexed-padded", try indexedImage(width: width, height: height)))
-        images.append(("rgba16-padded", try rgba16Image(width: width, height: height)))
-        let parent = try image(width: width + 14, height: height + 18, space: spaces[2])
-        let cropped = try XCTUnwrap(parent.cropping(to: CGRect(x: 5, y: 7, width: width, height: height)))
-        images.append(("nonzero-origin-crop", cropped))
-        let nestedParent = try XCTUnwrap(parent.cropping(to: CGRect(x: 2, y: 3, width: width + 8, height: height + 10)))
-        images.append(("nested-crop", try XCTUnwrap(nestedParent.cropping(to: CGRect(x: 3, y: 4, width: width, height: height)))))
-        for type in ["public.png", "public.jpeg"] {
-            images.append((type, try encodedRoundTrip(try image(width: width, height: height, space: spaces[0], opaque: true), type: type)))
-        }
-        // Revisit all inputs in reverse order: stale pixels/color conversion state
-        // from a preceding image must not affect the next observation.
-        for (label, image) in images + Array(images.reversed()) {
-            let expected = try referencePixels(image)
-            let actual = try workspace.withNormalizedPixels(image) { Data($0) }
-            XCTAssertEqual(actual, expected, label)
-            XCTAssertEqual(try workspace.observation(image), try ManualScrollScreenDriver.observation(image), label)
-            XCTAssertEqual(workspace.allocatedByteCount, width * height * 4)
+            images.append(("gray-padded", try grayImage(width: width, height: height)))
+            images.append(("indexed-padded", try indexedImage(width: width, height: height)))
+            images.append(("rgba16-padded", try rgba16Image(width: width, height: height)))
+            let parent = try image(width: width + 14, height: height + 18, space: spaces[2])
+            let cropped = try XCTUnwrap(parent.cropping(to: CGRect(x: 5, y: 7, width: width, height: height)))
+            images.append(("nonzero-origin-crop", cropped))
+            let nestedParent = try XCTUnwrap(parent.cropping(to: CGRect(x: 2, y: 3, width: width + 8, height: height + 10)))
+            images.append(("nested-crop", try XCTUnwrap(nestedParent.cropping(to: CGRect(x: 3, y: 4, width: width, height: height)))))
+            for type in ["public.png", "public.jpeg"] {
+                images.append((type, try encodedRoundTrip(try image(width: width, height: height, space: spaces[0], opaque: true), type: type)))
+            }
+            // Revisit all inputs in reverse order: stale pixels/color conversion state
+            // from a preceding image must not affect the next observation.
+            for (label, image) in images + Array(images.reversed()) {
+                do {
+                    let expected = try referencePixels(image)
+                    let actual = try workspace.withNormalizedPixels(image) { Data($0) }
+                    var differences: [String] = []
+                    for offset in 0..<min(actual.count, expected.count) where actual[offset] != expected[offset] {
+                        differences.append("\(offset):\(actual[offset])/\(expected[offset])")
+                        if differences.count == 8 { break }
+                    }
+                    let description = "\(type(of: workspace)): \(label), first actual/reference differences \(differences)"
+                    XCTAssertEqual(actual, expected, description)
+                    XCTAssertEqual(try workspace.observation(image), try ManualScrollScreenDriver.observation(image), description)
+                    XCTAssertEqual(workspace.allocatedByteCount, width * height * 4)
+                } catch {
+                    XCTFail("\(type(of: workspace)): \(label) conversion failed: \(error)")
+                }
+            }
         }
     }
 
     func testRepeatedTransparentFramesDoNotAccumulateOldPixels() throws {
-        let workspace = ManualScrollReusableObservation(), space = try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB))
-        let opaque = try image(width: 31, height: 97, space: space, opaque: true)
-        let translucent = try image(width: 31, height: 97, space: space)
-        let zero = try rgbaBytesImage(width: 31, height: 97, bytes: [UInt8](repeating: 0, count: 31 * 97 * 4), space: space)
-        for source in [opaque, translucent, translucent, zero, translucent, zero, opaque] {
-            XCTAssertEqual(try workspace.withNormalizedPixels(source) { Data($0) }, try referencePixels(source))
+        for makeWorkspace in workspaceFactories {
+            let workspace = makeWorkspace(), space = try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB))
+            let opaque = try image(width: 31, height: 97, space: space, opaque: true)
+            let translucent = try image(width: 31, height: 97, space: space)
+            let zero = try rgbaBytesImage(width: 31, height: 97, bytes: [UInt8](repeating: 0, count: 31 * 97 * 4), space: space)
+            for source in [opaque, translucent, translucent, zero, translucent, zero, opaque] {
+                XCTAssertEqual(try workspace.withNormalizedPixels(source) { Data($0) }, try referencePixels(source))
+            }
         }
     }
 
     func testEveryPixelAndEveryRGBAChannelAffectsObservation() throws {
-        let width = 9, height = 11, space = try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB))
-        let initialPixel: [UInt8] = [47, 83, 129, 255]
-        let initialBytes = Array(repeating: initialPixel, count: width * height).flatMap { $0 }
-        let initial = try rgbaBytesImage(width: width, height: height, bytes: initialBytes, space: space)
-        let workspace = ManualScrollReusableObservation(), original = try workspace.observation(initial)
-        for pixel in 0..<width * height {
-            for channel in 0..<4 {
-                var changed = initialBytes
-                changed[pixel * 4 + channel] = channel == 3 ? 254 : changed[pixel * 4 + channel] + 1
-                let source = try rgbaBytesImage(width: width, height: height, bytes: changed, space: space)
-                let result = try workspace.observation(source)
-                XCTAssertNotEqual(result, original, "pixel \(pixel), channel \(channel)")
-                XCTAssertEqual(result, try ManualScrollScreenDriver.observation(source))
+        for makeWorkspace in workspaceFactories {
+            let width = 9, height = 11, space = try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB))
+            let initialPixel: [UInt8] = [47, 83, 129, 255]
+            let initialBytes: [UInt8] = Array(repeating: initialPixel, count: width * height).flatMap { $0 }
+            let initial = try rgbaBytesImage(width: width, height: height, bytes: initialBytes, space: space)
+            let workspace = makeWorkspace(), original = try workspace.observation(initial)
+            for pixel in 0..<width * height {
+                for channel in 0..<4 {
+                    var changed = initialBytes
+                    changed[pixel * 4 + channel] = channel == 3 ? 254 : changed[pixel * 4 + channel] + 1
+                    let source = try rgbaBytesImage(width: width, height: height, bytes: changed, space: space)
+                    let result = try workspace.observation(source)
+                    XCTAssertNotEqual(result, original, "pixel \(pixel), channel \(channel)")
+                    XCTAssertEqual(result, try ManualScrollScreenDriver.observation(source))
+                }
             }
         }
     }
 
     func testWorkspaceRejectsChangedExtentWithoutReplacingItsAllocation() throws {
-        let space = CGColorSpaceCreateDeviceRGB(), workspace = ManualScrollReusableObservation()
-        let initial = try image(width: 17, height: 19, space: space)
-        let expected = try workspace.observation(initial)
-        XCTAssertThrowsError(try workspace.observation(image(width: 18, height: 19, space: space)))
-        XCTAssertEqual(workspace.allocatedByteCount, 17 * 19 * 4)
-        XCTAssertEqual(try workspace.observation(initial), expected)
+        for makeWorkspace in workspaceFactories {
+            let space = CGColorSpaceCreateDeviceRGB(), workspace = makeWorkspace()
+            let initial = try image(width: 17, height: 19, space: space)
+            let expected = try workspace.observation(initial)
+            XCTAssertThrowsError(try workspace.observation(image(width: 18, height: 19, space: space)))
+            XCTAssertEqual(workspace.allocatedByteCount, 17 * 19 * 4)
+            XCTAssertEqual(try workspace.observation(initial), expected)
+        }
     }
 
     func testDimensionAdmissionRunsBeforeWorkspaceAllocation() throws {
-        for (width, height) in [(ScrollFrame.maximumDimension + 1, 1), (1, ScrollFrame.maximumDimension + 1)] {
-            let workspace = ManualScrollReusableObservation()
-            let source = try rgbaBytesImage(width: width, height: height,
-                bytes: [UInt8](repeating: 0, count: width * height * 4), space: CGColorSpaceCreateDeviceRGB())
+        for makeWorkspace in workspaceFactories {
+            for (width, height) in [(ScrollFrame.maximumDimension + 1, 1), (1, ScrollFrame.maximumDimension + 1)] {
+                let workspace = makeWorkspace()
+                let source = try rgbaBytesImage(width: width, height: height,
+                    bytes: [UInt8](repeating: 0, count: width * height * 4), space: CGColorSpaceCreateDeviceRGB())
+                XCTAssertThrowsError(try workspace.observation(source))
+                XCTAssertEqual(workspace.allocatedByteCount, 0)
+            }
+        }
+    }
+
+    func testWorkspaceUsesOneBackingAddressAndReleasesAfterOwnerDropsIt() throws {
+        for makeWorkspace in workspaceFactories {
+            var workspace: (any HashNormalizationWorkspace)? = makeWorkspace()
+            weak var weakWorkspace = workspace
+            let source = try image(width: 37, height: 131, space: CGColorSpaceCreateDeviceRGB())
+            let firstAddress = try workspace!.withNormalizedPixels(source) { UInt(bitPattern: $0.baseAddress!) }
+            for _ in 0..<12 {
+                XCTAssertEqual(try workspace!.withNormalizedPixels(source) { UInt(bitPattern: $0.baseAddress!) }, firstAddress)
+            }
+            workspace = nil
+            XCTAssertNil(weakWorkspace)
+        }
+    }
+
+    func testPixelLimitAdmissionRunsBeforeAllocation() throws {
+        // A gray provider keeps this rejection test small while exercising a real
+        // CGImage above 24 MP, with both dimensions still inside the existing cap.
+        let width = 6001, height = 4000
+        let source = try makeImage(width: width, height: height, bits: 8, pixelBits: 8,
+            rowBytes: width, space: CGColorSpaceCreateDeviceGray(),
+            bitmap: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+            bytes: [UInt8](repeating: 0, count: width * height))
+        for makeWorkspace in workspaceFactories {
+            let workspace = makeWorkspace()
             XCTAssertThrowsError(try workspace.observation(source))
             XCTAssertEqual(workspace.allocatedByteCount, 0)
         }
     }
 
-    func testWorkspaceUsesOneBackingAddressAndReleasesAfterOwnerDropsIt() throws {
-        var workspace: ManualScrollReusableObservation? = ManualScrollReusableObservation()
-        weak var weakWorkspace = workspace
+    func testWorkspaceMetadataAndOwnerReleaseDoNotWaitForWorker() async throws {
         let source = try image(width: 37, height: 131, space: CGColorSpaceCreateDeviceRGB())
-        let firstAddress = try workspace!.withNormalizedPixels(source) { UInt(bitPattern: $0.baseAddress!) }
-        for _ in 0..<12 {
-            XCTAssertEqual(try workspace!.withNormalizedPixels(source) { UInt(bitPattern: $0.baseAddress!) }, firstAddress)
+        for makeWorkspace in workspaceFactories {
+            var owner: (any HashNormalizationWorkspace)? = makeWorkspace()
+            weak var weakWorkspace = owner
+            let gate = WorkerGate()
+            let worker = Task.detached { [workspace = owner!] in
+                try workspace.withNormalizedPixels(source) { _ in
+                    gate.hold()
+                    return 1
+                }
+            }
+            defer { gate.release() }
+            try await until { gate.entered }
+            // The worker holds the normalization lock here. MainActor can still
+            // read the short metadata lock and drop ownership immediately.
+            XCTAssertEqual(owner?.allocatedByteCount, 37 * 131 * 4)
+            owner = nil
+            XCTAssertNotNil(weakWorkspace)
+            worker.cancel(); gate.release()
+            do { _ = try await worker.value; XCTFail("Canceled result escaped") }
+            catch is CancellationError { }
+            try await until { weakWorkspace == nil }
         }
-        workspace = nil
-        XCTAssertNil(weakWorkspace)
     }
 
     func testCancellationBeforeAndAfterNormalizationRejectsTheResult() async throws {
-        let source = try image(width: 37, height: 131, space: CGColorSpaceCreateDeviceRGB())
-        let before = ManualScrollReusableObservation()
-        let beforeTask = Task.detached {
-            withUnsafeCurrentTask { $0?.cancel() }
-            return try before.observation(source)
-        }
-        do { _ = try await beforeTask.value; XCTFail("Canceled observation succeeded") }
-        catch is CancellationError { }
-        XCTAssertEqual(before.allocatedByteCount, 0)
-        let after = ManualScrollReusableObservation()
-        let afterTask = Task.detached {
-            try after.withNormalizedPixels(source) { _ in
+        for makeWorkspace in workspaceFactories {
+            let source = try image(width: 37, height: 131, space: CGColorSpaceCreateDeviceRGB())
+            let before = makeWorkspace()
+            let beforeTask = Task.detached {
                 withUnsafeCurrentTask { $0?.cancel() }
-                return 1
+                return try before.observation(source)
             }
+            do { _ = try await beforeTask.value; XCTFail("Canceled observation succeeded") }
+            catch is CancellationError { }
+            XCTAssertEqual(before.allocatedByteCount, 0)
+            let after = makeWorkspace()
+            let afterTask = Task.detached {
+                try after.withNormalizedPixels(source) { _ in
+                    withUnsafeCurrentTask { $0?.cancel() }
+                    return 1
+                }
+            }
+            do { _ = try await afterTask.value; XCTFail("Canceled normalized result escaped") }
+            catch is CancellationError { }
+            XCTAssertEqual(try after.observation(source), try ManualScrollScreenDriver.observation(source))
         }
-        do { _ = try await afterTask.value; XCTFail("Canceled normalized result escaped") }
-        catch is CancellationError { }
-        XCTAssertEqual(try after.observation(source), try ManualScrollScreenDriver.observation(source))
     }
 
     func testDefaultDriverDoesNotAllocateExperimentalWorkspaceAndAllStrategiesAgree() async throws {
@@ -148,7 +230,9 @@ final class ManualScrollHashTests: XCTestCase {
             XCTAssertEqual(first, expected)
             driver.discardPendingCapture()
             XCTAssertNil(driver.pendingImage)
-            XCTAssertEqual(driver.normalizationBufferBytesForVerification, strategy == .reusableFullFrame ? 37 * 131 * 4 : 0)
+            let usesWorkspace: Bool = strategy == .reusableFullFrame || strategy == .vImageFullFrame
+            let expectedBytes: Int = usesWorkspace ? 37 * 131 * 4 : 0
+            XCTAssertEqual(driver.normalizationBufferBytesForVerification, expectedBytes)
             let second = try await driver.capture()
             XCTAssertEqual(second, expected)
             driver.invalidate()
@@ -181,26 +265,28 @@ final class ManualScrollHashTests: XCTestCase {
     }
 
     func testControllerReleasesWorkspaceAfterPauseThenRebuildsOnResumeAndCloses() async throws {
-        let controller = ScrollCaptureController { _ in }
-        defer { controller.close() }
-        try await controller.setAutoCropForVerification(false)
-        var configuration = ManualScrollConfiguration()
-        configuration.countdownSeconds = 0; configuration.sampleInterval = 0.05
-        let coordinator = try controller.startManualForVerification(axis: .vertical,
-            region: CGRect(x: 0, y: 0, width: 96, height: 140), screenSize: CGSize(width: 800, height: 600),
-            configuration: configuration, observationStrategy: .reusableFullFrame,
-            provider: { try ScrollSequenceSmokeFixture.image(axis: .vertical, offset: 100) })
-        let driver = try XCTUnwrap(controller.manualDriverForVerification)
-        try await until { controller.sourceURLsForVerification.count == 1 && coordinator.state == .waiting }
-        XCTAssertEqual(driver.normalizationBufferBytesForVerification, 96 * 140 * 4)
-        coordinator.pause(); try await until { coordinator.canResume }
-        XCTAssertNil(driver.pendingImage); XCTAssertEqual(driver.normalizationBufferBytesForVerification, 0)
-        coordinator.resume()
-        try await until { coordinator.state == .waiting && driver.normalizationBufferBytesForVerification > 0 }
-        coordinator.stop(); try await until { !coordinator.hasPendingOperation }
-        XCTAssertEqual(driver.normalizationBufferBytesForVerification, 0)
-        controller.resetForVerification(); controller.close()
-        XCTAssertNil(driver.pendingImage); XCTAssertEqual(driver.normalizationBufferBytesForVerification, 0)
+        for strategy in [ManualScrollObservationStrategy.reusableFullFrame, .vImageFullFrame] {
+            let controller = ScrollCaptureController { _ in }
+            defer { controller.close() }
+            try await controller.setAutoCropForVerification(false)
+            var configuration = ManualScrollConfiguration()
+            configuration.countdownSeconds = 0; configuration.sampleInterval = 0.05
+            let coordinator = try controller.startManualForVerification(axis: .vertical,
+                region: CGRect(x: 0, y: 0, width: 96, height: 140), screenSize: CGSize(width: 800, height: 600),
+                configuration: configuration, observationStrategy: strategy,
+                provider: { try ScrollSequenceSmokeFixture.image(axis: .vertical, offset: 100) })
+            let driver = try XCTUnwrap(controller.manualDriverForVerification)
+            try await until { controller.sourceURLsForVerification.count == 1 && coordinator.state == .waiting }
+            XCTAssertEqual(driver.normalizationBufferBytesForVerification, 96 * 140 * 4)
+            coordinator.pause(); try await until { coordinator.canResume }
+            XCTAssertNil(driver.pendingImage); XCTAssertEqual(driver.normalizationBufferBytesForVerification, 0)
+            coordinator.resume()
+            try await until { coordinator.state == .waiting && driver.normalizationBufferBytesForVerification > 0 }
+            coordinator.stop(); try await until { !coordinator.hasPendingOperation }
+            XCTAssertEqual(driver.normalizationBufferBytesForVerification, 0)
+            controller.resetForVerification(); controller.close()
+            XCTAssertNil(driver.pendingImage); XCTAssertEqual(driver.normalizationBufferBytesForVerification, 0)
+        }
     }
 
     private func until(_ condition: () -> Bool) async throws {
@@ -218,7 +304,26 @@ final class ManualScrollHashTests: XCTestCase {
         func release() { continuation?.resume(); continuation = nil }
     }
 
-    private enum Format: Equatable { case rgba, bgra, straightRGBA }
+    private final class WorkerGate: @unchecked Sendable {
+        private let condition = NSCondition()
+        private var isEntered = false
+        private var isReleased = false
+        var entered: Bool {
+            condition.lock(); defer { condition.unlock() }
+            return isEntered
+        }
+        func hold() {
+            condition.lock(); defer { condition.unlock() }
+            isEntered = true
+            while !isReleased { condition.wait() }
+        }
+        func release() {
+            condition.lock(); defer { condition.unlock() }
+            isReleased = true; condition.broadcast()
+        }
+    }
+
+    private enum Format: Equatable { case rgba, bgra, argb, straightRGBA, straightARGB, skipFirst, skipLast }
 
     private func image(width: Int, height: Int, space: CGColorSpace, format: Format = .rgba,
                        opaque: Bool = false) throws -> CGImage {
@@ -226,15 +331,30 @@ final class ManualScrollHashTests: XCTestCase {
         var bytes = [UInt8](repeating: 211, count: rowBytes * height)
         for y in 0..<height {
             for x in 0..<width {
-                let a = opaque ? 255 : (x * 43 + y * 71) % 256
-                let limit = format == .straightRGBA ? 256 : a + 1
+                let hasSkippedAlpha: Bool = format == .skipFirst || format == .skipLast
+                let hasStraightAlpha: Bool = format == .straightRGBA || format == .straightARGB
+                let a: Int = opaque || hasSkippedAlpha ? 255 : (x * 43 + y * 71) % 256
+                let limit: Int = hasStraightAlpha ? 256 : a + 1
                 let r = (x * 97 + y * 23 + 11) % limit, g = (x * 17 + y * 109 + 31) % limit
                 let b = (x * 67 + y * 13 + 71) % limit
-                let values = format == .bgra ? [b, g, r, a] : [r, g, b, a]
+                let values: [Int]
+                switch format {
+                case .bgra: values = [b, g, r, a]
+                case .argb, .straightARGB, .skipFirst: values = [a, r, g, b]
+                case .rgba, .straightRGBA, .skipLast: values = [r, g, b, a]
+                }
                 for c in 0..<4 { bytes[y * rowBytes + x * 4 + c] = UInt8(values[c]) }
             }
         }
-        let alpha: CGImageAlphaInfo = format == .bgra ? .premultipliedFirst : (format == .straightRGBA ? .last : .premultipliedLast)
+        let alpha: CGImageAlphaInfo
+        switch format {
+        case .rgba: alpha = .premultipliedLast
+        case .bgra, .argb: alpha = .premultipliedFirst
+        case .straightRGBA: alpha = .last
+        case .straightARGB: alpha = .first
+        case .skipFirst: alpha = .noneSkipFirst
+        case .skipLast: alpha = .noneSkipLast
+        }
         let order: CGBitmapInfo = format == .bgra ? .byteOrder32Little : .byteOrder32Big
         return try makeImage(width: width, height: height, bits: 8, pixelBits: 32, rowBytes: rowBytes,
             space: space, bitmap: CGBitmapInfo(rawValue: order.rawValue | alpha.rawValue), bytes: bytes)
