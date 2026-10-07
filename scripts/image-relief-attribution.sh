@@ -14,7 +14,7 @@ architecture=$(uname -m)
 [[ "$architecture" == arm64 || "$architecture" == x86_64 ]] || exit 69
 binary="$app/Contents/MacOS/PicShot"
 /usr/bin/codesign --verify --deep --strict "$app"
-/usr/bin/lipo -verify_arch "$architecture" "$binary"
+/usr/bin/lipo "$binary" -verify_arch "$architecture"
 source_commit=$(/usr/libexec/PlistBuddy -c 'Print :PicShotSourceCommit' "$app/Contents/Info.plist")
 [[ "$source_commit" =~ ^[0-9a-f]{40}$ ]] || { echo 'App must record its full build source commit' >&2; exit 65; }
 # Fail closed for an older app that does not contain this opt-in protocol.
