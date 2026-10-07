@@ -7,11 +7,15 @@ struct ImageDecodeMainQueueStatistics: Encodable {
     var maximumDelaySeconds = 0.0, totalDelaySeconds = 0.0
     var histogramTenMillisecondBins = [Int](repeating: 0, count: 64)
     var outstandingCallbacks = 0
+    var timing: ImageDecodeQueueTiming?
 }
 final class ImageDecodeMainQueueProbe: @unchecked Sendable {
     private let lock = NSLock(), queue = DispatchQueue(label: "PicShot.DecodeDiagnostic.MainQueue")
+    private let timingEnabled: Bool
     private var timer: DispatchSourceTimer?, pending = false, value = ImageDecodeMainQueueStatistics()
-    init() {
+    init(timingEnabled: Bool = false) {
+        self.timingEnabled = timingEnabled
+        if timingEnabled { value.timing = .init(); value.timing?.transition(.setup, at: ProcessInfo.processInfo.systemUptime) }
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now(), repeating: 1.0 / 60.0)
         timer.setEventHandler { [weak self] in self?.tick() }; self.timer = timer; timer.resume()
@@ -19,15 +23,26 @@ final class ImageDecodeMainQueueProbe: @unchecked Sendable {
     private func tick() {
         lock.lock()
         guard !pending else { value.coalescedTicks += 1; lock.unlock(); return }
-        pending = true; lock.unlock()
-        let queued = ProcessInfo.processInfo.systemUptime
+        pending = true
+        let queuedPhase = value.timing?.currentPhase
+        let timedQueued = queuedPhase == nil ? nil : ProcessInfo.processInfo.systemUptime
+        lock.unlock()
+        let queued = timedQueued ?? ProcessInfo.processInfo.systemUptime
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            let delay = max(0, ProcessInfo.processInfo.systemUptime - queued)
+            let acknowledged = ProcessInfo.processInfo.systemUptime
+            let delay = max(0, acknowledged - queued)
             self.lock.lock(); self.pending = false; self.value.samples += 1
             self.value.maximumDelaySeconds = max(self.value.maximumDelaySeconds, delay); self.value.totalDelaySeconds += delay
-            self.value.histogramTenMillisecondBins[min(63, Int(delay / 0.01))] += 1; self.lock.unlock()
+            self.value.histogramTenMillisecondBins[min(63, Int(delay / 0.01))] += 1
+            if let queuedPhase { self.value.timing?.acknowledge(queued: queued, acknowledged: acknowledged, phase: queuedPhase) }
+            self.lock.unlock()
         }
+    }
+    func phase(_ phase: ImageDecodeUIPhase) {
+        guard timingEnabled else { return }
+        lock.lock(); defer { lock.unlock() }
+        if value.timing != nil { value.timing?.transition(phase, at: ProcessInfo.processInfo.systemUptime) }
     }
     func stop() { guard let timer else { return }; timer.cancel(); self.timer = nil; queue.sync { } }
     func snapshot() -> ImageDecodeMainQueueStatistics { lock.lock(); defer { lock.unlock() }; var result = value; result.outstandingCallbacks = pending ? 1 : 0; return result }
@@ -100,9 +115,10 @@ final class ImageDecodeLargeUIRasterVerifier: @unchecked Sendable {
 /// serial worker queue. It consumes prepared PNG; it is not a complete encoder.
 final class ImageDecodeLargeUIAdapter: @unchecked Sendable {
     let input: ImageDecodeLargeInput, isolated: Bool, deadline: Double
+    let timingEnabled: Bool
     let state: ImageDecodeUIState, providers: ImageDrawAllocationTracker, verifier: ImageDecodeLargeUIRasterVerifier
-    init(input: ImageDecodeLargeInput, isolated: Bool, deadline: Double, state: ImageDecodeUIState) throws {
-        self.input = input; self.isolated = isolated; self.deadline = deadline; self.state = state
+    init(input: ImageDecodeLargeInput, isolated: Bool, deadline: Double, state: ImageDecodeUIState, timingEnabled: Bool = false) throws {
+        self.input = input; self.isolated = isolated; self.deadline = deadline; self.state = state; self.timingEnabled = timingEnabled
         providers = .init(maximumAllocations: 16, allocationBytes: input.profile.rasterBytes)
         verifier = try .init(profile: input.profile)
     }
@@ -121,7 +137,7 @@ final class ImageDecodeLargeUIAdapter: @unchecked Sendable {
             let image: CGImage
             if isolated {
                 let child = ImageDecodeDiagnosticProcess(mode: scenario == .closeDecoded ? .holdForCancellation : .decode, profile: input.profile,
-                    cancellationCheck: { token.isCancelled }, observer: { [state] name, time in state.stage(index, name, time) })
+                    cancellationCheck: { token.isCancelled }, observer: { [state] name, time in state.stage(index, name, time) }, timingEnabled: timingEnabled)
                 process = child
                 let raw = try child.run(png: input.png, armDeadline: deadline), metrics = child.snapshot()
                 guard metrics.cleanupConfirmed, metrics.admissionReleased, !metrics.childLaunched || metrics.exitConfirmed else { throw ImageDecodeDiagnosticError.exitUnconfirmed }

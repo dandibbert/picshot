@@ -6,7 +6,31 @@ import PicShotCodecCore
 
 /// The explicit diagnostic argument routes here; normal export run() is unchanged.
 enum ImageDecodeDiagnostic {
-    static func run(allowedSchema: String = ImageDecodeDiagnosticLimits.schema) -> Int32 {
+    static func runWithTiming() -> Int32 {
+        observeTimingReturn { recorder in
+            run(allowedSchema: ImageDecodeDiagnosticLimits.largeSchema, timingRecorder: recorder)
+        }
+    }
+
+    /// The injected closures allow tests to establish return/defer/write ordering
+    /// without starting ImageIO, changing stdio, or scheduling the hard backstop.
+    static func observeTimingReturn(childPID: Int32 = getpid(),
+                                   uptime: @escaping () -> Double = { ProcessInfo.processInfo.systemUptime },
+                                   emitFrame: (Data) throws -> Void = ImageDecodeDiagnosticTimingWriter.send,
+                                   runDiagnostic: (ImageDecodeDiagnosticTimingRecorder) -> Int32) -> Int32 {
+        let recorder = ImageDecodeDiagnosticTimingRecorder(uptime: uptime)
+        let status = runDiagnostic(recorder)
+        let returned = uptime()
+        // Encoding or pipe failure is observation loss, never a new exit result.
+        // A crash or the existing hard _exit backstop can leave this frame absent.
+        if let frame = try? recorder.traceAfterRunReturns(childPID: childPID, at: returned).encodeFrame() {
+            try? emitFrame(frame)
+        }
+        return status
+    }
+
+    static func run(allowedSchema: String = ImageDecodeDiagnosticLimits.schema,
+                    timingRecorder: ImageDecodeDiagnosticTimingRecorder? = nil) -> Int32 {
         let started = ProcessInfo.processInfo.systemUptime
         _ = signal(SIGPIPE, SIG_IGN); _ = umask(0o077)
         let writer = ImageDecodeDiagnosticWriter()
@@ -71,7 +95,9 @@ enum ImageDecodeDiagnostic {
             terminal.helperEntryUptimeSeconds = started
             terminal.responsePreparedUptimeSeconds = ProcessInfo.processInfo.systemUptime
             terminal.uptimeSeconds = terminal.responsePreparedUptimeSeconds!
+            timingRecorder?.terminalWriteStarted()
             try writer.send(terminal)
+            timingRecorder?.terminalWriteCompleted()
             // Worker completion is established before parent-loss cleanup.
             if state.parentLost { _ = files.removeAfterExit() }
             return terminal.kind == .result ? 0 : 1
@@ -81,7 +107,12 @@ enum ImageDecodeDiagnostic {
             event.helperEntryUptimeSeconds = started
             event.responsePreparedUptimeSeconds = ProcessInfo.processInfo.systemUptime
             event.uptimeSeconds = event.responsePreparedUptimeSeconds!
-            try? writer.send(event)
+            if let timingRecorder {
+                timingRecorder.terminalWriteStarted()
+                do { try writer.send(event); timingRecorder.terminalWriteCompleted() } catch { }
+            } else {
+                try? writer.send(event)
+            }
             if state.complete && state.parentLost { _ = job?.removeAfterExit() }
             return 1
         }
@@ -248,6 +279,55 @@ enum ImageDecodeDiagnostic {
         sampler.record(reading); try writer.send(.init(kind: .phase, phase: name, childPID: getpid(), memory: reading, profile: profile))
     }
 }
+
+/// Used synchronously only on run's calling thread, never by its decode worker.
+final class ImageDecodeDiagnosticTimingRecorder {
+    private let uptime: () -> Double
+    private var started: Double?, completed: Double?
+    private var attempts = 0
+    init(uptime: @escaping () -> Double = { ProcessInfo.processInfo.systemUptime }) { self.uptime = uptime }
+    func terminalWriteStarted() {
+        attempts += 1; started = uptime(); completed = nil
+    }
+    func terminalWriteCompleted() { completed = uptime() }
+    func traceAfterRunReturns(childPID: Int32, at returned: Double) -> ImageDecodeTimingTrace {
+        ImageDecodeTimingTrace(childPID: childPID, terminalWriteStartedUptimeSeconds: started,
+                               terminalWriteCompletedUptimeSeconds: completed, terminalWriteAttemptCount: attempts,
+                               runReturnedUptimeSeconds: returned, framePreparedUptimeSeconds: uptime(),
+                               terminalWriteSucceeded: completed != nil)
+    }
+}
+
+enum ImageDecodeDiagnosticTimingWriter {
+    static let writeSeconds = 0.05
+    static func send(_ frame: Data) throws { try send(frame, descriptor: STDERR_FILENO) }
+    static func send(_ frame: Data, descriptor: Int32) throws {
+        // The actual parent supplies a pipe. Never block exit behind a full pipe.
+        guard !frame.isEmpty, frame.count <= ImageDecodeTimingTrace.frameBytes, frame.last == 10 else {
+            throw ImageDecodeDiagnosticError.invalidProtocol
+        }
+        let deadline = ProcessInfo.processInfo.systemUptime + writeSeconds
+        let flags = fcntl(descriptor, F_GETFL)
+        guard flags >= 0, fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0 else {
+            throw ImageDecodeDiagnosticError.invalidProtocol
+        }
+        defer { _ = fcntl(descriptor, F_SETFL, flags) }
+        try frame.withUnsafeBytes { bytes in
+            var offset = 0
+            while offset < frame.count {
+                guard ProcessInfo.processInfo.systemUptime < deadline else { throw ImageDecodeDiagnosticError.deadline }
+                let count = Darwin.write(descriptor, bytes.baseAddress!.advanced(by: offset), frame.count - offset)
+                if count > 0 { offset += count }
+                else if count < 0 && errno == EINTR { continue }
+                else if count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    var writable = pollfd(fd: descriptor, events: Int16(POLLOUT), revents: 0)
+                    _ = poll(&writable, 1, 5)
+                } else { throw ImageDecodeDiagnosticError.invalidProtocol }
+            }
+        }
+    }
+}
+
 private final class ImageDecodeDiagnosticState: @unchecked Sendable {
     private let lock = NSLock()
     private var result: ImageDecodeDiagnosticEvent?, cancellation: ImageDecodeDiagnosticError?, lost = false

@@ -7,6 +7,7 @@ public enum ImageDecodeDiagnosticLimits {
     public static let argument = "--image-draw-decode-diagnostic-v1"
     public static let largeSchema = "image-decode-helper-v2"
     public static let largeArgument = "--image-draw-decode-diagnostic-v2"
+    public static let largeTimingArgument = "--image-draw-decode-diagnostic-v3"
     public static let width = 768, height = 576, rasterBytes = 1_769_472
     public static let pngBytes = 8 * 1_024 * 1_024
     public static let requestBytes = 4_096, eventBytes = 16_384, stdoutBytes = 131_072, stderrBytes = 8_192
@@ -132,7 +133,7 @@ public struct ImageDecodeDiagnosticEventDecoder {
 }
 
 // Inspect bounded wire bytes before Foundation materializes a nested object.
-private func imageDecodeDiagnosticObject(_ data: Data, maximumDepth: Int) throws -> [String: Any]? {
+func imageDecodeDiagnosticObject(_ data: Data, maximumDepth: Int) throws -> [String: Any]? {
     let bytes = [UInt8](data)
     var objects: [Set<String>] = [], index = 0
     while index < bytes.count {

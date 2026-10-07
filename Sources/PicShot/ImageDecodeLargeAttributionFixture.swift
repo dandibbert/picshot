@@ -4,12 +4,13 @@ import PicShotCodecCore
 @MainActor
 enum ImageDecodeLargeAttributionFixture {
     enum Mode: String, CaseIterable { case prepare, productionControl = "production-control", isolatedDecode = "isolated-decode", nativeUIControl = "native-ui-control", nativeUIIsolated = "native-ui-isolated" }
-    struct Request: Equatable { let mode: Mode; let profile: ImageDecodeDiagnosticProfile; let inputDirectory: URL? }
+    struct Request: Equatable { let mode: Mode; let profile: ImageDecodeDiagnosticProfile; let inputDirectory: URL?; let timingEnabled: Bool }
     private static var claimed = false
     static func request(_ environment: [String: String]) throws -> Request? {
         let prefix = "PICSHOT_IMAGE_DECODE_LARGE_", keys = Set(environment.keys.filter { $0.hasPrefix(prefix) })
         if keys.isEmpty { return nil }
-        guard keys.isSubset(of: [prefix + "MODE", prefix + "PROFILE", prefix + "INPUT_DIRECTORY"]),
+        guard keys.isSubset(of: [prefix + "MODE", prefix + "PROFILE", prefix + "INPUT_DIRECTORY", prefix + "TIMING"]),
+              environment[prefix + "TIMING"] == nil || environment[prefix + "TIMING"] == "3",
               let mode = environment[prefix + "MODE"].flatMap(Mode.init(rawValue:)),
               let profile = environment[prefix + "PROFILE"].flatMap(ImageDecodeDiagnosticProfile.init(rawValue:)),
               (mode != .prepare) == (environment[prefix + "INPUT_DIRECTORY"] != nil),
@@ -18,7 +19,7 @@ enum ImageDecodeLargeAttributionFixture {
         if mode == .nativeUIControl || mode == .nativeUIIsolated { guard profile == .fiveK else { throw ImageDecodeDiagnosticError.invalidInput } }
         let path = environment[prefix + "INPUT_DIRECTORY"]
         if let path, !path.hasPrefix("/") { throw ImageDecodeDiagnosticError.invalidInput }
-        return .init(mode: mode, profile: profile, inputDirectory: path.map { URL(fileURLWithPath: $0, isDirectory: true) })
+        return .init(mode: mode, profile: profile, inputDirectory: path.map { URL(fileURLWithPath: $0, isDirectory: true) }, timingEnabled: environment[prefix + "TIMING"] == "3")
     }
     static func runIfRequested(evidenceDirectory: URL, environment: [String: String] = ProcessInfo.processInfo.environment) async throws -> [String: Any]? {
         guard let request = try request(environment) else { return nil }
@@ -27,11 +28,11 @@ enum ImageDecodeLargeAttributionFixture {
         if request.mode == .prepare { return try ImageDecodeLargeSupport.prepare(profile: request.profile, directory: evidenceDirectory) }
         let input = try ImageDecodeLargeSupport.input(profile: request.profile, directory: request.inputDirectory!)
         if request.mode == .nativeUIControl || request.mode == .nativeUIIsolated {
-            return try await ImageDecodeLargeUIFixture.run(input: input, isolated: request.mode == .nativeUIIsolated, directory: evidenceDirectory)
+            return try await ImageDecodeLargeUIFixture.run(input: input, isolated: request.mode == .nativeUIIsolated, directory: evidenceDirectory, timingEnabled: request.timingEnabled)
         }
-        return try await measured(input: input, isolated: request.mode == .isolatedDecode, directory: evidenceDirectory)
+        return try await measured(input: input, isolated: request.mode == .isolatedDecode, directory: evidenceDirectory, timingEnabled: request.timingEnabled)
     }
-    private static func measured(input: ImageDecodeLargeInput, isolated: Bool, directory: URL) async throws -> [String: Any] {
+    private static func measured(input: ImageDecodeLargeInput, isolated: Bool, directory: URL, timingEnabled: Bool) async throws -> [String: Any] {
         let mode = isolated ? Mode.isolatedDecode.rawValue : Mode.productionControl.rawValue
         let started = ProcessInfo.processInfo.systemUptime, deadline = started + 180
         let profile = input.profile, providers = ImageDrawAllocationTracker(maximumAllocations: 14, allocationBytes: input.profile.rasterBytes)
@@ -40,6 +41,7 @@ enum ImageDecodeLargeAttributionFixture {
         defer { destination?.close() }
         let sampler = ImageDecodeMemorySampler(); defer { sampler.stop() }
         var report = ImageDecodeLargeSupport.base(mode: mode, input: input), cycles: [ImageDecodeLargeCycle] = []
+        if timingEnabled { report["timingInstrumentationVersion"] = 3 }
         let output = directory.appendingPathComponent("image-decode-large-\(mode).json")
         do {
             let existing = await CodecExportProcessService.shared.snapshot()
@@ -55,7 +57,7 @@ enum ImageDecodeLargeAttributionFixture {
                 let cycleSampler = ImageDecodeMemorySampler(); defer { cycleSampler.stop() }
                 var raw: Data?, child: ImageDecodeProcessMetrics?
                 if isolated {
-                    let process = ImageDecodeDiagnosticProcess(mode: .decode, profile: profile)
+                    let process = ImageDecodeDiagnosticProcess(mode: .decode, profile: profile, timingEnabled: timingEnabled)
                     do {
                         raw = try await withTaskCancellationHandler { try await Task.detached { try autoreleasepool { try process.run(png: input.png, armDeadline: deadline) } }.value } onCancel: { process.cancel() }
                         child = process.snapshot()

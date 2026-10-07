@@ -8,6 +8,8 @@ let args = CommandLine.arguments, app = URL(fileURLWithPath: CommandLine.argumen
 let mode = args[2], profile = args[3], evidence = URL(fileURLWithPath: args[4], isDirectory: true)
 let modes = ["prepare", "production-control", "isolated-decode", "native-ui-control", "native-ui-isolated"]
 let hasInputs = args.count == 6
+let timingSelector = ProcessInfo.processInfo.environment["PICSHOT_IMAGE_DECODE_LARGE_TIMING"]
+guard timingSelector == nil || timingSelector == "3" else { exit(64) }
 let outerDeadline: Double = mode == "prepare" ? 70 : mode.hasPrefix("native-ui") ? 140 : 200
 let files = FileManager.default, binary = app.appendingPathComponent("Contents/MacOS/PicShot")
 guard modes.contains(mode), ["4k", "5k"].contains(profile), hasInputs == (mode != "prepare"),
@@ -26,6 +28,7 @@ process.standardInput = FileHandle.nullDevice; process.standardOutput = pipe; pr
 process.environment = ["HOME": NSHomeDirectory(), "TMPDIR": files.temporaryDirectory.path, "LANG": "en_US.UTF-8",
     "PICSHOT_SMOKE_TEST": "1", "PICSHOT_SMOKE_REPORT": launchReport.path,
     "PICSHOT_IMAGE_DECODE_LARGE_MODE": mode, "PICSHOT_IMAGE_DECODE_LARGE_PROFILE": profile]
+if let timingSelector { process.environment?["PICSHOT_IMAGE_DECODE_LARGE_TIMING"] = timingSelector }
 if hasInputs { process.environment?["PICSHOT_IMAGE_DECODE_LARGE_INPUT_DIRECTORY"] = args[5] }
 let start = ProcessInfo.processInfo.systemUptime
 try process.run(); try? pipe.fileHandleForWriting.close()
@@ -75,4 +78,5 @@ guard let report = try JSONSerialization.jsonObject(with: data) as? [String: Any
       report["protocol"] as? String == (mode == "prepare" ? "image-decode-large-input-v2" : "image-decode-large-parent-v2"),
       report["status"] as? String == (mode == "prepare" ? "prepared" : "observed"), report["profile"] as? String == profile,
       (mode == "prepare" || report["mode"] as? String == mode), report["processIdentifier"] as? Int == Int(process.processIdentifier) else { exit(1) }
+if timingSelector == "3", mode != "prepare", report["timingInstrumentationVersion"] as? Int != 3 { exit(1) }
 print(named.path)

@@ -10,6 +10,7 @@ enum PicShotCodecHelper {
         if arguments == [ImageDecodeDiagnosticLimits.largeArgument] {
             exit(ImageDecodeDiagnostic.run(allowedSchema: ImageDecodeDiagnosticLimits.largeSchema))
         }
+        if arguments == [ImageDecodeDiagnosticLimits.largeTimingArgument] { exit(ImageDecodeDiagnostic.runWithTiming()) }
         exit(run(arguments: arguments))
     }
 

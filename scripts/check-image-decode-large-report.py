@@ -19,7 +19,67 @@ def memory(m):
     assert all(k in m['purgeable']['bytes'] for k in ('purgeable_volatile_resident', 'purgeable_volatile_virtual', 'purgeable_volatile_pmap'))
 
 
-def process(m, profile, reference_sha, pids, allow_cancel=False):
+def finite_time(value):
+    assert isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0
+    return value
+
+
+def process_timing(m, enabled):
+    if not enabled:
+        assert 'timingInstrumentationVersion' not in m and 'childTimingTrace' not in m and 'parentTimingUptimes' not in m
+        return
+    assert m['timingInstrumentationVersion'] == 3
+    parent = m['parentTimingUptimes']
+    if not m['childLaunched']:
+        assert m['childTimingTraceStatus'] == 'notLaunched' and 'childTimingTrace' not in m and parent == {}
+        return
+    assert m['childTimingTraceStatus'] == 'complete' and 0 < m['stderrBytes'] <= 1024
+    trace = m['childTimingTrace']
+    assert set(trace) == {'schema', 'childPID', 'terminalWriteStartedUptimeSeconds', 'terminalWriteCompletedUptimeSeconds',
+                          'terminalWriteAttemptCount', 'runReturnedUptimeSeconds', 'framePreparedUptimeSeconds', 'terminalWriteSucceeded'}
+    assert trace['schema'] == 'image-decode-tail-v3' and trace['childPID'] == m['childPID']
+    assert trace['terminalWriteSucceeded'] is True and trace['terminalWriteAttemptCount'] == 1
+    child_times = [finite_time(trace[k]) for k in ['terminalWriteStartedUptimeSeconds', 'terminalWriteCompletedUptimeSeconds', 'runReturnedUptimeSeconds', 'framePreparedUptimeSeconds']]
+    assert child_times == sorted(child_times)
+    assert set(parent) == {'terminalFrameReadReturned', 'terminalFrameDecodedAtReceipt', 'terminationObserved', 'waitUntilExitStarted', 'waitUntilExitCompleted'}
+    for value in parent.values(): finite_time(value)
+    prepared = finite_time(m['terminal']['responsePreparedUptimeSeconds'])
+    assert prepared <= child_times[0] and prepared <= parent['terminalFrameReadReturned'] <= parent['terminalFrameDecodedAtReceipt']
+    assert child_times[-1] <= parent['terminationObserved'] <= parent['waitUntilExitStarted'] <= parent['waitUntilExitCompleted'] <= m['boundaryUptimes']['childExitConfirmed']
+    # Parent may consume the terminal frame before the child write returns, or
+    # drain it after exit. Do not invent a cross-process ordering between them.
+
+
+def queue_timing(queue, enabled):
+    if not enabled:
+        assert 'timing' not in queue
+        return
+    timing = queue['timing']
+    assert timing['version'] == 3 and timing['maximumWorstAcknowledgements'] == 8 and timing['maximumPhaseTransitions'] == 64
+    assert timing['overflowed'] is False and timing['invalidTimestampObserved'] is False
+    phases = {'setup', 'sourceConstruction', 'controllerSnapshotConstruction', 'warmupPreview', 'steadyPreview', 'debounceBurst',
+              'cancelActive', 'closeDecoded', 'lateResult', 'evidenceCapture', 'settle', 'cleanup'}
+    transitions = timing['phaseTransitions']; worst = timing['worstAcknowledgements']
+    assert 1 <= len(transitions) <= 64 and len(worst) == min(8, queue['samples'])
+    assert phases.issubset({t['phase'] for t in transitions})
+    times = [finite_time(t['uptimeSeconds']) for t in transitions]
+    assert times == sorted(times) and all(t['phase'] in phases for t in transitions)
+    def phase_at(time):
+        eligible = [t['phase'] for t in transitions if t['uptimeSeconds'] <= time]
+        assert eligible
+        return eligible[-1]
+    delays = []
+    for record in worst:
+        queued = finite_time(record['queuedUptimeSeconds']); acknowledged = finite_time(record['acknowledgedUptimeSeconds'])
+        delay = finite_time(record['delaySeconds']); assert acknowledged >= queued and math.isclose(delay, acknowledged-queued, rel_tol=1e-9, abs_tol=1e-9)
+        assert record['queuedPhase'] == phase_at(queued) and record['acknowledgedPhase'] == phase_at(acknowledged)
+        delays.append(delay)
+    assert delays == sorted(delays, reverse=True)
+    assert math.isclose(delays[0], queue['maximumDelaySeconds'], rel_tol=1e-9, abs_tol=1e-9)
+
+
+def process(m, profile, reference_sha, pids, allow_cancel=False, timing_enabled=False):
+    process_timing(m, timing_enabled)
     assert m['diagnosticProfile'] == profile and m['cleanupConfirmed'] and m['admissionReleased']
     assert m['stdoutBytes'] <= 131072 and m['stderrBytes'] <= 8192 and not m['stderrTruncated']
     if m.get('jobDirectory'): assert not Path(m['jobDirectory']).exists()
@@ -71,7 +131,7 @@ def process(m, profile, reference_sha, pids, allow_cancel=False):
             assert ready['rawSHA256'] == reference_sha and not m['outputExistedBeforeCleanup']
 
 
-def validate(root, source, architecture, headless_only=False):
+def validate(root, source, architecture, headless_only=False, timing_enabled=False):
     summaries = []; parent_pids = set(); child_pids = set(); inputs = {}
     for profile, width, height in [('4k', 3840, 2160), ('5k', 5120, 2880)]:
         prepared = read(root/f'prepared-{profile}/image-decode-large-inputs.json')
@@ -87,7 +147,7 @@ def validate(root, source, architecture, headless_only=False):
             assert path.stat().st_size <= 8388608 and hashlib.sha256(path.read_bytes()).hexdigest() == prepared[key]
         for mode in ['production-control', 'isolated-decode']:
             r = read(root/f'{profile}-{mode}'/f'image-decode-large-{mode}.json')
-            base(r, source, architecture, profile, prepared, parent_pids)
+            base(r, source, architecture, profile, prepared, parent_pids, timing_enabled)
             assert r['mode'] == mode
             assert r['warmupCycles'] == 2 and r['measuredCycles'] == 12 and len(r['warmups']) == 2 and len(r['cycles']) == 12
             assert r['completedDraws'] == r['completedExactPixelChecks'] == 14
@@ -99,7 +159,7 @@ def validate(root, source, architecture, headless_only=False):
                     d = c['draw']; memory(d['beforeDraw']); memory(d['afterDraw'])
                     assert d['maximumDifference'] == 0 and d['validatedBytes'] == 2359296 and d['pixelsSHA256'] == prepared['rawSHA256']
                     assert 0 < c['timeToValidatedPixelsSeconds'] <= c['fullLifecycleSeconds'] <= c['observedCycleSeconds']
-                    if mode == 'isolated-decode': process(c['process'], profile, prepared['rawSHA256'], child_pids)
+                    if mode == 'isolated-decode': process(c['process'], profile, prepared['rawSHA256'], child_pids, timing_enabled=timing_enabled)
                     else: assert 'process' not in c
             assert r['helperInvocations'] == (14 if mode == 'isolated-decode' else 0)
             b, end = r['baselineAfterWarmup'], r['cycles'][-1]['settled']; memory(b); memory(end)
@@ -111,7 +171,7 @@ def validate(root, source, architecture, headless_only=False):
     if not headless_only:
         for mode in ['native-ui-control', 'native-ui-isolated']:
             r = read(root/f'5k-{mode}'/f'image-decode-large-{mode}.json'); prepared = inputs['5k']
-            base(r, source, architecture, '5k', prepared, parent_pids)
+            base(r, source, architecture, '5k', prepared, parent_pids, timing_enabled)
             assert r['mode'] == mode
             assert r['warmupCycles'] == 2 and r['measuredCycles'] == 4 and len(r['warmups']) == 2 and len(r['cycles']) == 4
             assert r['completedSuccessfulNativeDraws'] == r['exactSuccessfulPreviewValidations'] == 6 and r['actualNativeDrawCount'] >= 6
@@ -121,6 +181,7 @@ def validate(root, source, architecture, headless_only=False):
             assert len(r['workers']) == 10 and len(r['faultScenarios']) == 3
             workers = {w['index']: w for w in r['workers']}
             assert set(workers) == set(range(1, 11))
+            queue_timing(r['mainQueue'], timing_enabled)
             assert r['mainQueue']['samples'] > 0 and r['mainQueue']['outstandingCallbacks'] == 0
             assert len(r['mainQueue']['histogramTenMillisecondBins']) == 64
             assert r['responsivenessFlagTriggered'] == (r['mainQueue']['maximumDelaySeconds'] > 0.1)
@@ -151,7 +212,7 @@ def validate(root, source, architecture, headless_only=False):
                 assert w['finishedUptimeSeconds'] >= w['startedUptimeSeconds']
                 if mode == 'native-ui-isolated':
                     assert 'process' in w
-                    process(w['process'], '5k', prepared['rawSHA256'], child_pids, allow_cancel=True)
+                    process(w['process'], '5k', prepared['rawSHA256'], child_pids, allow_cancel=True, timing_enabled=timing_enabled)
                 else: assert 'process' not in w
                 if w['outcome'] in ('completed', 'completed-after-cancel'): assert w['pixelsSHA256'] == prepared['rawSHA256']
             assert r['helperInvocations'] == sum(w.get('process', {}).get('childLaunched', False) for w in r['workers'])
@@ -167,10 +228,11 @@ def validate(root, source, architecture, headless_only=False):
         'responsivenessFlagTriggered': any(c['responsivenessFlagTriggered'] for c in summaries if c['mode'].startswith('native-ui')),
     }
     return {'status': 'observed', 'sourceCommit': source, 'architecture': architecture, 'headlessOnly': headless_only,
-        'cells': summaries, 'coverage': coverage, 'parentLossVerified': False, 'interpretation': 'Exact bounded previews and native diagnostic UI observations only; no production remedy verdict'}
+        'cells': summaries, 'coverage': coverage, **({'timingInstrumentationVersion': 3} if timing_enabled else {}), 'parentLossVerified': False, 'interpretation': 'Exact bounded previews and native diagnostic UI observations only; no production remedy verdict'}
 
 
-def base(r, source, architecture, profile, prepared, pids):
+def base(r, source, architecture, profile, prepared, pids, timing_enabled=False):
+    assert (r.get('timingInstrumentationVersion') == 3) if timing_enabled else ('timingInstrumentationVersion' not in r)
     assert r['protocol'] == 'image-decode-large-parent-v2' and r['status'] == 'observed'
     assert r['sourceCommit'] == source and r['architecture'] == architecture and r['profile'] == profile
     assert r['processIdentifier'] not in pids; pids.add(r['processIdentifier'])
@@ -191,9 +253,10 @@ def base(r, source, architecture, profile, prepared, pids):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) not in (4, 5): raise SystemExit('Usage: check-image-decode-large-report.py ROOT SOURCE ARCH [--headless-only]')
-    headless = len(sys.argv) == 5
-    if headless and sys.argv[4] != '--headless-only': raise SystemExit('Unknown mode')
-    root = Path(sys.argv[1]); result = validate(root, sys.argv[2], sys.argv[3], headless)
+    if len(sys.argv) not in (4, 5, 6): raise SystemExit('Usage: check-image-decode-large-report.py ROOT SOURCE ARCH [--headless-only] [--timing-v3]')
+    flags = sys.argv[4:]
+    if len(flags) != len(set(flags)) or not set(flags).issubset({'--headless-only', '--timing-v3'}): raise SystemExit('Unknown or duplicate mode')
+    headless = '--headless-only' in flags
+    root = Path(sys.argv[1]); result = validate(root, sys.argv[2], sys.argv[3], headless, '--timing-v3' in flags)
     (root/('headless-comparison.json' if headless else 'comparison.json')).write_text(json.dumps(result, indent=2, sort_keys=True)+'\n')
     print(json.dumps(result, indent=2, sort_keys=True))

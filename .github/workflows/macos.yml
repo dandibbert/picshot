@@ -7,7 +7,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[decode-large]') && 'decode-large' || contains(github.event.head_commit.message || '', '[pin-workflows]') && 'pins-010' || contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
+  group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[decode-timing-v3]') && 'decode-timing-v3' || contains(github.event.head_commit.message || '', '[decode-large]') && 'decode-large' || contains(github.event.head_commit.message || '', '[pin-workflows]') && 'pins-010' || contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
   cancel-in-progress: true
 jobs:
   runner-check:
@@ -466,18 +466,25 @@ jobs:
           bash scripts/image-decode-helper-attribution.sh --compare "$PWD/dist/PicShot.app" "$PWD/dist/evidence/image-decode-helper" 2>&1 | tee dist/decode-small.log
       - name: Compare bounded large PNG previews and actual native window flows
         timeout-minutes: 25
+        env:
+          PICSHOT_DECODE_TIMING_V3: ${{ contains(github.event.head_commit.message || '', '[decode-timing-v3]') && '1' || '0' }}
         run: |
           set -o pipefail
-          bash scripts/image-decode-large-attribution.sh --compare "$PWD/dist/PicShot.app" "$PWD/dist/evidence/image-decode-large" 2>&1 | tee dist/decode-large.log
+          if [[ "$PICSHOT_DECODE_TIMING_V3" == "1" ]]; then
+            bash scripts/image-decode-large-attribution.sh --timing-v3 "$PWD/dist/PicShot.app" "$PWD/dist/evidence/image-decode-timing-v3" 2>&1 | tee dist/decode-timing-v3.log
+          else
+            bash scripts/image-decode-large-attribution.sh --compare "$PWD/dist/PicShot.app" "$PWD/dist/evidence/image-decode-large" 2>&1 | tee dist/decode-large.log
+          fi
       - name: Preserve diagnostic observations without installer publication
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: PicShot-Decode-Large-${{ matrix.arch }}-${{ github.sha }}
+          name: PicShot-Decode-${{ contains(github.event.head_commit.message || '', '[decode-timing-v3]') && 'Timing-V3' || 'Large' }}-${{ matrix.arch }}-${{ github.sha }}
           path: |
             dist/*.log
             dist/*report.json
             dist/evidence/image-decode-helper/
             dist/evidence/image-decode-large/
+            dist/evidence/image-decode-timing-v3/
           if-no-files-found: warn
           retention-days: 14

@@ -1,12 +1,24 @@
 #!/bin/bash
 # Explicit standalone diagnostic. No default release hook or installer.
 set -euo pipefail
-if [[ $# -ne 3 || "$1" != --compare ]]; then
-  echo 'Usage: image-decode-large-attribution.sh --compare /absolute/PicShot.app /absolute/new-evidence-directory' >&2
+if [[ $# -ne 3 || ( "$1" != --compare && "$1" != --timing-v3 ) ]]; then
+  echo 'Usage: image-decode-large-attribution.sh {--compare|--timing-v3} /absolute/PicShot.app /absolute/new-evidence-directory' >&2
   exit 64
 fi
 cd "$(dirname "$0")/.."
 app="$2"; root="$3"
+if [[ "$1" == --timing-v3 ]]; then
+  export PICSHOT_IMAGE_DECODE_LARGE_TIMING=3
+else
+  unset PICSHOT_IMAGE_DECODE_LARGE_TIMING
+fi
+check_report() {
+  if [[ "${PICSHOT_IMAGE_DECODE_LARGE_TIMING:-}" == 3 ]]; then
+    python3 scripts/check-image-decode-large-report.py "$@" --timing-v3
+  else
+    python3 scripts/check-image-decode-large-report.py "$@"
+  fi
+}
 [[ "$app" == /* && "$root" == /* && "$app" == *.app && ! -e "$root" ]] || exit 64
 [[ "$(uname -s)" == Darwin ]] || exit 69
 architecture=$(uname -m)
@@ -19,8 +31,8 @@ binary="$app/Contents/MacOS/PicShot"; helper="$app/Contents/Helpers/PicShotCodec
 source_commit=$(/usr/libexec/PlistBuddy -c 'Print :PicShotSourceCommit' "$app/Contents/Info.plist")
 [[ "$source_commit" =~ ^[0-9a-f]{40}$ ]] || exit 65
 python3 - "$binary" "$helper" <<'PY'
-import sys
-for path,needle in [(sys.argv[1],b'image-decode-large-parent-v2'),(sys.argv[2],b'--image-draw-decode-diagnostic-v2')]:
+import os,sys
+for path,needle in [(sys.argv[1],b'image-decode-large-parent-v2'),(sys.argv[2],b'--image-draw-decode-diagnostic-v3' if os.getenv('PICSHOT_IMAGE_DECODE_LARGE_TIMING') == '3' else b'--image-draw-decode-diagnostic-v2')]:
     with open(path,'rb') as stream:
         tail=b''
         while True:
@@ -38,8 +50,8 @@ for profile in 4k 5k; do
   done
 done
 # UI runs only after all large source/preview/exit/pixel checks succeed.
-python3 scripts/check-image-decode-large-report.py "$root" "$source_commit" "$architecture" --headless-only
+check_report "$root" "$source_commit" "$architecture" --headless-only
 for mode in native-ui-control native-ui-isolated; do
   swift scripts/launch-image-decode-large.swift "$app" "$mode" 5k "$root/5k-$mode" "$root/prepared-5k"
 done
-python3 scripts/check-image-decode-large-report.py "$root" "$source_commit" "$architecture"
+check_report "$root" "$source_commit" "$architecture"

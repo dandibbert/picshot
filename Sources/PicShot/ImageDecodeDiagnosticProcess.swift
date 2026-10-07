@@ -20,6 +20,10 @@ struct ImageDecodeProcessMetrics: Encodable, Sendable {
     var phases: [ImageDecodeChildPhase] = []
     var terminal: ImageDecodeDiagnosticEvent?
     var rejectedEvent: ImageDecodeDiagnosticEvent?
+    var timingInstrumentationVersion: Int?
+    var parentTimingUptimes: [String: Double]?
+    var childTimingTrace: ImageDecodeTimingTrace?
+    var childTimingTraceStatus: String?
     var signaturePhases: [CodecHelperValidationTiming] = []
     var diagnosticProfile: String?
     var boundaryUptimes: [String: Double] = [:]
@@ -33,12 +37,15 @@ final class ImageDecodeDiagnosticProcess: @unchecked Sendable {
     enum Mode: Equatable, Sendable { case decode, cancelAfterDecode, timeoutAfterDecode, holdForCancellation }
     private let lock = NSLock(), mode: Mode
     private let profile: ImageDecodeDiagnosticProfile?
+    private let timingEnabled: Bool
     private let cancellationCheck: @Sendable () -> Bool
     private let observer: (@Sendable (String, Double) -> Void)?
     private var cancelled = false, metrics = ImageDecodeProcessMetrics()
     init(mode: Mode, profile: ImageDecodeDiagnosticProfile? = nil,
-         cancellationCheck: @escaping @Sendable () -> Bool = { false }, observer: (@Sendable (String, Double) -> Void)? = nil) {
+         cancellationCheck: @escaping @Sendable () -> Bool = { false }, observer: (@Sendable (String, Double) -> Void)? = nil, timingEnabled: Bool = false) {
         self.mode = mode; self.profile = profile; self.cancellationCheck = cancellationCheck; self.observer = observer
+        self.timingEnabled = timingEnabled
+        if timingEnabled { metrics.timingInstrumentationVersion = 3; metrics.parentTimingUptimes = [:]; metrics.childTimingTraceStatus = "notLaunched" }
         metrics.diagnosticProfile = profile?.rawValue
     }
     func cancel() {
@@ -52,6 +59,11 @@ final class ImageDecodeDiagnosticProcess: @unchecked Sendable {
         update { $0.boundaryUptimes[name] = now; $0.parentBoundaries[name] = reading }
         observer?(name, now)
     }
+    private func timing(_ name: String, at time: Double? = nil) {
+        guard timingEnabled else { return }
+        let now = time ?? ProcessInfo.processInfo.systemUptime
+        update { if $0.parentTimingUptimes?[name] == nil { $0.parentTimingUptimes?[name] = now } }
+    }
     private var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
     func snapshot() -> ImageDecodeProcessMetrics { lock.lock(); defer { lock.unlock() }; return metrics }
     private func update(_ f: (inout ImageDecodeProcessMetrics) -> Void) { lock.lock(); f(&metrics); lock.unlock() }
@@ -63,6 +75,7 @@ final class ImageDecodeDiagnosticProcess: @unchecked Sendable {
     }
     func run(png: Data, armDeadline: Double) throws -> Data? {
         let started = ProcessInfo.processInfo.systemUptime
+        guard !timingEnabled || profile != nil else { throw ImageDecodeDiagnosticError.invalidProtocol }
         defer { update { $0.elapsedSeconds = ProcessInfo.processInfo.systemUptime - started } }
         guard let lease = NativeExportAdmission.shared.acquire() else { throw CodecExportProcessError.busy }
         var job: ImageDecodeDiagnosticJob?, process: Process?
@@ -124,7 +137,7 @@ final class ImageDecodeDiagnosticProcess: @unchecked Sendable {
                 try? errors.fileHandleForReading.close(); try? errors.fileHandleForWriting.close()
             }
             let child = Process(); process = child
-            child.executableURL = executable; child.arguments = [profile == nil ? ImageDecodeDiagnosticLimits.argument : ImageDecodeDiagnosticLimits.largeArgument]
+            child.executableURL = executable; child.arguments = [timingEnabled ? ImageDecodeDiagnosticLimits.largeTimingArgument : profile == nil ? ImageDecodeDiagnosticLimits.argument : ImageDecodeDiagnosticLimits.largeArgument]
             child.currentDirectoryURL = files.directory
             child.environment = ["HOME": NSHomeDirectory(), "TMPDIR": files.directory.path, "LANG": "en_US.UTF-8"]
             child.standardInput = input; child.standardOutput = output; child.standardError = errors
@@ -138,21 +151,34 @@ final class ImageDecodeDiagnosticProcess: @unchecked Sendable {
             let launchStart = ProcessInfo.processInfo.systemUptime
             boundary("processRunStarted")
             try child.run(); launched = true
+            if timingEnabled { update { $0.childTimingTraceStatus = "pending" } }
             boundary("processRunReturned")
             try? input.fileHandleForReading.close(); try? output.fileHandleForWriting.close(); try? errors.fileHandleForWriting.close()
             update { $0.childLaunched = true; $0.childPID = child.processIdentifier; $0.lastStage = "childRunning" }
             var decoder = ImageDecodeDiagnosticEventDecoder(), outClosed = false, errClosed = false
+            var timingStderr = Data()
             var sequence = ImageDecodeDiagnosticEventSequence(holdsAfterDecode: mode != .decode)
             var failure: ImageDecodeDiagnosticError?, stoppingAt: Double?, terminal: ImageDecodeDiagnosticEvent?
+            func observedRunning() -> Bool {
+                let running = child.isRunning
+                if !running { timing("terminationObserved") }
+                return running
+            }
             var buffer = [UInt8](repeating: 0, count: 4_096)
             func drain(_ fd: Int32, stderr: Bool) {
                 for _ in 0..<40 {
                     let n = Darwin.read(fd, &buffer, buffer.count)
                     if n == 0 { if stderr { errClosed = true } else { outClosed = true }; return }
                     if n < 0 { if errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK { failure = failure ?? .invalidProtocol }; return }
+                    let readReturned = timingEnabled ? ProcessInfo.processInfo.systemUptime : 0
                     if stderr {
                         update { $0.stderrBytes += n; if $0.stderrBytes > ImageDecodeDiagnosticLimits.stderrBytes { $0.stderrTruncated = true } }
                         if snapshot().stderrTruncated { failure = failure ?? .invalidProtocol }
+                        if timingEnabled {
+                            let remaining = max(0, ImageDecodeTimingTrace.frameBytes - timingStderr.count)
+                            timingStderr.append(contentsOf: buffer.prefix(min(n, remaining)))
+                            if n > remaining { update { $0.childTimingTraceStatus = "oversized" }; failure = failure ?? .invalidProtocol }
+                        }
                     } else {
                         update { $0.stdoutBytes += n }
                         do {
@@ -165,7 +191,7 @@ final class ImageDecodeDiagnosticProcess: @unchecked Sendable {
                                 try sequence.consume(event)
                                 let parentReading = ImageDecodeMemoryReading.current()
                                 guard parentReading.usable else { throw ImageDecodeDiagnosticError.failed }
-                                let pair = ImageDecodeChildPhase(child: event, parentAtReceipt: parentReading, childObservedRunning: child.isRunning,
+                                let pair = ImageDecodeChildPhase(child: event, parentAtReceipt: parentReading, childObservedRunning: timingEnabled ? observedRunning() : child.isRunning,
                                     receiptSkewSeconds: max(0, ProcessInfo.processInfo.systemUptime - event.uptimeSeconds))
                                 update { $0.phases.append(pair) }
                                 if event.kind == .ready {
@@ -174,13 +200,17 @@ final class ImageDecodeDiagnosticProcess: @unchecked Sendable {
                                     boundary("heldAfterDecode")
                                     if mode == .cancelAfterDecode { cancel() }
                                 }
-                                if event.kind == .result || event.kind == .error { terminal = event; update { $0.terminal = event } }
+                                if event.kind == .result || event.kind == .error {
+                                    timing("terminalFrameReadReturned", at: readReturned)
+                                    timing("terminalFrameDecodedAtReceipt")
+                                    terminal = event; update { $0.terminal = event }
+                                }
                             }
                         } catch { failure = failure ?? .invalidProtocol }
                     }
                 }
             }
-            while child.isRunning {
+            while timingEnabled ? observedRunning() : child.isRunning {
                 if !outClosed { drain(output.fileHandleForReading.fileDescriptor, stderr: false) }
                 if !errClosed { drain(errors.fileHandleForReading.fileDescriptor, stderr: true) }
                 let now = ProcessInfo.processInfo.systemUptime
@@ -205,12 +235,15 @@ final class ImageDecodeDiagnosticProcess: @unchecked Sendable {
                         boundary("cancelCommandSent")
                     }
                     if now - stoppingAt! >= 0.3, !snapshot().terminateSent { child.terminate(); update { $0.terminateSent = true } }
-                    if now - stoppingAt! >= 0.8, snapshot().killReturn == nil, child.isRunning { let result = kill(child.processIdentifier, SIGKILL); update { $0.killReturn = result } }
+                    if now - stoppingAt! >= 0.8, snapshot().killReturn == nil, timingEnabled ? observedRunning() : child.isRunning { let result = kill(child.processIdentifier, SIGKILL); update { $0.killReturn = result } }
                 }
-                if now - launchStart >= ImageDecodeDiagnosticLimits.exitSeconds, child.isRunning { throw ImageDecodeDiagnosticError.exitUnconfirmed }
-                if child.isRunning { Thread.sleep(forTimeInterval: 0.005) }
+                if now - launchStart >= ImageDecodeDiagnosticLimits.exitSeconds, timingEnabled ? observedRunning() : child.isRunning { throw ImageDecodeDiagnosticError.exitUnconfirmed }
+                if timingEnabled ? observedRunning() : child.isRunning { Thread.sleep(forTimeInterval: 0.005) }
             }
-            child.waitUntilExit(); exited = true
+            timing("terminationObserved")
+            timing("waitUntilExitStarted")
+            child.waitUntilExit()
+            timing("waitUntilExitCompleted"); exited = true
             boundary("childExitConfirmed")
             update { $0.exitConfirmed = true; $0.terminationStatus = child.terminationStatus; $0.terminationReason = child.terminationReason == .exit ? "exit" : "uncaughtSignal"
                 $0.launchThroughExitSeconds = ProcessInfo.processInfo.systemUptime - launchStart; $0.lastStage = "pipeDrain" }
@@ -222,6 +255,21 @@ final class ImageDecodeDiagnosticProcess: @unchecked Sendable {
             }
             update { $0.outputExistedBeforeCleanup = files.outputExists() }
             guard outClosed, errClosed else { throw ImageDecodeDiagnosticError.invalidProtocol }
+            if timingEnabled {
+                if timingStderr.isEmpty { update { $0.childTimingTraceStatus = "absent" }; throw ImageDecodeDiagnosticError.invalidProtocol }
+                do {
+                    let trace = try ImageDecodeTimingTrace.decodeFrame(timingStderr)
+                    guard trace.childPID == child.processIdentifier, trace.terminalWriteSucceeded,
+                          trace.terminalWriteAttemptCount == 1,
+                          let prepared = terminal?.responsePreparedUptimeSeconds,
+                          let writeStarted = trace.terminalWriteStartedUptimeSeconds, prepared <= writeStarted,
+                          trace.framePreparedUptimeSeconds <= (snapshot().parentTimingUptimes?["terminationObserved"] ?? 0) else { throw ImageDecodeDiagnosticError.invalidProtocol }
+                    update { $0.childTimingTrace = trace; $0.childTimingTraceStatus = "complete" }
+                } catch {
+                    update { if $0.childTimingTraceStatus != "oversized" { $0.childTimingTraceStatus = "malformed" } }
+                    throw ImageDecodeDiagnosticError.invalidProtocol
+                }
+            }
             try decoder.finish()
             if mode != .decode {
                 if let failure, failure != .cancelled && failure != .deadline { throw failure }

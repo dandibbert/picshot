@@ -3,16 +3,17 @@ import PicShotCodecCore
 
 @MainActor
 enum ImageDecodeLargeUIFixture {
-    static func run(input: ImageDecodeLargeInput, isolated: Bool, directory: URL) async throws -> [String: Any] {
+    static func run(input: ImageDecodeLargeInput, isolated: Bool, directory: URL, timingEnabled: Bool = false) async throws -> [String: Any] {
         guard input.profile == .fiveK else { throw ImageDecodeDiagnosticError.invalidInput }
         _ = NSApplication.shared
         let mode = isolated ? "native-ui-isolated" : "native-ui-control"
         let started = ProcessInfo.processInfo.systemUptime, deadline = started + 120
-        let state = ImageDecodeUIState(), pulse = ImageDecodeMainQueueProbe(), sampler = ImageDecodeMemorySampler()
+        let state = ImageDecodeUIState(), pulse = ImageDecodeMainQueueProbe(timingEnabled: timingEnabled), sampler = ImageDecodeMemorySampler()
         defer { pulse.stop(); sampler.stop() }
-        let adapter = try ImageDecodeLargeUIAdapter(input: input, isolated: isolated, deadline: deadline, state: state)
+        let adapter = try ImageDecodeLargeUIAdapter(input: input, isolated: isolated, deadline: deadline, state: state, timingEnabled: timingEnabled)
         defer { adapter.verifier.close() }
         var report = ImageDecodeLargeSupport.base(mode: mode, input: input)
+        if timingEnabled { report["timingInstrumentationVersion"] = 3 }
         report["warmupCycles"] = 2; report["measuredCycles"] = 4; report["maximumRequestGenerations"] = 16
         report["armDeadlineSeconds"] = 120; report["requiredOuterDeadlineSeconds"] = 140
         report["scope"] = "Real ImageExportController controls/scheduling and ImageExportPreviewView native drawing over prepared PNG via encoder injection; excludes full export encoding and saving"
@@ -25,19 +26,23 @@ enum ImageDecodeLargeUIFixture {
         do {
             try ImageDecodeLargeSupport.check(deadline, sampler: sampler)
             report["beforeSourceConstruction"] = try ImageDecodeLargeSupport.object(ImageDecodeLargeSupport.observe())
+            pulse.phase(.sourceConstruction)
             let sourceStarted = ProcessInfo.processInfo.systemUptime
             let source = try autoreleasepool { try CodecExportResourceFixture.fixture(width: input.profile.sourceWidth, height: input.profile.sourceHeight) }
             report["sourceConstructionSeconds"] = ProcessInfo.processInfo.systemUptime - sourceStarted
             report["afterSourceConstruction"] = try ImageDecodeLargeSupport.object(ImageDecodeLargeSupport.observe())
+            pulse.phase(.controllerSnapshotConstruction)
             var controller: ImageExportController? = try Self.makeController(source: source, adapter: adapter, state: state)
             weakControllers.append(.init(controller!))
             defer { controller?.cancelExport() }
             for ordinal in 0..<6 {
+                pulse.phase(ordinal < 2 ? .warmupPreview : .steadyPreview)
                 let before = try ImageDecodeLargeSupport.observe()
                 let oldDrawCount = state.snapshot().drawCount
                 let action = try await perform(controller!, action: .preview, scenario: .normal, state: state)
                 let ready = try await ready(controller!, state: state, newerThanDrawCount: oldDrawCount, deadline: deadline)
                 guard ready.worker.pixelsSHA256 == input.referenceSHA else { throw ImageDecodeDiagnosticError.outputMismatch }
+                pulse.phase(.settle)
                 try await ImageDecodeLargeSupport.settle(0.18, deadline: deadline)
                 var row: [String: Any] = ["index": ordinal < 2 ? ordinal + 1 : ordinal - 1, "isWarmup": ordinal < 2,
                     "action": action, "workerIndex": ready.worker.index, "nativeDraw": try ImageDecodeLargeSupport.object(ready.draw),
@@ -51,6 +56,7 @@ enum ImageDecodeLargeUIFixture {
             }
             report["afterMeasuredSeries"] = try ImageDecodeLargeSupport.object(ImageDecodeLargeSupport.observe())
             // Three real native control actions inside the unchanged 160 ms debounce.
+            pulse.phase(.debounceBurst)
             let countBeforeBurst = state.snapshot().records.count, drawBeforeBurst = state.snapshot().drawCount
             let burstActions = try await performBurst(controller!, state: state)
             let burst = try await ready(controller!, state: state, newerThanDrawCount: drawBeforeBurst, deadline: deadline)
@@ -59,14 +65,18 @@ enum ImageDecodeLargeUIFixture {
             report["debounceBurst"] = ["actions": burstActions, "startedWorkers": 1, "latestResultDrawn": true,
                 "finalNativeDraw": try ImageDecodeLargeSupport.object(burst.draw)]
             // Capture only after the repeated memory interval, using actual view backing.
+            pulse.phase(.evidenceCapture)
             report["evidenceCapture"] = try capture(controller!, to: directory.appendingPathComponent("native-preview-ready.png"))
+            pulse.phase(.cleanup)
             controller?.cancelExport(); controller = nil
             try await quiescent(deadline: deadline)
             for scenario in [ImageDecodeUIState.Scenario.cancelActive, .closeDecoded, .lateResult] {
                 let count = state.snapshot().records.count
+                pulse.phase(.controllerSnapshotConstruction)
                 var faultController: ImageExportController? = try Self.makeController(source: source, adapter: adapter, state: state)
                 weakControllers.append(.init(faultController!))
                 defer { faultController?.cancelExport() }
+                pulse.phase(scenario == .cancelActive ? .cancelActive : scenario == .closeDecoded ? .closeDecoded : .lateResult)
                 let previewAction = try await perform(faultController!, action: .preview, scenario: scenario, state: state)
                 let desired = scenario == .cancelActive && isolated ? "signatureStarted" : scenario == .closeDecoded && isolated ? "heldAfterDecode" : "resultHeld"
                 let worker = try await stage(desired, afterRecordCount: count, state: state, deadline: deadline)
@@ -100,9 +110,11 @@ enum ImageDecodeLargeUIFixture {
                     // honestly rather than fabricating a held signature call.
                 }
                 faults.append(fault); faultController = nil
+                pulse.phase(.settle)
                 try await ImageDecodeLargeSupport.settle(0.2, deadline: deadline)
             }
             try await quiescent(deadline: deadline)
+            pulse.phase(.cleanup)
             adapter.verifier.close()
             try await ImageDecodeLargeSupport.settle(0.5, deadline: deadline)
             guard weakControllers.allSatisfy({ $0.value == nil }) else { throw ImageDecodeDiagnosticError.failed }
@@ -111,6 +123,7 @@ enum ImageDecodeLargeUIFixture {
             await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in DispatchQueue.main.async { c.resume() } }
             sampler.stop()
             let observed = state.snapshot(), mainQueue = pulse.snapshot()
+            if timingEnabled { guard let timing = mainQueue.timing, !timing.overflowed, !timing.invalidTimestampObserved else { throw ImageDecodeDiagnosticError.invalidProtocol } }
             guard observed.records.count <= 16, mainQueue.samples > 0,
                   observed.records.allSatisfy({ $0.finishedUptimeSeconds != nil }), ImageExportService.queue.operationCount == 0 else { throw ImageDecodeDiagnosticError.failed }
             report["warmups"] = Array(successful.prefix(2)); report["cycles"] = Array(successful.dropFirst(2)); report["faultScenarios"] = faults
@@ -140,6 +153,7 @@ enum ImageDecodeLargeUIFixture {
             while ImageExportService.queue.operationCount > 0 && ProcessInfo.processInfo.systemUptime < cleanupDeadline {
                 await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { c.resume() } }
             }
+            if timingEnabled { report["failedMainQueueTiming"] = try? ImageDecodeLargeSupport.object(pulse.snapshot()) }
             report["failureWorkerQueueDrained"] = ImageExportService.queue.operationCount == 0
             pulse.stop(); sampler.stop()
             report["status"] = "failed"; report["error"] = error.localizedDescription
