@@ -272,9 +272,18 @@ def png_metadata(data, width, height):
         if kind == b'IEND':
             need(size == 0 and end == len(data) and b'IDAT' in seen, 'invalid PNG end')
         elif kind == b'eXIf':
-            # The fixture emits no EXIF. Rejecting an added orientation/container
-            # avoids allowing an unvalidated alternate image interpretation.
-            raise ValueError('unexpected PNG EXIF/orientation metadata')
+            need(kind not in seen and b'IDAT' not in seen, 'duplicate/misordered PNG EXIF')
+            # ImageIO in build116 emits this bounded TIFF structure: one IFD0
+            # ExifIFD pointer, then only sRGB and the two pixel dimensions. No
+            # Orientation, thumbnail, trailing data, alternate IFD or pointer
+            # layout is admitted. This validates metadata, not a new pixel
+            # golden; independent complete RGBA comparisons remain required.
+            expected_exif = (bytes.fromhex(
+                '4d4d002a00000008000187690004000000010000001a000000000003'
+                'a00100030000000100010000a002000400000001')
+                + struct.pack('>I', width) + bytes.fromhex('a003000400000001')
+                + struct.pack('>I', height) + bytes(4))
+            need(payload == expected_exif, 'PNG EXIF differs from canonical sRGB/dimensions-only metadata')
         elif kind == b'sRGB':
             need(kind not in seen and size == 1 and payload[0] <= 3, 'invalid PNG sRGB metadata')
         elif kind == b'gAMA':
@@ -594,11 +603,29 @@ def validate_launch(launcher, report, installed):
          'native checkpoints fall outside owned launch interval')
 
 
+def validate_group_observation(observation, duration):
+    keys(observation, {'backend', 'timeout_seconds', 'count', 'failures', 'total_seconds',
+        'max_seconds', 'atomic_snapshot'}, 'owned process-group observation')
+    need(observation['backend'] == 'darwin-ps-pgrp', 'native process-group backend differs')
+    need(number(observation['timeout_seconds']) == .5, 'process-group subprocess timeout differs')
+    count = integer(observation['count'], 1, 1_000_000)
+    equal_int(observation['failures'], 0, 'process-group observation failures')
+    need(observation['atomic_snapshot'] is False, 'process-group snapshot cannot claim atomicity')
+    # The wrapper duration is rounded to milliseconds. Observation wall time
+    # includes bounded ps setup/parsing and scheduling, so it is not the .5s
+    # subprocess timeout itself. Preserve both values without inventing a
+    # tighter wall-clock claim or accepting unreported probe failures.
+    total = number(observation['total_seconds'], 0, duration + .001)
+    maximum = number(observation['max_seconds'], 0, total)
+    need(maximum > 0 and total <= count * maximum + 1e-9,
+         'process-group observation timing/counts disagree')
+
+
 def validate_command(command, directory, installed):
     keys(command, {'schema_version', 'status', 'command', 'started_at', 'timeout_seconds',
         'grace_seconds', 'max_log_bytes', 'pid', 'child_returncode', 'exit_code', 'cancel_signal',
         'sigterm_sent', 'sigkill_sent', 'descendant_cleanup', 'output_bytes', 'log_bytes',
-        'log_truncated', 'termination_reason', 'duration_seconds'}, 'bounded launcher command')
+        'log_truncated', 'termination_reason', 'duration_seconds', 'group_observation'}, 'bounded launcher command')
     equal_int(command['schema_version'], 1, 'command schema')
     need(command['status'] == command['termination_reason'] == 'exited', 'bounded launcher did not exit normally')
     equal_int(command['exit_code'], 0, 'wrapper exit'); equal_int(command['child_returncode'], 0, 'launcher child exit')
@@ -613,6 +640,7 @@ def validate_command(command, directory, installed):
     need(log_bytes == min(output_bytes, MAX_REPORT) and command['log_truncated'] is (output_bytes > log_bytes), 'wrapper log accounting differs')
     duration = number(command['duration_seconds'], 0, 620)
     need(duration > 0, 'wrapper duration missing')
+    validate_group_observation(command['group_observation'], duration)
     need(command['command'] == ['swift', 'scripts/launch-editable-component.swift', installed['bundlePath'], str(directory / 'launch.json')], 'wrapper command target differs')
     start = datetime.datetime.fromisoformat(string(command['started_at']))
     need(start.tzinfo is not None and start.utcoffset() == datetime.timedelta(0), 'wrapper start must be UTC')

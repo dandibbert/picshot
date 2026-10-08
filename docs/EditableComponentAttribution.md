@@ -1,6 +1,10 @@
 # Full-size editable component attribution proposal
 
-Status: implemented as an opt-in diagnostic patch; **native compilation and execution have not run**. No measurements, remedy, plateau, release acceptance, or installer are produced by this change. The held 0.16 end-to-end fixture and its gates remain unchanged.
+Status: build116 at `0db429b5cca3ae0246b628efc9edfbfdc1d53364` compiled the native diagnostic and passed its admission tests. Both architectures passed 282 focused cases; the separate ARM installed output guard passed 24 cases and 432 rejected-output attempts. Preparation and certification processes exited successfully, but the certification checker rejected the runner's new `group_observation` field before any consumer ran. **No component-cycle memory measurements or remedy acceptance exist from build116.** The held 0.16 end-to-end fixture and its gates remain unchanged.
+
+The following checker correction requires and validates that telemetry: the native Darwin backend, unchanged 0.5-second subprocess timeout, positive observation count, zero failures, explicit non-atomicity, and consistent finite total/maximum timing within the wrapper's recorded duration. Observation wall time includes setup/parsing and scheduling; it is not falsely equated to the configured subprocess timeout. Unknown/missing keys, failed observations and unsupported claims still fail closed. The consumer workload, native/launcher deadlines, exact pixels and production behavior are unchanged. A fresh source-bound native run remains required.
+
+Offline inspection of the actual build116 preparation then found a second checker assumption: ImageIO writes a 68-byte `eXIf` chunk in each PNG. It contains only a big-endian TIFF IFD0 ExifIFD pointer and the sRGB/width/height tags, with no Orientation tag. The correction admits exactly that bounded byte layout with dimensions checked against IHDR, once before IDAT; every alternative tag, pointer, orientation, duplicate, trailing byte or malformed structure remains rejected. It does not strip metadata or change native bytes, pixel expectations or alpha/color equivalence. This narrow diagnostic schema follows the [PNG eXIf container specification](https://www.w3.org/TR/png-3/#11eXIf); it is not a general EXIF parser.
 
 ## Why these controls
 

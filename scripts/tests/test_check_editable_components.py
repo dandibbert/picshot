@@ -182,7 +182,10 @@ def command(directory):
         'timeout_seconds': 620, 'grace_seconds': 5, 'max_log_bytes': C.MAX_REPORT, 'pid': 103,
         'child_returncode': 0, 'exit_code': 0, 'cancel_signal': None, 'sigterm_sent': False, 'sigkill_sent': False,
         'descendant_cleanup': False, 'output_bytes': 0, 'log_bytes': 0, 'log_truncated': False,
-        'termination_reason': 'exited', 'duration_seconds': 22}
+        'termination_reason': 'exited', 'duration_seconds': 22,
+        'group_observation': {'backend': 'darwin-ps-pgrp', 'timeout_seconds': .5,
+            'count': 2, 'failures': 0, 'total_seconds': .02, 'max_seconds': .012,
+            'atomic_snapshot': False}}
 
 
 def png(w=1, h=1, rgba=b'\x01\x02\x03\xff', *, depth=8, color=6, extra=b''):
@@ -386,6 +389,38 @@ class ComponentContracts(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(ValueError):
                 value = command(directory); value[field] = bad; C.validate_command(value, directory, INSTALLED)
 
+    def test_native_group_telemetry_is_required_and_strict(self):
+        directory = Path('/synthetic/certify')
+        for mutate in [lambda c: c.pop('group_observation'),
+                       lambda c: c['group_observation'].pop('failures'),
+                       lambda c: c['group_observation'].update(unknown=0),
+                       lambda c: c.update(unknown=0)]:
+            with self.subTest(mutation=mutate), self.assertRaises(ValueError):
+                value = command(directory); mutate(value)
+                C.validate_command(value, directory, INSTALLED)
+
+    def test_native_group_errors_bounds_types_and_claims_fail_closed(self):
+        directory = Path('/synthetic/certify')
+        for field, bad in [('backend', 'portable-ps-all'), ('timeout_seconds', 1),
+            ('count', 0), ('count', True), ('count', 1_000_001), ('failures', 1),
+            ('failures', False), ('atomic_snapshot', True), ('atomic_snapshot', 0),
+            ('total_seconds', float('nan')), ('total_seconds', float('inf')),
+            ('total_seconds', -.1), ('total_seconds', True), ('total_seconds', 22.01),
+            ('total_seconds', .04), ('max_seconds', .03), ('max_seconds', 0),
+            ('max_seconds', float('nan')), ('max_seconds', True)]:
+            with self.subTest(field=field, bad=bad), self.assertRaises(ValueError):
+                value = command(directory); value['group_observation'][field] = bad
+                C.validate_command(value, directory, INSTALLED)
+
+    def test_probe_wall_time_is_not_falsely_equal_to_subprocess_timeout(self):
+        directory = Path('/synthetic/certify')
+        value = command(directory)
+        value['group_observation'].update(count=1, total_seconds=.501, max_seconds=.501)
+        C.validate_command(value, directory, INSTALLED)
+        value['duration_seconds'] = .501
+        value['group_observation'].update(total_seconds=.5014, max_seconds=.5014)
+        C.validate_command(value, directory, INSTALLED)
+
     def test_png_metadata_and_truncation_crc_depth_dimensions(self):
         C.png_metadata(png(), 1, 1)
         C.png_metadata(png(color=2), 1, 1)
@@ -393,6 +428,30 @@ class ComponentContracts(unittest.TestCase):
         for data, w, h in [(png()[:-1],1,1),(bytes(bad_crc),1,1),(png(depth=16),1,1),
                            (png(),2,1),(png()+b'junk',1,1), (b'not a png',1,1)]:
             with self.subTest(data=data[:16]), self.assertRaises(ValueError): C.png_metadata(data,w,h)
+
+    def test_native_imageio_exif_metadata_exact_structure_and_dimensions(self):
+        # Independently copied from build116 original.png (3840 x 2160).
+        actual = bytes.fromhex('4d4d002a00000008000187690004000000010000001a00000000'
+            '0003a00100030000000100010000a00200040000000100000f00'
+            'a0030004000000010000087000000000')
+        def chunk(payload):
+            return struct.pack('>I', len(payload)) + b'eXIf' + payload + struct.pack('>I', zlib.crc32(b'eXIf' + payload) & 0xffffffff)
+        fixture = png(3840, 2160, extra=chunk(actual))
+        self.assertEqual(C.png_metadata(fixture, 3840, 2160)['width'], 3840)
+        # Use a small exact equivalent to keep exhaustive corruptions bounded.
+        small = bytearray(actual); struct.pack_into('>I', small, 48, 1); struct.pack_into('>I', small, 60, 1)
+        C.png_metadata(png(extra=chunk(small)), 1, 1)
+        for offset in range(len(small)):
+            bad = bytearray(small); bad[offset] ^= 1
+            with self.subTest(offset=offset), self.assertRaises(ValueError):
+                C.png_metadata(png(extra=chunk(bad)), 1, 1)
+        for extra in [chunk(small) * 2, chunk(small[:-1]), chunk(small + b'\0'),
+                      chunk(b'Exif\0\0' + small), chunk(actual)]:
+            with self.subTest(extra=extra[:20]), self.assertRaises(ValueError):
+                C.png_metadata(png(extra=extra), 1, 1)
+        base = png()
+        with self.assertRaisesRegex(ValueError, 'misordered'):
+            C.png_metadata(base[:-12] + chunk(small) + base[-12:], 1, 1)
 
     def test_png_decompression_bomb_and_animated_metadata(self):
         def chunk(kind, payload):
