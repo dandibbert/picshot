@@ -233,6 +233,7 @@ final class EditableAnnotationMemorySampler: @unchecked Sendable {
         try checkpoint("workload-entry")
     }
     func checkpoint(_ label: String) throws {
+        try EditableDrawingPairDiagnostic.process?.checkpoint(workload: workload, label: label)
         try O.require(checkpoints.count < 256, "Diagnostic checkpoint bound exceeded")
         checkpoints.append(["workload": workload, "label": label, "observation": try counters()])
         if label.hasPrefix("snapshot-before-") { snapshotCount += 1 }

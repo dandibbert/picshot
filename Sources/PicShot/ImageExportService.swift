@@ -41,7 +41,8 @@ typealias ImageExportEncoder = @Sendable (ImageExportSnapshot, ImageExportOption
 struct ImageExportSnapshot: @unchecked Sendable {
     let image: CGImage
     let sourceURL: URL?
-    init(image: CGImage, sourceURL: URL? = nil, limits: ImageExportLimits = .standard) throws {
+    init(image: CGImage, sourceURL: URL? = nil, limits: ImageExportLimits = .standard,
+         drawingRaster: DrawingRasterConfiguration = .process) throws {
         try limits.validate()
         guard image.width > 0, image.height > 0, image.width <= limits.maximumSourcePixels / image.height else {
             throw ImageExportError.sourceTooLarge
@@ -52,7 +53,7 @@ struct ImageExportSnapshot: @unchecked Sendable {
             throw ImageExportError.sourceTooLarge
         }
         context.interpolationQuality = .none
-        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        try DrawingRaster.seedFreshSRGB8Context(context, from: image, configuration: drawingRaster)
         guard let owned = context.makeImage() else { throw ImageExportError.encodeFailed }
         self.image = owned; self.sourceURL = sourceURL?.standardizedFileURL.resolvingSymlinksInPath()
     }

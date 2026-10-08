@@ -191,7 +191,7 @@ struct PinImageState {
     var currentImage: CGImage { state.current }
     private var state: PinImageState
     private var pixelRevision: UInt = 0
-    private let canvas = PinCanvas()
+    private let canvas: PinCanvas
     private let scrollView = NSScrollView()
     private var fixedZoom: CGFloat?
     private var locked = false
@@ -251,11 +251,13 @@ struct PinImageState {
          recognizeWithOptions: PinOCRSession.Recognizer? = nil,
          defaults: UserDefaults? = PinOCRPreferences.applicationDefaults,
          ocrScheduler: PinOCRScheduler? = nil,
+         drawingRaster: DrawingRasterConfiguration = .process,
          recognizeCodes: @escaping @Sendable (CGImage) async throws -> RecognizedBarcodeDocument = { try await RecognitionService.recognizeBarcodes($0) }) {
         if let recognizeWithOptions { self.recognizeForSelection = recognizeWithOptions }
         else if let recognizeForSelection { self.recognizeForSelection = { image, _ in try await recognizeForSelection(image) } }
         else { self.recognizeForSelection = { try await RecognitionService.recognize($0, options: $1) } }
         self.recognizeCodes = recognizeCodes; self.defaults = defaults; self.ocrScheduler = ocrScheduler
+        canvas = PinCanvas(drawingRaster: drawingRaster)
         image = originalImage
         state = PinImageState(original: originalImage, current: currentImage, isModified: isModified)
         let scale = min(1, 680 / CGFloat(max(currentImage.width, currentImage.height)))
@@ -1163,8 +1165,23 @@ struct PinImageState {
     override func cancelOperation(_ sender: Any?) { close() }
 }
 
-@MainActor private final class PinCanvas: NSView {
-    var image: CGImage? { didSet { needsDisplay = true } }
+@MainActor final class PinCanvas: NSView {
+    private let drawingCache: DrawingRasterPresentationCache
+    var image: CGImage? {
+        didSet {
+            if oldValue !== image { drawingCache.clear() }
+            needsDisplay = true
+        }
+    }
+    init(frame: NSRect = .zero, drawingRaster: DrawingRasterConfiguration = .process) {
+        drawingCache = DrawingRasterPresentationCache(configuration: drawingRaster)
+        super.init(frame: frame)
+    }
+    required init?(coder: NSCoder) { return nil }
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil { drawingCache.clear() }
+        super.viewWillMove(toWindow: newWindow)
+    }
     var zoom: CGFloat = 1
     var isCropping = false { didSet { needsDisplay = true; window?.invalidateCursorRects(for: self) } }
     var selection: CGRect? { didSet { needsDisplay = true } }
@@ -1193,7 +1210,7 @@ struct PinImageState {
         NSColor.clear.setFill(); dirtyRect.fill(using: .copy)
         guard let image, let context = NSGraphicsContext.current?.cgContext else { return }
         context.interpolationQuality = zoom > 1 ? .none : .high
-        context.draw(image, in: imageRect)
+        context.draw(drawingCache.image(for: image), in: imageRect)
         context.setStrokeColor(NSColor.black.withAlphaComponent(0.18).cgColor)
         context.setLineWidth(1); context.stroke(imageRect.insetBy(dx: 0.5, dy: 0.5))
         guard isCropping, let selection else { return }

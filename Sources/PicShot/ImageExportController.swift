@@ -10,7 +10,7 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
     static let maximumSessions = 2
     private var snapshot: ImageExportSnapshot?
     let accessory = ExportFormatAccessory()
-    let previewView = ImageExportPreviewView()
+    let previewView: ImageExportPreviewView
     let statusLabel = NSTextField(wrappingLabelWithString: "正在编码…")
     let pageLabel = NSTextField(labelWithString: "")
     let saveButton = NSButton(title: "保存…", target: nil, action: nil)
@@ -101,13 +101,15 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
     /// Internal construction supports native control/close fixtures without a
     /// filesystem picker. Production callers use present to enforce admission.
     init(image: CGImage, suggestedName: String = "PicShot", sourceURL: URL? = nil, onSaved: ((URL) -> Void)? = nil,
-         saveWorkflow: SaveWorkflowPresenter? = nil, encoder: @escaping ImageExportEncoder = { snapshot, options, token in
+         saveWorkflow: SaveWorkflowPresenter? = nil, drawingRaster: DrawingRasterConfiguration = .process,
+         encoder: @escaping ImageExportEncoder = { snapshot, options, token in
              try ImageExportService.encode(snapshot: snapshot, options: options, cancellation: token)
          }, bundledEncoder: @escaping ImageExportBundledEncoder = { snapshot, options in
              try await ImageExportService.encodeBundled(snapshot: snapshot, options: options)
          }) throws {
         self.encoder = encoder; self.bundledEncoder = bundledEncoder; self.saveWorkflow = saveWorkflow ?? SaveWorkflowPresenter.application
-        snapshot = try ImageExportSnapshot(image: image, sourceURL: sourceURL)
+        previewView = ImageExportPreviewView(drawingRaster: drawingRaster)
+        snapshot = try ImageExportSnapshot(image: image, sourceURL: sourceURL, drawingRaster: drawingRaster)
         self.suggestedName = (suggestedName as NSString).deletingPathExtension
         self.onSaved = onSaved
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 550),
@@ -240,7 +242,7 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
                     self.spinner.stopAnimation(nil)
                     switch result {
                     case .success(let artifact):
-                        self.latestArtifact = artifact; self.previewView.image = artifact.firstPreview.nsImage
+                        self.latestArtifact = artifact; self.previewView.setSourceImage(artifact.firstPreview)
                         self.saveButton.isEnabled = true; self.showSize(artifact); self.refreshPageControls()
                     case .failure(let error):
                         self.statusLabel.textColor = .systemRed; self.statusLabel.stringValue = error.localizedDescription
@@ -261,7 +263,7 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
                     self.spinner.stopAnimation(nil)
                     switch result {
                     case .success(let artifact):
-                        self.latestArtifact = artifact; self.previewView.image = artifact.firstPreview.nsImage
+                        self.latestArtifact = artifact; self.previewView.setSourceImage(artifact.firstPreview)
                         self.saveButton.isEnabled = true; self.showSize(artifact); self.refreshPageControls()
                     case .failure(let error):
                         self.statusLabel.textColor = .systemRed; self.statusLabel.stringValue = error.localizedDescription
@@ -295,8 +297,8 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
         pageOperation?.cancel(); pageOperation = nil; pageInput?.clear(); pageInput = nil
         pageGeneration += 1; let currentPageGeneration = pageGeneration, current = generation
         previewPage = page; refreshPageControls()
-        if page == 0 { previewView.image = artifact.firstPreview.nsImage; return }
-        if let cachedPage, cachedPage.index == page { previewView.image = cachedPage.image.nsImage; return }
+        if page == 0 { previewView.setSourceImage(artifact.firstPreview); return }
+        if let cachedPage, cachedPage.index == page { previewView.setSourceImage(cachedPage.image); return }
         previewView.image = nil
         let token = previewCancellation, input = ImageExportJobInput(artifact)
         pageInput = input
@@ -308,7 +310,7 @@ final class ImageExportController: NSWindowController, NSWindowDelegate, NSOpenS
                       !token.isCancelled else { return }
                 self.pageOperation = nil; self.pageInput = nil
                 switch result {
-                case .success(let image): self.cachedPage = (page, image); self.previewView.image = image.nsImage
+                case .success(let image): self.cachedPage = (page, image); self.previewView.setSourceImage(image)
                 case .failure(let error): self.statusLabel.textColor = .systemRed; self.statusLabel.stringValue = error.localizedDescription
                 }
             }
@@ -518,10 +520,42 @@ struct ImageExportPreviewDrawObservation {
 
 @MainActor
 final class ImageExportPreviewView: NSImageView {
+    private let drawingCache: DrawingRasterPresentationCache
+    private var sourceImage: CGImage?
+    private var presentationImage: NSImage?
+    override var image: NSImage? {
+        didSet {
+            if oldValue !== image {
+                drawingCache.clear(); sourceImage = nil; presentationImage = nil
+            }
+        }
+    }
+    init(frame: NSRect = .zero, drawingRaster: DrawingRasterConfiguration = .process) {
+        drawingCache = DrawingRasterPresentationCache(configuration: drawingRaster)
+        super.init(frame: frame)
+    }
+    required init?(coder: NSCoder) { return nil }
+    /// Keep NSImage and all observations pointed at the original decoded export.
+    /// The optional owned raster exists only inside this view's drawing cache.
+    func setSourceImage(_ source: CGImage) {
+        if sourceImage === source { needsDisplay = true; return }
+        image = source.nsImage
+        sourceImage = source
+    }
+    private func imageForDrawing(_ original: NSImage) -> NSImage {
+        guard let sourceImage else { return original }
+        let raster = drawingCache.image(for: sourceImage)
+        guard raster !== sourceImage else { return original }
+        if let presentationImage { return presentationImage }
+        let wrapped = NSImage(cgImage: raster, size: original.size)
+        presentationImage = wrapped
+        return wrapped
+    }
     /// Explicit diagnostic observation only; no image/controller ownership in the payload.
     var diagnosticDrawObserver: ((ImageExportPreviewDrawObservation) -> Void)?
     override func viewWillMove(toWindow newWindow: NSWindow?) {
         if newWindow == nil { diagnosticDrawObserver = nil }
+        if newWindow == nil { drawingCache.clear(); presentationImage = nil }
         super.viewWillMove(toWindow: newWindow)
     }
     override func viewDidChangeEffectiveAppearance() {
@@ -543,7 +577,7 @@ final class ImageExportPreviewView: NSImageView {
         // Draw into the exact aspect-fit rectangle exposed to the fixture. The
         // source NSImage still comes only from independently decoded export bytes.
         guard let image else { return }
-        image.draw(in: displayedImageRect, from: .zero, operation: .sourceOver, fraction: 1,
+        imageForDrawing(image).draw(in: displayedImageRect, from: .zero, operation: .sourceOver, fraction: 1,
                    respectFlipped: true, hints: [.interpolation: NSImageInterpolation.high.rawValue])
         if let observe = diagnosticDrawObserver {
             observe(ImageExportPreviewDrawObservation(uptimeSeconds: ProcessInfo.processInfo.systemUptime,

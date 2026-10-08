@@ -7,8 +7,8 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[editable-observation]') && 'editable-observation' || contains(github.event.head_commit.message || '', '[callout-retirement]') && 'callout-retirement' || contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-documents' || contains(github.event.head_commit.message || '', '[multiwindow-memory]') && 'multiwindow-memory' || contains(github.event.head_commit.message || '', '[recording-wait]') && 'recording-wait' || contains(github.event.head_commit.message || '', '[manual-hash]') && 'manual-hash' || contains(github.event.head_commit.message || '', '[scroll-memory]') && 'scroll-memory' || contains(github.event.head_commit.message || '', '[decode-exit-latch]') && 'decode-exit-latch' || contains(github.event.head_commit.message || '', '[decode-timing-v3]') && 'decode-timing-v3' || contains(github.event.head_commit.message || '', '[decode-large]') && 'decode-large' || contains(github.event.head_commit.message || '', '[pin-workflows]') && 'pins-010' || contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
-  cancel-in-progress: ${{ !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
+  group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[drawing-pair]') && 'drawing-pair' || contains(github.event.head_commit.message || '', '[editable-observation]') && 'editable-observation' || contains(github.event.head_commit.message || '', '[callout-retirement]') && 'callout-retirement' || contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-documents' || contains(github.event.head_commit.message || '', '[multiwindow-memory]') && 'multiwindow-memory' || contains(github.event.head_commit.message || '', '[recording-wait]') && 'recording-wait' || contains(github.event.head_commit.message || '', '[manual-hash]') && 'manual-hash' || contains(github.event.head_commit.message || '', '[scroll-memory]') && 'scroll-memory' || contains(github.event.head_commit.message || '', '[decode-exit-latch]') && 'decode-exit-latch' || contains(github.event.head_commit.message || '', '[decode-timing-v3]') && 'decode-timing-v3' || contains(github.event.head_commit.message || '', '[decode-large]') && 'decode-large' || contains(github.event.head_commit.message || '', '[pin-workflows]') && 'pins-010' || contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
+  cancel-in-progress: ${{ !contains(github.event.head_commit.message || '', '[drawing-pair]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
 jobs:
   runner-check:
     if: ${{ contains(github.event.head_commit.message || '', '[runner-only]') }}
@@ -951,7 +951,7 @@ jobs:
         run: |
           python3 -m unittest discover -s scripts/tests -p test_native_test_shards.py -v
           python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/native-test-discovery.log --report dist/editable-discovery.json -- swift test list --skip-build
-          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --selection-regex 'SourceFormatOwnedCopy|EditableComponent|PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|ImageEditorTests|EditorOutputProjection|AnnotationEditing|PinOriginalCurrent|PinSession|History|Retention|AutomaticMosaic' --output dist/editable-tests-plan.json
+          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --selection-regex 'DrawingRaster|SourceFormatOwnedCopy|EditableComponent|PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|ImageEditorTests|EditorOutputProjection|AnnotationEditing|PinOriginalCurrent|PinSession|History|Retention|AutomaticMosaic' --output dist/editable-tests-plan.json
       - name: Exercise editable state and existing crop/pin/history behavior
         timeout-minutes: 16
         run: |
@@ -1271,6 +1271,105 @@ jobs:
           dist/editable-components-*.json
           dist/evidence/editable-components/
           dist/PicShot.app/Contents/Resources/build-info.json
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 6
+
+  editable-drawing-pair:
+    if: ${{ contains(github.event.head_commit.message || '', '[drawing-pair]') }}
+    runs-on: macos-15
+    timeout-minutes: 130
+    steps:
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      timeout-minutes: 2
+    - name: Check paired drawing and owned guard contracts
+      timeout-minutes: 3
+      run: |
+        mkdir -p dist
+        python3 -m unittest discover -s scripts/tests -p '*drawing*.py' -v
+        python3 -O -m unittest discover -s scripts/tests -p '*drawing*.py' -v
+    - name: Package one signed application without user installers
+      timeout-minutes: 31
+      env:
+        PICSHOT_PACKAGE_APP_ONLY: '1'
+      run: python3 scripts/run-bounded-command.py --timeout-seconds 1800 --log dist/drawing-package.log --report dist/drawing-package.json -- bash scripts/package.sh
+    - name: Compile the complete native test target
+      timeout-minutes: 10
+      run: python3 scripts/run-bounded-command.py --timeout-seconds 540 --log dist/drawing-test-build.log --report dist/drawing-test-build.json -- swift build --build-tests
+    - name: Execute every discovered drawing-raster regression exactly once
+      timeout-minutes: 9
+      run: |
+        python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/drawing-test-discovery.log --report dist/drawing-test-discovery.json -- swift test list --skip-build
+        python3 scripts/run-bounded-command.py --timeout-seconds 420 --log dist/drawing-native-tests.log --report dist/drawing-native-tests.json -- swift test --skip-build --filter DrawingRasterTests
+        python3 - <<'PYTHON'
+        import hashlib, importlib.util, json, os
+        from pathlib import Path
+        spec = importlib.util.spec_from_file_location('native_cases', 'scripts/native-test-shards.py')
+        native = importlib.util.module_from_spec(spec); spec.loader.exec_module(native)
+        inventory = Path('dist/drawing-test-discovery.log').read_text()
+        expected = [name for name in native.discover(inventory) if name.split('/')[0] == 'PicShotTests.DrawingRasterTests']
+        native.need(bool(expected), 'No drawing raster native cases discovered')
+        log = Path('dist/drawing-native-tests.log').read_text()
+        runner = json.loads(Path('dist/drawing-native-tests.json').read_text())
+        native.need(runner['status'] == runner['termination_reason'] == 'exited'
+                    and runner['exit_code'] == runner['child_returncode'] == 0
+                    and runner['timeout_seconds'] == 420 and not runner['log_truncated'], 'Native drawing test process incomplete')
+        passed, skipped = native.case_results(log, expected)
+        native.need(not skipped, 'Drawing raster native test skipped')
+        Path('dist/drawing-native-check.json').write_text(json.dumps({
+            'status': 'passed', 'sourceCommit': os.environ['GITHUB_SHA'], 'passedTests': passed,
+            'inventorySHA256': hashlib.sha256(inventory.encode()).hexdigest(),
+            'logSHA256': hashlib.sha256(log.encode()).hexdigest(), 'productAcceptance': False
+        }, indent=2) + '\n')
+        PYTHON
+    - name: Relocate and bind the single exact signed ARM application
+      timeout-minutes: 2
+      run: |
+        test ! -e dist/drawing-installed
+        mkdir -p dist/drawing-installed
+        ditto dist/PicShot.app dist/drawing-installed/PicShot.app
+        codesign --verify --deep --strict dist/drawing-installed/PicShot.app
+        test "$(lipo -archs dist/drawing-installed/PicShot.app/Contents/MacOS/PicShot)" = arm64
+        cmp dist/PicShot.app/Contents/MacOS/PicShot dist/drawing-installed/PicShot.app/Contents/MacOS/PicShot
+        python3 - <<'PYTHON'
+        import hashlib, json, os, plistlib
+        from pathlib import Path
+        app = Path('dist/drawing-installed/PicShot.app').resolve()
+        info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
+        if info['PicShotSourceCommit'] != os.environ['GITHUB_SHA']:
+            raise SystemExit('Installed drawing source mismatch')
+        Path('dist/drawing-installed-identity.json').write_text(json.dumps({
+            'sourceCommit': info['PicShotSourceCommit'], 'bundlePath': str(app), 'architecture': 'arm64',
+            'executableSHA256': hashlib.sha256((app / 'Contents/MacOS/PicShot').read_bytes()).hexdigest(),
+            'oneBinaryForEveryCell': True, 'productionDefaultChanged': False, 'installerAcceptance': False
+        }, indent=2) + '\n')
+        PYTHON
+    - name: Verify fail-closed outputs under the candidate drawing strategy
+      timeout-minutes: 12
+      env:
+        PICSHOT_DRAWING_RASTER_STRATEGY: owned-srgb8
+      run: |
+        python3 scripts/run-bounded-command.py --timeout-seconds 630 --log dist/drawing-owned-guard.log --report dist/drawing-owned-guard.json -- bash scripts/effect-output-failure-smoke.sh "$PWD/dist/drawing-installed/PicShot.app" "$PWD/dist/evidence/drawing-owned-guard" "$GITHUB_SHA"
+        python3 scripts/check-drawing-raster-guard.py "$PWD/dist/evidence/drawing-owned-guard" "$PWD/dist/drawing-installed/PicShot.app" "$GITHUB_SHA" > dist/drawing-owned-guard-check.json
+    - name: Compare complete native workflows with identical observation
+      # Four 620s wrappers plus bounded cleanup and checker overhead. Native
+      # 300s and owned-launch 600s deadlines remain unchanged in every process.
+      timeout-minutes: 46
+      run: python3 scripts/run-bounded-command.py --timeout-seconds 2700 --log dist/drawing-pair.log --report dist/drawing-pair.json -- bash scripts/editable-drawing-pair-diagnostic.sh "$PWD/dist/drawing-installed/PicShot.app" "$PWD/dist/evidence/drawing-pair" "$GITHUB_SHA"
+    - name: Preserve native drawing reports and pixels
+      if: always()
+      timeout-minutes: 2
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Editable-Drawing-arm64-${{ github.sha }}
+        path: |
+          dist/drawing-*.json
+          dist/drawing-*.log
+          dist/evidence/drawing-pair/
+          dist/evidence/drawing-owned-guard/
+          dist/drawing-installed/PicShot.app/Contents/Info.plist
+          dist/drawing-installed/PicShot.app/Contents/MacOS/PicShot
+          dist/drawing-installed/PicShot.app/Contents/Resources/build-info.json
         if-no-files-found: error
         retention-days: 14
         compression-level: 6

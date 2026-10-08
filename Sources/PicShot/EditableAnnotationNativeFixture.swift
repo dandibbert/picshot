@@ -16,7 +16,8 @@ import PicShotCore
         _ = NSApplication.shared
         try O.require(evidenceDirectory.isFileURL && NSScreen.main != nil, "Owned native display/evidence directory unavailable")
         try O.beginDiagnostic(includeResources: includeResources)
-        defer { O.diagnostic = nil }
+        try EditableDrawingPairDiagnostic.begin(includeResources: includeResources)
+        defer { O.diagnostic = nil; EditableDrawingPairDiagnostic.process = nil }
         let began = ProcessInfo.processInfo.systemUptime, deadline = began + deadlineSeconds
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("picshot-editable-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
@@ -312,6 +313,7 @@ import PicShotCore
             && basePNGHash == beforeFiles[savedAsset.base.filename]
             && originalPNGHash == savedAsset.original.sha256 && basePNGHash == savedAsset.base.sha256,
             "An immutable original/base PNG changed during reopen/edit/export")
+        try EditableDrawingPairDiagnostic.process?.documents(original: originalDocument, applied: appliedDocument)
         let result: [String: Any] = ["width": width, "height": height, "fullBasePixels": width * height,
             "viewportPixels": Int(crop.width * crop.height), "outputWidth": expected.width, "outputHeight": expected.height,
             "layerCount": payload.document.annotations.count, "originalAndBaseAreDistinct": true,
@@ -661,5 +663,6 @@ import PicShotCore
         let data = try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
         try data.write(to: directory.appendingPathComponent("editable-annotation-native.json"), options: .atomic)
         try O.diagnostic?.write(native: report, nativeData: data, directory: directory)
+        try EditableDrawingPairDiagnostic.process?.write(native: report, nativeData: data, directory: directory)
     }
 }

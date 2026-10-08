@@ -157,10 +157,12 @@ enum ImageEditorRenderer {
     }
 
     static func render(image: CGImage, annotations: [ImageAnnotation],
+                       drawingRaster: DrawingRasterConfiguration = .process,
                        effectPatchRenderer: EffectPatchRenderer = ImageEditorRenderer.renderEffectPatch) -> CGImage? {
         guard let context = makeContext(width: image.width, height: image.height) else { return nil }
         let extent = CGRect(x: 0, y: 0, width: CGFloat(image.width), height: CGFloat(image.height))
-        context.draw(image, in: extent)
+        do { try DrawingRaster.seedFreshSRGB8Context(context, from: image, configuration: drawingRaster) }
+        catch { return nil } // A partially seeded destination must never become an output.
         guard drawAnnotations(annotations, in: context, extent: extent, baseImage: image,
                               effectPatchRenderer: effectPatchRenderer) else { return nil }
         return context.makeImage()
