@@ -33,6 +33,8 @@ jobs:
     # Full Intel model/install validation exceeded the former aggregate budget.
     # Individual test, product, cancellation and smoke deadlines stay unchanged.
     timeout-minutes: 90
+    env:
+      NATIVE_TEST_PROCESS_COUNT: ${{ matrix.arch == 'x86_64' && '4' || '2' }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       - name: Test bounded CI command runner and annotation evidence checker
@@ -112,8 +114,8 @@ jobs:
         run: |
           python3 -m unittest discover -s scripts/tests -p test_native_test_shards.py -v
           python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/native-test-discovery.log --report dist/native-test-discovery-report.json -- swift test list --skip-build
-          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --output dist/native-tests-plan.json
-          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --selection-regex 'AnnotationEditing|CaptureAspectRatio|CaptureRatio|MultiWindow|ImageOutputDecoration|EditorOutput|PinOriginalCurrent|ManualScroll|ScrollPreview|ScrollSequencePreview|AnnotationFreehand|AnnotationTextLine|NumberedCallout|AutomaticMosaic|RepeatedRegion|AutomaticPinOCR|PinOCR|TextResultSourceSelection|PinWorkflow|LaTeXPin|PinLaTeX|PinGroup|PinDesktop|EditorToolbarHierarchy|SaveWorkflow|OwnedVideoExportStage|ImageBacking|Codec|NativeExport|AnimatedWebP|WebPContainer|RecordingWebP|CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' --output dist/focused-tests-plan.json
+          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$NATIVE_TEST_PROCESS_COUNT" --output dist/native-tests-plan.json
+          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$NATIVE_TEST_PROCESS_COUNT" --selection-regex 'AnnotationEditing|CaptureAspectRatio|CaptureRatio|MultiWindow|ImageOutputDecoration|EditorOutput|PinOriginalCurrent|ManualScroll|ScrollPreview|ScrollSequencePreview|AnnotationFreehand|AnnotationTextLine|NumberedCallout|AutomaticMosaic|RepeatedRegion|AutomaticPinOCR|PinOCR|TextResultSourceSelection|PinWorkflow|LaTeXPin|PinLaTeX|PinGroup|PinDesktop|EditorToolbarHierarchy|SaveWorkflow|OwnedVideoExportStage|ImageBacking|Codec|NativeExport|AnimatedWebP|WebPContainer|RecordingWebP|CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' --output dist/focused-tests-plan.json
       - name: Upload test compilation evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -130,10 +132,14 @@ jobs:
           PICSHOT_TEST_EVIDENCE_ROOT: ${{ github.workspace }}/dist/evidence/native-failures
         run: |
           set -o pipefail
-          for shard in 0 1; do
-            python3 scripts/native-test-shards.py run --plan dist/focused-tests-plan.json --index "$shard" --directory dist/focused-test-shards
-          done 2>&1 | tee dist/critical-tests.log
-          python3 scripts/native-test-shards.py check --plan dist/focused-tests-plan.json --directory dist/focused-test-shards --output dist/critical-tests-report.json
+          {
+            native_status=0
+            for ((shard = 0; shard < NATIVE_TEST_PROCESS_COUNT; shard++)); do
+              python3 scripts/native-test-shards.py run --plan dist/focused-tests-plan.json --expected-source "$GITHUB_SHA" --index "$shard" --directory dist/focused-test-shards || native_status=1
+            done
+            python3 scripts/native-test-shards.py check --plan dist/focused-tests-plan.json --expected-source "$GITHUB_SHA" --directory dist/focused-test-shards --output dist/critical-tests-report.json || native_status=1
+            exit "$native_status"
+          } 2>&1 | tee dist/critical-tests.log
       - name: Upload focused native test evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -159,10 +165,14 @@ jobs:
           PICSHOT_TEST_EVIDENCE_ROOT: ${{ github.workspace }}/dist/evidence/native-failures
         run: |
           set -o pipefail
-          for shard in 0 1; do
-            python3 scripts/native-test-shards.py run --plan dist/native-tests-plan.json --index "$shard" --directory dist/native-test-shards
-          done 2>&1 | tee dist/test.log
-          python3 scripts/native-test-shards.py check --plan dist/native-tests-plan.json --directory dist/native-test-shards --output dist/test-report.json
+          {
+            native_status=0
+            for ((shard = 0; shard < NATIVE_TEST_PROCESS_COUNT; shard++)); do
+              python3 scripts/native-test-shards.py run --plan dist/native-tests-plan.json --expected-source "$GITHUB_SHA" --index "$shard" --directory dist/native-test-shards || native_status=1
+            done
+            python3 scripts/native-test-shards.py check --plan dist/native-tests-plan.json --expected-source "$GITHUB_SHA" --directory dist/native-test-shards --output dist/test-report.json || native_status=1
+            exit "$native_status"
+          } 2>&1 | tee dist/test.log
       - name: Upload full native test evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
