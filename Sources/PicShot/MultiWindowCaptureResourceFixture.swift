@@ -25,7 +25,7 @@ enum MultiWindowCaptureResourceFixture {
 
     @MainActor static func verify(evidenceDirectory: URL) async throws -> [String: Any] {
         let mode = try compositionMode(environment: ProcessInfo.processInfo.environment)
-        let normalizationBytes = mode == .normalizedCandidate ? width * height * 4 : 0
+        let normalizationBytes = mode == .coreGraphicsBaseline ? 0 : width * height * 4
         let began = ProcessInfo.processInfo.systemUptime, deadline = began + deadlineSeconds
         let manager = FileManager.default
         try manager.createDirectory(at: evidenceDirectory, withIntermediateDirectories: true)
@@ -43,6 +43,7 @@ enum MultiWindowCaptureResourceFixture {
             "status": "running", "observationsComplete": false, "activePhase": "inputPreparation", "activeCycleIndex": 0,
             "remainingWarmupCycles": warmupCount, "remainingMeasuredCycles": measuredCount, "fixture": "multi-window-imageio-composition-comparison-v2",
             "compositionMode": mode.rawValue, "productionCompositionMode": MultiWindowCompositionMode.production.rawValue,
+            "candidateImplementation": "vimage-canonical-cgimage-quartz-strips-v1",
             "pid": getpid(), "processName": ProcessInfo.processInfo.processName,
             "executablePath": Bundle.main.executableURL?.path ?? ProcessInfo.processInfo.arguments.first ?? "unknown",
             "bundlePath": Bundle.main.bundlePath, "bundleIdentifier": Bundle.main.bundleIdentifier ?? "none",
@@ -122,7 +123,9 @@ enum MultiWindowCaptureResourceFixture {
                     diagnosticTailStripFirst: diagnosticTailStripFirst, diagnosticObserve: diagnosticObserve, cycle: &activeCycle)
                 activeCycle["ownedRasterProbe"] = rasterProbe.snapshot
                 try require(rasterProbe.snapshot["currentRasterBytes"] == 0, "Completed cycle retained an explicit raster")
-                try require(rasterProbe.snapshot["normalizationCount"] == (mode == .normalizedCandidate ? 2 : 0), "Unexpected normalization count")
+                try require(rasterProbe.snapshot["liveCanonicalImages"] == 0, "Completed cycle retained a normalized CGImage wrapper")
+                try require(rasterProbe.snapshot["canonicalImagesCreated"] == (mode == .normalizedCandidate ? 2 : 0), "Unexpected canonical image count")
+                try require(rasterProbe.snapshot["normalizationCount"] == (mode == .coreGraphicsBaseline ? 0 : 2), "Unexpected normalization count")
                 try require(ownership.allReleased, "A completed cycle retained an input, decoder or output object")
                 let handles = try ownedFileDescriptors(root, identities: ownedIdentities)
                 try require(handles.isEmpty, "A completed cycle left an owned PNG descriptor open")

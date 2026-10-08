@@ -38,21 +38,22 @@ def trace(candidate, tail_first):
                 for event in ('decodeBefore', 'decodeImageCreated', 'decodeReturned', 'inputBeforeAppend'):
                     add(phase, cycle, event, window)
                 if candidate:
-                    for event in ('normalizationBefore', 'normalizationAfter', 'candidateBlendBefore', 'candidateBlendAfter'):
+                    for event in ('normalizationBefore', 'normalizationAfter', 'candidateBlendBefore'):
                         add(phase, cycle, event, window)
-                else:
-                    add(phase, cycle, 'appendBeforeDraws', window)
-                    tops = [2048] + list(range(0, 2048, 128)) if tail_first else list(range(0, 2160, 128))
-                    for top in tops:
-                        add(phase, cycle, 'drawBefore', window, top); add(phase, cycle, 'drawAfter', window, top)
-                    add(phase, cycle, 'appendAfterFlush', window)
+                add(phase, cycle, 'appendBeforeDraws', window)
+                tops = [2048] + list(range(0, 2048, 128)) if tail_first else list(range(0, 2160, 128))
+                for top in tops:
+                    add(phase, cycle, 'drawBefore', window, top); add(phase, cycle, 'drawAfter', window, top)
+                add(phase, cycle, 'appendAfterFlush', window)
+                if candidate:
+                    add(phase, cycle, 'candidateBlendAfter', window)
                 add(phase, cycle, 'inputAfterAppendScope', window)
             for event in ('finishBefore', 'finishAfterOwnershipTransfer', 'outputAfterFinishScope', 'digestBefore', 'digestAfter', 'cycleAfterRelease'):
                 add(phase, cycle, event)
     for event, window in [('canvasBeforeAllocation', 0), ('canvasAfterAllocation', 0),
             ('decodeBefore', 202), ('decodeImageCreated', 202), ('decodeReturned', 202), ('cancellationAfterRelease', 0)]:
         add(3, 0, event, window)
-    assert len(rows) == (422 if candidate else 1446)
+    assert len(rows) == (1574 if candidate else 1446)
     return dict(capacity=2048, allocatedBytes=2048 * 800, overflowCount=0, recordCount=len(rows), observations=rows)
 
 def cell(number, name, mode, tail_first, traced):
@@ -66,11 +67,13 @@ def cell(number, name, mode, tail_first, traced):
             ownedOpenFileDescriptorsAfter=0, ownership=owned.copy(),
             ownedRasterProbe=dict(currentRasterBytes=0, peakRasterBytes=111513600,
                 canvasBytes=0, normalizationBytes=0, admittedSourceBytes=0,
-                normalizationCount=2 if mode == 'normalizedCandidate' else 0),
+                normalizationCount=2 if mode == 'normalizedCandidate' else 0,
+                canonicalImagesCreated=2 if mode == 'normalizedCandidate' else 0, liveCanonicalImages=0),
             **{key:dict(counters=counters(30+index)) for key in ('before','afterCompositionBeforeDigest','afterDigestBeforeOutputRelease','afterRelease')})
     report = dict(syntheticFixture=True, status='observed', observationsComplete=True, pid=pid,
         bundlePath=app, executablePath=app+'/Contents/MacOS/PicShot', compiledArchitecture='arm64', osVersion='explicitly synthetic macOS',
         compositionMode=mode, productionCompositionMode='coreGraphicsBaseline',
+        candidateImplementation='vimage-canonical-cgimage-quartz-strips-v1',
         diagnosticTailStripFirst=tail_first, diagnosticBoundariesEnabled=traced,
         diagnosticTraceAllocatedBytesBeforeEntry=2048 * 800 if traced else 0,
         warmupCycles=4, measuredCycles=12, windowsPerCycle=2, maximumConcurrentCycleTasks=1, cooperativeDeadlineSeconds=180, perCompositionDeadlineSeconds=20,
@@ -135,14 +138,60 @@ class ComparisonCheckerTests(unittest.TestCase):
         self.assertEqual(result['status'], 'observed')
         self.assertFalse(result['memoryStabilityAssessed'])
         self.assertFalse(result['productionPromotionApproved'])
+        self.assertEqual(result['candidateImplementation'], 'vimage-canonical-cgimage-quartz-strips-v1')
         self.assertEqual(len(result['cells']), 6)
         self.assertEqual(result['cells'][0]['measuredDelta'], counters(10))
         self.assertEqual(result['cells'][0]['sampledPeaks'], counters(50))
 
-    def test_trace_counts_are_1446_and_422(self):
+    def test_trace_counts_are_1446_and_1574(self):
         self.assertEqual(len(trace(False, False)['observations']), 1446)
         self.assertEqual(len(trace(False, True)['observations']), 1446)
-        self.assertEqual(len(trace(True, False)['observations']), 422)
+        self.assertEqual(len(trace(True, False)['observations']), 1574)
+
+    def test_old_cpu_candidate_topology_rejected(self):
+        def change(d):
+            value=d['diagnosticBoundaryTrace']
+            value['observations']=[row for row in value['observations'] if row['event'] not in
+                ('appendBeforeDraws', 'drawBefore', 'drawAfter', 'appendAfterFlush')]
+            value['recordCount']=len(value['observations'])
+            self.assertEqual(value['recordCount'],422)
+        self.reject('candidate-traced','multi-window-resource.json',change)
+
+    def test_candidate_draw_after_blend_scope_rejected(self):
+        def change(d):
+            rows=d['diagnosticBoundaryTrace']['observations']
+            i=next(i for i,r in enumerate(rows) if r['event']=='appendBeforeDraws')
+            j=next(i for i,r in enumerate(rows) if r['event']=='candidateBlendAfter')
+            rows[i],rows[j]=rows[j],rows[i]
+        self.reject('candidate-traced','multi-window-resource.json',change)
+
+    def test_candidate_wrong_strip_geometry_rejected(self):
+        self.reject('candidate-traced','multi-window-resource.json',lambda d:
+            next(r for r in d['diagnosticBoundaryTrace']['observations'] if r['event']=='drawBefore').update(stripTop=2048))
+
+    def test_missing_candidate_implementation_rejected(self):
+        self.reject('candidate','multi-window-resource.json',lambda d:d.pop('candidateImplementation'))
+
+    def test_wrong_candidate_implementation_rejected(self):
+        self.reject('candidate','multi-window-resource.json',lambda d:d.update(candidateImplementation='cpu-nearest-v0'))
+
+    def test_baseline_wrong_candidate_implementation_rejected(self):
+        self.reject('baseline','multi-window-resource.json',lambda d:d.update(candidateImplementation='cpu-nearest-v0'))
+
+    def test_candidate_canonical_image_retained_rejected(self):
+        self.reject('candidate','multi-window-resource.json',lambda d:d['cycles'][0]['ownedRasterProbe'].update(liveCanonicalImages=1))
+
+    def test_candidate_wrong_canonical_count_rejected(self):
+        self.reject('candidate','multi-window-resource.json',lambda d:d['cycles'][0]['ownedRasterProbe'].update(canonicalImagesCreated=1))
+
+    def test_baseline_canonical_image_creation_rejected(self):
+        self.reject('baseline','multi-window-resource.json',lambda d:d['cycles'][0]['ownedRasterProbe'].update(canonicalImagesCreated=1))
+
+    def test_missing_canonical_count_rejected(self):
+        self.reject('candidate','multi-window-resource.json',lambda d:d['cycles'][0]['ownedRasterProbe'].pop('canonicalImagesCreated'))
+
+    def test_missing_live_canonical_count_rejected(self):
+        self.reject('candidate','multi-window-resource.json',lambda d:d['cycles'][0]['ownedRasterProbe'].pop('liveCanonicalImages'))
 
     def test_stale_zero_measured_delta_rejected(self):
         self.reject('baseline','checked-resource.json',lambda d:d['afterWarmupToCleanupDeltaBytes'].update(resident_size=0))

@@ -4,8 +4,9 @@ import ImageIO
 import PicShotCore
 @testable import PicShot
 
-/// Exact native promotion gates. A failure is evidence of changed pixels, not a
-/// reason to loosen tolerance. This file does not change the production default.
+/// Exact gates for one vImage normalization plus the original Quartz strip loop.
+/// Replaces the rejected CPU implementation; all original exact expectations remain.
+/// No tolerance or production default is changed by this diagnostic suite.
 final class MultiWindowNormalizedCompositionTests: XCTestCase {
     func testProductionDefaultAndDiagnosticParsing() throws {
         XCTAssertEqual(MultiWindowCompositionMode.production, .coreGraphicsBaseline)
@@ -103,6 +104,8 @@ final class MultiWindowNormalizedCompositionTests: XCTestCase {
             XCTAssertEqual(probe.snapshot["currentRasterBytes"], 0)
         }
         XCTAssertEqual(probe.snapshot["normalizationCount"], 24)
+        XCTAssertEqual(probe.snapshot["canonicalImagesCreated"], 24)
+        XCTAssertEqual(probe.snapshot["liveCanonicalImages"], 0)
         XCTAssertEqual(probe.snapshot["peakRasterBytes"], 128 * 256 * 4 * 3)
     }
 
@@ -111,6 +114,7 @@ final class MultiWindowNormalizedCompositionTests: XCTestCase {
         let output = try await SequentialMultiWindowCapture.capture(layout: layout, deadline: deadline,
             mode: .normalizedCandidate, resourceProbe: probe, validate: {}, frame: { _, _ in
                 XCTAssertEqual(sourceProbe.live, 0, "Previous source survived into next acquisition")
+                XCTAssertEqual(probe.snapshot["liveCanonicalImages"], 0, "Previous canonical image survived into next acquisition")
                 XCTAssertEqual(probe.snapshot["normalizationBytes"], 0, "Previous normalization survived into next acquisition")
                 return try self.ownedImage(width: 128, height: 256, probe: sourceProbe)
             })
@@ -118,6 +122,7 @@ final class MultiWindowNormalizedCompositionTests: XCTestCase {
         XCTAssertEqual(probe.snapshot["currentRasterBytes"], layout.width * layout.height * 4)
         XCTAssertEqual(probe.snapshot["normalizationBytes"], 0)
         XCTAssertEqual(probe.snapshot["admittedSourceBytes"], 0)
+        XCTAssertEqual(probe.snapshot["liveCanonicalImages"], 0)
         XCTAssertEqual(sourceProbe.live, 0)
         withExtendedLifetime(output) {}
     }
@@ -143,7 +148,34 @@ final class MultiWindowNormalizedCompositionTests: XCTestCase {
             XCTAssertEqual(calls, 2); XCTAssertEqual(sourceProbe.live, 0)
             XCTAssertEqual(probe.snapshot["currentRasterBytes"], 0)
             XCTAssertEqual(probe.snapshot["normalizationCount"], 1)
+            XCTAssertEqual(probe.snapshot["canonicalImagesCreated"], 1)
+            XCTAssertEqual(probe.snapshot["liveCanonicalImages"], 0)
         }
+    }
+
+    @MainActor func testCandidateCancellationAfterFirstQuartzStripReleasesCanonicalProvider() async throws {
+        let layout = try MultiWindowCaptureLayout(frontToBack: [window(1, width: 16, height: 368)])
+        let probe = MultiWindowCompositionResourceProbe(), sourceProbe = NormalizedSourceProbe()
+        let draws = NormalizedDrawCounter()
+        let task = Task { @MainActor in
+            try await SequentialMultiWindowCapture.capture(layout: layout, deadline: deadline,
+                mode: .normalizedCandidate, resourceProbe: probe, diagnosticObserve: { event, _, _ in
+                    if event == .drawAfter {
+                        draws.increment()
+                        withUnsafeCurrentTask { $0?.cancel() }
+                    }
+                }, validate: {}, frame: { _, _ in
+                    try self.ownedImage(width: 16, height: 368, probe: sourceProbe)
+                })
+        }
+        do { _ = try await task.value; XCTFail("Cancelled strip drawing returned an output") }
+        catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertEqual(draws.count, 1, "The next strip must not draw after cancellation")
+        XCTAssertEqual(sourceProbe.live, 0)
+        XCTAssertEqual(probe.snapshot["normalizationCount"], 1)
+        XCTAssertEqual(probe.snapshot["canonicalImagesCreated"], 1)
+        XCTAssertEqual(probe.snapshot["liveCanonicalImages"], 0)
+        XCTAssertEqual(probe.snapshot["currentRasterBytes"], 0)
     }
 
     func testOverBudgetCandidateRejectsBeforeCanvasAllocation() throws {
@@ -223,4 +255,11 @@ private final class NormalizedSourceProbe: @unchecked Sendable {
     private var current = 0
     var live: Int { lock.lock(); defer { lock.unlock() }; return current }
     func change(_ delta: Int) { lock.lock(); current += delta; lock.unlock() }
+}
+
+private final class NormalizedDrawCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var draws = 0
+    var count: Int { lock.lock(); defer { lock.unlock() }; return draws }
+    func increment() { lock.lock(); draws += 1; lock.unlock() }
 }

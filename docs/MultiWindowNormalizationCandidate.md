@@ -1,59 +1,71 @@
 # Multi-window normalization candidate
 
-This is an **opt-in diagnostic candidate**, based on the supplied `03cae2a31e5a37f32ca224d422b6690e25c6d7bb` snapshot. Normal capture still uses `coreGraphicsBaseline`. It has not been promoted, native-compiled, or measured on macOS by this authoring environment.
+`normalizedCandidate` is an **opt-in diagnostic candidate**. Production remains `coreGraphicsBaseline`. The implementation now performs one caller-owned vImage conversion per source, wraps that buffer in a zero-copy canonical `CGImage`, and uses the original Quartz strip drawing loop for sampling and source-over blending. It does not emulate Quartz's sampling arithmetic.
 
-The existing baseline repeatedly draws the entire source `CGImage` through a clipped `CGContext` in 128-row strips. The candidate instead normalizes each source once into caller-owned, tightly packed, 8-bit premultiplied sRGB RGBA with `vImageBuffer_InitWithCGImage` and `kvImageNoAllocate`. It then writes nearest-neighbor, top-left pixel-center samples and premultiplied source-over bytes directly into the existing output allocation. It creates no intermediate `CGImage`, cropped raster, framework drawing context, or scaled raster. The existing final provider retains that exact output allocation, with no final canvas copy.
+The fixture reports `candidateImplementation: vimage-canonical-cgimage-quartz-strips-v1` so results cannot be confused with the earlier CPU prototype under the same experimental mode name. The corrected candidate still needs native exact-byte and fresh-process resource evidence. No installer publication or production-default change is part of this correction.
 
-This does **not** establish that conversion caused the observed resource growth. `kvImageNoAllocate` constrains the supplied destination; it does not bound private vImage, ColorSync, ImageIO, CoreGraphics or kernel storage. The attribution worker's separate final-strip-order comparison is independent evidence.
+## Why the CPU implementation was rejected
 
-## Admission and ownership
+Both ARM and Intel run100 at `83406c0d` compiled and ran 32 source-scoped tests. Thirty-one passed on each architecture. The exact fractional-density test failed at output byte 24: baseline 62 versus CPU candidate 73. For its 8-pixel source scaled into 13 pixels, destination pixel X=6 lands mathematically on source edge 4; Quartz selected source pixel 3 while the prototype selected 4.
 
-The existing 16,000,000 input pixels, 64,000,000 total input pixels, 32,000,000 output pixels, and 16,384 side limits remain unchanged. The combined admission limit is explicitly 192,000,000 bytes:
+The alpha grid, source profiles, alpha conventions, byte orders, padding, grayscale/RGB/decode arrays, ImageIO, ownership, cancellation and budgets passed that run. This single sampling point does not establish a universal tie rule. The failed implementation and native evidence remain in Git history. The corrected implementation removes CPU sampling rather than loosening any equality or expected byte. The exact fractional test remains a required live gate.
+
+The separate native baseline/tail-first experiment on both architectures found measured late-cycle volatile increments of 3,440,640 bytes with the final 112-row clips, and 3,932,160 bytes with 128-row clips last. These match two source-width RGBA bands. Decode boundaries added no volatile bytes in that experiment. This associates the retained backing with the final draw band in that workload; it does not prove that normalizing sources removes the backing.
+
+## Corrected ownership and admission
+
+For each source, the candidate performs:
+
+1. Validate source metadata and combined byte admission
+2. Convert once into caller-owned 8-bit premultiplied sRGB RGBA using `vImageBuffer_InitWithCGImage` and `kvImageNoAllocate`
+3. Create one `CGDataProvider` and `CGImage` referring directly to that normalization allocation
+4. Draw that canonical image with the original context, transform, nearest interpolation, 128-row clip partition and source-over blend mode
+5. Release the canonical image/provider and normalization before acquiring the next source
+
+The provider release callback retains/releases the normalization allocation. It does not create `Data`, copy provider bytes, use `CGContext.makeImage`, or allocate a scaled image. The final output provider still receives the original output allocation without a canvas copy.
+
+The existing limits remain 16,000,000 pixels per input, 64,000,000 total input pixels, 32,000,000 output pixels, and 16,384 per side. Explicit live raster admission remains at most **192,000,000 bytes**:
 
 - Output: `layout.width × layout.height × 4`
-- Current source: actual `image.bytesPerRow × image.height`, including padding
+- Source: actual `image.bytesPerRow × image.height`, including padding
 - Normalization: `image.width × image.height × 4`
 
-Maximum-density layouts that cannot fit a tightly packed source and normalization are rejected before output allocation. Actual padded-source admission is checked again before allocating normalization. This intentionally rejects some combinations the baseline admits, for example a 32 MP output plus a 16 MP source, which would need 256 MB with normalization. A 16 MP output and 16 MP source fit exactly at 192 MB. No larger scratch allowance is hidden in the old two-raster claim.
+Impossible maximum-density layouts reject before canvas allocation. Actual padded-source admission rejects before normalization. Some layouts admitted by baseline are intentionally rejected by the candidate; a 32 MP output plus a 16 MP source would otherwise require 256 MB.
 
-One source and one normalization exist at a time. Normalization leaves scope before the next frame request. Output ownership survives the renderer through the provider and ends with the returned image. Probes count explicit canvas/normalization allocation and admitted source stride separately; they do not prove total process backing has been released.
+One source and one normalization remain live at a time. A weak wrapper probe verifies each canonical image is released before the next frame; explicit allocation counters also detect a provider retaining normalization after its image wrapper disappears. Both must return to zero after complete or cancelled cycles. Tests cover cancellation immediately after the first Quartz strip as well as acquisition cancellation/failure and ordinary output release.
 
-The candidate checks cancellation/deadline before and after normalization, every 32 composition rows, and yields every 128 rows. Native conversion remains noninterruptible; a late or cancelled result is rejected. Existing sequential acquisition, failure discard, process termination/reaping and normal editor admission are unchanged.
+Private Quartz, vImage, ColorSync, ImageIO and kernel storage are **not** covered by these explicit-raster counters or by `kvImageNoAllocate`. Quartz can still create native converted backing for the canonical image. Its remaining volatile/virtual/resident/footprint cost must be measured. There is no claimed process-memory cap or zero-leak result.
 
-## Native gates
+Cancellation/deadline checks remain before/after normalization and between Quartz strips. Native conversion/drawing is not interruptible; late or cancelled results are rejected. Existing sequential acquisition, screenshot process termination/reaping, failure discard and editor admission remain unchanged.
 
-Run `bash scripts/test-multiwindow-source-scope.sh` on macOS. It includes the new exact-byte tests and needs no models or third-party package dependencies. It uses Apple Accelerate.
+## Required native gates
 
-New tests cover:
+Run `bash scripts/test-multiwindow-source-scope.sh` on macOS. The same exact tests and expected bytes cover all 65,536 source/destination alpha pairs, fractional placement and density, orientation, z-order, gaps, sRGB/P3/linear profiles, alpha conventions, byte order, padding, grayscale, RGB, decode arrays and PNG decoding. Wrapper/provider lifetime assertions and a first-strip cancellation test extend the previous ownership checks.
 
-- All 65,536 source/destination alpha pairs against the baseline and a separate integer source-over oracle
-- Fractional placement, negative origins, mixed density, nonintegral nearest sampling, asymmetric orientation, desktop z-order and transparent gaps
-- sRGB, Display P3 and linear sRGB; straight and premultiplied alpha; RGBA and BGRA; padded rows
-- Grayscale, 24-bit RGB, color decode arrays, and a fresh ImageIO PNG decode
-- Repeated one-source/one-normalization ownership, final output release, cancellation/failure cleanup, and budget rejection before allocation
+There is no tolerance, expected-failure marker, test exclusion, or production switch. A new failure blocks the candidate and must be investigated.
 
-There is deliberately **no color or alpha tolerance**. Any baseline difference, including rounding, profile conversion, or nearest-neighbor tie behavior, blocks promotion and needs investigation. Existing end-to-end native/controller tests remain necessary; tests added here are source, not evidence that they pass.
-
-## Fresh-process resource comparison
-
-The existing 4-warmup / 12-measured, two-window 4K fixture accepts an optional fourth script argument:
+After exact tests pass, run the same provenance-verified binary in separate fresh processes:
 
 ```sh
 bash scripts/multiwindow-resource-smoke.sh /absolute/PicShot.app /absolute/new-baseline-evidence SOURCE_COMMIT coreGraphicsBaseline
 bash scripts/multiwindow-resource-smoke.sh /absolute/PicShot.app /absolute/new-candidate-evidence SOURCE_COMMIT normalizedCandidate
 ```
 
-Use the same provenance-verified candidate binary for both fresh processes, and reverse ordering in an independent repeat if results justify further comparison. `SOURCE_COMMIT` must match that binary's embedded commit. Each launch requires a new evidence directory. The fixture-only environment key is `PICSHOT_MULTIWINDOW_COMPOSITION`; it never selects the renderer for ordinary capture.
+The fixture-only key remains `PICSHOT_MULTIWINDOW_COMPOSITION`. The independent tail-first control remains restricted to baseline. No ordinary capture reads this diagnostic mode selector.
 
-The report records mode, production default, extra normalization bytes, combined limit, per-cycle live/peak raster counters, normalization counts, all existing memory/volatile/virtual samples, RGBA hashes, release probes, file cleanup and cancellation results. For the current fixture the tight-raster figures are:
+For the two-window 4K workload, tight explicit raster accounting is:
 
 - Baseline: 45,158,400 output + 33,177,600 source = 78,336,000 bytes
 - Candidate: 45,158,400 output + 33,177,600 source + 33,177,600 normalization = 111,513,600 bytes
 
-The counters use the actual source stride, so padding can increase the measured peak. A source stride that breaks combined admission fails before scratch allocation. Digest readback remains separately labeled and may copy output provider bytes.
+The report adds canonical wrapper creation/live counts to actual source-stride and normalization accounting. It retains output SHA-256, weak input/decoder/output probes, cancellation and file/exit cleanup, all measured memory fields, phase boundaries and transient peaks. Digest readback can allocate and remains separately labeled. Completed observations do not establish memory stability.
 
-Keep native exact-byte results, per-cycle late volatile/virtual/footprint changes, transient peaks, elapsed time and exit confirmation together. A completed fixture is an observation, not a leak-free or plateau verdict. Do not switch production until native correctness, cancellation, admission and resource comparison evidence supports the change.
+## Standalone sampling calibration
+
+`probe-multiwindow-nearest.swift` records 1,211 small coordinate-encoded cases, covering source sizes 2–17 and destinations 2–33, translations, both axes, mirrored transforms, exact run100 canvas geometry, long thin rasters, and whole/128-row/tail-first clipping. `analyze-multiwindow-nearest.py` compares explicit exact-tie and floating/fixed-point hypotheses, separating tie from non-tie differences and checking translation, clipping and reflection effects.
+
+These tools diagnose the rejected CPU assumption; they do not establish a universal Quartz arithmetic contract or modify rendering. Their native output should accompany the next comparison run.
 
 ## Authoring validation
 
-Linux checks: shell syntax for both multi-window scripts and compilation of embedded Python passed. No Swift compiler, Apple SDK, WindowServer or native process resource measurements are available in this authoring environment. No owner checkout or published artifact was modified.
+The isolated correction was authored against the supplied run100 source. Shell syntax and embedded Python compile checks passed, and the sampling analyzer passed synthetic tie/non-tie classification checks. Native compilation, sampling observations, corrected exact-byte tests and memory comparison are still pending from the macOS run.

@@ -743,6 +743,22 @@ jobs:
           python3 scripts/run-bounded-command.py --timeout-seconds 540
           --log dist/multiwindow-source-scope.log --report dist/multiwindow-source-scope.json
           -- bash scripts/test-multiwindow-source-scope.sh
+      - name: Preserve authoritative native outcome before packaging
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-MultiWindow-Native-${{ matrix.arch }}-${{ github.sha }}
+          path: |
+            dist/multiwindow-source-scope.log
+            dist/multiwindow-source-scope.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Observe Quartz sampling maps independently
+        continue-on-error: true
+        timeout-minutes: 3
+        run: |
+          python3 scripts/run-bounded-command.py --timeout-seconds 150 --log dist/multiwindow-nearest.log --report dist/multiwindow-nearest-process.json -- swift scripts/probe-multiwindow-nearest.swift "$PWD/dist/multiwindow-nearest-maps.json"
+          python3 scripts/analyze-multiwindow-nearest.py dist/multiwindow-nearest-maps.json dist/multiwindow-nearest-analysis.json
       - name: Package signed diagnostic app with unchanged production default
         env:
           PICSHOT_PACKAGE_APP_ONLY: '1'

@@ -17,6 +17,7 @@ PROFILES = (
 COUNTERS = ('resident_size', 'phys_footprint', 'purgeable_volatile_resident',
             'purgeable_volatile_virtual', 'compressed', 'ledger_purgeable_volatile_compressed')
 OUTPUT_SHA256 = '5b8033659faae766800872f3684782128355a46fc4603aa5718e3134b2ac941d'
+CANDIDATE_IMPLEMENTATION = 'vimage-canonical-cgimage-quartz-strips-v1'
 
 
 def require(condition, message):
@@ -59,15 +60,16 @@ def trace_sequence(candidate, tail_first):
                 for event in ('decodeBefore', 'decodeImageCreated', 'decodeReturned', 'inputBeforeAppend'):
                     emit(phase, cycle, event, window)
                 if candidate:
-                    for event in ('normalizationBefore', 'normalizationAfter', 'candidateBlendBefore', 'candidateBlendAfter'):
+                    for event in ('normalizationBefore', 'normalizationAfter', 'candidateBlendBefore'):
                         emit(phase, cycle, event, window)
-                else:
-                    emit(phase, cycle, 'appendBeforeDraws', window)
-                    tops = [2048] + list(range(0, 2048, 128)) if tail_first else list(range(0, 2160, 128))
-                    for top in tops:
-                        emit(phase, cycle, 'drawBefore', window, top)
-                        emit(phase, cycle, 'drawAfter', window, top)
-                    emit(phase, cycle, 'appendAfterFlush', window)
+                emit(phase, cycle, 'appendBeforeDraws', window)
+                tops = [2048] + list(range(0, 2048, 128)) if tail_first else list(range(0, 2160, 128))
+                for top in tops:
+                    emit(phase, cycle, 'drawBefore', window, top)
+                    emit(phase, cycle, 'drawAfter', window, top)
+                emit(phase, cycle, 'appendAfterFlush', window)
+                if candidate:
+                    emit(phase, cycle, 'candidateBlendAfter', window)
                 emit(phase, cycle, 'inputAfterAppendScope', window)
             for event in ('finishBefore', 'finishAfterOwnershipTransfer', 'outputAfterFinishScope',
                           'digestBefore', 'digestAfter', 'cycleAfterRelease'):
@@ -152,6 +154,7 @@ def validate(root, source):
         require(pathlib.Path(report['executablePath']).resolve() == executable, name + ': executable mismatch')
         require(len(launch['arguments']) == 1 and pathlib.Path(launch['arguments'][0]).resolve() == executable, name + ': unexpected process operands')
         require(report['compositionMode'] == checked['compositionMode'] == mode and report['productionCompositionMode'] == 'coreGraphicsBaseline', name + ': wrong mode')
+        require(report['candidateImplementation'] == CANDIDATE_IMPLEMENTATION, name + ': wrong candidate implementation')
         require(report['diagnosticTailStripFirst'] is tail_first and report['diagnosticBoundariesEnabled'] is traced, name + ': wrong control flags')
         workload = dict(warmupCycles=4, measuredCycles=12, windowsPerCycle=2,
             completedWarmupCycles=4, completedMeasuredCycles=12, remainingWarmupCycles=0, remainingMeasuredCycles=0,
@@ -197,6 +200,8 @@ def validate(root, source):
                     require(integer(raster[key], 'raster.' + key) == 0, name + ': explicit raster retained')
                 require(0 < integer(raster['peakRasterBytes'], 'raster peak') <= 192_000_000, name + ': raster budget exceeded')
                 require(integer(raster['normalizationCount'], 'normalizationCount') == (2 if mode == 'normalizedCandidate' else 0), name + ': wrong conversion count')
+                require(integer(raster['canonicalImagesCreated'], 'canonicalImagesCreated') == (2 if mode == 'normalizedCandidate' else 0), name + ': wrong canonical image count')
+                require(integer(raster['liveCanonicalImages'], 'liveCanonicalImages') == 0, name + ': canonical image retained')
                 for boundary in ('before', 'afterCompositionBeforeDigest', 'afterDigestBeforeOutputRelease', 'afterRelease'):
                     counter_values(cycle[boundary]['counters'], name + '.' + boundary)
         boundary = {key: counter_values(report[key]['counters'], name + '.' + key) for key in
@@ -226,6 +231,7 @@ def validate(root, source):
     require(len(identities) == len(inputs) == len(outputs) == len(architectures) == len(systems) == 1, 'cells do not share binary/input/system identity')
     require(len(pids) == len(PROFILES), 'Every cell requires a distinct, confirmed-exited process')
     return dict(status='observed', observationsComplete=True, sourceCommit=source, productionDefault='coreGraphicsBaseline',
+                candidateImplementation=CANDIDATE_IMPLEMENTATION,
                 memoryStabilityAssessed=False, productionPromotionApproved=False, cells=cells)
 
 

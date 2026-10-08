@@ -35,7 +35,8 @@ try:
   assert pathlib.Path(launch['bundlePath']).resolve()==pathlib.Path(sys.argv[2]).resolve()
   assert r['compositionMode']==sys.argv[5],r
   assert r['productionCompositionMode']=='coreGraphicsBaseline',r
-  assert r['normalizationRasterBytes']==(3840*2160*4 if sys.argv[5]=='normalizedCandidate' else 0),r
+  assert r['candidateImplementation']=='vimage-canonical-cgimage-quartz-strips-v1',r
+  assert r['normalizationRasterBytes']==(3840*2160*4 if sys.argv[5]!='coreGraphicsBaseline' else 0),r
   assert r['status']=='observed' and r['observationsComplete'] is True,r
   assert r['completedWarmupCycles']==4 and r['completedMeasuredCycles']==12
   assert r['remainingWarmupCycles']==0 and r['remainingMeasuredCycles']==0
@@ -46,7 +47,9 @@ try:
     assert cycle['ownedOpenFileDescriptorsAfter']==0,cycle
     raster=cycle['ownedRasterProbe']
     assert raster['currentRasterBytes']==0 and raster['peakRasterBytes']<=192_000_000,raster
-    assert raster['normalizationCount']==(2 if sys.argv[5]=='normalizedCandidate' else 0),raster
+    assert raster['normalizationCount']==(2 if sys.argv[5]!='coreGraphicsBaseline' else 0),raster
+    assert raster['liveCanonicalImages']==0,raster
+    assert raster['canonicalImagesCreated']==(2 if sys.argv[5]=='normalizedCandidate' else 0),raster
     owned=cycle['ownership']
     assert owned['inputObjectsCreated']==2 and owned['decoderObjectsCreated']==2 and owned['outputObjectsCreated']==1,owned
     assert owned['maximumConcurrentInputObjects']==1,owned
