@@ -494,8 +494,13 @@ import PicShotCore
     private static func undo(_ editor: ImageEditorController) throws {
         try O.require(editor.annotationCanvas.performKeyEquivalent(with: key(editor.annotationCanvas, "z", 6, modifiers: .command)), "Native undo shortcut failed")
     }
-    private static func pinCanvas(_ pin: PinController) throws -> PinCanvas {
-        try O.required(descendants(pin.window?.contentView).compactMap { $0 as? PinCanvas }.first, "Pin canvas missing")
+    private static func pinCanvas(_ pin: PinController) throws -> NSView {
+        let menu = try O.required(pin.actionMenu, "Pin action menu missing")
+        let canvas = try O.required(descendants(pin.window?.contentView).compactMap { $0 as? NSScrollView }
+            .compactMap(\.documentView).first { $0.menu === menu && $0.acceptsFirstResponder }, "Native pin document view missing")
+        try O.require(canvas.window === pin.window && pin.window?.makeFirstResponder(canvas) == true,
+                      "Pin document view is not the native key responder")
+        return canvas
     }
     private static func outputDrained(_ editor: ImageEditorController, _ deadline: Double) async throws {
         try await wait(deadline) { !editor.outputProjectionIsPending && !EditorOutputProjection.shared.isBusy }

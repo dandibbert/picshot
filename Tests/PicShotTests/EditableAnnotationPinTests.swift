@@ -182,8 +182,13 @@ import PicShotCore
         XCTAssertEqual(try EditableUIFixtures.bytes(pin.currentImage), try EditableUIFixtures.bytes(fixture.current))
     }
 
-    private func pinCanvas(_ pin: PinController) throws -> PinCanvas {
-        try XCTUnwrap(EditableUIFixtures.descendants(pin.window?.contentView).compactMap { $0 as? PinCanvas }.first)
+    private func pinCanvas(_ pin: PinController) throws -> NSView {
+        let menu = try XCTUnwrap(pin.actionMenu)
+        let canvas = try XCTUnwrap(EditableUIFixtures.descendants(pin.window?.contentView).compactMap { $0 as? NSScrollView }
+            .compactMap(\.documentView).first { $0.menu === menu && $0.acceptsFirstResponder })
+        XCTAssertTrue(canvas.window === pin.window)
+        XCTAssertTrue(pin.window?.makeFirstResponder(canvas) == true)
+        return canvas
     }
     private func drain(_ pin: PinController) async throws {
         let deadline = ProcessInfo.processInfo.systemUptime + 5
