@@ -44,6 +44,7 @@ import CryptoKit
             "nativeReportSHA256": SHA256.hash(data: nativeData).map { String(format: "%02x", $0) }.joined(),
             "drawingReportSHA256": SHA256.hash(data: drawingData).map { String(format: "%02x", $0) }.joined(),
             "requestedStrategy": requested, "selectedStrategy": selected.rawValue,
+            "rendererAutoreleaseScope": selected.autoreleaseScope,
             "drawingStrategy": "owned-srgb8", "productionDefaultStrategy": RendererStorageStrategy.productionDefault.rawValue,
             "tracker": try JSONSerialization.jsonObject(with: JSONEncoder().encode(snapshot))]
         let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])

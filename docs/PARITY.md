@@ -6,6 +6,8 @@ Baseline: [PixPin 3.5.5.1, released 11 September 2026][release]. Vendor research
 
 ## Current acceptance: ARM 0.15.1 and Intel 0.11
 
+[Build 124](EditableObservation124.md) qualifies the diagnostic output and public ownership contracts but worsens cold/final memory. The intervention includes an unmatched inner pool, so matched-scope controls remain pending. No production default, accepted package or feature row changes.
+
 The [full build 121 drawing diagnostic](EditableObservation121.md) passes its pixels/documents/guard contracts, but substantial cold memory and adverse footprint remain. Production drawing stays reference; 0.16 remains held and no feature row is promoted.
 
 Build 119 [qualifies tested source-format fidelity but fails the memory objective](EditableObservation119.md). The new drawing-only comparison remains diagnostic and unaccepted; originals and production drawing defaults remain unchanged. No behavior row is promoted.

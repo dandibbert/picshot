@@ -28,7 +28,7 @@ def state(strategy, work=0):
     result.update(unsupportedCounts={}, callbackSizesMatch=True)
     for key in ('attemptCount', 'seedCount', 'drawCount', 'publishCount'):
         result[key] = work
-    if strategy == 'native':
+    if strategy in R.NATIVE_POLICIES:
         result['nativeCount'] = work
     else:
         for key in ('eligibleCount', 'allocations', 'deallocations', 'releaseCallbacks'):
@@ -39,15 +39,19 @@ def state(strategy, work=0):
     return result
 
 
-def materialize(root, identity, strategy='native', resources=False, index=0):
+def materialize(root, identity, strategy='native', resources=False, index=0, comparison_kind=R.KIND, explicit_kind=False):
     root = Path(root).resolve(strict=True)
     directory, arm = F.materialize(root, identity, 'owned-srgb8', resources, index)
-    arm['launcher'].update(rendererStorageStrategy=strategy, comparisonKind=R.KIND)
+    arm['launcher'].update(rendererStorageStrategy=strategy, comparisonKind=comparison_kind,
+                           rendererAutoreleaseScope=R.C.renderer_autorelease_scope(strategy))
     arm['wrapper']['command'][1] = 'scripts/launch-renderer-storage-pair.swift'
     arm['wrapper']['command'][-2] = strategy
+    if comparison_kind != R.KIND or explicit_kind:
+        arm['wrapper']['command'].append(comparison_kind)
     F.save(directory, arm)
     report = {key: arm['native'][key] for key in (*R.C.IDENTITY, 'executableBytes')}
-    report.update(schemaVersion=1, status='passed', comparisonKind=R.KIND, rendererStorageStrategy=strategy,
+    report.update(schemaVersion=1, status='passed', comparisonKind=comparison_kind, rendererStorageStrategy=strategy,
+        rendererAutoreleaseScope=R.C.renderer_autorelease_scope(strategy),
         drawingStrategy='owned-srgb8', productionDefaultStrategy='native',
         hashObservation='vimage' if resources else 'certify', maximumCheckpoints=256,
         additionalRasterObservations=0, observationBoundary='after-existing-drawing-checkpoint',
@@ -109,6 +113,98 @@ class RendererStoragePairTests(unittest.TestCase):
         self.assertEqual(R.C.STRATEGIES, ('reference', 'owned-srgb8'))
         self.assertEqual(R.C.CELLS[0], ('baseline-certification', 'reference', 'certify'))
 
+    def test_every_finite_comparison_has_four_complete_independent_processes(self):
+        for kind in R.COMPARISON_KINDS:
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as root:
+                identity = F.identity_at(Path(root))
+                strategies, cells, _ = R.comparison_contract(kind)
+                self.assertEqual(len(strategies), 2)
+                self.assertEqual(len(cells), 4)
+                arms = {}
+                for index, (name, strategy, mode) in enumerate(cells):
+                    directory, _, _ = materialize(root, identity, strategy, mode == 'resources', index, kind, explicit_kind=True)
+                    arms[name] = R.load_cell(directory, identity, strategy, mode, comparison_kind=kind)
+                certificate = R.compare({name: arms[name] for name, _, _ in cells[:2]}, 'certification', kind)
+                result = R.compare(arms, 'pair', kind)
+                self.assertEqual(certificate['certificationWorkPerArm']['hashes'], 35)
+                self.assertEqual(result['measuredWorkPerArm'], dict(functionalWorkloads=2, warmupWorkloads=2,
+                    measuredWorkloads=8, hashes=205, conversions=205, snapshots=4))
+                self.assertEqual(len({arm['native']['processIdentifier'] for arm in arms.values()}), 4)
+                self.assertEqual(sum(len(arm['native']['functionalCases'][0]['visualEvidence']) for arm in arms.values()), 16)
+                self.assertEqual(result['comparisonKind'], kind)
+                self.assertEqual(result['matchedAutoreleaseScope'], kind == 'renderer-final-storage-scoped')
+                for name, strategy, mode in cells:
+                    self.assertEqual(result['cells'][name]['rendererStorageStrategy'], strategy)
+                    self.assertEqual(result['cells'][name]['rendererAutoreleaseScope'], R.C.renderer_autorelease_scope(strategy))
+                    self.assertEqual(result['cells'][name]['comparisonKind'], kind)
+                    self.assertEqual(len(arms[name]['documents']), 12 if mode == 'resources' else 2)
+                for optimized in (False, True):
+                    output = Path(root) / 'checked.json'
+                    command = [sys.executable, *(['-O'] if optimized else []), str(SCRIPTS / 'check-renderer-storage-pair.py'),
+                        '--app', identity['bundlePath'], '--expected-source', identity['sourceCommit'], '--root', root,
+                        '--comparison-kind', kind, '--stage', 'pair', '--output', str(output)]
+                    completed = subprocess.run(command, capture_output=True, text=True, timeout=20)
+                    self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+                    self.assertEqual(json.loads(output.read_text())['comparisonKind'], kind)
+                # No kind accepts extra cells, pooled arms substituted into the
+                # legacy kind, a six-cell matrix or a forged report label.
+                for bad in ({**arms, 'extra': arms['baseline']}, {**arms, 'other-certification': arms['baseline'], 'other': arms['candidate']}):
+                    with self.assertRaisesRegex(ValueError, 'required fresh cells'):
+                        R.compare(bad, 'pair', kind)
+                corrupted = copy.deepcopy(arms)
+                corrupted['candidate']['rendererStorage']['comparisonKind'] = 'forged'
+                with self.assertRaisesRegex(ValueError, 'renderer arm selection'):
+                    R.compare(corrupted, 'pair', kind)
+                corrupted = copy.deepcopy(arms)
+                corrupted['candidate']['rendererStorage']['rendererAutoreleaseScope'] = 'forged'
+                with self.assertRaisesRegex(ValueError, 'autorelease scope'):
+                    R.compare(corrupted, 'pair', kind)
+
+    def test_pooled_launcher_policy_kind_scope_and_lifecycle_fail_closed(self):
+        kind = 'renderer-final-storage-scoped'
+        directory, arm, report = materialize(self.root, self.identity, 'native-pooled', comparison_kind=kind)
+        original_arm = copy.deepcopy(arm)
+        for target, key, value, error in [
+            ('launcher', 'comparisonKind', R.KIND, 'launcher renderer storage selection'),
+            ('launcher', 'rendererStorageStrategy', 'owned-pooled', 'launcher renderer storage selection'),
+            ('launcher', 'rendererAutoreleaseScope', 'draw-only', 'launcher renderer autorelease scope'),
+            ('launcher', 'ownedExitConfirmed', False, 'fresh owned application exit'),
+            ('launcher', 'processIdentifier', 999, 'report process does not match the owned installed launch'),
+            ('launcher', 'timeoutSeconds', 601, 'owned timeout'),
+            ('wrapper', 'timeout_seconds', 621, 'wrapper deadline'),
+            ('wrapper', 'command', original_arm['wrapper']['command'][:-1], 'bounded command selection'),
+        ]:
+            arm = copy.deepcopy(original_arm); arm[target][key] = value; F.save(directory, arm); bind(directory, report)
+            with self.subTest(target=target, key=key), self.assertRaisesRegex(ValueError, error):
+                R.load_cell(directory, self.identity, 'native-pooled', 'certify', comparison_kind=kind)
+        F.save(directory, original_arm); bind(directory, report)
+        for requested_kind, strategy in [(R.KIND, 'native-pooled'), ('renderer-autorelease-scope', 'owned-pooled'),
+                                         ('drawing-input', 'native-pooled'), ('forged', 'native-pooled')]:
+            with self.subTest(kind=requested_kind, strategy=strategy), self.assertRaises(ValueError):
+                R.load_cell(directory, self.identity, strategy, 'certify', comparison_kind=requested_kind)
+        for key, value in [('rendererAutoreleaseScope', 'caller'), ('rendererStorageStrategy', 'owned-pooled'),
+                           ('comparisonKind', 'renderer-autorelease-scope')]:
+            bad = copy.deepcopy(report); bad[key] = value; save(directory, bad)
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                R.load_cell(directory, self.identity, 'native-pooled', 'certify', comparison_kind=kind)
+
+    def test_new_policies_preserve_native_and_owned_scalar_partition_rules(self):
+        for policy in R.POLICIES:
+            value = state(policy, 4)
+            R.snapshot(value, policy, released=True)
+            if policy in R.NATIVE_POLICIES:
+                value.update(eligibleCount=1, allocations=1, deallocations=1, releaseCallbacks=1,
+                    allocatedBytes=4096, deallocatedBytes=4096, callbackBytes=4096, peakActiveBytes=4096,
+                    attemptCount=5, seedCount=5, drawCount=5, publishCount=5)
+                with self.assertRaisesRegex(ValueError, 'native renderer performed owned'):
+                    R.snapshot(value, policy, released=True)
+            else:
+                value.update(releaseCallbacks=3)
+                with self.assertRaisesRegex(ValueError, 'allocation byte partition'):
+                    R.snapshot(value, policy, released=True)
+        with self.assertRaisesRegex(ValueError, 'unknown renderer strategy'):
+            R.snapshot(state('native'), 'forged')
+
     def test_closed_explicit_kind_does_not_accept_arbitrary_contracts(self):
         for kind in ('', 'renderer', None, True, 'drawing-input-extra'):
             with self.subTest(kind=kind), self.assertRaisesRegex(ValueError, 'unknown comparison kind'):
@@ -132,6 +228,7 @@ class RendererStoragePairTests(unittest.TestCase):
             'resourcesRequested': (True, 'identity differs: resourcesRequested'),
             'rendererStorageStrategy': ('owned-srgb8', 'strategy/default differs'),
             'drawingStrategy': ('reference', 'strategy/default differs'),
+            'rendererAutoreleaseScope': ('whole-render', 'autorelease scope differs'),
             'productionDefaultStrategy': ('owned-srgb8', 'strategy/default differs'),
             'comparisonKind': ('drawing-input', 'status/kind differs'),
             'hashObservation': ('cgcontext', 'observer differs'),

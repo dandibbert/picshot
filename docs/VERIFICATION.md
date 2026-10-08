@@ -2,6 +2,8 @@
 
 ## Held 0.16 component results
 
+[Build 124](EditableObservation124.md) passes all 340 focused cases on both architectures, 41 dedicated cases and exact full paired pixels/documents/guards. Its combined owned-storage/draw-pool candidate retains more cold/final RSS (+585.6875 MiB from native entry) and worse footprint than native storage. It is rejected for production promotion; matched-pool controls are required before storage attribution.
+
 [Build 121](EditableObservation121.md) completes the four-process full native drawing comparison with exact pixels/documents and both-architecture 320/320 focused coverage. Repeated RSS growth improves, but candidate native-entry→final RSS remains +530.875 MiB, volatile backing +267.96875 MiB and footprint +92.563904 MiB; footprint peaks worsen. Production remains reference and 0.16 stays held. The next final-renderer-storage experiment changes one separate boundary.
 
 [Build 119](EditableObservation119.md) passes 299 selected native cases on each architecture and completes all nine ARM component processes. Source-format sample fidelity passes, but preserved-format drawing retains +624.015625 MiB post-warmup RSS and +622.375 MiB volatile backing. The memory candidate is rejected; production decoding remains unchanged. A separate [full drawing-only pair](editable-drawing-pair-diagnostic.md) is authored and awaits native qualification, with no installer or ledger promotion.

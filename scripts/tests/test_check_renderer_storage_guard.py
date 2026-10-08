@@ -36,6 +36,7 @@ class RendererStorageGuardTests(unittest.TestCase):
         self.report.update(comparisonKind=R.R.KIND, productionDefaultStrategy='native', drawingStrategy='owned-srgb8',
             executableBytes=self.executable.stat().st_size, executableSHA256=hashlib.sha256(self.executable.read_bytes()).hexdigest(),
             drawingReportSHA256=hashlib.sha256(self.fixture.sidecar_path.read_bytes()).hexdigest(),
+            rendererAutoreleaseScope='draw-only',
             tracker=dict(attemptCount=6, nativeCount=0, eligibleCount=6, seedCount=6, drawCount=2, publishCount=2,
                 failureCount=4, unsupportedCounts={}, allocations=6, deallocations=6, releaseCallbacks=2,
                 allocatedBytes=384, deallocatedBytes=384, callbackBytes=128, activeBytes=0, peakActiveBytes=64,
@@ -45,9 +46,9 @@ class RendererStorageGuardTests(unittest.TestCase):
     def write(self):
         self.path.write_text(json.dumps(self.report))
 
-    def check(self):
+    def check(self, strategy='owned-srgb8'):
         self.write()
-        return R.check_directory(self.directory, self.app, self.source)
+        return R.check_directory(self.directory, self.app, self.source, strategy)
 
     def test_expected_failures_free_before_provider_and_native_matrix_stays_complete(self):
         result = self.check()
@@ -60,6 +61,54 @@ class RendererStorageGuardTests(unittest.TestCase):
             p = self.cli(optimized)
             self.assertEqual(p.returncode, 0, p.stderr)
             self.assertEqual(json.loads(p.stdout), result)
+
+    def test_pooled_guards_require_the_explicit_policy_and_actual_work(self):
+        for policy in ('native', 'native-pooled', 'owned-pooled'):
+            self.report.update(requestedStrategy=policy, selectedStrategy=policy,
+                rendererAutoreleaseScope=R.R.C.renderer_autorelease_scope(policy))
+            if policy in R.R.NATIVE_POLICIES:
+                self.report['tracker'] = dict.fromkeys(R.R.COUNTERS, 0)
+                self.report['tracker'].update(attemptCount=588, nativeCount=588, seedCount=588,
+                    drawCount=108, publishCount=108, failureCount=480, unsupportedCounts={}, callbackSizesMatch=True)
+            else:
+                self.report['tracker'].update(nativeCount=0, eligibleCount=588,
+                    allocations=588, deallocations=588, releaseCallbacks=108,
+                    allocatedBytes=37632, deallocatedBytes=37632, callbackBytes=6912, peakActiveBytes=64)
+            good = copy.deepcopy(self.report)
+            result = self.check(policy)
+            self.assertEqual(result['selectedStrategy'], policy)
+            self.assertEqual(result['rendererAutoreleaseScope'], R.R.C.renderer_autorelease_scope(policy))
+            self.assertEqual((result['caseCount'], result['rejectedOutputAttempts'], result['controllerReleaseCount']), (24, 432, 24))
+            for optimized in (False, True):
+                completed = self.cli(optimized, policy)
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                self.assertEqual(json.loads(completed.stdout), result)
+                self.assertNotEqual(self.cli(optimized).returncode, 0)
+                self.assertNotEqual(self.cli(optimized, 'forged').returncode, 0)
+            for key, value, error in [('selectedStrategy', 'owned-srgb8', 'strategy/default'),
+                                       ('requestedStrategy', 'owned-srgb8', 'strategy/default'),
+                                       ('rendererAutoreleaseScope', 'forged', 'autorelease scope')]:
+                self.report = copy.deepcopy(good); self.report[key] = value
+                with self.subTest(policy=policy, key=key), self.assertRaisesRegex(ValueError, error):
+                    self.check(policy)
+            self.report = copy.deepcopy(good)
+            if policy in R.R.NATIVE_POLICIES:
+                for field in R.R.COUNTERS:
+                    self.report['tracker'][field] = 0
+                with self.assertRaisesRegex(ValueError, 'path not exercised'):
+                    self.check(policy)
+                self.report = copy.deepcopy(good)
+                self.report['tracker'].update(attemptCount=2, nativeCount=2, seedCount=2, drawCount=1,
+                    publishCount=1, failureCount=1)
+                with self.assertRaisesRegex(ValueError, 'native guard failures or successes omitted'):
+                    self.check(policy)
+            if policy == 'owned-pooled':
+                for changes in ({'callbackBytes': good['tracker']['allocatedBytes']},
+                                {'releaseCallbacks': good['tracker']['allocations']}):
+                    self.report = copy.deepcopy(good); self.report['tracker'].update(changes)
+                    with self.subTest(policy=policy, changes=changes), self.assertRaises(ValueError):
+                        self.check(policy)
+            self.report = copy.deepcopy(good)
 
     def test_provider_callback_can_precede_failed_image_publication(self):
         self.report['tracker'].update(drawCount=3, releaseCallbacks=3, callbackBytes=192)
@@ -78,9 +127,9 @@ class RendererStorageGuardTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'allocation byte partition differs: deallocations'):
             self.check()
 
-    def cli(self, optimized):
+    def cli(self, optimized, strategy=None):
         return subprocess.run([sys.executable, *(['-O'] if optimized else []), str(SCRIPTS / 'check-renderer-storage-guard.py'),
-            str(self.directory), str(self.app), self.source], text=True, capture_output=True, timeout=20)
+            str(self.directory), str(self.app), self.source, *(['--strategy', strategy] if strategy is not None else [])], text=True, capture_output=True, timeout=20)
 
     def test_identity_hashes_and_selection_reach_specific_rejection(self):
         self.check()
@@ -95,6 +144,7 @@ class RendererStorageGuardTests(unittest.TestCase):
             'requestedStrategy': ('native', 'strategy/default differs'),
             'selectedStrategy': ('native', 'strategy/default differs'),
             'drawingStrategy': ('reference', 'strategy/default differs'),
+            'rendererAutoreleaseScope': ('whole-render', 'autorelease scope differs'),
             'productionDefaultStrategy': ('owned-srgb8', 'strategy/default differs'),
             'comparisonKind': ('drawing-input', 'observation differs'),
             'diagnosticOnly': (1, 'not raw evidence'),

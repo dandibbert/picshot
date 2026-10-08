@@ -4,12 +4,21 @@ import Foundation
 // Launch the real installed app without command-line operands. Cocoa can turn
 // unknown arguments (especially an absolute report path) into an open-file
 // request, suppressing the application's normal initial window.
-guard CommandLine.arguments.count == 5 else {
-    fputs("Usage: launch-renderer-storage-pair.swift APP REPORT native|owned-srgb8 certify|resources\n", stderr)
+guard [5, 6].contains(CommandLine.arguments.count) else {
+    fputs("Usage: launch-renderer-storage-pair.swift APP REPORT STRATEGY certify|resources [COMPARISON_KIND]\n", stderr)
     exit(64)
 }
 let strategy = CommandLine.arguments[3], mode = CommandLine.arguments[4]
-guard ["native", "owned-srgb8"].contains(strategy), ["certify", "resources"].contains(mode),
+let comparisonKind = CommandLine.arguments.count == 6 ? CommandLine.arguments[5] : "renderer-final-storage"
+let contracts = [
+    "renderer-final-storage": ["native", "owned-srgb8"],
+    "renderer-autorelease-scope": ["native", "native-pooled"],
+    "renderer-final-storage-scoped": ["native-pooled", "owned-pooled"],
+]
+let scopes = ["native": "caller", "owned-srgb8": "draw-only",
+              "native-pooled": "whole-render", "owned-pooled": "whole-render"]
+guard contracts[comparisonKind]?.contains(strategy) == true,
+      let rendererAutoreleaseScope = scopes[strategy], ["certify", "resources"].contains(mode),
       CommandLine.arguments[1].hasPrefix("/"), CommandLine.arguments[2].hasPrefix("/") else { exit(64) }
 let appURL = URL(fileURLWithPath: CommandLine.arguments[1])
 let configuration = NSWorkspace.OpenConfiguration()
@@ -25,6 +34,7 @@ configuration.environment["PICSHOT_EDITABLE_ANNOTATIONS_ONLY"] = "1"
 configuration.environment["PICSHOT_EDITABLE_HASH_DIAGNOSTIC"] = mode == "certify" ? "certify" : "vimage"
 configuration.environment["PICSHOT_DRAWING_RASTER_STRATEGY"] = "owned-srgb8"
 configuration.environment["PICSHOT_RENDERER_STORAGE_STRATEGY"] = strategy
+configuration.environment["PICSHOT_RENDERER_COMPARISON_KIND"] = comparisonKind
 if mode == "resources" { configuration.environment["PICSHOT_EDITABLE_ANNOTATION_RESOURCES"] = "1" }
 let launchBegan = Date()
 let launchBeganUptime = ProcessInfo.processInfo.systemUptime
@@ -51,7 +61,8 @@ func finish(_ code: Int32, _ status: String) -> Never {
         let reportURL = URL(fileURLWithPath: CommandLine.arguments[2] + ".launcher.json")
         var report: [String: Any] = ["schemaVersion": 1, "status": status,
             "launcherExitCode": Int(code), "drawingStrategy": "owned-srgb8", "drawingMode": mode,
-            "rendererStorageStrategy": strategy, "comparisonKind": "renderer-final-storage",
+            "rendererStorageStrategy": strategy, "comparisonKind": comparisonKind,
+            "rendererAutoreleaseScope": rendererAutoreleaseScope,
             "hashObservation": mode == "certify" ? "certify" : "vimage", "selectedAppPath": appURL.resolvingSymlinksInPath().path,
             "createsNewApplicationInstance": configuration.createsNewApplicationInstance,
             "timeoutSeconds": timeout, "elapsedSeconds": Date().timeIntervalSince(launchBegan),

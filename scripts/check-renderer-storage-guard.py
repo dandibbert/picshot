@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Candidate renderer ownership after the unchanged 24-case/432-attempt guard."""
+import argparse
 import hashlib
 import json
 from pathlib import Path
@@ -18,10 +19,11 @@ D = module('renderer_guard_drawing', 'check-drawing-raster-guard.py')
 R = module('renderer_guard_pair', 'check-renderer-storage-pair.py')
 N = R.N
 FILENAME = 'renderer-storage-output-guard.json'
-KEYS = D.SIDECAR_KEYS | {'comparisonKind', 'executableSHA256', 'executableBytes', 'drawingReportSHA256', 'drawingStrategy'}
+KEYS = D.SIDECAR_KEYS | {'comparisonKind', 'executableSHA256', 'executableBytes', 'drawingReportSHA256', 'drawingStrategy', 'rendererAutoreleaseScope'}
 
 
-def check_directory(directory, app, source):
+def check_directory(directory, app, source, strategy='owned-srgb8'):
+    R.C.renderer_autorelease_scope(strategy)
     directory, app = Path(directory), Path(app)
     # Keep every original native and drawing assertion, including the exact
     # matrix, no failed output publication, successful retry and owned exit.
@@ -50,12 +52,22 @@ def check_directory(directory, app, source):
     executable = D.read_bytes(app / 'Contents/MacOS/PicShot', 512 * 1024 * 1024)
     C.equal_int(report['executableBytes'], len(executable), 'renderer guard executable byte count')
     N.need(report['executableSHA256'] == hashlib.sha256(executable).hexdigest(), 'renderer guard executable SHA differs')
-    N.need(report['requestedStrategy'] == report['selectedStrategy'] == 'owned-srgb8'
+    N.need(report['requestedStrategy'] == report['selectedStrategy'] == strategy
            and report['drawingStrategy'] == 'owned-srgb8' and report['productionDefaultStrategy'] == 'native',
            'renderer guard strategy/default differs')
-    tracker = R.snapshot(report['tracker'], 'owned-srgb8', released=True, allow_failures=True)
-    for field in ('eligibleCount', 'seedCount', 'drawCount', 'publishCount', 'failureCount', 'allocations', 'releaseCallbacks'):
+    N.need(report['rendererAutoreleaseScope'] == C.renderer_autorelease_scope(strategy),
+           'renderer guard autorelease scope differs')
+    tracker = R.snapshot(report['tracker'], strategy, released=True, allow_failures=True)
+    fields = ['seedCount', 'drawCount', 'publishCount', 'failureCount']
+    fields += ['nativeCount'] if strategy in R.NATIVE_POLICIES else ['eligibleCount', 'allocations', 'releaseCallbacks']
+    for field in fields:
         N.need(tracker[field] > 0, 'renderer guard path not exercised: ' + field)
+    if strategy in R.NATIVE_POLICIES:
+        N.need(tracker['nativeCount'] == tracker['attemptCount'], 'renderer guard native work omitted')
+        expected_failures = sum(case['failedRenderRequests'] + case['cacheFailureAttempts'] for case in native['cases'])
+        minimum_successes = sum(case['successControlDeliveries'] + case['retryDeliveries'] for case in native['cases'])
+        N.need(tracker['failureCount'] >= expected_failures and tracker['publishCount'] >= minimum_successes,
+               'renderer native guard failures or successes omitted')
     # Failed pre-provider destinations must be freed but have no callback.
     # A provider created before image-publication failure can have a callback.
     # Do not equate callbacks with all allocations or successful publications.
@@ -65,6 +77,7 @@ def check_directory(directory, app, source):
            'renderer guard eligible work omitted without failures')
     return {**drawing_result, 'comparisonKind': R.KIND,
         'drawingStrategy': 'owned-srgb8', 'productionDefaultStrategy': 'native',
+        'selectedStrategy': strategy, 'rendererAutoreleaseScope': report['rendererAutoreleaseScope'],
         'executableSHA256': report['executableSHA256'], 'executableBytes': report['executableBytes'],
         'drawingReportSHA256': report['drawingReportSHA256'], 'drawingTracker': drawing_result['tracker'],
         'tracker': tracker, 'nativeExecutionAttestedByChecker': False,
@@ -72,5 +85,8 @@ def check_directory(directory, app, source):
 
 
 if __name__ == '__main__':
-    N.need(len(sys.argv) == 4, 'EVIDENCE_DIRECTORY APP SOURCE')
-    print(json.dumps(check_directory(*sys.argv[1:]), sort_keys=True, allow_nan=False))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('directory'); parser.add_argument('app'); parser.add_argument('source')
+    parser.add_argument('--strategy', choices=R.POLICIES, default='owned-srgb8')
+    args = parser.parse_args()
+    print(json.dumps(check_directory(args.directory, args.app, args.source, args.strategy), sort_keys=True, allow_nan=False))

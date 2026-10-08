@@ -6,24 +6,33 @@ import CryptoKit
 @MainActor final class RendererStoragePairDiagnostic {
     typealias O = EditableAnnotationFixtureObservation
     static var process: RendererStoragePairDiagnostic?
-    private let strategy: String, resources: Bool, observer: String
+    private let strategy: RendererStorageStrategy, resources: Bool, observer: String, comparisonKind: String
     private var checkpoints: [[String: Any]] = []
 
-    private init(strategy: String, resources: Bool, observer: String) {
+    private init(strategy: RendererStorageStrategy, resources: Bool, observer: String, comparisonKind: String) {
         self.strategy = strategy; self.resources = resources; self.observer = observer
+        self.comparisonKind = comparisonKind
     }
     static func begin(includeResources: Bool, observer: String) throws {
         process = nil
         let environment = ProcessInfo.processInfo.environment
         guard environment["PICSHOT_RENDERER_STORAGE_STRATEGY"] != nil else { return }
-        let selected = try RendererStorageConfiguration.process.selectedStrategy().rawValue
+        let selected = try RendererStorageConfiguration.process.selectedStrategy()
+        let kind = environment["PICSHOT_RENDERER_COMPARISON_KIND"] ?? "renderer-final-storage"
+        let contracts: [String: [RendererStorageStrategy]] = [
+            "renderer-final-storage": [.native, .ownedSRGB8],
+            "renderer-autorelease-scope": [.native, .nativePooled],
+            "renderer-final-storage-scoped": [.nativePooled, .ownedPooled],
+        ]
+        try O.require(contracts[kind]?.contains(selected) == true,
+                      "Unknown renderer comparison kind or inconsistent strategy")
         try O.require(environment["PICSHOT_SMOKE_TEST"] == "1"
             && environment["PICSHOT_EDITABLE_ANNOTATIONS_ONLY"] == "1"
             && environment["PICSHOT_DRAWING_RASTER_STRATEGY"] == "owned-srgb8",
             "Renderer pair requires the owned editable route and fixed drawing strategy")
         try O.require(observer == "vimage" || (observer == "certify" && !includeResources),
                       "Renderer pair requires common observation and isolated certification")
-        process = RendererStoragePairDiagnostic(strategy: selected, resources: includeResources, observer: observer)
+        process = RendererStoragePairDiagnostic(strategy: selected, resources: includeResources, observer: observer, comparisonKind: kind)
     }
     func checkpoint(drawingCheckpoint: [String: Any]) throws {
         try O.require(checkpoints.count < 256, "Renderer checkpoint bound exceeded")
@@ -35,7 +44,8 @@ import CryptoKit
     func write(native: [String: Any], nativeData: Data, drawingData: Data, directory: URL) throws {
         guard native["status"] as? String != "running" else { return }
         var report: [String: Any] = ["schemaVersion": 1, "status": native["status"] ?? "unknown",
-            "comparisonKind": "renderer-final-storage", "rendererStorageStrategy": strategy,
+            "comparisonKind": comparisonKind, "rendererStorageStrategy": strategy.rawValue,
+            "rendererAutoreleaseScope": strategy.autoreleaseScope,
             "drawingStrategy": "owned-srgb8", "productionDefaultStrategy": RendererStorageStrategy.productionDefault.rawValue,
             "hashObservation": observer, "resourcesRequested": resources,
             "nativeReportSHA256": SHA256.hash(data: nativeData).map { String(format: "%02x", $0) }.joined(),

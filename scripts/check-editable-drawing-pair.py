@@ -26,7 +26,10 @@ STRATEGIES = ('reference', 'owned-srgb8')
 CELLS = [('baseline-certification', 'reference', 'certify'),
          ('candidate-certification', 'owned-srgb8', 'certify'),
          ('baseline', 'reference', 'resources'), ('candidate', 'owned-srgb8', 'resources')]
-COMPARISON_KINDS = ('drawing-input', 'renderer-final-storage')
+COMPARISON_KINDS = ('drawing-input', 'renderer-final-storage',
+                    'renderer-autorelease-scope', 'renderer-final-storage-scoped')
+RENDERER_POLICIES = {'native': 'caller', 'owned-srgb8': 'draw-only',
+                     'native-pooled': 'whole-render', 'owned-pooled': 'whole-render'}
 
 
 def comparison_contract(kind):
@@ -34,11 +37,22 @@ def comparison_contract(kind):
     N.need(kind in COMPARISON_KINDS, 'unknown comparison kind')
     if kind == 'drawing-input':
         return STRATEGIES, CELLS, 'scripts/launch-editable-drawing-pair.swift'
-    return ('native', 'owned-srgb8'), [
-        ('baseline-certification', 'native', 'certify'),
-        ('candidate-certification', 'owned-srgb8', 'certify'),
-        ('baseline', 'native', 'resources'), ('candidate', 'owned-srgb8', 'resources')
+    strategies = {
+        'renderer-final-storage': ('native', 'owned-srgb8'),
+        'renderer-autorelease-scope': ('native', 'native-pooled'),
+        'renderer-final-storage-scoped': ('native-pooled', 'owned-pooled'),
+    }[kind]
+    baseline, candidate = strategies
+    return strategies, [
+        ('baseline-certification', baseline, 'certify'),
+        ('candidate-certification', candidate, 'certify'),
+        ('baseline', baseline, 'resources'), ('candidate', candidate, 'resources')
     ], 'scripts/launch-renderer-storage-pair.swift'
+
+
+def renderer_autorelease_scope(strategy):
+    N.need(type(strategy) is str and strategy in RENDERER_POLICIES, 'unknown renderer strategy')
+    return RENDERER_POLICIES[strategy]
 
 
 def drawing_strategy(strategy, kind):
@@ -311,7 +325,7 @@ def validate_pair_sidecar(pair, native, native_bytes, diagnostic, strategy, reso
 def validate_launch(launcher, wrapper, envelope, native, identity, directory, strategy, mode, comparison_kind='drawing-input'):
     _, _, launch_script = comparison_contract(comparison_kind)
     expected_drawing = drawing_strategy(strategy, comparison_kind)
-    extra_fields = {'rendererStorageStrategy', 'comparisonKind'} if comparison_kind == 'renderer-final-storage' else set()
+    extra_fields = {'rendererStorageStrategy', 'comparisonKind', 'rendererAutoreleaseScope'} if comparison_kind != 'drawing-input' else set()
     N.keys(launcher, {'schemaVersion', 'status', 'launcherExitCode', 'drawingStrategy', 'drawingMode',
         'hashObservation', 'selectedAppPath', 'createsNewApplicationInstance', 'timeoutSeconds', 'elapsedSeconds',
         'launchBeganUptimeSeconds', 'finishUptimeSeconds', 'callbackReceived', 'ownedExitConfirmed',
@@ -322,9 +336,11 @@ def validate_launch(launcher, wrapper, envelope, native, identity, directory, st
            and launcher['ownedExitConfirmed'] is True and launcher['createsNewApplicationInstance'] is True,
            'fresh owned application exit unverified')
     N.need(launcher['processStartMemoryCaptured'] is False, 'launcher incorrectly claims birth memory')
-    if comparison_kind == 'renderer-final-storage':
+    if comparison_kind != 'drawing-input':
         N.need(launcher['rendererStorageStrategy'] == strategy and launcher['comparisonKind'] == comparison_kind,
                'launcher renderer storage selection differs')
+        N.need(launcher['rendererAutoreleaseScope'] == renderer_autorelease_scope(strategy),
+               'launcher renderer autorelease scope differs')
     N.need(launcher['drawingStrategy'] == expected_drawing and launcher['drawingMode'] == mode
            and launcher['hashObservation'] == ('certify' if mode == 'certify' else 'vimage'), 'launcher selection differs')
     executable = str(Path(identity['bundlePath']) / 'Contents/MacOS/PicShot')
@@ -359,8 +375,11 @@ def validate_launch(launcher, wrapper, envelope, native, identity, directory, st
     duration = N.number(wrapper['duration_seconds'], 0, 620)
     N.need(duration > 0 and duration + .1 >= launcher['elapsedSeconds'], 'wrapper interval shorter than launch')
     C.validate_group_observation(wrapper['group_observation'], duration)
-    N.need(wrapper['command'] == ['swift', launch_script, identity['bundlePath'],
-        str(directory / 'launch.json'), strategy, mode], 'bounded command selection differs')
+    command = ['swift', launch_script, identity['bundlePath'], str(directory / 'launch.json'), strategy, mode]
+    commands = [command] if comparison_kind == 'drawing-input' else [command + [comparison_kind]]
+    if comparison_kind == 'renderer-final-storage':
+        commands.append(command)  # Preserve original default launcher invocations.
+    N.need(wrapper['command'] in commands, 'bounded command selection differs')
     N.string(wrapper['started_at'])
     start = datetime.datetime.fromisoformat(wrapper['started_at'])
     N.need(start.tzinfo is not None and start.utcoffset() == datetime.timedelta(0), 'wrapper start is not UTC')
@@ -471,8 +490,11 @@ def compare(arms, stage, comparison_kind='drawing-input'):
             N.need(arm['native'][field] == first['native'][field], 'paired installed binary identity differs: ' + field)
         N.need(arm['drawing']['drawingStrategy'] == drawing_strategy(strategy, comparison_kind)
                and arm['native']['resourcesRequested'] is (mode == 'resources'), 'arm selection differs')
-        if comparison_kind == 'renderer-final-storage':
-            N.need(arm['rendererStorage']['rendererStorageStrategy'] == strategy, 'renderer arm selection differs')
+        if comparison_kind != 'drawing-input':
+            N.need(arm['rendererStorage']['rendererStorageStrategy'] == strategy
+                   and arm['rendererStorage']['comparisonKind'] == comparison_kind, 'renderer arm selection differs')
+            N.need(arm['rendererStorage']['rendererAutoreleaseScope'] == renderer_autorelease_scope(strategy),
+                   'renderer arm autorelease scope differs')
         if previous:
             N.need(previous['finishUptimeSeconds'] <= arm['lifecycle']['launchBeganUptimeSeconds'], 'fresh owned launches overlap or reordered')
         previous = arm['lifecycle']

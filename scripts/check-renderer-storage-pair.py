@@ -18,6 +18,20 @@ C = module('renderer_drawing_pair', 'check-editable-drawing-pair.py')
 N = C.N
 KIND = 'renderer-final-storage'
 STRATEGIES, CELLS, _ = C.comparison_contract(KIND)
+COMPARISON_KINDS = tuple(kind for kind in C.COMPARISON_KINDS if kind != 'drawing-input')
+POLICIES = tuple(C.RENDERER_POLICIES)
+NATIVE_POLICIES = ('native', 'native-pooled')
+OWNED_POLICIES = ('owned-srgb8', 'owned-pooled')
+INTERVENTIONS = {
+    KIND: 'combined final renderer storage and draw-only autorelease pool intervention',
+    'renderer-autorelease-scope': 'whole-render autorelease pool with native destination and final makeImage',
+    'renderer-final-storage-scoped': 'final destination allocation and snapshot storage under matched whole-render autorelease pools',
+}
+
+
+def comparison_contract(kind=KIND):
+    N.need(kind in COMPARISON_KINDS, 'unknown renderer comparison kind')
+    return C.comparison_contract(kind)
 FILENAME = 'renderer-storage-pair.json'
 MAX_BYTES = 256 * 1024
 COUNTERS = {'attemptCount', 'nativeCount', 'eligibleCount', 'seedCount', 'drawCount', 'publishCount',
@@ -29,7 +43,7 @@ OWNERSHIP = {'allocations', 'deallocations', 'releaseCallbacks', 'allocatedBytes
 
 def snapshot(value, strategy, previous=None, released=False, allow_failures=False):
     N.keys(value, COUNTERS | {'unsupportedCounts', 'callbackSizesMatch'})
-    N.need(strategy in STRATEGIES, 'unknown renderer strategy')
+    C.renderer_autorelease_scope(strategy)
     for field in COUNTERS:
         N.integer(value[field])
     unsupported = value['unsupportedCounts']
@@ -61,7 +75,7 @@ def snapshot(value, strategy, previous=None, released=False, allow_failures=Fals
            and value['peakActiveBytes'] * value['allocations'] >= value['allocatedBytes'], 'renderer peak omits owned work')
     if not allow_failures:
         N.need(value['failureCount'] == 0, 'renderer failed during complete workload')
-    if strategy == 'native':
+    if strategy in NATIVE_POLICIES:
         N.need(value['eligibleCount'] == 0 and not unsupported
                and all(value[field] == 0 for field in OWNERSHIP), 'native renderer performed owned storage work')
     else:
@@ -82,15 +96,19 @@ def snapshot(value, strategy, previous=None, released=False, allow_failures=Fals
     return value
 
 
-def validate_sidecar(report, arm, raw_native, raw_drawing, strategy):
+def validate_sidecar(report, arm, raw_native, raw_drawing, strategy, comparison_kind=KIND):
+    comparison_contract(comparison_kind)
+    C.drawing_strategy(strategy, comparison_kind)
     N.keys(report, {'schemaVersion', 'status', *C.IDENTITY, 'executableBytes', 'comparisonKind',
-        'rendererStorageStrategy', 'drawingStrategy', 'productionDefaultStrategy', 'hashObservation',
+        'rendererStorageStrategy', 'rendererAutoreleaseScope', 'drawingStrategy', 'productionDefaultStrategy', 'hashObservation',
         'nativeReportSHA256', 'drawingReportSHA256', 'maximumCheckpoints', 'additionalRasterObservations',
         'observationBoundary', 'checkpoints', 'productDefaultsChanged', 'privateFrameworkReleaseClaim', 'scope'})
     C.equal_int(report['schemaVersion'], 1, 'renderer schema')
-    N.need(report['status'] == 'passed' and report['comparisonKind'] == KIND, 'renderer sidecar status/kind differs')
+    N.need(report['status'] == 'passed' and report['comparisonKind'] == comparison_kind, 'renderer sidecar status/kind differs')
     N.need(report['rendererStorageStrategy'] == strategy and report['drawingStrategy'] == 'owned-srgb8'
            and report['productionDefaultStrategy'] == 'native', 'renderer strategy/default differs')
+    N.need(report['rendererAutoreleaseScope'] == C.renderer_autorelease_scope(strategy),
+           'renderer autorelease scope differs')
     for key in (*C.IDENTITY, 'executableBytes'):
         N.need(type(report[key]) is type(arm['native'][key]) and report[key] == arm['native'][key], 'renderer identity differs: ' + key)
     N.need(report['hashObservation'] == ('vimage' if arm['native']['resourcesRequested'] else 'certify'), 'renderer observer differs')
@@ -115,8 +133,8 @@ def validate_sidecar(report, arm, raw_native, raw_drawing, strategy):
         if point['label'] == 'workload-released':
             N.need(entry is not None, 'renderer workload entry missing')
             fields = ['attemptCount', 'seedCount', 'drawCount', 'publishCount',
-                      'nativeCount' if strategy == 'native' else 'eligibleCount']
-            if strategy == 'owned-srgb8':
+                      'nativeCount' if strategy in NATIVE_POLICIES else 'eligibleCount']
+            if strategy in OWNED_POLICIES:
                 fields += ['allocations', 'releaseCallbacks', 'allocatedBytes']
             for field in fields:
                 N.need(state[field] > entry[field], 'renderer path not exercised in every workload: ' + field)
@@ -124,24 +142,27 @@ def validate_sidecar(report, arm, raw_native, raw_drawing, strategy):
     return report
 
 
-def load_cell(directory, identity, strategy, mode, launcher_status=0):
-    arm = C.load_cell(directory, identity, strategy, mode, launcher_status, comparison_kind=KIND)
+def load_cell(directory, identity, strategy, mode, launcher_status=0, comparison_kind=KIND):
+    comparison_contract(comparison_kind)
+    arm = C.load_cell(directory, identity, strategy, mode, launcher_status, comparison_kind=comparison_kind)
     path = Path(arm['directory']) / FILENAME
     N.need(0 < path.lstat().st_size <= MAX_BYTES, 'renderer scalar sidecar exceeds bound')
     report = N.read_report(path)
     arm['rendererStorage'] = validate_sidecar(report, arm,
         (path.parent / 'editable-annotation-native.json').read_bytes(),
-        (path.parent / 'editable-drawing-pair.json').read_bytes(), strategy)
+        (path.parent / 'editable-drawing-pair.json').read_bytes(), strategy, comparison_kind)
     arm['reportHashes']['rendererStorage'] = hashlib.sha256(path.read_bytes()).hexdigest()
     return arm
 
 
-def compare(arms, stage):
-    result = C.compare(arms, stage, comparison_kind=KIND)
-    result.update(comparisonKind=KIND, drawingStrategy='owned-srgb8', productionDefaultStrategy='native',
-                  singleVariable='final ImageEditorRenderer.render destination allocation and snapshot storage')
+def compare(arms, stage, comparison_kind=KIND):
+    comparison_contract(comparison_kind)
+    result = C.compare(arms, stage, comparison_kind=comparison_kind)
+    result.update(comparisonKind=comparison_kind, drawingStrategy='owned-srgb8', productionDefaultStrategy='native',
+                  intervention=INTERVENTIONS[comparison_kind], matchedAutoreleaseScope=comparison_kind == 'renderer-final-storage-scoped')
     for name, arm in arms.items():
-        result['cells'][name]['rendererStorageStrategy'] = arm['rendererStorage']['rendererStorageStrategy']
+        for field in ('rendererStorageStrategy', 'rendererAutoreleaseScope', 'comparisonKind'):
+            result['cells'][name][field] = arm['rendererStorage'][field]
     if stage == 'pair':
         for name in ('baseline', 'candidate'):
             result['arms'][name]['rendererStorageCheckpoints'] = arms[name]['rendererStorage']['checkpoints']
@@ -152,7 +173,8 @@ def compare(arms, stage):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--app', required=True, type=Path); parser.add_argument('--expected-source', required=True)
-    parser.add_argument('--cell', type=Path); parser.add_argument('--strategy', choices=STRATEGIES)
+    parser.add_argument('--comparison-kind', choices=COMPARISON_KINDS, default=KIND)
+    parser.add_argument('--cell', type=Path); parser.add_argument('--strategy', choices=POLICIES)
     parser.add_argument('--mode', choices=('certify', 'resources')); parser.add_argument('--launcher-status', type=int, default=0)
     parser.add_argument('--root', type=Path); parser.add_argument('--stage', choices=('certification', 'pair'))
     parser.add_argument('--output', required=True, type=Path)
@@ -162,19 +184,21 @@ def main():
         identity = N.bundle_identity(args.app, args.expected_source)
         if args.cell:
             N.need(args.root is None and args.stage is None, 'mixed cell/pair invocation')
-            arm = load_cell(args.cell, identity, args.strategy, args.mode, args.launcher_status)
-            result.update(status='passed', comparisonKind=KIND, sourceCommit=identity['sourceCommit'],
+            arm = load_cell(args.cell, identity, args.strategy, args.mode, args.launcher_status, args.comparison_kind)
+            result.update(status='passed', comparisonKind=args.comparison_kind, sourceCommit=identity['sourceCommit'],
                 executableSHA256=identity['executableSHA256'], architecture=identity['architecture'],
                 processIdentifier=arm['native']['processIdentifier'], rendererStorageStrategy=args.strategy,
+                rendererAutoreleaseScope=C.renderer_autorelease_scope(args.strategy),
                 drawingStrategy='owned-srgb8', resourcesRequested=args.mode == 'resources',
                 ownedExitConfirmed=True, visualFilesVerified=True, nativeExecutionAttestedByChecker=False,
                 reportHashes=arm['reportHashes'])
         else:
             N.need(args.root is not None and args.stage is not None and args.strategy is None and args.mode is None,
                    'incomplete renderer pair invocation')
-            selected = CELLS[:2] if args.stage == 'certification' else CELLS
-            result = compare({name: load_cell(args.root / name, identity, strategy, mode)
-                              for name, strategy, mode in selected}, args.stage)
+            _, cells, _ = comparison_contract(args.comparison_kind)
+            selected = cells[:2] if args.stage == 'certification' else cells
+            result = compare({name: load_cell(args.root / name, identity, strategy, mode, comparison_kind=args.comparison_kind)
+                              for name, strategy, mode in selected}, args.stage, args.comparison_kind)
     except Exception as error:
         result['error'] = str(error)[:4096]
     args.output.write_text(json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + '\n')

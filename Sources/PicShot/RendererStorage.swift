@@ -7,7 +7,22 @@ import Foundation
 enum RendererStorageStrategy: String, CaseIterable, Sendable {
     case native
     case ownedSRGB8 = "owned-srgb8"
+    // Smoke-only matched controls. Both enclose allocation, seeding, annotation
+    // drawing and final output creation in the same whole-render pool.
+    case nativePooled = "native-pooled"
+    case ownedPooled = "owned-pooled"
     static let productionDefault: Self = .native
+
+    var usesOwnedStorage: Bool { self == .ownedSRGB8 || self == .ownedPooled }
+    var usesWholeRenderAutoreleasePool: Bool { self == .nativePooled || self == .ownedPooled }
+    /// The pool boundary owned by this renderer, not framework-internal pools.
+    var autoreleaseScope: String {
+        switch self {
+        case .native: return "caller"
+        case .ownedSRGB8: return "draw-only"
+        case .nativePooled, .ownedPooled: return "whole-render"
+        }
+    }
 }
 
 struct RendererStorageConfiguration: @unchecked Sendable {
@@ -134,48 +149,73 @@ enum RendererStorage {
         do {
             try cancellation(isCancelled)
             let strategy = try configuration.selectedStrategy()
-            let unsupported = strategy == .ownedSRGB8 ? DrawingRaster.unsupported(image) : nil
-            if strategy == .native || unsupported != nil {
-                configuration.tracker.update {
-                    $0.nativeCount += 1
-                    if strategy == .ownedSRGB8, let unsupported { $0.unsupportedCounts[unsupported.rawValue, default: 0] += 1 }
+            if strategy.usesWholeRenderAutoreleasePool {
+                return try autoreleasepool {
+                    try renderSelected(image: image, annotations: annotations, strategy: strategy, configuration: configuration,
+                        drawingRaster: drawingRaster, isCancelled: isCancelled, effectPatchRenderer: effectPatchRenderer)
                 }
-                return try renderNative(image: image, annotations: annotations, configuration: configuration,
-                    drawingRaster: drawingRaster, isCancelled: isCancelled, effectPatchRenderer: effectPatchRenderer)
             }
-            configuration.tracker.update { $0.eligibleCount += 1 }
-            let count = try admittedStorage(width: image.width, height: image.height,
-                sourceBytesPerRow: image.bytesPerRow, sourceBitsPerPixel: image.bitsPerPixel, limits: configuration.limits)
-            let bytes = try Bytes(count: count, configuration: configuration)
-            // This function has no callback that receives a mutable context or
-            // pointer. The mutable context dies before publication; immutable
-            // effect snapshots may outlive the draw through effectPatchRenderer.
-            try autoreleasepool {
-                try drawOwned(image: image, annotations: annotations, bytes: bytes, configuration: configuration,
-                    drawingRaster: drawingRaster, isCancelled: isCancelled, effectPatchRenderer: effectPatchRenderer)
-            }
-            try cancellation(isCancelled)
-            if configuration.failureInjection == .provider { throw Failure.injectedProvider }
-            let retained = Unmanaged.passRetained(bytes)
-            guard let provider = CGDataProvider(dataInfo: retained.toOpaque(), data: bytes.pointer, size: count,
-                releaseData: { info, _, size in
-                    guard let info else { return }
-                    let owner = Unmanaged<Bytes>.fromOpaque(info).takeRetainedValue()
-                    owner.tracker.callback(actual: size, expected: owner.count)
-                }) else { retained.release(); throw Failure.providerFailed }
-            if configuration.failureInjection == .image { throw Failure.injectedImage }
-            guard let color = CGColorSpace(name: CGColorSpace.sRGB),
-                  let result = CGImage(width: image.width, height: image.height, bitsPerComponent: 8,
-                    bitsPerPixel: 32, bytesPerRow: image.width * 4, space: color, bitmapInfo: bitmapInfo,
-                    provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent) else { throw Failure.imageFailed }
-            try cancellation(isCancelled)
-            configuration.tracker.update { $0.publishCount += 1 }
-            return result
+            return try renderSelected(image: image, annotations: annotations, strategy: strategy, configuration: configuration,
+                drawingRaster: drawingRaster, isCancelled: isCancelled, effectPatchRenderer: effectPatchRenderer)
         } catch {
             configuration.tracker.update { $0.failureCount += 1 }
             if error as? DrawingRaster.Failure == .cancelled { throw Failure.cancelled }
             throw error
         }
+    }
+
+    /// Shared body for all strategies. Only the matched controls wrap this whole
+    /// body in a pool; the original native and owned paths retain their scopes.
+    private static func renderSelected(image: CGImage, annotations: [ImageAnnotation],
+        strategy: RendererStorageStrategy, configuration: RendererStorageConfiguration,
+        drawingRaster: DrawingRasterConfiguration, isCancelled: () -> Bool,
+        effectPatchRenderer: ImageEditorRenderer.EffectPatchRenderer) throws -> CGImage {
+        let unsupported = strategy.usesOwnedStorage ? DrawingRaster.unsupported(image) : nil
+        if !strategy.usesOwnedStorage || unsupported != nil {
+            configuration.tracker.update {
+                $0.nativeCount += 1
+                if strategy.usesOwnedStorage, let unsupported { $0.unsupportedCounts[unsupported.rawValue, default: 0] += 1 }
+            }
+            return try renderNative(image: image, annotations: annotations, configuration: configuration,
+                drawingRaster: drawingRaster, isCancelled: isCancelled, effectPatchRenderer: effectPatchRenderer)
+        }
+        configuration.tracker.update { $0.eligibleCount += 1 }
+        let count = try admittedStorage(width: image.width, height: image.height,
+            sourceBytesPerRow: image.bytesPerRow, sourceBitsPerPixel: image.bitsPerPixel, limits: configuration.limits)
+        let bytes = try Bytes(count: count, configuration: configuration)
+        // This function has no callback that receives a mutable context or
+        // pointer. The mutable context dies before publication; immutable
+        // effect snapshots may outlive the draw through effectPatchRenderer.
+        if strategy == .ownedSRGB8 {
+            // Preserve the legacy draw-only pool for the original experiment.
+            try autoreleasepool {
+                try drawOwned(image: image, annotations: annotations, bytes: bytes, configuration: configuration,
+                    drawingRaster: drawingRaster, isCancelled: isCancelled, effectPatchRenderer: effectPatchRenderer)
+            }
+        } else {
+            // The pooled pair has one shared outer pool, with no extra draw pool.
+            // The private Void helper still ends the mutable context's lifetime
+            // before immutable provider publication below.
+            try drawOwned(image: image, annotations: annotations, bytes: bytes, configuration: configuration,
+                drawingRaster: drawingRaster, isCancelled: isCancelled, effectPatchRenderer: effectPatchRenderer)
+        }
+        try cancellation(isCancelled)
+        if configuration.failureInjection == .provider { throw Failure.injectedProvider }
+        let retained = Unmanaged.passRetained(bytes)
+        guard let provider = CGDataProvider(dataInfo: retained.toOpaque(), data: bytes.pointer, size: count,
+            releaseData: { info, _, size in
+                guard let info else { return }
+                let owner = Unmanaged<Bytes>.fromOpaque(info).takeRetainedValue()
+                owner.tracker.callback(actual: size, expected: owner.count)
+            }) else { retained.release(); throw Failure.providerFailed }
+        if configuration.failureInjection == .image { throw Failure.injectedImage }
+        guard let color = CGColorSpace(name: CGColorSpace.sRGB),
+              let result = CGImage(width: image.width, height: image.height, bitsPerComponent: 8,
+                bitsPerPixel: 32, bytesPerRow: image.width * 4, space: color, bitmapInfo: bitmapInfo,
+                provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent) else { throw Failure.imageFailed }
+        try cancellation(isCancelled)
+        configuration.tracker.update { $0.publishCount += 1 }
+        return result
     }
 
     /// The control is the pre-experiment allocation/snapshot path, including for
