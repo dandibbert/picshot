@@ -1139,7 +1139,7 @@ final class EditorSaveActionsButton: NSPopUpButton {
 
 @MainActor
 final class ImageEditorController: NSWindowController, NSWindowDelegate {
-    private struct Snapshot { var image: CGImage; var annotations: [ImageAnnotation]; var selectionFrame: CGRect?; var pinPresentation: PinEditorPresentation?; var numberSequence: NumberedCalloutSequence; var aspectRatio: CaptureAspectRatio? }
+    private struct Snapshot { var image: CGImage; var annotations: [ImageAnnotation]; var selectionFrame: CGRect?; var pinPresentation: PinEditorPresentation?; var numberSequence: NumberedCalloutSequence; var aspectRatio: CaptureAspectRatio?; var outputDecoration: ImageOutputDecoration }
     private let canvas: ImageEditorCanvas
     private let scrollView = NSScrollView()
     private let workspace = EditorWorkspaceView(frame: .zero)
@@ -1153,6 +1153,23 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     var captureRatioPaletteFrame: CGRect { captureRatioSurface.frame }
     private let onSave: (CGImage) -> Void
     private let onPin: (CGImage) -> Void
+    private let onPinWithOriginal: ((CGImage, CGImage) -> Void)?
+    /// Immutable while the editor is open; released on close. Crop/recrop and
+    /// output decoration never replace this initial capture.
+    private(set) var initialOriginalImage: CGImage?
+    private(set) var outputDecoration = ImageOutputDecoration.none
+    private(set) var outputDecorationPalette: ImageOutputDecorationPalette?
+    private var outputDecorationButton: NSButton?
+    private var projectionTicket: EditorOutputProjection.Ticket?
+    private var projectionGeneration = UUID()
+    var outputProjectionIsPending: Bool { projectionTicket != nil }
+    var outputProjectionReservedBytes: Int { projectionTicket?.reservedBytes ?? 0 }
+    var estimatedOutputProjectionReservationBytes: Int { outputProjectionReservedBytes }
+    private(set) var outputDeliveryCount = 0
+    private(set) var lastOutputRoute: ImageEditorOutputRoute?
+    // Production defaults to the app error presenter; fixtures can observe a
+    // refusal without blocking automation in a modal alert.
+    var onOutputError: ((Error) -> Void)?
     private let onOCR: (CGImage) -> Void
     private let onTranslate: ((CGImage) -> Void)?
     private let onApply: ((CGImage) -> Bool)?
@@ -1191,7 +1208,10 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     var automaticMosaicWorkspace: NSView { workspace }
     // A test may delay a real matcher result; production always uses the actor above.
     var automaticMosaicFind: ((CGImage, RepeatedRegionPixelRect) async throws -> RepeatedRegionMatchResult)?
-    func setAutomaticMosaicReviewState(_ state: AutomaticMosaicReviewState?) { automaticMosaicReviewState = state }
+    func setAutomaticMosaicReviewState(_ state: AutomaticMosaicReviewState?) {
+        if state != nil { cancelDecorationWork() }
+        automaticMosaicReviewState = state
+    }
     func refreshAutomaticMosaicInterface() { updateStatus() }
     func automaticMosaicOutputAction(_ action: Selector?) -> Bool {
         [#selector(copyResult), #selector(exportResult), #selector(pinResult), #selector(applyResult),
@@ -1199,7 +1219,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
          #selector(quickSaveResult), #selector(saveCopyResult)].contains { $0 == action }
     }
     func installAutomaticMosaicInspector() {
-        inspector.onAutomaticMosaic = { [weak self] in self?.startAutomaticMosaic() }
+        inspector.onAutomaticMosaic = { [weak self] in self?.cancelDecorationWork(); self?.startAutomaticMosaic() }
         inspector.onMosaicSync = { [weak self] enabled in self?.canvas.setMosaicSync(enabled) }
         inspector.onMosaicAdd = { [weak self] in self?.beginLinkedMosaicCorrection() }
     }
@@ -1208,11 +1228,12 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     /// Current/history/cache/frozen rasters once per identity, with a reserved
     /// redraw raster when the cache is empty. This is not total process memory.
     var estimatedAdmissionRasterBytes: Int {
-        var images = [canvas.image] + undoStates.map(\.image) + redoStates.map(\.image)
+        var images = [canvas.image] + [initialOriginalImage].compactMap { $0 } + undoStates.map(\.image) + redoStates.map(\.image)
         images += [canvas.retainedPresentationRaster, presentation?.frozenImage,
                    workspace.frozenImage, workspace.boundaryPreviewImage].compactMap { $0 }
         return EditorAdmissionPolicy.sum([EditorRasterEstimate.retainedBytes(images),
-            canvas.retainedPresentationRaster == nil ? EditorRasterEstimate.redrawBytes(canvas.image) : 0])
+            canvas.retainedPresentationRaster == nil ? EditorRasterEstimate.redrawBytes(canvas.image) : 0,
+            outputDecorationPalette?.estimatedAdditionalRasterBytes ?? 0, outputProjectionReservedBytes])
     }
     var annotationCanvas: ImageEditorCanvas { canvas }
     var activeInlineTextView: InlineAnnotationTextView? { inlineBox?.input }
@@ -1252,10 +1273,11 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     init(image: CGImage, presentation: FrozenCapturePresentation? = nil,
          onSave: @escaping (CGImage) -> Void, onPin: @escaping (CGImage) -> Void,
          onOCR: @escaping (CGImage) -> Void, onTranslate: ((CGImage) -> Void)? = nil,
-         onApply: ((CGImage) -> Bool)? = nil, captureDate: Date? = nil, saveWorkflow: SaveWorkflowPresenter? = nil, copyAction: ((CGImage) -> Void)? = nil) {
+         onApply: ((CGImage) -> Bool)? = nil, captureDate: Date? = nil, saveWorkflow: SaveWorkflowPresenter? = nil, copyAction: ((CGImage) -> Void)? = nil, onPinWithOriginal: ((CGImage, CGImage) -> Void)? = nil) {
         canvas = ImageEditorCanvas(image: image, captureDate: presentation?.capturedAt ?? captureDate)
         self.presentation = presentation
         self.onSave = onSave; self.onPin = onPin; self.onOCR = onOCR
+        self.onPinWithOriginal = onPinWithOriginal; initialOriginalImage = image
         self.onTranslate = onTranslate; self.onApply = onApply; self.saveWorkflow = saveWorkflow ?? SaveWorkflowPresenter.application
         self.copyAction = copyAction ?? { copyImage($0) }
         let window: NSWindow
@@ -1280,8 +1302,14 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         canvas.onCopy = { [weak self] in self?.copyResult() }
         canvas.onExport = { [weak self] in self?.exportResult() }
         canvas.onCancel = { [weak self] in self?.cancelEditor() }
-        canvas.onBeforeInteraction = { [weak self] in self?.finishInlineText(commit: true) }
+        canvas.onBeforeInteraction = { [weak self] in
+            self?.cancelDecorationWork(); self?.finishInlineText(commit: true)
+        }
         installAutomaticMosaic()
+        let mosaicInvalidation = canvas.onContentInvalidated
+        canvas.onContentInvalidated = { [weak self] in
+            mosaicInvalidation?(); self?.cancelDecorationWork()
+        }
         inspector.onClearAnnotations = { [weak self] in self?.canvas.clearAnnotations() }
         inspector.onFinishPolyline = { [weak self] in
             self?.canvas.finishPolyline(); self?.window?.makeFirstResponder(self?.canvas)
@@ -1460,6 +1488,8 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
             let button = iconButton("aspectratio", title: "截图区域比例与像素尺寸", id: "editor.captureRatio", action: #selector(toggleCaptureRatio))
             ratioButton = button; toolbar.addArrangedSubview(button)
         }
+        let decoration = iconButton("rectangle.inset.filled", title: "圆角 · 边框 · 阴影", id: "editor.outputDecoration", action: #selector(editOutputDecoration))
+        outputDecorationButton = decoration; toolbar.addArrangedSubview(decoration)
         divider()
         toolbar.addArrangedSubview(iconButton("text.viewfinder", title: "识别文字", id: "editor.ocr", action: #selector(recognizeResult)))
         if onTranslate != nil { toolbar.addArrangedSubview(iconButton("character.bubble", title: "翻译", id: "editor.translate", action: #selector(translateResult))) }
@@ -1484,6 +1514,9 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         let autoMosaic = NSMenuItem(title: "查找相同内容…", action: #selector(startAutomaticMosaic), keyEquivalent: "")
         autoMosaic.target = self; autoMosaic.identifier = .init("editor.context.automaticMosaic")
         canvas.menu?.addItem(autoMosaic)
+        let decorationItem = NSMenuItem(title: "圆角 · 边框 · 阴影…", action: #selector(editOutputDecoration), keyEquivalent: "")
+        decorationItem.target = self; decorationItem.identifier = .init("editor.context.outputDecoration")
+        canvas.menu?.addItem(decorationItem)
         if presentation != nil {
             let item = NSMenuItem(title: "截图区域比例与像素尺寸…", action: #selector(toggleCaptureRatio), keyEquivalent: "")
             item.target = self; canvas.menu?.addItem(item)
@@ -1501,6 +1534,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         }
         overflow.menu?.addItem(.separator())
         if presentation != nil { addMenu("截图区域比例与像素尺寸…", action: #selector(toggleCaptureRatio)) }
+        addMenu("圆角 · 边框 · 阴影…", action: #selector(editOutputDecoration))
         addMenu("自动马赛克…", action: #selector(chooseAutomaticMosaicTool))
         addMenu("查找所选区域的相同内容…", action: #selector(startAutomaticMosaic))
         addMenu("模糊", action: #selector(selectBlur)); addMenu("创建标注副本 · ⌘D", action: #selector(duplicateAnnotation))
@@ -1576,7 +1610,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         workspace.aspectRatio = presentation?.aspectRatio
         captureRatioControls.display(ratio: presentation?.aspectRatio, pixels: workspace.pixelSize)
         captureRatioSurface.isHidden = !ratioControlsVisible || presentation == nil || automaticMosaicBlocksOutput
-        inspector.isHidden = !captureRatioSurface.isHidden || automaticMosaicReviewState != nil || canvas.automaticMosaicDrawHandler != nil
+        inspector.isHidden = outputDecorationPalette != nil || !captureRatioSurface.isHidden || automaticMosaicReviewState != nil || canvas.automaticMosaicDrawHandler != nil
             || canvas.tool == .crop || (canvas.tool == .select && canvas.selectedAnnotation == nil)
         let availableBounds = pinPresentation.flatMap { pin in NSScreen.screens.first { $0.frame.intersects(pin.viewportFrame) }?.frame } ?? workspace.bounds
         for button in toolButtons.values { button.isHidden = false }
@@ -1632,7 +1666,11 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         if frames.palette.height == 0 { inspector.isHidden = true; captureRatioSurface.isHidden = true }
         ratioButton?.state = ratioControlsVisible ? .on : .off
         status.stringValue = "\(Int(workspace.pixelSize.width)) × \(Int(workspace.pixelSize.height)) px"
-        if let ratio = presentation?.aspectRatio { status.stringValue += " · \(ratio.label) exact" }
+        if let ratio = presentation?.aspectRatio { status.stringValue += " · \(ratio.label) 精确" }
+        if !outputDecoration.isIdentity, let output = try? ImageOutputDecorationLayout.make(width: canvas.image.width, height: canvas.image.height, decoration: outputDecoration) {
+            status.stringValue += " · 输出 \(output.width) × \(output.height) px"
+        }
+        if let ticket = projectionTicket { status.stringValue += ticket.cancellation.isCancelled ? " · 正在取消…" : " · 正在生成装饰…" }
         if (canvas.pendingFreehand ?? canvas.selectedAnnotation)?.freehandWasSimplified == true {
             status.stringValue += " · 长笔迹已简化（最多 2048 点）"
         }
@@ -1645,8 +1683,8 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     func setVerificationAnnotations(_ annotations: [ImageAnnotation]) {
         recordChange(); canvas.setContent(image: canvas.image, annotations: annotations); canvas.displayIfNeeded()
     }
-    private var snapshot: Snapshot { Snapshot(image: canvas.image, annotations: canvas.annotations, selectionFrame: presentation?.selectionFrame, pinPresentation: pinPresentation, numberSequence: canvas.numberSequence, aspectRatio: presentation?.aspectRatio) }
-    private func recordChange() { undoStates.append(snapshot); redoStates.removeAll(); trimHistory(preferUndo: true); updateStatus() }
+    private var snapshot: Snapshot { Snapshot(image: canvas.image, annotations: canvas.annotations, selectionFrame: presentation?.selectionFrame, pinPresentation: pinPresentation, numberSequence: canvas.numberSequence, aspectRatio: presentation?.aspectRatio, outputDecoration: outputDecoration) }
+    private func recordChange() { cancelDecorationWork(); undoStates.append(snapshot); redoStates.removeAll(); trimHistory(preferUndo: true); updateStatus() }
     private func trimHistory(preferUndo: Bool) {
         let first = preferUndo ? redoStates : undoStates, second = preferUndo ? undoStates : redoStates
         let count = ImageEditorHistoryBudget.retainedSuffixStart(images: (first + second).map(\.image))
@@ -1655,6 +1693,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         else { undoStates.removeFirst(firstCount); redoStates.removeFirst(secondCount) }
     }
     private func restore(_ state: Snapshot) {
+        cancelDecorationWork(); outputDecoration = state.outputDecoration
         if pinPresentation != nil { pinPresentation = state.pinPresentation }
         if let old = presentation, let frame = state.selectionFrame {
             presentation = FrozenCapturePresentation(frozenImage: old.frozenImage, displayID: old.displayID, displayFrame: old.displayFrame, selectionFrame: frame, capturedAt: old.capturedAt, aspectRatio: state.aspectRatio)
@@ -1664,7 +1703,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     private func updateStatus() {
         let outputIDs: Set<String> = ["editor.copy", "editor.save", "editor.pin", "editor.applyToPin", "editor.ocr", "editor.translate", "editor.saveActions"]
         for view in toolbar.views + toolbar.detachedViews where outputIDs.contains(view.identifier?.rawValue ?? "") {
-            (view as? NSControl)?.isEnabled = !automaticMosaicBlocksOutput
+            (view as? NSControl)?.isEnabled = !automaticMosaicBlocksOutput && !outputProjectionIsPending && !isClosed
         }
         for menu in [canvas.menu, overflow.menu].compactMap({ $0 }) {
             for item in menu.items {
@@ -1672,9 +1711,12 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
                     item.isEnabled = canvas.selectedAnnotation?.supportsAutomaticMosaic == true && !isClosed
                     item.toolTip = canvas.selectedAnnotation?.mosaicLink == nil ? "选择同尺寸、未旋转的马赛克、模糊或遮盖区域" : "已关联的结果可用同步/补充区域编辑；重新查找请新建选区"
                 }
-                if automaticMosaicOutputAction(item.action) { item.isEnabled = !automaticMosaicBlocksOutput && !isClosed }
+                if automaticMosaicOutputAction(item.action) { item.isEnabled = !automaticMosaicBlocksOutput && !outputProjectionIsPending && !isClosed }
+                if item.action == #selector(editOutputDecoration) { item.isEnabled = !automaticMosaicBlocksOutput && !isClosed }
             }
         }
+        outputDecorationButton?.isEnabled = !automaticMosaicBlocksOutput && !isClosed
+        outputDecorationButton?.state = outputDecoration.enabled ? .on : .off
         status.stringValue = "\(canvas.image.width) × \(canvas.image.height) px · \(canvas.annotations.count) 个标注"
         undoButton?.isEnabled = !undoStates.isEmpty || canvas.pendingPolylinePointCount > 0; redoButton?.isEnabled = !redoStates.isEmpty && canvas.pendingPolylinePointCount == 0
         cropButton?.isHidden = canvas.tool != .crop
@@ -1699,6 +1741,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         layoutInterface()
     }
     func chooseTool(_ tool: ImageEditorTool) {
+        cancelDecorationWork()
         ratioControlsVisible = false
         cancelAutomaticMosaic()
         finishInlineText(commit: true); canvas.tool = tool; refreshSubtoolButton(for: tool); updateStatus(); window?.makeFirstResponder(canvas)
@@ -1713,6 +1756,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     @objc private func duplicateAnnotation() { finishInlineText(commit: true); canvas.duplicateSelection() }
     @objc private func deleteAnnotation() { finishInlineText(commit: false); canvas.deleteSelection() }
     @objc private func undoEdit() {
+        cancelDecorationWork()
         cancelAutomaticMosaic()
         canvas.finishNumberComment(commit: true)
         if canvas.pendingPolylinePointCount > 0 { canvas.removeLastPolylineVertex(); return }
@@ -1721,6 +1765,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         redoStates.append(snapshot); trimHistory(preferUndo: false); restore(state)
     }
     @objc private func redoEdit() {
+        cancelDecorationWork()
         cancelAutomaticMosaic()
         canvas.finishNumberComment(commit: false)
         guard canvas.pendingPolylinePointCount == 0 else { return }
@@ -1729,6 +1774,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         undoStates.append(snapshot); trimHistory(preferUndo: true); restore(state)
     }
     @objc private func applyCrop() {
+        cancelDecorationWork()
         canvas.finishNumberComment(commit: true)
         finishInlineText(commit: true)
         guard let rect = canvas.cropRect, let flattened = canvas.flattened(), let cropped = ImageEditorRenderer.crop(image: flattened, to: rect) else { return }
@@ -1751,49 +1797,136 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     }
     @objc private func fitImage() { canvas.finishNumberComment(commit: true); finishInlineText(commit: true); fitToWindow = true; needsFit = true; layoutInterface() }
     @objc private func actualSize() { guard presentation == nil else { return }; canvas.finishNumberComment(commit: true); finishInlineText(commit: true); fitToWindow = false; canvas.zoom = 1; layoutInterface() }
-    private func result(close: Bool = false, _ action: (CGImage) -> Void) {
-        guard !automaticMosaicBlocksOutput else { return }
+    /// One seam for all CURRENT final-image routes. OCR/translation intentionally
+    /// inspect the final visible projection; matching and crop stay in source coordinates.
+    func requestOutput(for route: ImageEditorOutputRoute, close: Bool = false,
+                       completion: @escaping (CGImage) -> Void) {
+        guard !isClosed, !automaticMosaicBlocksOutput else { return }
+        guard projectionTicket == nil else { presentOutputError(EditorOutputProjectionError.busy); return }
+        outputDecorationPalette?.cancel(); outputDecorationPalette = nil
         canvas.finishNumberComment(commit: true)
         finishInlineText(commit: true); canvas.finishPolyline()
-        guard let image = canvas.flattened() else { showError(PicShotError.message("无法合成图片，可能内存不足")); return }
-        if close { window?.close() }; action(image)
+        if outputDecoration.isIdentity {
+            guard let image = canvas.flattened() else { presentOutputError(ImageOutputDecorationError.allocationFailed); return }
+            deliverOutput(image, route: route, close: close, completion: completion)
+            return
+        }
+        let service = EditorOutputProjection.shared
+        var reservation: EditorOutputProjection.Ticket?
+        do {
+            let ticket = try service.reserve(width: canvas.image.width, height: canvas.image.height, decoration: outputDecoration)
+            reservation = ticket
+            guard let image = canvas.flattened() else { throw ImageOutputDecorationError.allocationFailed }
+            let generation = UUID(); projectionGeneration = generation; projectionTicket = ticket
+            updateStatus()
+            try service.start(ticket, image: image) { [weak self, weak ticket] result in
+                guard let self, let ticket, self.projectionTicket === ticket else { return }
+                self.projectionTicket = nil
+                if !self.isClosed { self.updateStatus() }
+                guard !self.isClosed, !self.automaticMosaicBlocksOutput,
+                      self.projectionGeneration == generation, !ticket.cancellation.isCancelled else { return }
+                switch result {
+                case .success(let image): self.deliverOutput(image, route: route, close: close, completion: completion)
+                case .failure(let error): if !(error is CancellationError) { self.presentOutputError(error) }
+                }
+            }
+        } catch {
+            if let reservation { service.abandon(reservation) }
+            projectionTicket = nil; updateStatus(); presentOutputError(error)
+        }
+    }
+    private func deliverOutput(_ image: CGImage, route: ImageEditorOutputRoute, close: Bool,
+                               completion: (CGImage) -> Void) {
+        guard !isClosed, !automaticMosaicBlocksOutput else { return }
+        outputDeliveryCount += 1; lastOutputRoute = route
+        if close { window?.close() }
+        completion(image)
+    }
+    private func presentOutputError(_ error: Error) {
+        if let onOutputError { onOutputError(error) } else { showError(error) }
+    }
+    func cancelDecorationWork() {
+        projectionGeneration = UUID(); projectionTicket?.cancel()
+        outputDecorationPalette?.cancel(); outputDecorationPalette = nil
+        // A cancelling operation still owns its reservation until completion.
+        if !isClosed { updateStatus() }
+    }
+    @discardableResult
+    func applyOutputDecoration(_ value: ImageOutputDecoration) throws -> Bool {
+        guard !isClosed else { return false }
+        if value.enabled { try value.validate() }
+        _ = try ImageOutputDecorationLayout.make(width: canvas.image.width, height: canvas.image.height, decoration: value)
+        guard value != outputDecoration else { return false }
+        recordChange(); outputDecoration = value; updateStatus(); return true
+    }
+    @objc private func editOutputDecoration() {
+        guard !isClosed, !automaticMosaicBlocksOutput else { return }
+        cancelDecorationWork(); ratioControlsVisible = false
+        guard !EditorOutputProjection.shared.isBusy else { presentOutputError(EditorOutputProjectionError.busy); return }
+        canvas.finishNumberComment(commit: true); finishInlineText(commit: true); canvas.finishPolyline()
+        let bytes = EditorRasterEstimate.redrawBytes(canvas.image)
+        guard bytes <= (EditorOutputProjection.combinedWorkingByteLimit - 12 * 1_024 * 1_024) / 2 else {
+            presentOutputError(EditorOutputProjectionError.tooLarge); return
+        }
+        guard let image = canvas.flattened(), let anchor = outputDecorationButton else {
+            presentOutputError(ImageOutputDecorationError.allocationFailed); return
+        }
+        let palette = ImageOutputDecorationPalette(flattened: image, decoration: outputDecoration,
+            onApply: { [weak self] value in
+                guard let self, !self.isClosed else { return }
+                do { _ = try self.applyOutputDecoration(value) } catch { self.presentOutputError(error) }
+            }, onDismiss: { [weak self] in
+                self?.outputDecorationPalette = nil
+                if self?.isClosed == false { self?.updateStatus() }
+            })
+        outputDecorationPalette = palette; updateStatus(); palette.show(relativeTo: anchor)
     }
     @objc private func copyResult() {
         let workflow = saveWorkflow, copy = copyAction
-        result(close: presentation != nil) { image in
+        requestOutput(for: .copy, close: presentation != nil) { image in
             copy(image) // Immediate copy never waits for automatic save admission.
             workflow?.save(image: image, automatic: true)
         }
     }
     @objc private func saveResult() {
         let workflow = saveWorkflow, action = onSave
-        result { image in action(image); workflow?.save(image: image, automatic: true) }
+        requestOutput(for: .history) { image in action(image); workflow?.save(image: image, automatic: true) }
     }
     @objc private func pinResult() {
-        let workflow = saveWorkflow, action = onPin
-        result(close: presentation != nil) { image in action(image); workflow?.save(image: image, automatic: true) }
+        requestOutput(for: .pin) { [weak self] image in
+            guard let self, !self.isClosed else { return }
+            // Acquire original pixels only after successful MainActor delivery.
+            // A queued/cancelled projection must not retain another full source
+            // outside its flattened-input/renderer reservation.
+            let workflow = self.saveWorkflow, action = self.onPin
+            let originalAction = self.onPinWithOriginal, original = self.initialOriginalImage
+            if self.presentation != nil { self.window?.close() }
+            if let originalAction, let original { originalAction(original, image) } else { action(image) }
+            workflow?.save(image: image, automatic: true)
+        }
     }
     @objc private func quickSaveResult() { saveUsingWorkflow(copy: false) }
     @objc private func saveCopyResult() { saveUsingWorkflow(copy: true) }
     @objc private func openSaveSettings() { saveWorkflow?.onSettings?(window) }
     private func saveUsingWorkflow(copy: Bool) {
         guard let saveWorkflow else { return }
-        result { [weak self] image in
+        requestOutput(for: copy ? .saveCopy : .quickSave) { [weak self] image in
             saveWorkflow.save(image: image, copy: copy, from: self?.window) { [weak self] saved in
                 guard saved.clipboardOutcome != .failed, saved.clipboardOutcome != .cancelledAfterSave else { return }
                 if self?.presentation != nil { self?.window?.close() }
             }
         }
     }
-    @objc private func recognizeResult() { result(close: presentation != nil, onOCR) }
-    @objc private func translateResult() { if let onTranslate { result(close: presentation != nil, onTranslate) } }
+    @objc private func recognizeResult() { requestOutput(for: .recognition, close: presentation != nil, completion: onOCR) }
+    @objc private func translateResult() { if let onTranslate { requestOutput(for: .translation, close: presentation != nil, completion: onTranslate) } }
     @objc private func applyResult() {
         guard let onApply else { return }
-        result { image in if onApply(image) { window?.close() } }
+        requestOutput(for: .applyToPin) { [weak self] image in if onApply(image) { self?.window?.close() } }
     }
-    @objc private func cancelEditor() { finishInlineText(commit: false); window?.close() }
+    @objc private func cancelEditor() { cancelDecorationWork(); finishInlineText(commit: false); window?.close() }
 
     @objc private func toggleCaptureRatio() {
+        cancelDecorationWork()
         guard presentation != nil else { return }
         finishInlineText(commit: true); canvas.finishNumberComment(commit: true)
         ratioControlsVisible.toggle(); layoutInterface()
@@ -1806,6 +1939,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     }
     @discardableResult
     func setCaptureAspectRatio(_ ratio: CaptureAspectRatio?) -> Bool {
+        cancelDecorationWork()
         guard !isClosed, boundaryPreviewFrame == nil, let presentation, let geometry = captureRatioGeometry else { return false }
         do {
             let frame = try ratio.map { try geometry.fitting(presentation.selectionFrame, ratio: $0) } ?? presentation.selectionFrame
@@ -1814,6 +1948,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     }
     @discardableResult
     func setCapturePixelSize(width: Int, height: Int, axis: CaptureRatioAxis) -> Bool {
+        cancelDecorationWork()
         guard !isClosed, boundaryPreviewFrame == nil, let presentation, let geometry = captureRatioGeometry else { return false }
         do {
             let frame: CGRect
@@ -1874,6 +2009,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     }
 
     private func beginBoundaryResize() {
+        cancelDecorationWork()
         cancelAutomaticMosaic()
         canvas.finishNumberComment(commit: true)
         finishInlineText(commit: true); canvas.finishPolyline()
@@ -1913,6 +2049,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     }
 
     func beginInlineText(at point: CGPoint, editing id: UUID?) {
+        cancelDecorationWork()
         canvas.finishNumberComment(commit: true)
         finishInlineText(commit: true)
         let existing = id.flatMap { identifier in canvas.annotations.first { $0.id == identifier && $0.tool == .text } }
@@ -1951,6 +2088,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     }
     func windowWillClose(_ notification: Notification) {
         guard !isClosed else { return }; isClosed = true
+        cancelDecorationWork(); initialOriginalImage = nil; onOutputError = nil
         cancelAutomaticMosaic(); automaticMosaicFind = nil
         automaticMosaicReviewSurface.removeFromSuperview()
         canvas.onContentInvalidated = nil; canvas.onAutomaticMosaicToggle = nil
@@ -1980,12 +2118,11 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     func windowDidResize(_ notification: Notification) { guard !layingOut else { return }; canvas.finishNumberComment(commit: true); finishInlineText(commit: true); layoutInterface() }
 
     @objc private func exportResult() {
-        guard !automaticMosaicBlocksOutput else { return }
-        canvas.finishNumberComment(commit: true)
-        finishInlineText(commit: true); canvas.finishPolyline()
-        guard let window, let image = canvas.flattened() else { return }
-        ImageExportController.present(image: image, from: window, saveWorkflow: saveWorkflow) { [weak self] _ in
-            if self?.presentation != nil { self?.window?.close() }
+        requestOutput(for: .export) { [weak self] image in
+            guard let self, !self.isClosed, let window = self.window else { return }
+            ImageExportController.present(image: image, from: window, saveWorkflow: self.saveWorkflow) { [weak self] _ in
+                if self?.presentation != nil { self?.window?.close() }
+            }
         }
     }
 

@@ -334,12 +334,14 @@ import ImageIO
         if presentation != nil, !frozenEditorAdmission.shouldStart(isBusy:false,
             isClosed:{$0.isClosed},focus:{self.focusEditor($0)}) { return }
         let editors=controllers.compactMap{$0 as? ImageEditorController}.filter{!$0.isClosed}
+        let reportedProjectionBytes=editors.reduce(0){$0 + $1.estimatedOutputProjectionReservationBytes}
+        let drainingProjectionBytes=max(0,EditorOutputProjection.shared.reservedBytes-reportedProjectionBytes)
         guard editorAdmission.refusal(existingRasterBytes:editors.map(\.estimatedAdmissionRasterBytes),
-            incomingRasterBytes:EditorRasterEstimate.openingBytes(image:image,presentation:presentation)) == nil else {
+            incomingRasterBytes:EditorAdmissionPolicy.sum([EditorRasterEstimate.openingBytes(image:image,presentation:presentation),drainingProjectionBytes])) == nil else {
             if editorAdmissionNotices.recordRefusal(){showEditorAdmissionNotice()};return
         }
         let knownCaptureDate=presentation?.capturedAt ?? captureDate
-        let c=ImageEditorController(image:image,presentation:presentation,onSave:{[weak self] img in do{try self?.history.add(img,title:"编辑",capturedAt:knownCaptureDate)}catch{showError(error)}},onPin:{[weak self] img in self?.pin(img)},onOCR:{[weak self] img in self?.recognize(img)},onTranslate:{[weak self] img in self?.translateImage(img)},captureDate:knownCaptureDate,saveWorkflow:smoke == nil ? saveWorkflows : nil)
+        let c=ImageEditorController(image:image,presentation:presentation,onSave:{[weak self] img in do{try self?.history.add(img,title:"编辑",capturedAt:knownCaptureDate)}catch{showError(error)}},onPin:{[weak self] img in self?.pin(img)},onOCR:{[weak self] img in self?.recognize(img)},onTranslate:{[weak self] img in self?.translateImage(img)},captureDate:knownCaptureDate,saveWorkflow:smoke == nil ? saveWorkflows : nil,onPinWithOriginal:{[weak self] original,current in self?.pin(originalImage:original,currentImage:current)})
         c.onClose={ [weak self,weak c] in
             guard let self,let c else{return}
             self.frozenEditorAdmission.editorDidClose(c)
@@ -368,11 +370,12 @@ import ImageIO
     }
     func retain(_ controller:NSWindowController){controllers.append(controller)}
     @objc func windowClosed(_ n:Notification){guard let w=n.object as? NSWindow else{return};let closedSettings=settingsController?.window === w;controllers.removeAll{$0.window === w};pins.removeAll{$0.window === w};if closedSettings{settingsController=nil;refreshHotkeys()}}
-    func pin(_ image:CGImage){
-        if let pinSession {do{try pinSession.add(image:image)}catch{showError(error)};return}
-        let bytes=pins.reduce(0){$0+$1.image.bytesPerRow*$1.image.height}
-        guard pins.count<20,bytes+image.bytesPerRow*image.height<400_000_000 else{showError(PicShotError.message("贴图已达到内存保护上限，请关闭一些贴图后重试"));return}
-        let c=PinController(image:image,defaults:smoke == nil ? .standard : nil)
+    func pin(_ image:CGImage){ pin(originalImage:image,currentImage:image) }
+    func pin(originalImage:CGImage,currentImage:CGImage){
+        if let pinSession {do{try pinSession.add(originalImage:originalImage,currentImage:currentImage)}catch{showError(error)};return}
+        let bytes=EditorRasterEstimate.retainedBytes(pins.flatMap{[$0.image,$0.currentImage]} + [originalImage,currentImage])
+        guard pins.count<20,bytes<400_000_000 else{showError(PicShotError.message("贴图已达到内存保护上限，请关闭一些贴图后重试"));return}
+        let c=PinController(originalImage:originalImage,currentImage:currentImage,isModified:!(originalImage === currentImage),defaults:smoke == nil ? .standard : nil)
         c.applyAutomaticOCR(pinOCRPreferences.automaticallyRecognizeText)
         c.onAutomaticOCRChange = { [weak self] enabled in self?.setAutomaticPinOCR(enabled) }
         pins.append(c);c.showWindow(nil)

@@ -4,16 +4,16 @@ public enum MultiWindowCaptureError: Error, LocalizedError, Equatable {
     case empty, noWindows, windowLimit, invalidWindow, changed, pixelLimit, incomplete, finished, deadline, diskLimit
     public var errorDescription: String? {
         switch self {
-        case .empty: return "Select at least one window."
-        case .noWindows: return "No eligible windows are visible. Open a window on this desktop and try again."
-        case .windowLimit: return "Select up to 8 windows for one screenshot."
-        case .invalidWindow: return "This window cannot be captured. Choose another window."
-        case .changed: return "A selected window or display changed during capture. Start a new capture."
-        case .pixelLimit: return "Selected windows exceed the capture size limit. Select fewer or smaller windows."
-        case .incomplete: return "A selected window could not be captured. No partial screenshot was saved."
-        case .finished: return "This window capture has already finished."
-        case .deadline: return "Window capture timed out. Start a new capture."
-        case .diskLimit: return "There is not enough temporary disk space for window capture."
+        case .empty: return "请至少选择一个窗口。"
+        case .noWindows: return "当前桌面没有可截图的窗口，请打开窗口后重试。"
+        case .windowLimit: return "一次最多选择 8 个窗口。"
+        case .invalidWindow: return "无法截取此窗口，请选择其他窗口。"
+        case .changed: return "所选窗口或屏幕在截图过程中发生变化，请重新截图。"
+        case .pixelLimit: return "所选窗口超出截图尺寸上限，请减少窗口或缩小窗口后重试。"
+        case .incomplete: return "未能完整截取所选窗口，本次截图未保存。"
+        case .finished: return "本次窗口截图已结束。"
+        case .deadline: return "窗口截图超时，请重新截图。"
+        case .diskLimit: return "临时磁盘空间不足，无法截取窗口。"
         }
     }
 }

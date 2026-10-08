@@ -160,14 +160,34 @@ import PicShotCore
                                presentation: PinPresentation = PinPresentation(),
                                protecting protectedIDs: Set<UUID> = [],
                                revealingGroup: Bool = false) throws -> PinSessionEntry {
+        try add(originalImage: image, currentImage: image, title: title, groupID: groupID,
+                presentation: presentation, protecting: protectedIDs, revealingGroup: revealingGroup)
+    }
+
+    /// Stage source and decorated pixels before publishing one complete entry. The original
+    /// is never rendered from the current image. Reusing the same image object stores one PNG.
+    @discardableResult func add(originalImage: CGImage, currentImage: CGImage,
+                               title: String = "贴图", groupID: UUID? = nil,
+                               presentation: PinPresentation = PinPresentation(),
+                               protecting protectedIDs: Set<UUID> = [],
+                               revealingGroup: Bool = false) throws -> PinSessionEntry {
         let groupID = groupID ?? index.activeGroupID
         guard index.groups.contains(where: { $0.id == groupID }) else { throw PinSessionError.missingGroup }
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard PinSessionIndex.validName(title, limit: 120) else { throw PinSessionError.invalidName }
-        let asset = try writeAsset(image)
+        var staged: [String] = []
         var committed = false
-        defer { if !committed { removeAssetIfSafe(asset.filename) } }
-        let entry = PinSessionEntry(groupID: groupID, title: title, original: asset, presentation: presentation.normalized())
+        defer { if !committed { staged.forEach { removeAssetIfSafe($0) } } }
+        let original = try writeAsset(originalImage)
+        staged.append(original.filename)
+        let current: PinRasterAsset
+        if originalImage === currentImage { current = original }
+        else {
+            current = try writeAsset(currentImage)
+            staged.append(current.filename)
+        }
+        let entry = PinSessionEntry(groupID: groupID, title: title, original: original, current: current,
+                                    presentation: presentation.normalized())
         var next = index; next.entries.insert(entry, at: 0)
         // A user-created pin can reveal its group in the same atomic transaction.
         // A failed manifest write must not save/evict a pin or change visibility alone.

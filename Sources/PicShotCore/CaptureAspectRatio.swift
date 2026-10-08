@@ -7,7 +7,7 @@ public enum CaptureAspectRatioError: Error, LocalizedError, Equatable {
     case invalidRatio
 
     public var errorDescription: String? {
-        "Enter whole-number ratio values from 1 to 10,000."
+        "请输入 1 至 10000 的整数比例。"
     }
 }
 

@@ -15,8 +15,8 @@ final class CaptureRatioControls: NSStackView, NSTextFieldDelegate {
     let widthField = NSTextField(string: "")
     let heightField = NSTextField(string: "")
     private let customRow = NSStackView()
-    private let swap = NSButton(title: "Swap", target: nil, action: nil)
-    private let feedback = NSTextField(labelWithString: "Free selection")
+    private let swap = NSButton(title: "交换", target: nil, action: nil)
+    private let feedback = NSTextField(labelWithString: "自由选区")
     private var lastAxis: CaptureRatioAxis = .width
     private var enteringCustom = false
     private let prefix: String
@@ -28,37 +28,37 @@ final class CaptureRatioControls: NSStackView, NSTextFieldDelegate {
         super.init(frame: .zero)
         orientation = .vertical; alignment = .leading; spacing = 4
         identifier = .init(prefix + ".ratioControls")
-        preset.addItems(withTitles: ["Free"] + CaptureAspectRatio.presets.map(\.label) + ["Custom…"])
+        preset.addItems(withTitles: ["自由"] + CaptureAspectRatio.presets.map(\.label) + ["自定义…"])
         preset.target = self; preset.action = #selector(selectPreset)
         preset.identifier = .init(prefix + ".ratioPreset")
-        preset.setAccessibilityLabel("Selection aspect ratio in source pixels")
+        preset.setAccessibilityLabel("按原图像素设置选区宽高比")
         preset.controlSize = .small
         preset.widthAnchor.constraint(equalToConstant: 102).isActive = true
         swap.target = self; swap.action = #selector(swapRatio)
         swap.identifier = .init(prefix + ".ratioSwap"); swap.controlSize = .small; swap.bezelStyle = .rounded
-        swap.toolTip = "Swap width and height ratio"
-        let row = NSStackView(views: [NSTextField(labelWithString: "Ratio"), preset, swap])
+        swap.toolTip = "交换宽高比例"
+        let row = NSStackView(views: [NSTextField(labelWithString: "比例"), preset, swap])
         row.orientation = .horizontal; row.spacing = 5
-        for (field, id, label, width) in [(numerator, "ratioNumerator", "Custom ratio numerator, 1 through 10000", 48.0),
-                                         (denominator, "ratioDenominator", "Custom ratio denominator, 1 through 10000", 48.0),
-                                         (widthField, "pixelWidth", "Selection width in source pixels", 58.0),
-                                         (heightField, "pixelHeight", "Selection height in source pixels", 58.0)] {
+        for (field, id, label, width) in [(numerator, "ratioNumerator", "宽度比例，1 至 10000 的整数", 48.0),
+                                         (denominator, "ratioDenominator", "高度比例，1 至 10000 的整数", 48.0),
+                                         (widthField, "pixelWidth", "选区宽度，原图像素", 58.0),
+                                         (heightField, "pixelHeight", "选区高度，原图像素", 58.0)] {
             field.identifier = .init(prefix + "." + id); field.setAccessibilityLabel(label)
             field.delegate = self; field.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
             field.controlSize = .small; field.alignment = .right
             field.target = self; field.action = #selector(applyField(_:))
             field.widthAnchor.constraint(equalToConstant: CGFloat(width)).isActive = true
         }
-        let custom = NSButton(title: "Set", target: self, action: #selector(applyCustom))
+        let custom = NSButton(title: "设置", target: self, action: #selector(applyCustom))
         custom.identifier = .init(prefix + ".ratioApply"); custom.bezelStyle = .rounded; custom.controlSize = .small
         customRow.setViews([numerator, NSTextField(labelWithString: ":"), denominator, custom], in: .leading)
         customRow.orientation = .horizontal; customRow.spacing = 3; customRow.isHidden = true
         row.addArrangedSubview(customRow)
         addArrangedSubview(row)
-        let apply = NSButton(title: "Set px", target: self, action: #selector(applySize))
+        let apply = NSButton(title: "应用尺寸", target: self, action: #selector(applySize))
         apply.identifier = .init(prefix + ".sizeApply"); apply.bezelStyle = .rounded; apply.controlSize = .small
-        dimensionRow.setViews([NSTextField(labelWithString: "W"), widthField,
-                               NSTextField(labelWithString: "H"), heightField, apply], in: .leading)
+        dimensionRow.setViews([NSTextField(labelWithString: "宽"), widthField,
+                               NSTextField(labelWithString: "高"), heightField, apply], in: .leading)
         dimensionRow.orientation = .horizontal; dimensionRow.spacing = 4
         addArrangedSubview(dimensionRow)
         feedback.font = .systemFont(ofSize: 10); feedback.textColor = .secondaryLabelColor
@@ -86,8 +86,8 @@ final class CaptureRatioControls: NSStackView, NSTextFieldDelegate {
         (dimensionRow.arrangedSubviews.last as? NSControl)?.isEnabled = pixels != nil
         feedback.stringValue = ratio.map { value in
             let exact = pixels.map { $0.width * CGFloat(value.denominator) == $0.height * CGFloat(value.numerator) } ?? true
-            return "\(exact ? "Exact pixel ratio" : "Next resize ratio") \(value.label) · \(value.numerator) × \(value.denominator) px steps"
-        } ?? "Free selection · dimensions are source pixels"
+            return "\(exact ? "精确比例" : "下次调整比例") \(value.label) · \(value.numerator) × \(value.denominator) 像素步长"
+        } ?? "自由选区 · 尺寸为原图像素"
         needsLayout = true
     }
     func showError(_ message: String) { feedback.stringValue = message; feedback.toolTip = message }
@@ -106,7 +106,7 @@ final class CaptureRatioControls: NSStackView, NSTextFieldDelegate {
     @objc private func applyCustom() {
         guard let n = Int(text(numerator)), let d = Int(text(denominator)),
               let value = try? CaptureAspectRatio(numerator: n, denominator: d) else {
-            showError("Enter whole ratio values from 1 through 10000"); return
+            showError("请输入 1 至 10000 的整数比例"); return
         }
         enteringCustom = false
         if onRatio?(value) != true { enteringCustom = true }
@@ -117,7 +117,7 @@ final class CaptureRatioControls: NSStackView, NSTextFieldDelegate {
     }
     @objc private func applySize() {
         guard let width = Int(text(widthField)), let height = Int(text(heightField)), width > 0, height > 0 else {
-            showError("Enter positive whole source-pixel dimensions"); return
+            showError("请输入正整数像素尺寸"); return
         }
         _ = onSize?(width, height, lastAxis)
     }

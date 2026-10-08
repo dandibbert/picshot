@@ -89,12 +89,20 @@ import PicShotCore
     /// A new capture does not implicitly reopen old saved pins when launch restore is off.
     /// Explicit Show, Recover, or a group-manager action reopens the whole visible group.
     @discardableResult func add(image: CGImage, title: String = "贴图") throws -> UUID {
+        try add(originalImage: image, currentImage: image, title: title)
+    }
+
+    /// Editor output keeps its undecorated source available for original-copy/save/reset.
+    /// A shared image object is unmodified; distinct source/current images persist together.
+    @discardableResult func add(originalImage: CGImage, currentImage: CGImage,
+                               title: String = "贴图") throws -> UUID {
         guard !terminated else { throw PinSessionError.missingPin }
         guard livePinCount < Self.maximumLivePins else { throw PinSessionError.capacityExceeded }
-        let controller = makeImageController(image, image, false)
+        let controller = makeImageController(originalImage, currentImage, !(originalImage === currentImage))
         let entry: PinSessionEntry
         do {
-            entry = try store.add(image: image, title: title, presentation: controller.presentation,
+            entry = try store.add(originalImage: originalImage, currentImage: currentImage,
+                                  title: title, presentation: controller.presentation,
                                   protecting: livePinIDs, revealingGroup: true)
         } catch {
             controller.close()

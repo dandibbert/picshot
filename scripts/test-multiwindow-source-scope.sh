@@ -9,6 +9,7 @@ trap 'rm -rf "$picshot_scope"' EXIT
 mkdir -p "$picshot_scope/Sources/PicShot" "$picshot_scope/Sources/PicShotCore" "$picshot_scope/Tests/PicShotTests" "$picshot_scope/Tests/PicShotCoreTests"
 cp "$picshot_root"/Sources/PicShot/MultiWindow*.swift "$picshot_scope/Sources/PicShot/"
 cp "$picshot_root/Sources/PicShot/DisplayConfigurationWatcher.swift" "$picshot_scope/Sources/PicShot/"
+cp "$picshot_root/Sources/PicShot/ImageBackingMemoryReading.swift" "$picshot_scope/Sources/PicShot/"
 cp "$picshot_root/Sources/PicShotCore/MultiWindowCaptureLayout.swift" "$picshot_root/Sources/PicShotCore/DisplayCompositeLayout.swift" "$picshot_root/Sources/PicShotCore/ScreenshotCaptureOptions.swift" "$picshot_scope/Sources/PicShotCore/"
 cp "$picshot_root"/Tests/PicShotTests/MultiWindow*.swift "$picshot_scope/Tests/PicShotTests/"
 cp "$picshot_root/Tests/PicShotCoreTests/MultiWindowCaptureLayoutTests.swift" "$picshot_scope/Tests/PicShotCoreTests/"

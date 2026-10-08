@@ -1,12 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# Keep the previously ambiguous installed recording wait observable in the
+# original broad ordering. This changes no recording work, limit or assertion.
+export PICSHOT_RECORDING_COMPOSITION_TRACE=1
 export PICSHOT_SMOKE_ERASE_MODEL_DIR="$PWD/.build/model-fixtures/erase"
 export PICSHOT_SMOKE_FORMULA_MODEL_DIR="$PWD/.build/model-fixtures/formula"
 export PICSHOT_SMOKE_FORMULA_INPUT="$PWD/Tests/PicShotMLHelperTests/Fixtures/energy.png"
 export PICSHOT_SMOKE_TABLE_MODEL_DIR="$PWD/.build/model-fixtures/table"
 export PICSHOT_SMOKE_TABLE_INPUT="$PWD/Tests/PicShotTableEngineTests/Fixtures/merged-table.png"
-base="PicShot-0.14.0-macos-$(uname -m)"
+base="PicShot-0.15.0-macos-$(uname -m)"
 work=$(mktemp -d)
 mounted=false
 trap 'if [[ "$mounted" == true ]];then hdiutil detach "$work/mount" || true;fi;rm -rf "$work"' EXIT
@@ -121,7 +124,11 @@ for c in save['resourceCycles']:
     assert c['activeJobs']==0 and c['retainedInputBytes']==0 and c['controllerReleased'] and c['temporaryJobRemoved'],c
 print(json.dumps(r,indent=2))
 PY
-  python3 scripts/check-pin-ocr-report.py "$PWD/dist/evidence/$format/pin-ocr/pin-ocr-workflow.json" "$app" "$(git rev-parse HEAD)" 0.14.0 "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")" --full
+  python3 scripts/check-capture-output-report.py "$PWD/dist/evidence/$format/capture-output/capture-output-workflow.json" "$app" "$(git rev-parse HEAD)"
+  if [[ "$format" == zip ]];then
+    bash scripts/multiwindow-resource-smoke.sh "$app" "$PWD/dist/evidence/$format/multiwindow-resources" "$(git rev-parse HEAD)"
+  fi
+  python3 scripts/check-pin-ocr-report.py "$PWD/dist/evidence/$format/pin-ocr/pin-ocr-workflow.json" "$app" "$(git rev-parse HEAD)" 0.15.0 "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")" --full
   python3 scripts/check-automatic-mosaic-report.py "$PWD/dist/evidence/$format/automatic-mosaic/automatic-mosaic-workflow.json" "$app" "$(git rev-parse HEAD)" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")" --full
   python3 scripts/check-annotation-details-report.py "$PWD/dist/evidence/$format/annotation-details/annotation-details.json" "$app" "$(git rev-parse HEAD)" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")" --full
   bash scripts/pin-workflows-smoke.sh "$app" "$PWD/dist/evidence/$format/pin-workflows" "$(git rev-parse HEAD)"

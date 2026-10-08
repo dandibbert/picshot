@@ -716,7 +716,7 @@ final class RegionSelectionView: NSView {
                     ratioControls.showError("Select at least 2 × 2 points inside this display"); return
                 }
                 if let aspectRatio, pixels.width * CGFloat(aspectRatio.denominator) != pixels.height * CGFloat(aspectRatio.numerator) {
-                    ratioControls.showError("The selected pixels do not match the ratio; redraw the region"); return
+                    ratioControls.showError("选区像素不符合比例，请重新绘制选区"); return
                 }
                 committedPixelFrame = pixels
                 finished?(.success(aligned.topLeftFrame))
@@ -775,7 +775,7 @@ final class RegionSelectionView: NSView {
         ratioSurface.material = .hudWindow; ratioSurface.blendingMode = .withinWindow; ratioSurface.state = .active
         ratioSurface.wantsLayer = true; ratioSurface.layer?.cornerRadius = 8
         addSubview(ratioSurface)
-        ratioAccept.title = "Use selection · Return"; ratioAccept.target = self; ratioAccept.action = #selector(acceptRatioSelection)
+        ratioAccept.title = "使用选区 · Return"; ratioAccept.target = self; ratioAccept.action = #selector(acceptRatioSelection)
         ratioAccept.identifier = .init("capture.ratioAccept"); ratioAccept.bezelStyle = .rounded; ratioAccept.controlSize = .small
         ratioAccept.isEnabled = false
         let stack = NSStackView(views: [ratioControls, ratioAccept]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 3
@@ -866,7 +866,7 @@ final class RegionSelectionView: NSView {
             }
         }
         let text: String
-        if let aligned { text = "\(Int(aligned.pixelFrame.width)) × \(Int(aligned.pixelFrame.height)) px" + (aspectRatio.map { " · \($0.label) exact · Return to use" } ?? "") }
+        if let aligned { text = "\(Int(aligned.pixelFrame.width)) × \(Int(aligned.pixelFrame.height)) px" + (aspectRatio.map { " · \($0.label) 精确 · Return 确认" } ?? "") }
         else if !selected.isEmpty { text = "\(Int(selected.width)) × \(Int(selected.height)) pt" }
         else { text = "拖动选择截图区域 · Esc 或右键取消" }
         drawLabel(text, at: CGPoint(x: outlineFrame.isEmpty ? bounds.midX : outlineFrame.minX,

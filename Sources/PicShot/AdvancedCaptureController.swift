@@ -674,9 +674,9 @@ final class AdvancedSelectionView: NSView, NSTextFieldDelegate {
         } else if let index = selectedOperationIndex, selection.operations.indices.contains(index),
                   case .rectangle(let rectangle) = selection.operations[index].shape,
                   let pixels = selection.rectanglePixelBounds(rectangle) {
-            status.stringValue = "Selected \(Int(pixels.width)) × \(Int(pixels.height)) px · X \(Int(pixels.minX)) Y \(Int(pixels.minY)) · Shape \(index + 1)/\(selection.operations.count)\(selection.operations[index].subtracts ? " · Cutout" : "")"
+            status.stringValue = "选区 \(Int(pixels.width)) × \(Int(pixels.height)) px · X \(Int(pixels.minX)) Y \(Int(pixels.minY)) · 形状 \(index + 1)/\(selection.operations.count)\(selection.operations[index].subtracts ? " · 减选" : "")"
         } else if let bounds = try? selection.enclosingPixelBounds() {
-            status.stringValue = "\(Int(bounds.width)) × \(Int(bounds.height)) px bounds · \(selection.operations.count) shapes · Return to capture"
+            status.stringValue = "\(Int(bounds.width)) × \(Int(bounds.height)) px 范围 · \(selection.operations.count) 个形状 · Return 截图"
         } else {
             status.stringValue = "Frozen current display · Draw a selection · C copies HEX · Esc cancels"
         }
@@ -753,7 +753,7 @@ final class AdvancedSelectionView: NSView, NSTextFieldDelegate {
         apply.font = .systemFont(ofSize: 11)
         sizeControls = [widthField, heightField, apply]
         let instructions = NSTextField(labelWithString: "Arrows: 1 px · Shift: 10 · Option: resize · ⌘Z: undo")
-        instructions.stringValue = "Arrows: 1 px · Shift: 10 · Option: ratio step · ⌘Z / ⇧⌘Z"
+        instructions.stringValue = "方向键：1 像素 · Shift：10 · Option：比例步长 · ⌘Z / ⇧⌘Z"
         instructions.font = .systemFont(ofSize: 10)
         instructions.textColor = .secondaryLabelColor
         let row = NSStackView(views: [NSTextField(labelWithString: "W"), widthField,

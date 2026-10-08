@@ -43,7 +43,7 @@ enum MultiWindowInventory {
                   let started = app.launchDate?.timeIntervalSince1970 else { continue }
             let scales = screens.filter { $0.quartzFrame.intersects(bounds) }.map(\.scale)
             guard let scale = scales.max() else { continue }
-            let owner = row[kCGWindowOwnerName as String] as? String ?? "Window"
+            let owner = row[kCGWindowOwnerName as String] as? String ?? "窗口"
             let title = row[kCGWindowName as String] as? String ?? ""
             // Oversized or malformed candidates never become selectable; bounds
             // are checked again against the entire selection before capture.

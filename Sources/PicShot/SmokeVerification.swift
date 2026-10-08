@@ -20,6 +20,15 @@ import PicShotFormulaRenderCore
                 try? FileManager.default.removeItem(at: history.directory)
                 NSApp.terminate(nil); return
             }
+            if ProcessInfo.processInfo.environment["PICSHOT_MULTIWINDOW_RESOURCES_ONLY"] == "1" {
+                var payload = try await MultiWindowCaptureResourceFixture.verify(evidenceDirectory: directory)
+                payload["bundlePath"] = Bundle.main.bundlePath
+                payload["sourceCommit"] = Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String ?? "unknown"
+                payload["arguments"] = CommandLine.arguments
+                try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]).write(to: url, options: .atomic)
+                try? FileManager.default.removeItem(at: history.directory)
+                NSApp.terminate(nil); return
+            }
             if let payload = try await ScrollMemoryAttributionFixture.runIfRequested(evidenceDirectory: directory, detailRenderer: ScrollMemoryAttributionCurrentDetail.render) {
                 try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]).write(to: url, options: .atomic)
                 try? FileManager.default.removeItem(at: history.directory)
@@ -123,6 +132,7 @@ import PicShotFormulaRenderCore
                 let automaticMosaicWorkflow=try await AutomaticMosaicWorkflowSmokeFixture.verify(evidenceDirectory:directory.appendingPathComponent("automatic-mosaic"),includeResourceCycles:false)
                 let annotationDetails=try await AnnotationDetailAcceptanceFixture.verify(evidenceDirectory:directory.appendingPathComponent("annotation-details"),includeResourceCycles:false)
                 let manualScroll=try await ScrollManualCaptureSmokeFixture.verify(evidenceDirectory:directory.appendingPathComponent("manual-scroll"),includeLargeFrames:false)
+                let captureOutput=try await CaptureOutputWorkflowFixture.verify(evidenceDirectory:directory.appendingPathComponent("capture-output"))
                 let originalAppearance=NSApp.appearance
                 for dark in [false,true] {
                     NSApp.appearance=NSAppearance(named:dark ? .darkAqua : .aqua)
@@ -133,7 +143,7 @@ import PicShotFormulaRenderCore
                     settings.close()
                 }
                 NSApp.appearance=originalAppearance
-                let payload:[String:Any] = ["status":"passed","uiPreviewOnly":true,"captureStarted":false,"bundlePath":Bundle.main.bundlePath,"sourceCommit":Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String ?? "unknown","previews":previews,"annotationEffects":annotationEffects,"interactionParity":interactionParity,"captureExportRecognition":captureExportRecognition,"codecUIPreview":codecUIPreview,"saveWorkflowUI":saveWorkflowUI,"pinOCRWorkflow":pinOCRWorkflow,"automaticMosaicWorkflow":automaticMosaicWorkflow,"annotationDetails":annotationDetails,"manualScroll":manualScroll,"scope":"Real native AppKit UI over an original synthetic frozen-desktop fixture; no screen-capture permission or live desktop capture"]
+                let payload:[String:Any] = ["status":"passed","uiPreviewOnly":true,"captureStarted":false,"bundlePath":Bundle.main.bundlePath,"sourceCommit":Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String ?? "unknown","previews":previews,"annotationEffects":annotationEffects,"interactionParity":interactionParity,"captureExportRecognition":captureExportRecognition,"codecUIPreview":codecUIPreview,"saveWorkflowUI":saveWorkflowUI,"pinOCRWorkflow":pinOCRWorkflow,"automaticMosaicWorkflow":automaticMosaicWorkflow,"annotationDetails":annotationDetails,"manualScroll":manualScroll,"captureOutput":captureOutput,"scope":"Real native AppKit UI over an original synthetic frozen-desktop fixture; no screen-capture permission or live desktop capture"]
                 try JSONSerialization.data(withJSONObject:payload,options:[.prettyPrinted,.sortedKeys]).write(to:url,options:.atomic)
                 NSApp.terminate(nil);return
             }
@@ -175,6 +185,7 @@ import PicShotFormulaRenderCore
                 traceEnabled: ProcessInfo.processInfo.environment["PICSHOT_RECORDING_COMPOSITION_TRACE"] == "1")
             let interactionParityEvidence=try await InteractionParitySmokeFixture.verify(evidenceDirectory:directory)
             let captureExportRecognitionEvidence=try await CaptureExportRecognitionSmokeFixture.verify(evidenceDirectory:directory,includeResourceCycles:true)
+            let captureOutputEvidence=try await CaptureOutputWorkflowFixture.verify(evidenceDirectory:directory.appendingPathComponent("capture-output"))
             let codecExportEvidence=try await CodecExportResourceFixture.verify(evidenceDirectory:directory)
             let saveWorkflowEvidence=try await SaveWorkflowUIPreviewFixture.verify(evidenceDirectory:directory)
             let pinOCRWorkflow=try await PinOCRWorkflowSmokeFixture.verify(evidenceDirectory:directory.appendingPathComponent("pin-ocr"),includeResourceCycles:true)
@@ -207,7 +218,7 @@ import PicShotFormulaRenderCore
             let final=residentBytes();let growth=Int64(final)-Int64(baseline);let lastIntervalGrowth=Int64(samples.last ?? final)-Int64(samples.dropLast().last ?? baseline);let windowsStable=windowCount()<=baselineWindows+3 && retainedOwned == 0
             let visible=mainWindow.isVisible && mainWindow.contentView != nil
             let source=(Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String) ?? "unknown"
-            let payload:[String:Any] = ["status":visible && growth<160*1024*1024 && lastIntervalGrowth<32*1024*1024 && windowsStable ? "passed":"failed","bundlePath":Bundle.main.bundlePath,"bundleIdentifier":Bundle.main.bundleIdentifier ?? "", "sourceCommit":source,"mainWindowVisible":visible,"arguments":CommandLine.arguments,"safeMode":true,"captureStarted":false,"packagedModelEvidence":modelEvidence,"pinSessionEvidence":pinSessionEvidence,"pinGroupTransformEvidence":pinGroupEvidence,"gifResourceEvidence":gifResourceEvidence,"recordingCompositionEvidence":recordingCompositionEvidence,"interactionParityEvidence":interactionParityEvidence,"captureExportRecognitionEvidence":captureExportRecognitionEvidence,"codecExportEvidence":codecExportEvidence,"saveWorkflowEvidence":saveWorkflowEvidence,"pinOCRWorkflow":pinOCRWorkflow,"automaticMosaicWorkflow":automaticMosaicWorkflow,"annotationDetails":annotationDetails,"recordingWebPEvidence":recordingWebPEvidence,"windowTitle":mainWindow.title,"resourceCycleCount":40,"warmupCycleCount":10,"rssSamplesEveryTenCycles":samples,"windowCountsEveryTenCycles":windowCounts,"baselineWindowCount":baselineWindows,"finalWindowCount":windowCount(),"weakCycleWindowCounts":weakCounts,"finalRetainedCycleWindows":retained.count,"retainedCycleWindowDetails":retained,"finalRetainedAppControllersOrContent":retainedOwned,"lastTenCyclesGrowthBytes":lastIntervalGrowth,"baselineRSSBytes":baseline,"peakRSSBytes":peak,"finalRSSBytes":final,"growthRSSBytes":growth,"resourceScope":"10 warm-up plus 40 synthetic editor/pin create-render-close cycles; not a screen-capture or recording leak test"]
+            let payload:[String:Any] = ["status":visible && growth<160*1024*1024 && lastIntervalGrowth<32*1024*1024 && windowsStable ? "passed":"failed","bundlePath":Bundle.main.bundlePath,"bundleIdentifier":Bundle.main.bundleIdentifier ?? "", "sourceCommit":source,"mainWindowVisible":visible,"arguments":CommandLine.arguments,"safeMode":true,"captureStarted":false,"packagedModelEvidence":modelEvidence,"pinSessionEvidence":pinSessionEvidence,"pinGroupTransformEvidence":pinGroupEvidence,"gifResourceEvidence":gifResourceEvidence,"recordingCompositionEvidence":recordingCompositionEvidence,"interactionParityEvidence":interactionParityEvidence,"captureExportRecognitionEvidence":captureExportRecognitionEvidence,"captureOutputEvidence":captureOutputEvidence,"codecExportEvidence":codecExportEvidence,"saveWorkflowEvidence":saveWorkflowEvidence,"pinOCRWorkflow":pinOCRWorkflow,"automaticMosaicWorkflow":automaticMosaicWorkflow,"annotationDetails":annotationDetails,"recordingWebPEvidence":recordingWebPEvidence,"windowTitle":mainWindow.title,"resourceCycleCount":40,"warmupCycleCount":10,"rssSamplesEveryTenCycles":samples,"windowCountsEveryTenCycles":windowCounts,"baselineWindowCount":baselineWindows,"finalWindowCount":windowCount(),"weakCycleWindowCounts":weakCounts,"finalRetainedCycleWindows":retained.count,"retainedCycleWindowDetails":retained,"finalRetainedAppControllersOrContent":retainedOwned,"lastTenCyclesGrowthBytes":lastIntervalGrowth,"baselineRSSBytes":baseline,"peakRSSBytes":peak,"finalRSSBytes":final,"growthRSSBytes":growth,"resourceScope":"10 warm-up plus 40 synthetic editor/pin create-render-close cycles; not a screen-capture or recording leak test"]
             try JSONSerialization.data(withJSONObject:payload,options:[.prettyPrinted,.sortedKeys]).write(to:url,options:.atomic)
             try? FileManager.default.removeItem(at:history.directory)
         }catch{try? JSONSerialization.data(withJSONObject:["status":"failed","error":error.localizedDescription]).write(to:url)}

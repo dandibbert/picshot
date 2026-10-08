@@ -1,5 +1,7 @@
 import XCTest
 import AppKit
+import Darwin
+import ImageIO
 import PicShotCore
 @testable import PicShot
 
@@ -89,15 +91,46 @@ final class MultiWindowCaptureTests: XCTestCase {
         }
         XCTAssertEqual(lifetime.peak, 1); XCTAssertEqual(lifetime.created, 24)
     }
-    private func countedImage(_ counter: WindowFrameLifetime) throws -> CGImage {
-        let pixels = UnsafeMutableRawPointer.allocate(byteCount: 16, alignment: 4)
-        pixels.initializeMemory(as: UInt8.self, repeating: 255, count: 16)
-        let retained = Unmanaged.passRetained(counter); counter.acquire()
-        guard let provider = CGDataProvider(dataInfo: retained.toOpaque(), data: pixels, size: 16, releaseData: { info, data, _ in
+    @MainActor func testLargerRepeatedFramesKeepOneOwnedSourceAndReportRSSSeparately() async throws {
+        let width = 1024, height = 768, frameBytes = width * height * 4
+        let windows = try (0..<8).map { try descriptor(UInt32($0 + 1), CGRect(x: $0 * 16, y: $0 * 12, width: width, height: height)) }
+        let layout = try MultiWindowCaptureLayout(frontToBack: windows), lifetime = WindowFrameLifetime()
+        var samples = [WindowProcessMemory.current()]
+        for _ in 0..<3 {
+            let output = try await SequentialMultiWindowCapture.capture(layout: layout, deadline: deadline, validate: {}, frame: { _, _ in
+                XCTAssertEqual(lifetime.live, 0)
+                let image = try self.countedImage(lifetime, width: width, height: height)
+                samples.append(WindowProcessMemory.current())
+                return image
+            })
+            XCTAssertEqual(output.width, layout.width); XCTAssertEqual(output.height, layout.height)
+            XCTAssertEqual(try pixel(output, x: output.width - 1, y: output.height - 1), [255,255,255,255])
+            XCTAssertEqual(lifetime.live, 0)
+            samples.append(WindowProcessMemory.current())
+        }
+        XCTAssertEqual(lifetime.peak, 1); XCTAssertEqual(lifetime.peakBytes, frameBytes)
+        XCTAssertEqual(lifetime.liveBytes, 0); XCTAssertEqual(lifetime.created, 24)
+        let report: [String: Any] = ["iterations": 3, "windowsPerIteration": 8, "sourceWidth": width, "sourceHeight": height,
+            "ownedSourcePeakBytes": lifetime.peakBytes, "ownedSourceBytesAfter": lifetime.liveBytes,
+            "calculatedCanvasBytes": layout.width * layout.height * 4,
+            "sampledProcessRSSBytes": samples.compactMap(\.residentBytes),
+            "sampledProcessPhysicalFootprintBytes": samples.compactMap(\.physicalFootprintBytes),
+            "measurementBoundary": "Whole XCTest process observations; not an owned-buffer counter, attributed peak, or RSS limit"]
+        let data = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
+        print("MULTI_WINDOW_RESOURCE_OBSERVATION " + (String(data: data, encoding: .utf8) ?? ""))
+        let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "public.json")
+        attachment.name = "Multi-window source ownership and process observations"; attachment.lifetime = .keepAlways; add(attachment)
+    }
+    private func countedImage(_ counter: WindowFrameLifetime, width: Int = 2, height: Int = 2) throws -> CGImage {
+        let count = width * height * 4
+        let pixels = UnsafeMutableRawPointer.allocate(byteCount: count, alignment: 4)
+        pixels.initializeMemory(as: UInt8.self, repeating: 255, count: count)
+        let retained = Unmanaged.passRetained(counter); counter.acquire(bytes: count)
+        guard let provider = CGDataProvider(dataInfo: retained.toOpaque(), data: pixels, size: count, releaseData: { info, data, size in
             UnsafeMutableRawPointer(mutating: data).deallocate()
-            if let info { Unmanaged<WindowFrameLifetime>.fromOpaque(info).takeRetainedValue().release() }
-        }) else { pixels.deallocate(); counter.release(); retained.release(); throw MultiWindowCaptureError.incomplete }
-        return try XCTUnwrap(CGImage(width: 2, height: 2, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: 8,
+            if let info { Unmanaged<WindowFrameLifetime>.fromOpaque(info).takeRetainedValue().release(bytes: size) }
+        }) else { pixels.deallocate(); counter.release(bytes: count); retained.release(); throw MultiWindowCaptureError.incomplete }
+        return try XCTUnwrap(CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4,
             space: CGColorSpace(name: CGColorSpace.sRGB)!,
             bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue),
             provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent))
@@ -115,10 +148,29 @@ final class MultiWindowCaptureTests: XCTestCase {
     @MainActor func testNativeInjectedSelectionCaptureCancelAndRepeatedSessions() async throws {
         _ = NSApplication.shared
         guard NSScreen.main != nil else { throw XCTSkip("Requires native WindowServer; never requests screen or AX permission") }
-        let report = try await MultiWindowCaptureNativeFixture.verify()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PicShot-Owned-MultiWindow-Evidence-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let report = try await MultiWindowCaptureNativeFixture.verify(evidenceDirectory: directory)
         XCTAssertEqual(report["status"] as? String, "passed")
         XCTAssertEqual(report["permissionRequested"] as? Bool, false)
         XCTAssertEqual(report["realDesktopCaptured"] as? Bool, false)
+        XCTAssertEqual(report["completedCapturesSameController"] as? Int, 2)
+        XCTAssertEqual(report["cancelledSessionsSameController"] as? Int, 4)
+        XCTAssertEqual(report["clearedObserverTimerContinuationChecks"] as? Int, 6)
+        XCTAssertEqual(report["retainedSelectors"] as? Int, 0)
+        XCTAssertEqual(report["visibleRetiredPanels"] as? Int, 0)
+        XCTAssertEqual(report["ownedBackdropClosed"] as? Bool, true)
+        XCTAssertEqual(report["latePermissionProviderCalls"] as? Int, 0)
+        for key in ["exactRGBAPixelsChecked", "transparentPixelsChecked", "translucentPixelsChecked", "overlapPixelsChecked"] {
+            XCTAssertGreaterThan(try XCTUnwrap(report[key] as? Int), 0)
+        }
+        let files = try XCTUnwrap(report["evidenceFiles"] as? [String]); XCTAssertEqual(files.count, 3)
+        for file in files {
+            let source = try XCTUnwrap(CGImageSourceCreateWithURL(directory.appendingPathComponent(file) as CFURL, nil))
+            XCTAssertEqual(CGImageSourceGetType(source) as String?, "public.png")
+            let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+            XCTAssertGreaterThan(image.width, 100); XCTAssertGreaterThan(image.height, 100)
+        }
     }
     private var deadline: TimeInterval { ProcessInfo.processInfo.systemUptime + 10 }
     private func descriptor(_ id: UInt32, _ bounds: CGRect = CGRect(x: 0, y: 0, width: 2, height: 2), scale: CGFloat = 1) throws -> MultiWindowDescriptor {
@@ -141,10 +193,35 @@ final class MultiWindowCaptureTests: XCTestCase {
 
 private final class WindowFrameLifetime: @unchecked Sendable {
     private let lock = NSLock()
-    private var active = 0, maximum = 0, allocations = 0
+    private var active = 0, maximum = 0, allocations = 0, bytes = 0, maximumBytes = 0
     var live: Int { lock.lock(); defer { lock.unlock() }; return active }
     var peak: Int { lock.lock(); defer { lock.unlock() }; return maximum }
     var created: Int { lock.lock(); defer { lock.unlock() }; return allocations }
-    func acquire() { lock.lock(); active += 1; maximum = max(maximum, active); allocations += 1; lock.unlock() }
-    func release() { lock.lock(); active -= 1; lock.unlock() }
+    var liveBytes: Int { lock.lock(); defer { lock.unlock() }; return bytes }
+    var peakBytes: Int { lock.lock(); defer { lock.unlock() }; return maximumBytes }
+    func acquire(bytes count: Int) { lock.lock(); active += 1; maximum = max(maximum, active); allocations += 1; bytes += count; maximumBytes = max(maximumBytes, bytes); lock.unlock() }
+    func release(bytes count: Int) { lock.lock(); active -= 1; bytes -= count; lock.unlock() }
+}
+
+private struct WindowProcessMemory {
+    let residentBytes: UInt64?
+    let physicalFootprintBytes: UInt64?
+    static func current() -> Self {
+        var basic = mach_task_basic_info()
+        var basicCount = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size)
+        let basicResult = withUnsafeMutablePointer(to: &basic) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(basicCount)) {
+                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &basicCount)
+            }
+        }
+        var vm = task_vm_info_data_t()
+        var vmCount = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+        let vmResult = withUnsafeMutablePointer(to: &vm) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(vmCount)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &vmCount)
+            }
+        }
+        return Self(residentBytes: basicResult == KERN_SUCCESS ? basic.resident_size : nil,
+                    physicalFootprintBytes: vmResult == KERN_SUCCESS ? vm.phys_footprint : nil)
+    }
 }

@@ -68,7 +68,7 @@ enum MultiWindowScreenshotCommand {
         } catch {
             let captureFailure = error
             do { if manager.fileExists(atPath: directory.path) { try manager.removeItem(at: directory) } }
-            catch { throw CaptureError.failed("Window capture failed (\(captureFailure.localizedDescription)); temporary cleanup also failed: \(error.localizedDescription)") }
+            catch { throw CaptureError.failed("窗口截图失败（\(captureFailure.localizedDescription)）；临时文件清理也未完成：\(error.localizedDescription)") }
             throw captureFailure
         }
     }
@@ -107,7 +107,7 @@ enum MultiWindowScreenshotCommand {
             try check()
         } catch { reap(); throw error }
         guard process.terminationStatus == 0 else {
-            throw CaptureError.failed("The window screenshot command exited with status \(process.terminationStatus) (\(process.terminationReason == .uncaughtSignal ? "signal" : "exit")). No partial image was saved.")
+            throw CaptureError.failed("系统截图命令退出，状态为 \(process.terminationStatus) (\(process.terminationReason == .uncaughtSignal ? "signal" : "exit"))。本次截图未保存。")
         }
         let attributes = try manager.attributesOfItem(atPath: output.path)
         guard attributes[.type] as? FileAttributeType == .typeRegular,
