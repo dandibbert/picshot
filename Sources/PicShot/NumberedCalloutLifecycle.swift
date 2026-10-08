@@ -64,10 +64,6 @@ final class NumberedCalloutClosedInputProbe {
     let textKit1WasTracked: Bool
     let textKit2WasTracked: Bool
     private(set) var closedAt = ProcessInfo.processInfo.systemUptime
-#if PICSHOT_CALLOUT_RETIREMENT_DIAGNOSTICS
-    private(set) var inputRetirementStamp: NumberedCalloutRetirementStamp?
-    private(set) var contextRetirementStamp: NumberedCalloutRetirementStamp?
-#endif
 
     init(editor: ImageEditorController, input: NSTextView, undoManager: UndoManager) {
         self.editor = editor; window = input.window; box = input.superview; session = input.delegate
@@ -79,10 +75,6 @@ final class NumberedCalloutClosedInputProbe {
         textKit1WasTracked = layout != nil; textKit2WasTracked = textLayout != nil
         requiredGraphTracked = window != nil && box != nil && session != nil && storage != nil && container != nil
             && (textKit1WasTracked != textKit2WasTracked)
-#if PICSHOT_CALLOUT_RETIREMENT_DIAGNOSTICS
-        inputRetirementStamp = NumberedCalloutRetirementStamp.attach(to: input)
-        if let context { contextRetirementStamp = NumberedCalloutRetirementStamp.attach(to: context) }
-#endif
     }
 
     func didClose() { closedAt = ProcessInfo.processInfo.systemUptime }
@@ -137,23 +129,6 @@ final class NumberedCalloutReleaseMonitor {
         var result = evidence; result.status = "failed"; return result
     }
 
-#if PICSHOT_CALLOUT_RETIREMENT_DIAGNOSTICS
-    /// Write a separate opt-in sidecar. The acceptance schema and decisions are
-    /// unchanged; failure snapshots do not drain, retry or resume the fixture.
-    func writeRetirementDiagnostics(to path: String, excluding roots: [URL], acceptanceStatus: String) throws {
-        let started = ProcessInfo.processInfo.systemUptime
-        let cycles = probes.enumerated().map { index, probe in
-            NumberedCalloutRetirementDiagnosticCycle(cycle: index + 1, closedAtUptime: probe.closedAt,
-                contextWasTracked: probe.contextWasTracked, input: probe.inputRetirementStamp?.snapshot(),
-                context: probe.contextRetirementStamp?.snapshot())
-        }
-        let report = NumberedCalloutRetirementDiagnosticReport(acceptanceStatus: acceptanceStatus,
-            snapshotStartedAtUptime: started, snapshotFinishedAtUptime: ProcessInfo.processInfo.systemUptime,
-            monitorBeganAtUptime: began, cycles: cycles,
-            observedLifecycle: acceptanceStatus == "passed" ? evidence : failedEvidence())
-        try NumberedCalloutDiagnosticDestination.write(JSONEncoder().encode(report), absolutePath: path, excluding: roots)
-    }
-#endif
     private func sample(promptCycle: Int? = nil) throws {
         guard evidence.samples.count < evidence.maximumSamples else { throw failure("Native retirement sample bound exceeded") }
         let inputs = probes.enumerated().compactMap { $0.element.input != nil ? $0.offset + 1 : nil }

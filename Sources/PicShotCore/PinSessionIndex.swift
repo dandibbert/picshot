@@ -96,9 +96,8 @@ public struct PinRasterAsset: Codable, Equatable, Sendable {
     public let width: Int
     public let height: Int
     public let byteCount: Int64
-    public let sha256: String?
-    public init(filename: String, width: Int, height: Int, byteCount: Int64, sha256: String? = nil) {
-        self.filename = filename; self.width = width; self.height = height; self.byteCount = byteCount; self.sha256 = sha256
+    public init(filename: String, width: Int, height: Int, byteCount: Int64) {
+        self.filename = filename; self.width = width; self.height = height; self.byteCount = byteCount
     }
     public static func isSafeFilename(_ filename: String) -> Bool {
         guard filename.count == 40, filename.hasSuffix(".png") else { return false }
@@ -107,8 +106,7 @@ public struct PinRasterAsset: Codable, Equatable, Sendable {
     }
     public var isValid: Bool {
         Self.isSafeFilename(filename) && width > 0 && height > 0 && height <= 32_000_000 &&
-            width <= 32_000_000 / height && byteCount > 0 && byteCount <= 536_870_912 &&
-            (sha256.map(EditableCaptureAsset.isValidDigest) ?? true)
+            width <= 32_000_000 / height && byteCount > 0 && byteCount <= 536_870_912
     }
     public var pixelCount: Int64 {
         guard width > 0, height > 0, Int64(width) <= Int64.max / Int64(height) else { return Int64.max }
@@ -126,7 +124,6 @@ public struct PinSessionEntry: Codable, Identifiable, Equatable, Sendable {
     public var current: PinRasterAsset
     public var presentation: PinPresentation
     public var richContent: PinRichAsset?
-    public var editableCapture: EditableCaptureAsset?
     /// false means archived in pin history. Group visibility is a separate concern.
     public var isVisible: Bool
     /// Actual close order. Older archives without this metadata are never guessed from creation/update dates.
@@ -134,14 +131,14 @@ public struct PinSessionEntry: Codable, Identifiable, Equatable, Sendable {
     public init(id: UUID = UUID(), groupID: UUID = PinGroup.defaultID, title: String = "贴图",
                 createdAt: Date = Date(), updatedAt: Date = Date(), original: PinRasterAsset,
                 current: PinRasterAsset? = nil, presentation: PinPresentation = PinPresentation(),
-                isVisible: Bool = true, richContent: PinRichAsset? = nil, archiveSequence: UInt64? = nil, editableCapture: EditableCaptureAsset? = nil) {
+                isVisible: Bool = true, richContent: PinRichAsset? = nil, archiveSequence: UInt64? = nil) {
         self.id = id; self.groupID = groupID; self.title = title
         self.createdAt = createdAt; self.updatedAt = updatedAt
         self.original = original; self.current = current ?? original; self.presentation = presentation
-        self.isVisible = isVisible; self.richContent = richContent; self.archiveSequence = archiveSequence; self.editableCapture = editableCapture
+        self.isVisible = isVisible; self.richContent = richContent; self.archiveSequence = archiveSequence
     }
     private enum CodingKeys: String, CodingKey {
-        case id, groupID, title, createdAt, updatedAt, original, current, presentation, isVisible, richContent, archiveSequence, editableCapture
+        case id, groupID, title, createdAt, updatedAt, original, current, presentation, isVisible, richContent, archiveSequence
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -156,21 +153,14 @@ public struct PinSessionEntry: Codable, Identifiable, Equatable, Sendable {
                   // Schema-1 sessions before pin history implicitly had every pin open.
                   isVisible: try values.decodeIfPresent(Bool.self, forKey: .isVisible) ?? true,
                   richContent: try values.decodeIfPresent(PinRichAsset.self, forKey: .richContent),
-                  archiveSequence: try values.decodeIfPresent(UInt64.self, forKey: .archiveSequence),
-                  editableCapture: try values.decodeIfPresent(EditableCaptureAsset.self, forKey: .editableCapture))
+                  archiveSequence: try values.decodeIfPresent(UInt64.self, forKey: .archiveSequence))
     }
-    public var assetFilenames: [String] { assets.map(\.filename) + (richContent.map { [$0.filename] } ?? []) + (editableCapture.map { [$0.documentFilename] } ?? []) }
-    public var storedByteCount: Int64 { assets.reduce(0) { $0 + $1.byteCount } + (richContent?.byteCount ?? 0) + (editableCapture?.documentByteCount ?? 0) }
+    public var assetFilenames: [String] { assets.map(\.filename) + (richContent.map { [$0.filename] } ?? []) }
+    public var storedByteCount: Int64 { assets.reduce(0) { $0 + $1.byteCount } + (richContent?.byteCount ?? 0) }
     public var contentLabel: String {
         switch richContent?.kind { case .text: return "文字 / HTML"; case .files: return "文件引用"; case .color: return "颜色"; case .animation: return "动态图片"; case .latex: return "LaTeX 公式"; case nil: return "图片" }
     }
-    public var assets: [PinRasterAsset] {
-        var values = original.filename == current.filename ? [original] : [original, current]
-        if let editableCapture {
-            for raster in editableCapture.rasters where !values.contains(where: { $0.filename == raster.filename }) { values.append(raster.pinAsset) }
-        }
-        return values
-    }
+    public var assets: [PinRasterAsset] { original.filename == current.filename ? [original] : [original, current] }
 }
 
 public enum PinSessionError: LocalizedError, Equatable {
@@ -211,10 +201,6 @@ public struct PinSessionPolicy: Equatable, Sendable {
                 guard rich.isValid, rich.byteCount <= maxDiskBytes - bytes, rich.workingPixelCount <= maxPixelCount - pixels else { return false }
                 bytes += rich.byteCount; pixels += rich.workingPixelCount
             }
-            if let editable = entry.editableCapture {
-                guard editable.isValid, editable.documentByteCount <= maxDiskBytes - bytes else { return false }
-                bytes += editable.documentByteCount
-            }
             for asset in entry.assets {
                 guard asset.isValid, asset.pixelCount <= maxPixelCount - pixels,
                       asset.byteCount <= maxDiskBytes - bytes else { return false }
@@ -245,7 +231,7 @@ public struct PinSessionPolicy: Equatable, Sendable {
 }
 
 public struct PinSessionIndex: Codable, Equatable, Sendable {
-    public static let schemaVersion = 3
+    public static let schemaVersion = 2
     public var version: Int
     public var groups: [PinGroup]
     public var entries: [PinSessionEntry]
@@ -253,7 +239,7 @@ public struct PinSessionIndex: Codable, Equatable, Sendable {
     public var allHidden: Bool
     public init(groups: [PinGroup] = [PinGroup(id: PinGroup.defaultID, name: "默认", color: .gray)],
                 entries: [PinSessionEntry] = [], activeGroupID: UUID = PinGroup.defaultID, allHidden: Bool = false) {
-        version = entries.contains(where: { $0.editableCapture != nil }) ? 3 : (entries.contains(where: { $0.richContent != nil }) ? 2 : 1); self.groups = groups; self.entries = entries
+        version = entries.contains(where: { $0.richContent != nil }) ? Self.schemaVersion : 1; self.groups = groups; self.entries = entries
         self.activeGroupID = activeGroupID; self.allHidden = allHidden
     }
     public var visibleEntries: [PinSessionEntry] {
@@ -295,17 +281,6 @@ public struct PinSessionIndex: Codable, Equatable, Sendable {
                 if rich.kind == .latex {
                     guard entry.current.width <= 4_096, entry.current.height <= 4_096,
                           entry.current.pixelCount <= 4_194_304 else { throw PinSessionError.invalidManifest }
-                }
-            }
-            if let editable = entry.editableCapture {
-                guard EditableCaptureAsset.isSafeDocumentFilename(editable.documentFilename) else { throw PinSessionError.unsafePath }
-                guard version >= 3, entry.richContent == nil, editable.isValid,
-                      editable.original.pinAsset == entry.original, editable.current?.pinAsset == entry.current,
-                      filenames.insert(editable.documentFilename.lowercased()).inserted else { throw PinSessionError.invalidManifest }
-                for raster in editable.rasters {
-                    for image in [entry.original, entry.current] where image.filename == raster.filename {
-                        guard image == raster.pinAsset else { throw PinSessionError.invalidManifest }
-                    }
                 }
             }
             if entry.original.filename == entry.current.filename && entry.original != entry.current { throw PinSessionError.invalidManifest }

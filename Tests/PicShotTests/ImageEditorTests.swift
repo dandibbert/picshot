@@ -252,12 +252,12 @@ final class ImageEditorTests: XCTestCase {
             try drag(canvas, from: CGPoint(x: 10, y: 20), to: CGPoint(x: 130, y: 100))
             XCTAssertEqual(canvas.cropRect, CGRect(x: 10, y: 20, width: 120, height: 80))
             canvas.keyDown(with: try keyEvent(canvas, key: "\r", code: 36))
-            XCTAssertEqual(canvas.outputPixelWidth, 120)
-            XCTAssertEqual(canvas.outputPixelHeight, 80)
+            XCTAssertEqual(canvas.image.width, 120)
+            XCTAssertEqual(canvas.image.height, 80)
             XCTAssertNil(canvas.cropRect)
             XCTAssertTrue(canvas.performKeyEquivalent(with: try keyEvent(canvas, key: "z", code: 6, modifiers: .command)))
-            XCTAssertEqual(canvas.outputPixelWidth, 320)
-            XCTAssertEqual(canvas.outputPixelHeight, 240)
+            XCTAssertEqual(canvas.image.width, 320)
+            XCTAssertEqual(canvas.image.height, 240)
         }
     }
 

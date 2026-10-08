@@ -172,9 +172,10 @@ private final class RecordingOverlayView: NSView {
         RecordingFrameCompositor.drawCamera(snapshot, context: context, size: bounds.size, imageContext: imageContext)
         context.saveGState()
         context.scaleBy(x: bounds.width / snapshot.canvasSize.width, y: bounds.height / snapshot.canvasSize.height)
-        ImageEditorRenderer.drawAnnotations(snapshot.annotations, in: context,
+        let complete = ImageEditorRenderer.drawAnnotations(snapshot.annotations, in: context,
             extent: CGRect(origin: .zero, size: snapshot.canvasSize))
         context.restoreGState()
+        guard complete else { context.clear(bounds); return }
         if controller.cameraEditing {
             let rect = snapshot.cameraLayout.pixelFrame(in: bounds.size)
             context.setStrokeColor(NSColor.controlAccentColor.cgColor); context.setLineWidth(2)

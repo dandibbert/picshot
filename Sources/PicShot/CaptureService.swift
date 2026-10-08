@@ -2,7 +2,6 @@ import AppKit
 import CoreGraphics
 import ImageIO
 import ScreenCaptureKit
-import CoreVideo
 import PicShotCore
 
 /// Full Screen uses the pointer display; All Screens composites the desktop at a uniform density.
@@ -50,7 +49,6 @@ final class CaptureService {
     /// The default region flow owns both the immutable desktop and its crop.
     /// Other modes deliberately carry no guessed screen placement information.
     func captureForEditing(mode: CaptureMode, options: ScreenshotCaptureOptions = .init(), elementSelection: Bool = false) async throws -> CapturedImage {
-        if mode == .window { return try await captureSystemForEditing(mode: mode, options: options) }
         guard mode == .region else {
             return CapturedImage(image: try await capture(mode: mode, options: options), presentation: nil)
         }
@@ -201,20 +199,8 @@ final class CaptureService {
         case .region, .window:
             // Cursor inclusion is intentionally not claimed for Apple's interactive
             // selector; only display-based SCK capture consumes showsCursor.
-            return try await captureInteractively(mode: mode).image
+            return try await captureInteractively(mode: mode)
         }
-    }
-
-    /// Preserve the producing decoder's retained compressed-byte count through
-    /// editor admission and recovery. Legacy CGImage-only callers remain available.
-    func captureSystemForEditing(mode: CaptureMode, options: ScreenshotCaptureOptions = .init()) async throws -> CapturedImage {
-        guard mode == .region || mode == .window else { throw CaptureError.invalidRegion }
-        guard !isCapturing, selection == nil else { throw CaptureError.busy }
-        isCapturing = true
-        defer { isCapturing = false }
-        try await options.delay.wait(); try Task.checkCancellation()
-        try Self.requireScreenPermission(); try Task.checkCancellation()
-        return try await captureInteractively(mode: mode)
     }
 
     /// Explicit defaults keep advanced/scroll capture immediate and cursor-free.
@@ -312,11 +298,6 @@ final class CaptureService {
         guard image.width == display.pixelWidth, image.height == display.pixelHeight else {
             throw DisplayCompositeError.layoutChanged
         }
-        // Production BGRA capture fits the separate recovery raster allowance.
-        // Reject an unsupported system result explicitly before accepting it.
-        guard image.bitsPerComponent <= 8, image.bitsPerPixel <= 32,
-              CaptureRecoveryPolicy.retainedBytes(rasterBytes: EditorRasterEstimate.retainedBytes([image]), encodedBytes: 0) != nil
-        else { throw CaptureRecoveryError.unsupportedBacking }
         return image
     }
 
@@ -325,7 +306,6 @@ final class CaptureService {
         configuration.width = display.pixelWidth
         configuration.height = display.pixelHeight
         configuration.showsCursor = showsCursor
-        configuration.pixelFormat = kCVPixelFormatType_32BGRA
         return configuration
     }
 
@@ -342,7 +322,7 @@ final class CaptureService {
         return try await controller.select()
     }
 
-    private func captureInteractively(mode: CaptureMode) async throws -> CapturedImage {
+    private func captureInteractively(mode: CaptureMode) async throws -> CGImage {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PicShot-Capture-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -362,8 +342,11 @@ final class CaptureService {
             if !CGPreflightScreenCaptureAccess() { throw CaptureError.screenPermission }
             throw CaptureError.cancelled
         }
-        guard status == 0 else { throw CaptureError.failed("The system screenshot could not be decoded.") }
-        return try SystemCaptureDecoder.read(url: url)
+        guard status == 0,
+              let image = CGImage.read(url: url) else {
+            throw CaptureError.failed("The system screenshot could not be decoded.")
+        }
+        return image
     }
 }
 

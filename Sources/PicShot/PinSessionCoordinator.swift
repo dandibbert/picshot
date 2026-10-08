@@ -26,7 +26,6 @@ import PicShotCore
     private let presentWindows: Bool
     private let makeImageController: @MainActor (CGImage, CGImage, Bool) -> PinController
     private let debounceNanoseconds: UInt64
-    private let editableRasterByteLimit: Int
     private var pendingPresentations: [UUID: PinPresentation] = [:]
     private var presentationSaveTask: Task<Void, Never>?
     private var terminated = false
@@ -36,10 +35,8 @@ import PicShotCore
          ocrPreferences: PinOCRPreferences? = nil,
          makeImageController: (@MainActor (CGImage, CGImage, Bool) -> PinController)? = nil,
          debounceNanoseconds: UInt64 = 250_000_000,
-         editableRasterByteLimit: Int = EditorAdmissionPolicy().maximumRasterBytes,
          screens: @escaping @MainActor () -> [CGRect] = { NSScreen.screens.map(\.visibleFrame) }) {
         self.store = store; self.presentWindows = presentWindows
-        self.editableRasterByteLimit = max(0, min(EditorAdmissionPolicy().maximumRasterBytes, editableRasterByteLimit))
         let preferences = ocrPreferences ?? PinOCRPreferences()
         self.ocrPreferences = preferences
         let defaults = preferences.defaults
@@ -98,16 +95,15 @@ import PicShotCore
     /// Editor output keeps its undecorated source available for original-copy/save/reset.
     /// A shared image object is unmodified; distinct source/current images persist together.
     @discardableResult func add(originalImage: CGImage, currentImage: CGImage,
-                               title: String = "贴图", editable: EditableCapturePayload? = nil) throws -> UUID {
+                               title: String = "贴图") throws -> UUID {
         guard !terminated else { throw PinSessionError.missingPin }
         guard livePinCount < Self.maximumLivePins else { throw PinSessionError.capacityExceeded }
-        if let editable { try editable.validate(currentImage: currentImage) }
         let controller = makeImageController(originalImage, currentImage, !(originalImage === currentImage))
         let entry: PinSessionEntry
         do {
             entry = try store.add(originalImage: originalImage, currentImage: currentImage,
                                   title: title, presentation: controller.presentation,
-                                  protecting: livePinIDs, revealingGroup: true, editable: editable)
+                                  protecting: livePinIDs, revealingGroup: true)
         } catch {
             controller.close()
             throw error
@@ -285,50 +281,7 @@ import PicShotCore
         connect(controller, id: entry.id)
         present(controller)
     }
-    private func editableAdmissionRemaining(workBytes: Int) throws -> Int {
-        try PinEditableAdmission.remaining(limit: editableRasterByteLimit,
-            retained: EditorAdmissionPolicy.sum(liveControllers.values.map(\.estimatedRetainedRasterBytes)),
-            reportedProjection: EditorAdmissionPolicy.sum(liveControllers.values.map(\.estimatedOutputProjectionReservationBytes)),
-            globalProjection: EditorOutputProjection.shared.reservedBytes, work: workBytes)
-    }
     private func connect(_ controller: PinController, id: UUID) {
-        controller.configureEditableCapture(available: store.entry(id: id)?.editableCapture != nil,
-            loadForWork: { [weak self, weak controller] work in
-                guard let self, let controller, self.liveControllers[id] === controller, !self.terminated else { throw CancellationError() }
-                guard let descriptor = self.store.entry(id: id)?.editableCapture else { return nil }
-                let document = try PinEditableAdmission.document(descriptor, directory: self.store.directory)
-                if PinEditableAdmission.requiresProjection(work, document: document), EditorOutputProjection.shared.isBusy {
-                    throw EditorOutputProjectionError.busy
-                }
-                let extra = try PinEditableAdmission.workBytes(work, document: document,
-                    baseWidth: descriptor.base.width, baseHeight: descriptor.base.height)
-                let remaining = try self.editableAdmissionRemaining(workBytes: extra)
-                let additionalDecode = descriptor.base.filename == descriptor.original.filename
-                    ? 0 : descriptor.base.decodedRasterByteEstimate
-                guard additionalDecode <= remaining else { throw PinSessionError.capacityExceeded }
-                // Persistence also accounts for the supplied original, but it is
-                // already owned by this live pin. Credit it only in that reader's
-                // local budget, not in the aggregate live-pin calculation.
-                let originalCredit = max(descriptor.original.decodedRasterByteEstimate,
-                    EditorRasterEstimate.retainedBytes([controller.image]))
-                return try self.store.editablePayload(id: id, reusingOriginal: controller.image,
-                    maximumRasterBytes: EditorAdmissionPolicy.sum([remaining, originalCredit]))
-            }, admission: { [weak self, weak controller] work, payload in
-                guard let self, let controller, self.liveControllers[id] === controller, !self.terminated else { throw CancellationError() }
-                let document = payload?.document, base = payload?.baseImage ?? controller.currentImage
-                if PinEditableAdmission.requiresProjection(work, document: document), EditorOutputProjection.shared.isBusy {
-                    throw EditorOutputProjectionError.busy
-                }
-                let additional = PinEditableAdmission.additionalImages(payload.map { [$0.originalImage, $0.baseImage] } ?? [],
-                    alreadyOwned: self.liveControllers.values.flatMap(\.retainedRasterImagesForAdmission))
-                let extra = try PinEditableAdmission.workBytes(work, document: document,
-                    baseWidth: base.width, baseHeight: base.height)
-                _ = try self.editableAdmissionRemaining(workBytes: EditorAdmissionPolicy.sum([additional, extra]))
-            })
-        controller.onEditablePixelChange = { [weak self, weak controller] image, editable in
-            guard let self, let controller, self.liveControllers[id] === controller, !self.terminated else { throw CancellationError() }
-            try self.store.replaceImage(image, id: id, protecting: self.livePinIDs, editable: editable)
-        }
         controller.applyAutomaticOCR(ocrPreferences.automaticallyRecognizeText)
         controller.onAutomaticOCRChange = { [weak self, weak controller] enabled in
             guard let self, let controller, self.liveControllers[id] === controller else { return }
@@ -359,7 +312,7 @@ import PicShotCore
             } catch { self.onError?(error) }
         }
         controller.onPixelChange = { [weak self, weak controller] image, isOriginal in
-            guard let self, let controller, self.liveControllers[id] === controller, !self.terminated else { throw CancellationError() }
+            guard let self, let controller, self.liveControllers[id] === controller, !self.terminated else { return }
             if isOriginal { try self.store.resetImage(id: id) }
             else { try self.store.replaceImage(image, id: id, protecting: self.livePinIDs) }
         }
@@ -394,7 +347,7 @@ import PicShotCore
         guard let controller = liveControllers[id] else { return }
         defer {
             // Removing onClose preserves open state on hide/switch instead of archiving.
-            controller.onClose = nil; controller.onPixelChange = nil; controller.onEditablePixelChange = nil; controller.onPresentationChange = nil
+            controller.onClose = nil; controller.onPixelChange = nil; controller.onPresentationChange = nil
             liveControllers.removeValue(forKey: id); pendingPresentations.removeValue(forKey: id)
             controller.close()
         }

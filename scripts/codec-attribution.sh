@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-ditto -x -k "dist/PicShot-0.16.0-macos-$(uname -m).zip" "$work"
+ditto -x -k "dist/PicShot-0.15.1-macos-$(uname -m).zip" "$work"
 app="$work/PicShot.app"
 codesign --verify --deep --strict "$app"
 unset PICSHOT_UI_PREVIEW_ONLY PICSHOT_SMOKE_GIF_RESOURCES PICSHOT_GIF_DIAGNOSTIC_MODE PICSHOT_CODEC_ATTRIBUTION_INPUT_DIRECTORY PICSHOT_CODEC_ATTRIBUTION_FORMAT

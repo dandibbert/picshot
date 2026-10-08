@@ -182,13 +182,16 @@ enum AnnotationWatermarkLayout {
 
 /// No retained raster cache: lenses sample one temporary composite snapshot at a time.
 enum AnnotationMagnifierRenderer {
-    static func draw(_ annotation: ImageAnnotation, snapshot: CGImage, extent: CGRect, privacyMarks: [ImageAnnotation] = [], in context: CGContext) {
+    static func draw(_ annotation: ImageAnnotation, snapshot: CGImage, extent: CGRect, privacyMarks: [ImageAnnotation] = [],
+                     in context: CGContext,
+                     effectPatchRenderer: ImageEditorRenderer.EffectPatchRenderer = ImageEditorRenderer.renderEffectPatch) -> Bool {
         let lens = annotation.localBounds.standardized, source = annotation.magnifierSourceRect.standardized
-        guard source.width > 0, source.height > 0, lens.width > 0, lens.height > 0 else { return }
+        guard source.width > 0, source.height > 0, lens.width > 0, lens.height > 0 else { return true }
         let sourcePath = annotation.magnifierShape.path(in: source)
         let lensPath = annotation.magnifierShape.path(in: lens)
         let sourceCenter = CGPoint(x: source.midX, y: source.midY), lensCenter = CGPoint(x: lens.midX, y: lens.midY)
         context.saveGState()
+        defer { context.restoreGState() }
         context.setShouldAntialias(annotation.magnifierSmooth)
         context.setLineDash(phase: 0, lengths: [])
         if annotation.magnifierConnector != .none && !lens.intersects(source) {
@@ -222,11 +225,15 @@ enum AnnotationMagnifierRenderer {
         context.translateBy(x: lens.minX - source.minX * sx, y: lens.minY - source.minY * sy)
         context.scaleBy(x: sx, y: sy); context.draw(snapshot, in: extent)
         if privacyMarks.contains(where: { $0.tool == .redact }) {
-            ImageEditorRenderer.drawAnnotations(privacyMarks, in: context, extent: extent)
+            guard ImageEditorRenderer.drawAnnotations(privacyMarks, in: context, extent: extent,
+                effectPatchRenderer: effectPatchRenderer) else {
+                context.restoreGState()
+                return false
+            }
         }
         context.restoreGState()
         context.addPath(lensPath); context.strokePath()
         context.setLineDash(phase: 0, lengths: [4, 3]); context.addPath(sourcePath); context.strokePath()
-        context.restoreGState()
+        return true
     }
 }

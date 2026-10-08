@@ -191,9 +191,10 @@ final class RecordingFrameCompositor {
         Self.drawCamera(snapshot, context: drawing, size: size, imageContext: context)
         drawing.saveGState()
         drawing.scaleBy(x: size.width / snapshot.canvasSize.width, y: size.height / snapshot.canvasSize.height)
-        ImageEditorRenderer.drawAnnotations(snapshot.annotations, in: drawing,
+        let complete = ImageEditorRenderer.drawAnnotations(snapshot.annotations, in: drawing,
             extent: CGRect(origin: .zero, size: snapshot.canvasSize))
         drawing.restoreGState()
+        guard complete else { throw RecordingError.failed("The recording annotations could not be rendered completely.") }
         if format == nil {
             guard CMVideoFormatDescriptionCreateForImageBuffer(allocator: kCFAllocatorDefault, imageBuffer: pixels,
                 formatDescriptionOut: &format) == noErr else { throw RecordingError.failed("Invalid overlay pixel format.") }

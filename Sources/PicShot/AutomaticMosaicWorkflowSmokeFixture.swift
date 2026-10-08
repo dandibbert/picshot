@@ -19,24 +19,45 @@ import PicShotCore
     static let nearNonmatch = CGRect(x: 59, y: 329, width: 144, height: 48)
 
     static func verify(evidenceDirectory: URL, includeResourceCycles: Bool = true) async throws -> [String: Any] {
+        let diagnostics = AutomaticMosaicWorkflowDiagnostics(directory: evidenceDirectory)
+        do {
+            let report = try await verifyWorkflow(evidenceDirectory: evidenceDirectory,
+                includeResourceCycles: includeResourceCycles, diagnostics: diagnostics)
+            diagnostics.finish()
+            return report
+        } catch {
+            diagnostics.fail(error)
+            print("Automatic mosaic failure evidence retained at: \(evidenceDirectory.path)")
+            throw error
+        }
+    }
+
+    private static func verifyWorkflow(evidenceDirectory: URL, includeResourceCycles: Bool,
+                                      diagnostics: AutomaticMosaicWorkflowDiagnostics) async throws -> [String: Any] {
         _ = NSApplication.shared
         try require(evidenceDirectory.isFileURL && NSScreen.main != nil, "Local evidence directory and WindowServer required")
         let started = ProcessInfo.processInfo.systemUptime, deadline = started + overallDeadlineSeconds
+        diagnostics.record("display-geometry")
         _ = try await CaptureUIPreviewFixture.waitForDisplayGeometryQuiet()
         try FileManager.default.createDirectory(at: evidenceDirectory, withIntermediateDirectories: true)
+        diagnostics.record("author-input")
         let raster = try authoredRaster(), sourceBefore = try rgba(raster)
         try raster.writePNG(to: evidenceDirectory.appendingPathComponent("automatic-mosaic-input.png"))
         let calls = AutomaticMosaicActualCallCounter()
-        let functional = try await verifyControls(raster: raster, calls: calls, directory: evidenceDirectory, deadline: deadline)
+        let functional = try await verifyControls(raster: raster, calls: calls, directory: evidenceDirectory,
+            deadline: deadline, diagnostics: diagnostics)
         let functionalCalls = calls.started
         let resources: [String: Any]
+        diagnostics.beginMode("resources")
         if includeResourceCycles { resources = try await verifyResources(raster: raster, calls: calls, deadline: deadline) }
         else { resources = ["status": "not-run", "reason": "includeResourceCycles=false; early native UI/export evidence only",
                             "warmupCycles": 0, "completedMeasuredCycles": 0, "actualMatcherCalls": 0] }
         let resourceCalls = calls.started - functionalCalls
         let largeImageTimings: [String: Any]
+        diagnostics.beginMode("large-image-timings")
         if includeResourceCycles { largeImageTimings = try await verifyLargeImageTimings(tileSource: raster, deadline: deadline) }
         else { largeImageTimings = ["status": "not-run", "reason": "Full installed release acceptance only", "completedSearches": 0] }
+        diagnostics.beginMode("final-verification")
         let sourceAfter = try rgba(raster)
         try require(sourceBefore == sourceAfter && calls.active == 0, "Source bytes changed or matcher remains active")
         let files = ["automatic-mosaic-input.png", "automatic-mosaic-review-light.png", "automatic-mosaic-review-dark.png",
@@ -73,6 +94,11 @@ import PicShotCore
         let editor = ImageEditorController(image: raster, onSave: { _ in calls.outputCallbacks += 1 },
             onPin: { _ in calls.outputCallbacks += 1 }, onOCR: { _ in calls.outputCallbacks += 1 },
             copyAction: { _ in calls.outputCallbacks += 1 })
+        // Native failure evidence must not be hidden behind an unattended alert.
+        editor.onOutputError = { error in
+            calls.outputErrors += 1
+            calls.lastOutputError = String(error.localizedDescription.prefix(1024))
+        }
         // The seam wraps the exact production matcher. It cannot supply invented
         // candidates; the optional gate delays only an already completed result.
         editor.automaticMosaicFind = { image, seed in
@@ -115,15 +141,19 @@ import PicShotCore
         }
         try require(!state.candidates.contains { $0.rect == canvasRect(nearNonmatch) }, "Changed glyph was treated as repeated content")
     }
-    private static func verifyControls(raster: CGImage, calls: AutomaticMosaicActualCallCounter, directory: URL, deadline: Double)
+    private static func verifyControls(raster: CGImage, calls: AutomaticMosaicActualCallCounter, directory: URL, deadline: Double,
+                                       diagnostics: AutomaticMosaicWorkflowDiagnostics)
         async throws -> (controls: [String: Any], exports: [[String: Any]]) {
         var exports: [[String: Any]] = []
         for (mode, tool) in [("redact", ImageEditorTool.redact), ("redact-excluded", .redact), ("blur", .blur), ("pixelate", .pixelate)] {
+            diagnostics.beginMode(mode)
             var editor: ImageEditorController? = makeEditor(raster: raster, calls: calls)
             let probe = AutomaticMosaicWorkflowReleaseProbe(editor!)
             defer { editor?.close() }
+            diagnostics.record("seed-and-match")
             try drawSeed(editor!, tool: tool)
             try await ready(editor!, deadline: deadline)
+            diagnostics.record("review-controls")
             probe.observeReview(editor!.automaticMosaicReviewSurface)
             try require(editor!.annotationCanvas.annotations.count == 1, "Review mutated annotations before Apply")
             try verifyOutputBlocked(editor!, calls: calls)
@@ -151,12 +181,15 @@ import PicShotCore
                 try click("mosaic.review.include", in: editor!)
                 try require(editor!.automaticMosaicReviewState?.includedCount == 3, "Native reinclusion failed")
             }
+            diagnostics.record("apply")
             try click("mosaic.review.apply", in: editor!)
             let regions = mode == "redact-excluded" ? Array(authoredRegions.prefix(2)) : authoredRegions
             try require(editor!.automaticMosaicReviewState == nil && editor!.annotationCanvas.annotations.count == regions.count,
                         "Apply did not create included regions only")
+            diagnostics.record("output-restoration")
             try verifyOutputRestored(editor!, calls: calls)
-            exports.append(try export(editor!, mode: mode, regions: regions, directory: directory))
+            exports.append(try export(editor!, mode: mode, regions: regions, directory: directory, diagnostics: diagnostics))
+            diagnostics.record("undo-redo-and-sync")
             let committedIDs = editor!.annotationCanvas.annotations.map(\.id)
             try click("editor.undo", in: editor!)
             try require(editor!.annotationCanvas.annotations.count == 1 && editor!.annotationCanvas.annotations[0].mosaicLink == nil,
@@ -164,10 +197,13 @@ import PicShotCore
             try click("editor.redo", in: editor!)
             try require(editor!.annotationCanvas.annotations.map(\.id) == committedIDs, "Redo did not restore exact group")
             if mode == "redact" { try verifySync(editor!) }
+            diagnostics.record("release")
             editor!.close(); editor = nil
             try await released([probe], calls: calls, deadline: deadline)
         }
+        diagnostics.beginMode("edge-controls")
         let edges = try await verifyEdges(raster: raster, calls: calls, directory: directory, deadline: deadline)
+        diagnostics.beginMode("stale-invalidation")
         let races = try await verifyInvalidation(raster: raster, calls: calls, deadline: deadline)
         return (["status": "passed", "productionActionsUsed": true,
                  "checks": ["native-seed-drag", "selected-seed-find", "review-before-apply", "native-candidate-exclude-include",
@@ -292,6 +328,9 @@ import PicShotCore
     private static func verifyOutputRestored(_ editor: ImageEditorController, calls: AutomaticMosaicActualCallCounter) throws {
         let before = calls.outputCallbacks
         try click("editor.copy", in: editor)
+        if let outputError = calls.lastOutputError {
+            throw failure("Production output error (\(calls.outputErrors) callbacks): " + outputError)
+        }
         try require(calls.outputCallbacks == before + 1, "Apply/Cancel did not restore production output")
     }
     private static func copyKey(_ canvas: ImageEditorCanvas) throws -> NSEvent {
@@ -318,8 +357,7 @@ import PicShotCore
                 try nativeTool(.crop, in: editor!)
                 try drag(editor!.annotationCanvas, rect: CGRect(x: 10, y: 10, width: 690, height: 450))
                 try click("editor.applyCrop", in: editor!)
-                try require(editor!.annotationCanvas.outputPixelWidth == 690 && editor!.annotationCanvas.outputPixelHeight == 450
-                    && editor!.annotationCanvas.cropViewportInBase == CGRect(x: 10, y: 10, width: 690, height: 450), "Native crop did not preserve the selected viewport")
+                try require(editor!.annotationCanvas.image.width == 690 && editor!.annotationCanvas.image.height == 450, "Native crop did not change source revision")
             case "edit":
                 try nativeTool(.rectangle, in: editor!)
                 try drag(editor!.annotationCanvas, rect: CGRect(x: 250, y: 240, width: 80, height: 40))
@@ -560,11 +598,23 @@ import PicShotCore
         context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
         return Data(bytes: try required(context.data, "RGBA bytes unavailable"), count: image.width * image.height * 4)
     }
-    private static func export(_ editor: ImageEditorController, mode: String, regions: [CGRect], directory: URL) throws -> [String: Any] {
+    private static func export(_ editor: ImageEditorController, mode: String, regions: [CGRect], directory: URL,
+                               diagnostics: AutomaticMosaicWorkflowDiagnostics) throws -> [String: Any] {
+        diagnostics.record("export-flatten")
         let image = try required(editor.annotationCanvas.flattened(), "Production flatten failed")
+        // Keep the actual output even if the existing byte assertions below fail.
+        let name = "automatic-mosaic-\(mode).png"
+        diagnostics.record("export-write-png")
+        try image.writePNG(to: directory.appendingPathComponent(name))
+        diagnostics.record("export-pixel-validation")
         let before = try rgba(editor.annotationCanvas.image), after = try rgba(image)
         try require(before.count == sourceWidth * sourceHeight * 4 && before.count == after.count, "Export dimensions changed")
         var matched = 0, exterior = 0, changed = 0, mismatches = 0
+        var inspectedAllPixels = false
+        defer {
+            diagnostics.recordExportCounters(matched: matched, exterior: exterior, changed: changed,
+                mismatches: mismatches, inspectedAllPixels: inspectedAllPixels)
+        }
         let opaque = mode.hasPrefix("redact")
         for y in 0..<sourceHeight { for x in 0..<sourceWidth {
             let offset = (y * sourceWidth + x) * 4
@@ -575,12 +625,15 @@ import PicShotCore
                 if opaque { try require(after[offset] == 0 && after[offset + 1] == 0 && after[offset + 2] == 0 && after[offset + 3] == 255, "Redaction left source/color/alpha at \(x),\(y)") }
             } else {
                 exterior += 1
-                if before[offset..<(offset + 4)] != after[offset..<(offset + 4)] { mismatches += 1 }
+                if before[offset..<(offset + 4)] != after[offset..<(offset + 4)] {
+                    mismatches += 1
+                    diagnostics.observeExteriorMismatch(x: x, y: y, offset: offset, before: before, after: after)
+                }
             }
         } }
+        inspectedAllPixels = true
         try require(matched > 0 && exterior > 0 && changed > 0 && mismatches == 0, "Export changed exterior or did not apply")
-        let name = "automatic-mosaic-\(mode).png"
-        try image.writePNG(to: directory.appendingPathComponent(name))
+        diagnostics.record("export-pixels-verified")
         return ["mode": mode, "file": name, "appliedRects": regions.map(rectangleObject), "nativeApply": true,
                 "flattenedRasterOnly": true, "securityClaim": opaque, "matchedPixelsChecked": matched,
                 "exteriorPixelsChecked": exterior, "exteriorMismatches": mismatches, "changedMatchedPixels": changed]
@@ -665,10 +718,87 @@ import PicShotCore
     private static func failure(_ detail: String) -> Error { PicShotError.message("Automatic mosaic acceptance: " + detail) }
 }
 
+/// Bounded observations only: timestamps and pixel differences do not identify
+/// a rendering failure's cause. This sidecar never changes acceptance results.
+@MainActor final class AutomaticMosaicWorkflowDiagnostics {
+    static let filename = "automatic-mosaic-workflow-diagnostic.json"
+    static let maximumPhases = 64
+    private let directory: URL
+    private let started = ProcessInfo.processInfo.systemUptime
+    private var status = "running", mode = "setup", phase = "starting"
+    private var phases: [[String: Any]] = []
+    private var omittedPhases = 0
+    private var exportCounters: [String: Any]?
+    private var firstExteriorMismatch: [String: Any]?
+    private var failureMessage: String?
+    private var reportedWriteError = false
+
+    init(directory: URL) { self.directory = directory }
+
+    func beginMode(_ value: String) {
+        mode = String(value.prefix(80))
+        exportCounters = nil; firstExteriorMismatch = nil
+        record("starting")
+    }
+
+    func record(_ value: String) {
+        phase = String(value.prefix(80))
+        phases.append(["mode": mode, "phase": phase,
+                       "timestampUTC": ISO8601DateFormatter().string(from: Date()),
+                       "elapsedSeconds": ProcessInfo.processInfo.systemUptime - started])
+        if phases.count > Self.maximumPhases { phases.removeFirst(); omittedPhases += 1 }
+        persist()
+    }
+
+    func observeExteriorMismatch(x: Int, y: Int, offset: Int, before: Data, after: Data) {
+        guard firstExteriorMismatch == nil else { return }
+        firstExteriorMismatch = ["x": x, "y": y,
+            "beforeRGBA": Array(before[offset..<(offset + 4)]), "afterRGBA": Array(after[offset..<(offset + 4)])]
+    }
+
+    func recordExportCounters(matched: Int, exterior: Int, changed: Int, mismatches: Int, inspectedAllPixels: Bool) {
+        exportCounters = ["mode": mode, "matchedPixelsChecked": matched, "exteriorPixelsChecked": exterior,
+                          "changedMatchedPixels": changed, "exteriorMismatches": mismatches,
+                          "inspectedAllPixels": inspectedAllPixels]
+        persist()
+    }
+
+    func finish() { status = "passed"; record("complete") }
+    func fail(_ error: Error) {
+        status = "failed"; failureMessage = String(error.localizedDescription.prefix(1024))
+        persist()
+    }
+
+    private func persist() {
+        guard directory.isFileURL else { return }
+        var report: [String: Any] = ["schemaVersion": 1, "status": status, "observationalOnly": true,
+            "currentMode": mode, "currentPhase": phase, "phases": phases, "maximumPhases": Self.maximumPhases,
+            "omittedEarlierPhases": omittedPhases, "elapsedSeconds": ProcessInfo.processInfo.systemUptime - started,
+            "pixelCoordinates": "top-left source pixels; RGBA8 premultiplied sRGB comparison bytes",
+            "scope": "Current mode, bounded phase timestamps, existing export counters and first exterior mismatch only; no causal attribution"]
+        if let exportCounters { report["exportCounters"] = exportCounters }
+        if let firstExteriorMismatch { report["firstExteriorMismatch"] = firstExteriorMismatch }
+        if let failureMessage { report["failure"] = failureMessage }
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+                .write(to: directory.appendingPathComponent(Self.filename), options: .atomic)
+        } catch {
+            // Diagnostic I/O must not replace the original assertion/error.
+            if !reportedWriteError {
+                reportedWriteError = true
+                print("Automatic mosaic diagnostic write failed: \(error.localizedDescription.prefix(1024))")
+            }
+        }
+    }
+}
+
 @MainActor private final class AutomaticMosaicActualCallCounter {
     let matcher = AutomaticMosaicMatcher()
     var started = 0, completed = 0, active = 0
     var outputCallbacks = 0
+    var outputErrors = 0
+    var lastOutputError: String?
 }
 
 /// This gate never produces a match. Cancellation is deliberately ignored after

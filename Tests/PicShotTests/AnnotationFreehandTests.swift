@@ -206,7 +206,7 @@ final class AnnotationFreehandTests: XCTestCase {
         marker.highlighterMode = .freehand; marker.highlighterBlend = .multiply; marker.rotation = 0.2
         let marks = [pencil, marker], rendered = try render(original, [pencil, marker])
         let direct = try context(width: 320, height: 240); direct.draw(original, in: extent)
-        ImageEditorRenderer.drawAnnotations(marks, in: direct, extent: extent, baseImage: original)
+        XCTAssertTrue(ImageEditorRenderer.drawAnnotations(marks, in: direct, extent: extent, baseImage: original))
         XCTAssertEqual(try bytes(rendered), try bytes(XCTUnwrap(direct.makeImage())))
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("PicShot-freehand-\(UUID().uuidString).png")
         defer { try? FileManager.default.removeItem(at: url) }

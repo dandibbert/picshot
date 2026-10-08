@@ -87,7 +87,7 @@ enum AutomaticMosaicLegacyRenderer {
                     // Apply these as vectors in source coordinates, avoiding another raster.
                     let privacyMarks = annotations.filter { $0.tool == .redact || $0.tool == .eraser }
                     if let snapshot {
-                        AnnotationMagnifierRenderer.draw(annotation, snapshot: snapshot, extent: extent,
+                        _ = AnnotationMagnifierRenderer.draw(annotation, snapshot: snapshot, extent: extent,
                                                          privacyMarks: privacyMarks, in: context)
                     }
                 }
