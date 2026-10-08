@@ -132,7 +132,7 @@ final class EditorOutputProjectionTests: XCTestCase {
         XCTAssertEqual(calls, 0); XCTAssertEqual(EditorOutputProjection.shared.reservedBytes, 0)
     }
 
-    func testOriginalAwarePinCapturesOriginalBeforeFrozenEditorClose() async throws {
+    func testOriginalAwarePinCommitsBeforeFrozenEditorClose() async throws {
         _ = NSApplication.shared
         let source = try EditorOutputDecorationNativeFixture.makeSource()
         let capture = try CapturedImage.frozenPixelRegion(image: source, displayID: 7,
@@ -141,14 +141,14 @@ final class EditorOutputProjectionTests: XCTestCase {
         weak var weakEditor: ImageEditorController?
         let editor = ImageEditorController(image: capture.image, presentation: capture.presentation,
             onSave: { _ in }, onPin: { _ in fallback += 1 }, onOCR: { _ in }, saveWorkflow: SaveWorkflowPresenter(isSmoke: true),
-            onPinWithOriginal: { original = $0; current = $1; closedAtDelivery = weakEditor?.isClosed == true })
+            onPinWithOriginal: { original = $0; current = $1; closedAtDelivery = weakEditor?.isClosed == true; return true })
         weakEditor = editor; defer { editor.close() }
         _ = try editor.applyOutputDecoration(decoration)
         let expectedOriginal = try XCTUnwrap(editor.initialOriginalImage)
         send("pinResult", to: editor)
         try await until { !editor.outputProjectionIsPending }
         XCTAssertTrue(original === expectedOriginal); XCTAssertGreaterThan(try XCTUnwrap(current).width, expectedOriginal.width)
-        XCTAssertTrue(closedAtDelivery); XCTAssertTrue(editor.isClosed); XCTAssertNil(editor.initialOriginalImage); XCTAssertEqual(fallback, 0)
+        XCTAssertFalse(closedAtDelivery); XCTAssertTrue(editor.isClosed); XCTAssertNil(editor.initialOriginalImage); XCTAssertEqual(fallback, 0)
     }
 
     func testCloseClearsOriginalAndDoesNotRetainControllerThroughPendingCallback() async throws {
@@ -179,7 +179,7 @@ final class EditorOutputProjectionTests: XCTestCase {
             let original = try trackedOriginal(witness)
             let editor = ImageEditorController(image: original, onSave: { _ in }, onPin: { _ in calls += 1 },
                 onOCR: { _ in }, saveWorkflow: SaveWorkflowPresenter(isSmoke: true),
-                onPinWithOriginal: { _, _ in calls += 1 })
+                onPinWithOriginal: { _, _ in calls += 1; return true })
             // Independent current pixels model an edited/cropped document without
             // leaving a crop provider that could itself share the original bytes.
             editor.annotationCanvas.setContent(image: try EditorOutputDecorationNativeFixture.makeSource(), annotations: [])

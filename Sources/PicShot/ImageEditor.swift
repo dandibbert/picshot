@@ -1153,7 +1153,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     var captureRatioPaletteFrame: CGRect { captureRatioSurface.frame }
     private let onSave: (CGImage) -> Void
     private let onPin: (CGImage) -> Void
-    private let onPinWithOriginal: ((CGImage, CGImage) -> Void)?
+    private let onPinWithOriginal: ((CGImage, CGImage) -> Bool)?
     /// Immutable while the editor is open; released on close. Crop/recrop and
     /// output decoration never replace this initial capture.
     private(set) var initialOriginalImage: CGImage?
@@ -1273,7 +1273,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     init(image: CGImage, presentation: FrozenCapturePresentation? = nil,
          onSave: @escaping (CGImage) -> Void, onPin: @escaping (CGImage) -> Void,
          onOCR: @escaping (CGImage) -> Void, onTranslate: ((CGImage) -> Void)? = nil,
-         onApply: ((CGImage) -> Bool)? = nil, captureDate: Date? = nil, saveWorkflow: SaveWorkflowPresenter? = nil, copyAction: ((CGImage) -> Void)? = nil, onPinWithOriginal: ((CGImage, CGImage) -> Void)? = nil) {
+         onApply: ((CGImage) -> Bool)? = nil, captureDate: Date? = nil, saveWorkflow: SaveWorkflowPresenter? = nil, copyAction: ((CGImage) -> Void)? = nil, onPinWithOriginal: ((CGImage, CGImage) -> Bool)? = nil) {
         canvas = ImageEditorCanvas(image: image, captureDate: presentation?.capturedAt ?? captureDate)
         self.presentation = presentation
         self.onSave = onSave; self.onPin = onPin; self.onOCR = onOCR
@@ -1900,8 +1900,15 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
             // outside its flattened-input/renderer reservation.
             let workflow = self.saveWorkflow, action = self.onPin
             let originalAction = self.onPinWithOriginal, original = self.initialOriginalImage
+            if let originalAction {
+                guard let original, originalAction(original, image) else { return }
+            } else {
+                // Legacy callbacks report completion by returning; keep their API intact.
+                action(image)
+            }
+            // Persistence must succeed before releasing the frozen source, annotations,
+            // undo history or window. A rejected pin stays editable and can be retried.
             if self.presentation != nil { self.window?.close() }
-            if let originalAction, let original { originalAction(original, image) } else { action(image) }
             workflow?.save(image: image, automatic: true)
         }
     }

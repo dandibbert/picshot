@@ -69,7 +69,7 @@ enum EditorOutputDecorationNativeFixture {
         let editor = ImageEditorController(image: source, presentation: capture?.presentation,
             onSave: { _ in unexpected += 1 }, onPin: { _ in unexpected += 1 },
             onOCR: { _ in unexpected += 1 }, onTranslate: { _ in unexpected += 1 }, saveWorkflow: presenter,
-            copyAction: { _ in unexpected += 1 }, onPinWithOriginal: { pinOriginal = $0; pinCurrent = $1 })
+            copyAction: { _ in unexpected += 1 }, onPinWithOriginal: { pinOriginal = $0; pinCurrent = $1; return true })
         defer { editor.cancelDecorationWork(); editor.close() }
         editor.onOutputError = { outputError = $0 }
         let mark = ImageAnnotation(tool: .redact, points: [CGPoint(x: 60, y: 170), CGPoint(x: 140, y: 230)], color: CGColor(gray: 0, alpha: 1))
