@@ -167,7 +167,7 @@ import CryptoKit
 
     private struct DraftState: Equatable {
         let image: ObjectIdentifier, annotations: [MarkState], decoration: ImageOutputDecoration
-        init(_ editor: ImageEditorController) {
+        @MainActor init(_ editor: ImageEditorController) {
             image = ObjectIdentifier(editor.annotationCanvas.image)
             annotations = editor.annotationCanvas.annotations.map(MarkState.init)
             decoration = editor.outputDecoration
@@ -191,7 +191,7 @@ import CryptoKit
     }
     private final class ReleaseProbe {
         weak var editor: ImageEditorController?, window: NSWindow?, canvas: ImageEditorCanvas?, presenter: SaveWorkflowPresenter?
-        init(_ editor: ImageEditorController, _ presenter: SaveWorkflowPresenter) {
+        @MainActor init(_ editor: ImageEditorController, _ presenter: SaveWorkflowPresenter) {
             self.editor = editor; window = editor.window; canvas = editor.annotationCanvas; self.presenter = presenter
         }
         var released: Bool { editor == nil && window == nil && canvas == nil && presenter == nil }
