@@ -23,6 +23,7 @@ spec = importlib.util.spec_from_file_location('editable_components_checker', SCR
 C = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(C)
 PROFILE = 'a' * 64
+CERTIFICATE_HASH = 'e' * 64
 INSTALLED = {'sourceCommit': 'b' * 40, 'executableSHA256': 'c' * 64,
              'executableBytes': 128, 'bundlePath': '/Applications/PicShot.app', 'architecture': 'arm64'}
 
@@ -95,7 +96,8 @@ def pixel(label, role, drawn=False, decoded=False):
 
 
 def certificate():
-    return {'validations': [pixel(role, role, decoded=True) for role in C.ROLES] + [pixel('controller-replay', 'current')]}
+    return {'validations': [pixel(role, role, decoded=True) for role in C.ROLES] + [pixel('controller-replay', 'current')],
+            'preservingValidations': [preserving_validation(role) for role in C.ROLES]}
 
 
 def allocations(count):
@@ -122,19 +124,41 @@ def normalized_input(role):
         **{name: memory() for name in C.NORMALIZATION_MEMORY}}
 
 
+def preserved_input(role):
+    asset = assets()[role]
+    metadata = image_metadata(role, decoded=True)
+    return {'role': role, 'sourcePNGBytes': asset['pngBytes'], 'sourcePNGSHA256': asset['pngSHA256'],
+        'sourceRawBytes': asset['rawBytes'], 'sourceRawSHA256': asset['rawSHA256'],
+        'inputMetadata': metadata, 'preservedMetadata': copy.deepcopy(metadata),
+        'copyError': 0, 'copyFlags': 512, 'ownedBytes': metadata['bytesPerRow'] * metadata['height'],
+        'rawSampleValidationSource': C.RAW_SAMPLE_SOURCE, 'rawSampleCertificateSHA256': CERTIFICATE_HASH,
+        **{name: memory() for name in C.PRESERVING_COPY_MEMORY}}
+
+
+def preserving_validation(role):
+    metadata = image_metadata(role, decoded=True)
+    sample_hash = C.digest(('synthetic decoded active-row samples ' + role).encode())
+    return {'role': role, 'inputMetadata': metadata, 'preservedMetadata': copy.deepcopy(metadata),
+        'ownedBytes': metadata['bytesPerRow'] * metadata['height'], 'providerLifetime': allocations(1)[role],
+        'rawSampleValidation': {'exact': True, 'comparedBytes': metadata['width'] * metadata['height'] * 4,
+            'sourceSHA256': sample_hash, 'preservedSHA256': sample_hash, 'excludesRowPadding': True,
+            'method': C.RAW_SAMPLE_METHOD}}
+
+
 def cycle(mode='raw-draw', ordinal=1):
     editable = mode == 'editable-render-pin'
-    decoded = mode == 'png-decode-draw'
+    decoded = mode in ('png-decode-draw', C.PRESERVED_DECODE_MODE)
     normalized = mode == C.OWNED_DECODE_MODE
+    preserved = mode == C.PRESERVED_DECODE_MODE
     value = {'ordinal': ordinal, 'phase': 'warmup' if ordinal <= 2 else 'measured',
         'index': ordinal if ordinal <= 2 else ordinal-2, 'beforeMemory': memory(),
         'afterReleaseMemory': memory(), 'afterWorkMemory': memory(), 'elapsedSeconds': 1,
         'ownershipAfterRelease': ownership(editable), 'windowContentGraphsAfterRelease': 0,
-        'providerLifetime': allocations(0 if decoded else ordinal), 'ownedOpenDescriptorsAfter': 0,
+        'providerLifetime': allocations(0 if mode == 'png-decode-draw' else ordinal), 'ownedOpenDescriptorsAfter': 0,
         'ownedInputOpenDescriptorsAfter': 0, 'temporaryDirectoryRemoved': True, 'activeExportControllersAfter': 0,
         'projectionReservedBytesAfter': 0, 'exportQueueOperationsAfter': 0, 'measuredDiskReads': 0,
         'validations': [pixel(role, role, drawn=True, decoded=decoded) for role in C.ROLES],
-        'writtenOutputs': [], 'imageCreationCount': 6 if normalized else 3, 'pngDecodeCount': 3 if decoded or normalized else 0,
+        'writtenOutputs': [], 'imageCreationCount': 6 if normalized or preserved else 3, 'pngDecodeCount': 3 if decoded or normalized else 0,
         'pngWriteCount': 3 if mode == 'png-write' else 0, 'editableRestoreCount': 2 if editable else 0,
         'pinApplyCount': 1 if editable else 0, 'freshRenderCount': 1 if editable else 0,
         'afterCreationMemory': memory(), 'afterValidationMemory': memory()}
@@ -147,6 +171,10 @@ def cycle(mode='raw-draw', ordinal=1):
     if normalized:
         value.update(ownedNormalizationCount=3, decodedInputReferencesReleasedBeforeValidation=True,
             normalizationMethod=C.NORMALIZATION_METHOD, normalizedInputs=[normalized_input(role) for role in C.ROLES])
+    if preserved:
+        value.update(ownedPreservingCopyCount=3, preservedCopyFallbackCount=0, preservedCopyFailureCount=0,
+            decodedInputReferencesReleasedBeforeValidation=True, copyMethod=C.PRESERVING_COPY_METHOD,
+            preservedInputs=[preserved_input(role) for role in C.ROLES], rawSampleValidationInMeasuredProcess=False)
     if mode == 'png-write':
         value['writtenOutputs'] = [{'file': f'cycle-{ordinal}-{role}.png', 'role': role, 'byteCount': 10,
             'sourceRawSHA256': C.EXPECTED_HASHES[role], 'width': C.DIMENSIONS[role][0],
@@ -169,8 +197,24 @@ def ordered_normalized_cycle():
     return value
 
 
+def ordered_preserved_cycle():
+    value = cycle(C.PRESERVED_DECODE_MODE)
+    for index, record in enumerate(value['preservedInputs']):
+        for stage, name in enumerate(C.PRESERVING_COPY_MEMORY):
+            record[name] = memory(t=101 + 5*index + stage)
+    value['afterCreationMemory'] = memory(t=116)
+    for index, record in enumerate(value['validations']):
+        for stage, name in enumerate(('beforeDrawMemory', 'afterDrawMemory', 'afterCompareMemory')):
+            record[name] = memory(t=117 + index + stage/10)
+    for time, name in enumerate(('afterValidationMemory', 'afterWritesMemory', 'afterWorkMemory', 'afterReleaseMemory'), 120):
+        value[name] = memory(t=time)
+    value['elapsedSeconds'] = 23
+    return value
+
+
 def consumer(mode='raw-draw'):
-    return {'mode': mode, 'nativeImageIOProviderCallbacksObserved': False, 'cycles': [cycle(mode, i) for i in range(1, 11)],
+    return {'mode': mode, 'certificateSHA256': CERTIFICATE_HASH,
+        'nativeImageIOProviderCallbacksObserved': False, 'cycles': [cycle(mode, i) for i in range(1, 11)],
         'retainedOutputBytes': 300 if mode == 'png-write' else 0, 'retainedOutputFileCount': 30 if mode == 'png-write' else 0,
         'outputPixelsValidatedInThisProcess': mode != 'png-write', 'inputScope': 'Synthetic fixture',
         'diskReadScope': 'Synthetic fixture', 'outputVerificationScope': 'Synthetic fixture',
@@ -233,8 +277,11 @@ class ComponentContracts(unittest.TestCase):
         self.assertEqual(C.DIMENSIONS['current'], (2414, 1574))
         self.assertEqual(C.EXPECTED_HASHES['original'], 'c7819513b71c4ad1675665feece59747ff9a518db5766c5a8de973f65fdf19c6')
         self.assertEqual(len(set(C.EXPECTED_HASHES.values())), 3)
-        self.assertEqual(C.CONSUMERS, ('raw-draw', 'png-write', 'png-decode-draw', 'png-decode-owned-draw', 'editable-render-pin'))
+        self.assertEqual(C.CONSUMERS, ('raw-draw', 'png-write', 'png-decode-draw', 'png-decode-owned-draw',
+                                     'png-decode-preserved-draw', 'editable-render-pin'))
         self.assertEqual(C.NORMALIZATION_METHOD, 'vImageBuffer_InitWithCGImage/kvImageNoAllocate')
+        self.assertEqual(C.PRESERVING_COPY_METHOD, 'vImageBuffer_InitWithCGImage/kvImageNoAllocate/matching-source-format')
+        self.assertEqual(C.RAW_SAMPLE_METHOD, 'CGDataProviderCopyData/active-row-bytes')
 
     def test_valid_synthetic_helper_contracts(self):
         C.validate_certificate(certificate(), assets())
@@ -250,9 +297,10 @@ class ComponentContracts(unittest.TestCase):
             certificate_hash = None if mode == 'certify' else 'e'*64
             report['certificateSHA256'] = certificate_hash
             if mode in C.CONSUMERS:
-                del report['validations']; report.update(consumer(mode))
+                del report['validations']; del report['preservingValidations']; report.update(consumer(mode))
                 report['status'] = 'observed-pending-output-validation' if mode == 'png-write' else 'observed'
             elif mode == 'verify-writes':
+                del report['preservingValidations']
                 report.update(mode=mode, status='verified', writerReportSHA256='f'*64,
                     writerProcessIdentifier=150, validations=[], verifiedOutputFiles=30,
                     verifiedOutputBytes=100, memoryComparisonExcluded=True)
@@ -348,6 +396,8 @@ class ComponentContracts(unittest.TestCase):
             if mode == C.OWNED_DECODE_MODE:
                 continue
             for field in C.OWNED_DECODE_CYCLE_FIELDS:
+                if mode == C.PRESERVED_DECODE_MODE and field in C.PRESERVED_DECODE_CYCLE_FIELDS:
+                    continue
                 with self.subTest(mode=mode, field=field), self.assertRaises(ValueError):
                     value = cycle(mode); value[field] = candidate[field]
                     C.validate_cycle(value, mode, 1, assets(), certificate())
@@ -419,6 +469,237 @@ class ComponentContracts(unittest.TestCase):
             for final in (False, True):
                 with self.subTest(field=field, final=final), self.assertRaises(ValueError):
                     report = consumer(C.OWNED_DECODE_MODE)
+                    target = report if final else report['cycles'][4]
+                    target['providerLifetime']['current'][field] = bad
+                    C.validate_consumer(report, assets(), certificate())
+
+    def test_preserved_decode_exact_counts_method_and_release_claim(self):
+        for field, bad in [('ownedPreservingCopyCount', 2), ('ownedPreservingCopyCount', True),
+            ('preservedCopyFallbackCount', 1), ('preservedCopyFallbackCount', False),
+            ('preservedCopyFailureCount', 1), ('preservedCopyFailureCount', False),
+            ('imageCreationCount', 3), ('pngDecodeCount', 0), ('pngWriteCount', 1),
+            ('editableRestoreCount', 1), ('pinApplyCount', 1), ('freshRenderCount', 1),
+            ('decodedInputReferencesReleasedBeforeValidation', False),
+            ('decodedInputReferencesReleasedBeforeValidation', 1),
+            ('rawSampleValidationInMeasuredProcess', True), ('rawSampleValidationInMeasuredProcess', 0),
+            ('copyMethod', C.NORMALIZATION_METHOD), ('copyMethod', 'CGContext.draw'), ('copyMethod', '')]:
+            with self.subTest(field=field, bad=bad), self.assertRaises(ValueError):
+                value = cycle(C.PRESERVED_DECODE_MODE); value[field] = bad
+                C.validate_cycle(value, C.PRESERVED_DECODE_MODE, 1, assets(), certificate(), CERTIFICATE_HASH)
+
+    def test_preserved_decode_cycle_and_input_schemas_are_closed(self):
+        for field in cycle(C.PRESERVED_DECODE_MODE):
+            with self.subTest(cycle_field=field), self.assertRaises(ValueError):
+                value = cycle(C.PRESERVED_DECODE_MODE); del value[field]
+                C.validate_cycle(value, C.PRESERVED_DECODE_MODE, 1, assets(), certificate(), CERTIFICATE_HASH)
+        for field in preserved_input('original'):
+            with self.subTest(input_field=field), self.assertRaises(ValueError):
+                value = cycle(C.PRESERVED_DECODE_MODE); del value['preservedInputs'][0][field]
+                C.validate_cycle(value, C.PRESERVED_DECODE_MODE, 1, assets(), certificate(), CERTIFICATE_HASH)
+        for mutate in [lambda c: c.update(extra=True),
+            lambda c: c['preservedInputs'][0].update(extra=True),
+            lambda c: c['preservedInputs'][0]['inputMetadata'].update(extra=True),
+            lambda c: c['preservedInputs'][0]['preservedMetadata'].update(extra=True),
+            lambda c: c['preservedInputs'][0].update(rawSampleValidation=preserving_validation('original')['rawSampleValidation']),
+            lambda c: c['preservedInputs'][0].update(afterRawValidationMemory=memory()),
+            lambda c: c['preservedInputs'].pop(),
+            lambda c: c['preservedInputs'].append(copy.deepcopy(c['preservedInputs'][0])),
+            lambda c: c['preservedInputs'].reverse(),
+            lambda c: c['preservedInputs'].__setitem__(1, copy.deepcopy(c['preservedInputs'][0])),
+            lambda c: c.update(preservedInputs={}),
+            lambda c: c['preservedInputs'].__setitem__(1, None),
+            lambda c: c['validations'].pop(),
+            lambda c: c['validations'].append(copy.deepcopy(c['validations'][0]))]:
+            with self.subTest(mutation=mutate), self.assertRaises(ValueError):
+                value = cycle(C.PRESERVED_DECODE_MODE); mutate(value)
+                C.validate_cycle(value, C.PRESERVED_DECODE_MODE, 1, assets(), certificate(), CERTIFICATE_HASH)
+
+    def test_preserved_decode_fields_do_not_leak_to_other_modes(self):
+        candidate = cycle(C.PRESERVED_DECODE_MODE)
+        for mode in C.CONSUMERS:
+            if mode == C.PRESERVED_DECODE_MODE:
+                continue
+            for field in C.PRESERVED_DECODE_CYCLE_FIELDS:
+                if mode == C.OWNED_DECODE_MODE and field in C.OWNED_DECODE_CYCLE_FIELDS:
+                    continue
+                with self.subTest(mode=mode, field=field), self.assertRaises(ValueError):
+                    value = cycle(mode); value[field] = candidate[field]
+                    C.validate_cycle(value, mode, 1, assets(), certificate())
+
+    def test_preserved_decode_identity_and_copy_rejections(self):
+        for field, bad in [('role', 'base'), ('sourcePNGBytes', 1), ('sourcePNGBytes', True),
+            ('sourcePNGSHA256', assets()['base']['pngSHA256']), ('sourcePNGSHA256', 'z'*64),
+            ('sourceRawBytes', 3840*2160*3), ('sourceRawBytes', True),
+            ('sourceRawSHA256', C.EXPECTED_HASHES['base']), ('sourceRawSHA256', 'z'*64),
+            ('copyError', 1), ('copyError', -1), ('copyError', False),
+            ('copyFlags', 0), ('copyFlags', 16), ('copyFlags', 256), ('copyFlags', True),
+            ('rawSampleValidationSource', 'measured-process'), ('rawSampleValidationSource', ''),
+            ('rawSampleCertificateSHA256', 'f'*64), ('rawSampleCertificateSHA256', 'E'*64),
+            ('rawSampleCertificateSHA256', True),
+            ('ownedBytes', 0), ('ownedBytes', True), ('ownedBytes', 3840*2160*4+1)]:
+            with self.subTest(field=field, bad=bad), self.assertRaises(ValueError):
+                value = cycle(C.PRESERVED_DECODE_MODE); value['preservedInputs'][0][field] = bad
+                C.validate_cycle(value, C.PRESERVED_DECODE_MODE, 1, assets(), certificate(), CERTIFICATE_HASH)
+
+    def test_preserved_decode_raw_sample_validation_rejections(self):
+        for field, bad in [('exact', False), ('exact', 1), ('excludesRowPadding', False),
+            ('excludesRowPadding', 1), ('comparedBytes', 3840*2160*4-1), ('comparedBytes', True),
+            ('sourceSHA256', 'z'*64), ('sourceSHA256', 'A'*64), ('sourceSHA256', 'a'*63),
+            ('sourceSHA256', C.EXPECTED_HASHES['original']), ('sourceSHA256', ''),
+            ('preservedSHA256', 'z'*64), ('preservedSHA256', 'A'*64), ('preservedSHA256', 'a'*65),
+            ('preservedSHA256', C.EXPECTED_HASHES['original']), ('preservedSHA256', None),
+            ('method', 'CGContext.draw'), ('method', '')]:
+            with self.subTest(field=field, bad=bad), self.assertRaises(ValueError):
+                cert = certificate(); cert['preservingValidations'][0]['rawSampleValidation'][field] = bad
+                C.validate_certificate(cert, assets())
+        for bad in ('A'*64, 'z'*64, '', True):
+            with self.subTest(equal_invalid_hashes=bad), self.assertRaises(ValueError):
+                cert = certificate()
+                cert['preservingValidations'][0]['rawSampleValidation'].update(sourceSHA256=bad, preservedSHA256=bad)
+                C.validate_certificate(cert, assets())
+
+    def test_preserving_certificate_schemas_and_order_are_closed(self):
+        for field in preserving_validation('original'):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                cert = certificate(); del cert['preservingValidations'][0][field]
+                C.validate_certificate(cert, assets())
+        for field in preserving_validation('original')['rawSampleValidation']:
+            with self.subTest(raw_field=field), self.assertRaises(ValueError):
+                cert = certificate(); del cert['preservingValidations'][0]['rawSampleValidation'][field]
+                C.validate_certificate(cert, assets())
+        for mutate in [lambda c: c.pop('preservingValidations'),
+            lambda c: c.update(preservingValidations={}), lambda c: c['preservingValidations'].pop(),
+            lambda c: c['preservingValidations'].reverse(),
+            lambda c: c['preservingValidations'].append(copy.deepcopy(c['preservingValidations'][0])),
+            lambda c: c['preservingValidations'].__setitem__(1, None),
+            lambda c: c['preservingValidations'].__setitem__(1, copy.deepcopy(c['preservingValidations'][0])),
+            lambda c: c['preservingValidations'][0].update(extra=True),
+            lambda c: c['preservingValidations'][0]['rawSampleValidation'].update(extra=True),
+            lambda c: c['preservingValidations'][0]['inputMetadata'].update(extra=True),
+            lambda c: c['preservingValidations'][0]['preservedMetadata'].update(extra=True),
+            lambda c: c['preservingValidations'][0]['providerLifetime'].update(extra=True)]:
+            with self.subTest(mutation=mutate), self.assertRaises(ValueError):
+                cert = certificate(); mutate(cert); C.validate_certificate(cert, assets())
+
+    def test_preserving_certificate_metadata_ownership_and_release_are_exact(self):
+        for kind in ('inputMetadata', 'preservedMetadata'):
+            for field, bad in [('width', 1), ('width', True), ('bytesPerRow', 3840*4+16),
+                ('bitsPerComponent', 16), ('bitsPerPixel', 24), ('colorSpaceModel', 2),
+                ('colorSpaceName', 'DisplayP3'), ('colorSpaceICC_SHA256', 'b'*64),
+                ('alphaInfo', 1), ('bitmapInfo', 16385), ('shouldInterpolate', False),
+                ('shouldInterpolate', 1), ('renderingIntent', 0)]:
+                with self.subTest(kind=kind, field=field), self.assertRaises(ValueError):
+                    cert = certificate(); cert['preservingValidations'][0][kind][field] = bad
+                    C.validate_certificate(cert, assets())
+        for field, bad in [('allocations', 0), ('releaseCallbacks', 0), ('deallocations', 0),
+            ('allocations', True), ('activeBytes', 1), ('peakActiveBytes', 1), ('callbackSizesMatch', False)]:
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                cert = certificate(); cert['preservingValidations'][0]['providerLifetime'][field] = bad
+                C.validate_certificate(cert, assets())
+        for field, bad in [('role', 'base'), ('ownedBytes', 0), ('ownedBytes', True), ('ownedBytes', 3840*2160*4+1)]:
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                cert = certificate(); cert['preservingValidations'][0][field] = bad
+                C.validate_certificate(cert, assets())
+
+    def test_preserved_consumer_requires_verified_raw_certificate_and_hash(self):
+        for mutate in [lambda c: c.pop('preservingValidations'),
+            lambda c: c['preservingValidations'][0]['rawSampleValidation'].update(exact=False)]:
+            with self.subTest(mutation=mutate), self.assertRaises(ValueError):
+                cert = certificate(); mutate(cert)
+                C.validate_consumer(consumer(C.PRESERVED_DECODE_MODE), assets(), cert)
+        for bad in (None, True, 'A'*64, 'f'*64):
+            with self.subTest(certificate_hash=bad), self.assertRaises(ValueError):
+                C.validate_cycle(cycle(C.PRESERVED_DECODE_MODE), C.PRESERVED_DECODE_MODE,
+                                 1, assets(), certificate(), bad)
+
+    def test_preserved_decode_metadata_must_match_input_certificate_and_draw(self):
+        mutations = [('width', 1), ('width', True), ('height', 1), ('bytesPerRow', 1),
+            ('bytesPerRow', 3840*4+16), ('bitsPerComponent', 16), ('bitsPerPixel', 24),
+            ('colorSpaceModel', 2), ('colorSpaceName', 'DisplayP3'), ('colorSpaceICC_SHA256', 'b'*64),
+            ('alphaInfo', 5), ('bitmapInfo', 5), ('shouldInterpolate', 1), ('shouldInterpolate', False),
+            ('renderingIntent', 0)]
+        for kind in ('inputMetadata', 'preservedMetadata', 'validationMetadata'):
+            for field, bad in mutations:
+                with self.subTest(kind=kind, field=field, bad=bad), self.assertRaises(ValueError):
+                    value = cycle(C.PRESERVED_DECODE_MODE)
+                    target = (value['validations'][0]['imageMetadata'] if kind == 'validationMetadata'
+                              else value['preservedInputs'][0][kind])
+                    target[field] = bad
+                    C.validate_cycle(value, C.PRESERVED_DECODE_MODE, 1, assets(), certificate(), CERTIFICATE_HASH)
+        value = cycle(C.PRESERVED_DECODE_MODE)
+        # Canonicalization is not preservation even if both the owned report
+        # and draw report claim the same normalized metadata.
+        for target in (value['preservedInputs'][0]['preservedMetadata'], value['validations'][0]['imageMetadata']):
+            target.update(image_metadata('original'))
+        with self.assertRaises(ValueError):
+            C.validate_cycle(value, C.PRESERVED_DECODE_MODE, 1, assets(), certificate(), CERTIFICATE_HASH)
+
+    def test_preserved_decode_padded_stride_is_owned_and_raw_comparison_excludes_padding(self):
+        report = consumer(C.PRESERVED_DECODE_MODE); cert = certificate()
+        for index, role in enumerate(C.ROLES):
+            row_bytes = C.DIMENSIONS[role][0]*4 + (index+1)*16
+            owned_bytes = row_bytes*C.DIMENSIONS[role][1]
+            cert['validations'][index]['imageMetadata']['bytesPerRow'] = row_bytes
+            certified = cert['preservingValidations'][index]
+            certified['inputMetadata']['bytesPerRow'] = row_bytes
+            certified['preservedMetadata']['bytesPerRow'] = row_bytes
+            certified['ownedBytes'] = owned_bytes
+            certified['providerLifetime']['peakActiveBytes'] = owned_bytes
+            report['providerLifetime'][role]['peakActiveBytes'] = owned_bytes
+            for value in report['cycles']:
+                record = value['preservedInputs'][index]
+                record['inputMetadata']['bytesPerRow'] = row_bytes
+                record['preservedMetadata']['bytesPerRow'] = row_bytes
+                record['ownedBytes'] = owned_bytes
+                value['validations'][index]['imageMetadata']['bytesPerRow'] = row_bytes
+                value['providerLifetime'][role]['peakActiveBytes'] = owned_bytes
+        C.validate_consumer(report, assets(), cert)
+        for final in (False, True):
+            bad = copy.deepcopy(report)
+            target = bad if final else bad['cycles'][3]
+            target['providerLifetime']['current']['peakActiveBytes'] = C.DIMENSIONS['current'][0]*C.DIMENSIONS['current'][1]*4
+            with self.subTest(final=final), self.assertRaisesRegex(ValueError, 'peak owned allocation bytes'):
+                C.validate_consumer(bad, assets(), cert)
+        bad = copy.deepcopy(report); record = bad['cycles'][0]['preservedInputs'][0]
+        record['ownedBytes'] = C.DIMENSIONS['original'][0]*C.DIMENSIONS['original'][1]*4
+        with self.assertRaises(ValueError):
+            C.validate_consumer(bad, assets(), cert)
+        cert['preservingValidations'][0]['rawSampleValidation']['comparedBytes'] = cert['preservingValidations'][0]['ownedBytes']
+        with self.assertRaisesRegex(ValueError, 'raw sample byte count'):
+            C.validate_certificate(cert, assets())
+
+    def test_preserved_decode_copy_and_validation_checkpoints_are_ordered(self):
+        C.validate_cycle(ordered_preserved_cycle(), C.PRESERVED_DECODE_MODE, 1, assets(), certificate(), CERTIFICATE_HASH)
+        for index in range(3):
+            for stage, name in enumerate(C.PRESERVING_COPY_MEMORY):
+                with self.subTest(index=index, stage=name), self.assertRaises(ValueError):
+                    value = ordered_preserved_cycle()
+                    value['preservedInputs'][index][name] = memory(t=99 + 5*index + stage)
+                    C.validate_cycle(value, C.PRESERVED_DECODE_MODE, 1, assets(), certificate(), CERTIFICATE_HASH)
+        for mutate in [lambda c: c.update(creationStartUptime=102),
+            lambda c: c.update(afterCreationMemory=memory(t=114)),
+            lambda c: c.update(afterValidationMemory=memory(t=119)),
+            lambda c: c['validations'][0].update(beforeDrawMemory=memory(t=115.5)),
+            lambda c: c['validations'][1].update(beforeDrawMemory=memory(t=117.1)),
+            lambda c: c['preservedInputs'][2].update(afterDecodedInputReleaseMemory=memory(t=117))]:
+            with self.subTest(mutation=mutate), self.assertRaises(ValueError):
+                value = ordered_preserved_cycle(); mutate(value)
+                C.validate_cycle(value, C.PRESERVED_DECODE_MODE, 1, assets(), certificate(), CERTIFICATE_HASH)
+
+    def test_preserved_decode_each_checkpoint_requires_all_counters(self):
+        for stage in C.PRESERVING_COPY_MEMORY:
+            for name in C.MEMORY:
+                with self.subTest(stage=stage, counter=name), self.assertRaises(ValueError):
+                    value = cycle(C.PRESERVED_DECODE_MODE)
+                    del value['preservedInputs'][2][stage]['counters'][name]
+                    C.validate_cycle(value, C.PRESERVED_DECODE_MODE, 1, assets(), certificate(), CERTIFICATE_HASH)
+
+    def test_preserved_decode_provider_callbacks_track_owned_allocations(self):
+        for field, bad in [('allocations', 0), ('releaseCallbacks', 0), ('deallocations', 0),
+                           ('activeBytes', 4), ('peakActiveBytes', 0), ('callbackSizesMatch', False)]:
+            for final in (False, True):
+                with self.subTest(field=field, final=final), self.assertRaises(ValueError):
+                    report = consumer(C.PRESERVED_DECODE_MODE)
                     target = report if final else report['cycles'][4]
                     target['providerLifetime']['current'][field] = bad
                     C.validate_consumer(report, assets(), certificate())
@@ -567,6 +848,77 @@ class ComponentContracts(unittest.TestCase):
                 self.assertNotIn('normalizationStagesByCycle', result)
                 self.assertNotIn('normalizationMethod', result)
                 self.assertNotIn('ownedNormalizationCount', result['operationCountsPerCycle'])
+
+    def test_preserved_decode_summary_keeps_certificate_binding_copy_cost_and_release_boundaries(self):
+        report = consumer(C.PRESERVED_DECODE_MODE)
+        report['entryMemory'] = memory(offset=40)
+        report['afterWarmupMemory'] = memory(offset=20)
+        report['finalMemory'] = memory(offset=400)
+        for index, measured in enumerate(report['cycles'][2:]):
+            measured['afterReleaseMemory'] = memory(offset=10+index)
+        value = ordered_preserved_cycle()
+        for stage, (name, offset) in enumerate(zip(C.PRESERVING_COPY_MEMORY, (10, 40, 50, 90, 20))):
+            value['preservedInputs'][0][name] = memory(t=101+stage, offset=offset)
+        report['cycles'][0] = value
+        result = C.metrics(report)
+        self.assertEqual(result['copyMethod'], C.PRESERVING_COPY_METHOD)
+        self.assertFalse(result['rawSampleValidationInMeasuredProcess'])
+        self.assertEqual(result['rawSampleValidationSource'], 'fresh-certification-process')
+        self.assertEqual(result['rawSampleCertificateSHA256'], CERTIFICATE_HASH)
+        self.assertEqual(result['operationCountsPerCycle']['ownedPreservingCopyCount'], 3)
+        self.assertEqual(result['operationCountsPerCycle']['preservedCopyFallbackCount'], 0)
+        self.assertEqual(result['operationCountsPerCycle']['preservedCopyFailureCount'], 0)
+        self.assertEqual(result['operationCountsPerCycle']['imageCreationCount'], 6)
+        self.assertEqual(result['operationCountsPerCycle']['pngDecodeCount'], 3)
+        self.assertEqual(len(result['measuredReleaseIncrements']), 8)
+        self.assertEqual(len(result['lateMeasuredIncrements']), 7)
+        self.assertEqual(result['finalThreeLateMeasuredIncrements'], result['lateMeasuredIncrements'][-3:])
+        self.assertEqual(result['finalThreeLateMeasuredIncrements'][0]['fromMeasuredIndex'], 5)
+        stages = result['preservingCopyStagesByCycle']
+        self.assertEqual(len(stages), 10)
+        self.assertEqual(stages[0]['creationElapsedSeconds'], 16)
+        self.assertEqual(stages[0]['validationElapsedSeconds'], 4)
+        self.assertEqual(stages[0]['cycleElapsedSeconds'], 23)
+        self.assertEqual([record['role'] for record in stages[0]['inputs']], list(C.ROLES))
+        original = stages[0]['inputs'][0]
+        self.assertEqual(original['inputMetadata'], original['preservedMetadata'])
+        self.assertEqual(original['inputMetadata'], value['preservedInputs'][0]['inputMetadata'])
+        self.assertEqual(original['ownedBytes'], 3840*2160*4)
+        self.assertEqual(original['rawSampleValidationSource'], C.RAW_SAMPLE_SOURCE)
+        self.assertEqual(original['rawSampleCertificateSHA256'], CERTIFICATE_HASH)
+        self.assertNotIn('rawSampleValidation', original)
+        self.assertEqual([item['stage'] for item in original['checkpoints']], list(C.PRESERVING_COPY_MEMORY))
+        self.assertEqual([item['elapsedSeconds'] for item in original['boundaries']], [1]*4)
+        for name in C.MEMORY:
+            self.assertEqual(result['entryToFinalDeltaBytes'][name], 360)
+            self.assertEqual(result['entryToSampledPeakDeltaBytes'][name], -40)
+            self.assertEqual(result['measuredReleaseIncrements'][0]['deltaBytes'][name], -10)
+            self.assertEqual([v['deltaBytes'][name] for v in result['measuredReleaseIncrements'][1:]], [1]*7)
+            self.assertEqual([v['deltaBytes'][name] for v in original['boundaries']], [30, 10, 40, -70])
+            self.assertEqual(original['checkpoints'][3]['bytes'][name], memory(offset=90)['counters'][name])
+            self.assertEqual(result['checkpointNetDeltasByCycle'][0]['cycleEntryToCheckpointPeakDeltaBytes'][name], 90)
+            self.assertEqual(result['checkpointNetDeltasByCycle'][0]['sampledPeakBytes'][name], memory()['counters'][name])
+        self.assertEqual(result['kernelReportedPeakBytesAtCleanup']['resident_size_peak'], 2000000)
+        self.assertEqual(result['kernelReportedPeakBytesAtCleanup']['ledger_phys_footprint_peak'], 2000000)
+        self.assertEqual(result['entryToKernelReportedPeakDeltaBytes'], {'resident_size': 999960, 'phys_footprint': 999960})
+        self.assertEqual(result['checkpointNetDeltasByCycle'][0]['kernelReportedPeakBytesAfterRelease'],
+                         result['kernelReportedPeakBytesAtCleanup'])
+        self.assertNotIn('totalCausalAllocationBytes', result)
+        self.assertNotIn('memoryRemedy', result)
+
+    def test_existing_mode_summaries_do_not_gain_preserving_copy_claims(self):
+        for mode in C.CONSUMERS:
+            if mode == C.PRESERVED_DECODE_MODE:
+                continue
+            with self.subTest(mode=mode):
+                result = C.metrics(consumer(mode))
+                self.assertNotIn('preservingCopyStagesByCycle', result)
+                self.assertNotIn('copyMethod', result)
+                self.assertNotIn('rawSampleValidationInMeasuredProcess', result)
+                self.assertNotIn('rawSampleValidationSource', result)
+                self.assertNotIn('rawSampleCertificateSHA256', result)
+                for name in ('ownedPreservingCopyCount', 'preservedCopyFallbackCount', 'preservedCopyFailureCount'):
+                    self.assertNotIn(name, result['operationCountsPerCycle'])
 
     def test_sampler_reconciliation_and_missing_fields(self):
         C.samples(sampler(True), True)
@@ -801,6 +1153,8 @@ class WrittenOutputContracts(unittest.TestCase):
         for index,mode in enumerate(('prepare','certify',*C.CONSUMERS,'verify-writes')):
             target=self.root/mode; target.mkdir(exist_ok=True)
             report=common(); report['mode']=mode; report['processIdentifier']=101+index
+            if mode != 'certify':
+                report.pop('preservingValidations')
             if mode=='prepare':
                 for name in C.LOADED_FIELDS: report.pop(name)
                 report.pop('validations'); report.update(status='prepared',assets=manifest['assets'])
@@ -809,11 +1163,14 @@ class WrittenOutputContracts(unittest.TestCase):
                 report.update(copy.deepcopy(self.writer) if mode=='png-write' else consumer(mode))
                 report['processIdentifier']=101+index
                 report['status']='observed-pending-output-validation' if mode=='png-write' else 'observed'
-                if mode == C.OWNED_DECODE_MODE:
+                if mode in (C.OWNED_DECODE_MODE, C.PRESERVED_DECODE_MODE):
                     for item in report['cycles']:
-                        for record, asset in zip(item['normalizedInputs'], manifest['assets']):
+                        inputs = item['normalizedInputs' if mode == C.OWNED_DECODE_MODE else 'preservedInputs']
+                        for record, asset in zip(inputs, manifest['assets']):
                             record.update(sourcePNGBytes=asset['pngBytes'], sourcePNGSHA256=asset['pngSHA256'],
                                           sourceRawBytes=asset['rawBytes'], sourceRawSHA256=asset['rawSHA256'])
+                            if mode == C.PRESERVED_DECODE_MODE:
+                                record['rawSampleCertificateSHA256'] = cert_hash
             elif mode=='verify-writes':
                 report.update(copy.deepcopy(self.verifier)); report['processIdentifier']=101+index
                 report.update(status='verified',writerReportSHA256=writer_hash,writerProcessIdentifier=104)
@@ -854,8 +1211,17 @@ class WrittenOutputContracts(unittest.TestCase):
         self.assertEqual(result['status'],'complete')
         self.assertFalse(result['nativeExecutionAttestedByChecker'])
         self.assertTrue(result['allThirtyWrittenOutputsPostExitVerified'])
-        self.assertEqual(len(result['observations']),5)
+        self.assertEqual(len(result['observations']),6)
         self.assertIn(C.OWNED_DECODE_MODE, result['observations'])
+        self.assertIn(C.PRESERVED_DECODE_MODE, result['observations'])
+        self.assertEqual(len(result['processIdentifiers']), 9)
+        self.assertEqual(len(set(result['processIdentifiers'].values())), 9)
+        self.assertEqual(list(result['processIdentifiers']), ['prepare', 'certify', *C.CONSUMERS, 'verify-writes'])
+        self.assertEqual(result['preservingValidations'], certificate()['preservingValidations'])
+        self.assertEqual(result['rawSampleValidationSource'], 'fresh-certification-process')
+        preserved = result['observations'][C.PRESERVED_DECODE_MODE]
+        self.assertEqual(preserved['rawSampleCertificateSHA256'], result['certificateSHA256'])
+        self.assertFalse(preserved['rawSampleValidationInMeasuredProcess'])
         self.assertFalse(result['memoryStabilityAssessed'])
 
     def test_certify_stage_does_not_claim_output_completion(self):
@@ -863,6 +1229,7 @@ class WrittenOutputContracts(unittest.TestCase):
         self.assertEqual(result['status'],'certified')
         self.assertFalse(result['allThirtyWrittenOutputsPostExitVerified'])
         self.assertEqual(result['observations'],{})
+        self.assertEqual(result['preservingValidations'], certificate()['preservingValidations'])
 
     def test_complete_cannot_omit_post_exit_verifier(self):
         self.pipeline_fixture(); (self.root/'verify-writes/component.json').unlink()
@@ -872,6 +1239,67 @@ class WrittenOutputContracts(unittest.TestCase):
         self.pipeline_fixture(); (self.root/C.OWNED_DECODE_MODE/'component.json').unlink()
         with self.assertRaises(FileNotFoundError): self.check_pipeline()
         self.assertEqual(self.check_pipeline('certify')['status'], 'certified')
+
+    def test_complete_cannot_omit_preserved_decode_candidate(self):
+        self.pipeline_fixture(); (self.root/C.PRESERVED_DECODE_MODE/'component.json').unlink()
+        with self.assertRaises(FileNotFoundError): self.check_pipeline()
+        self.assertEqual(self.check_pipeline('certify')['status'], 'certified')
+
+    def test_preserved_decode_pipeline_rejects_changed_bound_input_identity(self):
+        self.pipeline_fixture()
+        for name in ('component.json', 'launch.json'):
+            path = self.root/C.PRESERVED_DECODE_MODE/name; value = json.loads(path.read_text())
+            value['cycles'][9]['preservedInputs'][2]['sourcePNGSHA256'] = 'f'*64
+            path.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, 'source PNG hash differs'):
+            self.check_pipeline()
+
+    def test_preserved_decode_pipeline_rejects_changed_raw_sample_hash(self):
+        self.pipeline_fixture()
+        for name in ('component.json', 'launch.json'):
+            path = self.root/'certify'/name; value = json.loads(path.read_text())
+            value['preservingValidations'][2]['rawSampleValidation']['preservedSHA256'] = 'f'*64
+            path.write_text(json.dumps(value))
+        for stage in ('certify', 'complete'):
+            with self.subTest(stage=stage), self.assertRaisesRegex(ValueError, 'raw sample hashes differ'):
+                self.check_pipeline(stage)
+
+    def test_pipeline_cannot_omit_preserving_certificate_in_either_stage(self):
+        self.pipeline_fixture()
+        for name in ('component.json', 'launch.json'):
+            path = self.root/'certify'/name; value = json.loads(path.read_text())
+            del value['preservingValidations']
+            path.write_text(json.dumps(value))
+        for stage in ('certify', 'complete'):
+            with self.subTest(stage=stage), self.assertRaisesRegex(ValueError, 'preservingValidations'):
+                self.check_pipeline(stage)
+
+    def test_preserved_decode_pipeline_rejects_stale_raw_certificate_binding(self):
+        self.pipeline_fixture()
+        for name in ('component.json', 'launch.json'):
+            path = self.root/C.PRESERVED_DECODE_MODE/name; value = json.loads(path.read_text())
+            value['cycles'][9]['preservedInputs'][2]['rawSampleCertificateSHA256'] = 'f'*64
+            path.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, 'raw sample certificate hash differs'):
+            self.check_pipeline()
+
+    def test_preserved_decode_pipeline_forbids_raw_comparison_in_consumer(self):
+        self.pipeline_fixture()
+        for name in ('component.json', 'launch.json'):
+            path = self.root/C.PRESERVED_DECODE_MODE/name; value = json.loads(path.read_text())
+            value['cycles'][9]['preservedInputs'][2]['rawSampleValidation'] = preserving_validation('current')['rawSampleValidation']
+            path.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, 'extra=.*rawSampleValidation'):
+            self.check_pipeline()
+
+    def test_preserved_decode_candidate_requires_fresh_bound_process(self):
+        self.pipeline_fixture()
+        for name in ('component.json', 'launch.json', 'launch.json.launcher.json'):
+            path = self.root/C.PRESERVED_DECODE_MODE/name; value = json.loads(path.read_text())
+            value['processIdentifier'] = 106
+            path.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, 'distinct fresh process'):
+            self.check_pipeline()
 
     def test_owned_decode_pipeline_rejects_changed_bound_input_identity(self):
         self.pipeline_fixture()

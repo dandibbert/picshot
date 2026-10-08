@@ -36,7 +36,7 @@ import XCTest
         }
     }
     func testConsumersRequireAbsoluteInputsAndCertificate() throws {
-        for mode in ["raw-draw", "png-write", "png-decode-draw", "png-decode-owned-draw", "editable-render-pin"] {
+        for mode in ["raw-draw", "png-write", "png-decode-draw", "png-decode-owned-draw", "png-decode-preserved-draw", "editable-render-pin"] {
             var environment = env(mode)
             XCTAssertThrowsError(try EditableComponentFixture.request(environment))
             environment[prefix + "INPUT"] = "/tmp/input"
@@ -52,7 +52,7 @@ import XCTest
         XCTAssertEqual(Int(kvImageNoAllocate), 512)
         XCTAssertNotEqual(Int(kvImageNoAllocate), Int(kvImageDoNotTile))
         XCTAssertEqual(Set(EditableComponentFixture.Mode.allCases.map(\.rawValue)),
-            ["prepare", "certify", "raw-draw", "png-write", "png-decode-draw", "png-decode-owned-draw", "editable-render-pin", "verify-writes"])
+            ["prepare", "certify", "raw-draw", "png-write", "png-decode-draw", "png-decode-owned-draw", "png-decode-preserved-draw", "editable-render-pin", "verify-writes"])
         var environment = env("png-decode-owned-draw")
         environment[prefix + "INPUT"] = "/tmp/input"
         environment[prefix + "CERTIFICATE"] = "/tmp/certificate.json"
@@ -66,6 +66,20 @@ import XCTest
         }
         var ordinary = environment; ordinary["PICSHOT_SMOKE_TEST"] = nil
         XCTAssertThrowsError(try EditableComponentFixture.request(ordinary))
+    }
+    func testPreservedDecodeCandidateIsAnExplicitSeparateCertifiedConsumer() throws {
+        var environment = env("png-decode-preserved-draw")
+        XCTAssertThrowsError(try EditableComponentFixture.request(environment))
+        environment[prefix + "INPUT"] = "/tmp/input"
+        environment[prefix + "CERTIFICATE"] = "/tmp/certificate.json"
+        let request = try XCTUnwrap(EditableComponentFixture.request(environment))
+        XCTAssertEqual(request.mode, .pngDecodePreservedDraw)
+        XCTAssertTrue(request.mode.consumer)
+        for (key, value) in [("FORMAT", "sRGB8"), ("FALLBACK", "allow"), ("RAW_READBACK", "1"),
+                             ("WRITES", "/tmp/writes"), ("CYCLES", "1")] {
+            var invalid = environment; invalid[prefix + key] = value
+            XCTAssertThrowsError(try EditableComponentFixture.request(invalid))
+        }
     }
     func testCertificateAndWriteVerificationCannotBeConfusedWithConsumers() throws {
         var certificate = env("certify"); certificate[prefix + "INPUT"] = "/tmp/input"

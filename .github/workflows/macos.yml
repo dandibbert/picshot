@@ -951,7 +951,7 @@ jobs:
         run: |
           python3 -m unittest discover -s scripts/tests -p test_native_test_shards.py -v
           python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/native-test-discovery.log --report dist/editable-discovery.json -- swift test list --skip-build
-          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --selection-regex 'EditableComponent|PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|ImageEditorTests|EditorOutputProjection|AnnotationEditing|PinOriginalCurrent|PinSession|History|Retention|AutomaticMosaic' --output dist/editable-tests-plan.json
+          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --selection-regex 'SourceFormatOwnedCopy|EditableComponent|PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|ImageEditorTests|EditorOutputProjection|AnnotationEditing|PinOriginalCurrent|PinSession|History|Retention|AutomaticMosaic' --output dist/editable-tests-plan.json
       - name: Exercise editable state and existing crop/pin/history behavior
         timeout-minutes: 16
         run: |
@@ -1183,7 +1183,7 @@ jobs:
   editable-components:
     if: ${{ contains(github.event.head_commit.message || '', '[editable-observation]') && contains(github.event.head_commit.message || '', '[component-controls]') }}
     runs-on: macos-15
-    timeout-minutes: 160
+    timeout-minutes: 170
     steps:
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       timeout-minutes: 2
@@ -1200,22 +1200,23 @@ jobs:
       env:
         PICSHOT_PACKAGE_APP_ONLY: '1'
       run: python3 scripts/run-bounded-command.py --timeout-seconds 1800 --log dist/editable-components-package.log --report dist/editable-components-package.json -- bash scripts/package.sh
-    - name: Compile native component admission tests
+    - name: Compile native component and source-format fidelity tests
       timeout-minutes: 10
       run: python3 scripts/run-bounded-command.py --timeout-seconds 540 --log dist/editable-components-test-build.log --report dist/editable-components-test-build.json -- swift build --build-tests
-    - name: Execute every discovered component admission case exactly once
+    - name: Execute every discovered component and raw-format fidelity case exactly once
       timeout-minutes: 9
       run: |
         python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/editable-components-test-discovery.log --report dist/editable-components-test-discovery.json -- swift test list --skip-build
-        python3 scripts/run-bounded-command.py --timeout-seconds 420 --log dist/editable-components-native-tests.log --report dist/editable-components-native-tests.json -- swift test --skip-build --filter EditableComponentFixtureTests
+        python3 scripts/run-bounded-command.py --timeout-seconds 420 --log dist/editable-components-native-tests.log --report dist/editable-components-native-tests.json -- swift test --skip-build --filter 'EditableComponentFixtureTests|SourceFormatOwnedCopyTests'
         python3 - <<'PYTHON'
         import hashlib, importlib.util, json, os
         from pathlib import Path
         spec = importlib.util.spec_from_file_location('native_cases', 'scripts/native-test-shards.py')
         native = importlib.util.module_from_spec(spec); spec.loader.exec_module(native)
         inventory = Path('dist/editable-components-test-discovery.log').read_text()
-        expected = [name for name in native.discover(inventory) if name.split('/')[0] == 'PicShotTests.EditableComponentFixtureTests']
-        native.need(bool(expected), 'No native component admission cases discovered')
+        classes = {'PicShotTests.EditableComponentFixtureTests', 'PicShotTests.SourceFormatOwnedCopyTests'}
+        expected = [name for name in native.discover(inventory) if name.split('/')[0] in classes]
+        native.need({name.split('/')[0] for name in expected} == classes, 'Missing native component or source-format fidelity cases')
         log = Path('dist/editable-components-native-tests.log').read_text()
         process = json.loads(Path('dist/editable-components-native-tests.json').read_text())
         native.need(process['status'] == 'exited' and process['termination_reason'] == 'exited'
@@ -1255,10 +1256,10 @@ jobs:
         }, indent=2) + '\n')
         PYTHON
     - name: Run certified fresh-process component controls and independent output verification
-      # Eight separate processes retain their existing 300s native / 600s owned
+      # Nine separate processes retain their existing 300s native / 600s owned
       # launch / 620s wrapper limits, plus bounded cleanup and checker overhead.
-      timeout-minutes: 88
-      run: python3 scripts/run-bounded-command.py --timeout-seconds 5200 --log dist/editable-components-matrix.log --report dist/editable-components-matrix.json -- bash scripts/editable-components-diagnostic.sh "$PWD/dist/editable-components-installed/PicShot.app" "$PWD/dist/evidence/editable-components" "$GITHUB_SHA"
+      timeout-minutes: 98
+      run: python3 scripts/run-bounded-command.py --timeout-seconds 5800 --log dist/editable-components-matrix.log --report dist/editable-components-matrix.json -- bash scripts/editable-components-diagnostic.sh "$PWD/dist/editable-components-installed/PicShot.app" "$PWD/dist/evidence/editable-components" "$GITHUB_SHA"
     - name: Preserve all component reports and immutable pixel evidence
       if: always()
       timeout-minutes: 2

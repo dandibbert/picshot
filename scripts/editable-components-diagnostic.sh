@@ -30,7 +30,7 @@ launch prepare
 launch certify
 python3 scripts/check-editable-components.py --app "$app" --expected-source "$expected" --root "$root" --stage certify --output "$root/certification-check.json"
 # The same unchanged prepared byte files and certificate feed every cell.
-for mode in raw-draw png-write png-decode-draw png-decode-owned-draw editable-render-pin; do launch "$mode"; done
+for mode in raw-draw png-write png-decode-draw png-decode-owned-draw png-decode-preserved-draw editable-render-pin; do launch "$mode"; done
 # Only after the writer has exited: actual decode/draw+memcmp of ALL 30 outputs.
 launch verify-writes
 python3 scripts/check-editable-components.py --app "$app" --expected-source "$expected" --root "$root" --stage complete --output "$root/comparison.json"

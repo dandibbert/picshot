@@ -23,8 +23,10 @@ import zlib
 PROTOCOL = 'editable-components-v1'
 FIXTURE_SOURCE = 'c80e94de9cf712e118009700feacbd707356e0a3'
 ROLES = ('original', 'base', 'current')
-CONSUMERS = ('raw-draw', 'png-write', 'png-decode-draw', 'png-decode-owned-draw', 'editable-render-pin')
+CONSUMERS = ('raw-draw', 'png-write', 'png-decode-draw', 'png-decode-owned-draw',
+             'png-decode-preserved-draw', 'editable-render-pin')
 OWNED_DECODE_MODE = 'png-decode-owned-draw'
+PRESERVED_DECODE_MODE = 'png-decode-preserved-draw'
 NORMALIZATION_METHOD = 'vImageBuffer_InitWithCGImage/kvImageNoAllocate'
 NORMALIZATION_MEMORY = ('beforeDecodeMemory', 'afterDecodeMemory', 'afterConversionMemory',
                         'afterDecodedInputReleaseMemory')
@@ -32,6 +34,20 @@ NORMALIZATION_FIELDS = {'role', 'sourcePNGBytes', 'sourcePNGSHA256', 'sourceRawB
     'inputMetadata', 'normalizedMetadata', 'conversionError', 'conversionFlags', *NORMALIZATION_MEMORY}
 OWNED_DECODE_CYCLE_FIELDS = {'ownedNormalizationCount', 'decodedInputReferencesReleasedBeforeValidation',
                             'normalizationMethod', 'normalizedInputs'}
+PRESERVING_COPY_METHOD = 'vImageBuffer_InitWithCGImage/kvImageNoAllocate/matching-source-format'
+RAW_SAMPLE_METHOD = 'CGDataProviderCopyData/active-row-bytes'
+RAW_SAMPLE_SOURCE = 'fresh-certification-process'
+PRESERVING_COPY_MEMORY = ('beforeDecodeMemory', 'afterDecodeMemory', 'beforeCopyMemory',
+    'afterCopyMemory', 'afterDecodedInputReleaseMemory')
+PRESERVING_COPY_FIELDS = {'role', 'sourcePNGBytes', 'sourcePNGSHA256', 'sourceRawBytes', 'sourceRawSHA256',
+    'inputMetadata', 'preservedMetadata', 'copyError', 'copyFlags', 'ownedBytes',
+    'rawSampleValidationSource', 'rawSampleCertificateSHA256',
+    *PRESERVING_COPY_MEMORY}
+PRESERVING_CERTIFICATE_FIELDS = {'role', 'inputMetadata', 'preservedMetadata', 'ownedBytes',
+    'rawSampleValidation', 'providerLifetime'}
+PRESERVED_DECODE_CYCLE_FIELDS = {'ownedPreservingCopyCount', 'preservedCopyFallbackCount',
+    'preservedCopyFailureCount', 'decodedInputReferencesReleasedBeforeValidation', 'copyMethod', 'preservedInputs',
+    'rawSampleValidationInMeasuredProcess'}
 DIMENSIONS = {'original': (3840, 2160), 'base': (3840, 2160), 'current': (2414, 1574)}
 EXPECTED_HASHES = {
     'original': 'c7819513b71c4ad1675665feece59747ff9a518db5766c5a8de973f65fdf19c6',
@@ -446,6 +462,36 @@ def validate_certificate(report, assets):
     for index, label in enumerate((*ROLES, 'controller-replay')):
         role = label if label in ROLES else 'current'
         pixel_record(records[index], label, role, assets, decoded=index < 3)
+    validate_preserving_certificate(report, assets)
+
+
+def validate_preserving_certificate(report, assets):
+    records = report.get('preservingValidations')
+    need(type(records) is list and len(records) == 3, 'certificate must contain exactly three preserving validations')
+    for index, (record, role) in enumerate(zip(records, ROLES)):
+        keys(record, PRESERVING_CERTIFICATE_FIELDS, 'preserving certificate validation')
+        need(record['role'] == role, 'preserving certificate roles/order differ')
+        source = record['inputMetadata']
+        profile = assets[role]['canonical']['colorSpaceICC_SHA256']
+        image_metadata(source, role, profile, decoded=True)
+        need(source == report['validations'][index]['imageMetadata'],
+             'preserving certificate metadata differs from decoded certificate')
+        image_metadata(record['preservedMetadata'], role, profile, decoded=True)
+        need(record['preservedMetadata'] == source, 'preserving certificate metadata differs from decoded input')
+        owned_bytes = source['bytesPerRow'] * source['height']
+        equal_int(record['ownedBytes'], owned_bytes, 'preserving certificate owned bytes')
+        allocation(record['providerLifetime'], 1, owned_bytes)
+        raw = record['rawSampleValidation']
+        keys(raw, {'exact', 'comparedBytes', 'sourceSHA256', 'preservedSHA256', 'excludesRowPadding', 'method'},
+             'preserving copy raw sample validation')
+        need(raw['exact'] is True and raw['excludesRowPadding'] is True,
+             'preserving copy raw samples were not exactly compared without row padding')
+        equal_int(raw['comparedBytes'], source['width'] * source['height'] * (source['bitsPerPixel'] // 8),
+                  'preserving copy raw sample byte count')
+        # This full raw comparison belongs only to fresh certification. Decoded
+        # samples may differ from canonical premultiplied RGBA certificate bytes.
+        need(sha(raw['sourceSHA256']) == sha(raw['preservedSHA256']), 'preserving copy raw sample hashes differ')
+        need(raw['method'] == RAW_SAMPLE_METHOD, 'preserving copy raw sample method differs')
 
 
 def allocation(value, count, byte_count):
@@ -457,10 +503,11 @@ def allocation(value, count, byte_count):
     need(value['callbackSizesMatch'] is True, 'provider callback size differs')
 
 
-def allocations(value, count):
+def allocations(value, count, byte_counts=None):
     keys(value, ROLES, 'per-role allocations')
     for role in ROLES:
-        allocation(value[role], count, DIMENSIONS[role][0] * DIMENSIONS[role][1] * 4)
+        byte_count = byte_counts[role] if byte_counts is not None else DIMENSIONS[role][0] * DIMENSIONS[role][1] * 4
+        allocation(value[role], count, byte_count)
 
 
 def ownership(value, editable):
@@ -517,17 +564,72 @@ def validate_normalization(value, assets, certificate):
          'owned normalization began before creation start')
 
 
-def validate_cycle(value, mode, ordinal, assets, certificate):
+def validate_preserving_copy(value, assets, certificate, certificate_hash):
+    validate_preserving_certificate(certificate, assets)
+    sha(certificate_hash)
+    equal_int(value['ownedPreservingCopyCount'], 3, 'owned preserving copy count')
+    equal_int(value['preservedCopyFallbackCount'], 0, 'preserving copy fallback count')
+    equal_int(value['preservedCopyFailureCount'], 0, 'preserving copy failure count')
+    need(value['decodedInputReferencesReleasedBeforeValidation'] is True,
+         'decoded input references were not released before validation')
+    need(value['rawSampleValidationInMeasuredProcess'] is False,
+         'raw sample validation must be excluded from measured process')
+    need(value['copyMethod'] == PRESERVING_COPY_METHOD, 'preserving copy method differs')
+    records = value['preservedInputs']
+    need(type(records) is list and len(records) == 3, 'exactly three preserved inputs required')
+    timeline = [value['beforeMemory']]
+    byte_counts = {}
+    for index, (record, role) in enumerate(zip(records, ROLES)):
+        keys(record, PRESERVING_COPY_FIELDS, 'preserved input')
+        need(record['role'] == role, 'preserved input roles/order differ')
+        asset = assets[role]
+        equal_int(record['sourcePNGBytes'], asset['pngBytes'], 'preserving copy source PNG bytes')
+        equal_int(record['sourceRawBytes'], asset['rawBytes'], 'preserving copy source raw bytes')
+        need(sha(record['sourcePNGSHA256']) == asset['pngSHA256'], 'preserving copy source PNG hash differs')
+        need(sha(record['sourceRawSHA256']) == asset['rawSHA256'] == EXPECTED_HASHES[role],
+             'preserving copy source raw hash differs')
+        profile = asset['canonical']['colorSpaceICC_SHA256']
+        source = record['inputMetadata']
+        image_metadata(source, role, profile, decoded=True)
+        need(source == certificate['validations'][index]['imageMetadata'],
+             'preserving copy input metadata differs from certificate')
+        image_metadata(record['preservedMetadata'], role, profile, decoded=True)
+        need(record['preservedMetadata'] == source, 'preserved metadata differs from decoded input')
+        need(record['preservedMetadata'] == value['validations'][index]['imageMetadata'],
+             'preserved metadata differs from validation image')
+        equal_int(record['copyError'], 0, 'preserving copy error')
+        equal_int(record['copyFlags'], 512, 'preserving copy flags')
+        byte_counts[role] = source['bytesPerRow'] * source['height']
+        equal_int(record['ownedBytes'], byte_counts[role], 'preserving copy owned bytes')
+        need(record['rawSampleValidationSource'] == RAW_SAMPLE_SOURCE, 'raw sample validation source differs')
+        need(sha(record['rawSampleCertificateSHA256']) == certificate_hash,
+             'raw sample certificate hash differs')
+        timeline += [record[name] for name in PRESERVING_COPY_MEMORY]
+    timeline += [value['afterCreationMemory']]
+    for record in value['validations']:
+        timeline += [record[name] for name in ('beforeDrawMemory', 'afterDrawMemory', 'afterCompareMemory')]
+    timeline += [value['afterValidationMemory']]
+    ordered_observations(timeline)
+    need(value['creationStartUptime'] <= records[0]['beforeDecodeMemory']['uptimeSeconds'],
+         'preserving copy began before creation start')
+    return byte_counts
+
+
+def validate_cycle(value, mode, ordinal, assets, certificate, certificate_hash=None):
     editable = mode == 'editable-render-pin'
     normalized = mode == OWNED_DECODE_MODE
+    preserved = mode == PRESERVED_DECODE_MODE
     extra = {'documentChanged', 'persistenceCommitCount', 'afterRestoreMemory', 'afterPinOpenMemory', 'afterApplyMemory', 'afterFreshRenderMemory'} if editable else {'creationStartUptime', 'afterWritesMemory', 'writeSeconds'}
     if normalized:
         extra |= OWNED_DECODE_CYCLE_FIELDS
+    if preserved:
+        extra |= PRESERVED_DECODE_CYCLE_FIELDS
     keys(value, CYCLE_FIELDS | extra, 'consumer cycle')
     equal_int(value['ordinal'], ordinal, 'cycle ordinal')
     equal_int(value['index'], ordinal if ordinal <= 2 else ordinal - 2, 'cycle index')
     need(value['phase'] == ('warmup' if ordinal <= 2 else 'measured'), 'cycle phase differs')
-    for name, expected in {'imageCreationCount': 6 if normalized else 3, 'pngDecodeCount': 3 if mode in ('png-decode-draw', OWNED_DECODE_MODE) else 0,
+    for name, expected in {'imageCreationCount': 6 if normalized or preserved else 3,
+        'pngDecodeCount': 3 if mode in ('png-decode-draw', OWNED_DECODE_MODE, PRESERVED_DECODE_MODE) else 0,
         'pngWriteCount': 3 if mode == 'png-write' else 0, 'editableRestoreCount': 2 if editable else 0,
         'pinApplyCount': 1 if editable else 0, 'freshRenderCount': 1 if editable else 0}.items():
         equal_int(value[name], expected, 'operation ' + name)
@@ -535,7 +637,7 @@ def validate_cycle(value, mode, ordinal, assets, certificate):
     need(type(value['validations']) is list and len(value['validations']) == len(labels), 'draw count differs')
     for index, (record, label) in enumerate(zip(value['validations'], labels)):
         role = label if label in ROLES else 'current'
-        decoded = mode == 'png-decode-draw'
+        decoded = mode in ('png-decode-draw', PRESERVED_DECODE_MODE)
         pixel_record(record, label, role, assets, drawn=True, decoded=decoded, owned=index < 3 and not decoded)
         if decoded:
             need(record['imageMetadata'] == certificate['validations'][index]['imageMetadata'], 'decoded metadata differs from certificate')
@@ -555,12 +657,13 @@ def validate_cycle(value, mode, ordinal, assets, certificate):
         need(value['afterCreationMemory']['uptimeSeconds'] <= record['beforeDrawMemory']['uptimeSeconds'] <= record['afterCompareMemory']['uptimeSeconds'] <= value['afterWorkMemory']['uptimeSeconds'], 'draw checkpoint outside cycle')
     if normalized:
         validate_normalization(value, assets, certificate)
+    provider_bytes = validate_preserving_copy(value, assets, certificate, certificate_hash) if preserved else None
     ownership(value['ownershipAfterRelease'], editable)
     for field in ('windowContentGraphsAfterRelease', 'ownedOpenDescriptorsAfter', 'ownedInputOpenDescriptorsAfter', 'activeExportControllersAfter',
                   'projectionReservedBytesAfter', 'exportQueueOperationsAfter', 'measuredDiskReads'):
         equal_int(value[field], 0, field)
     need(value['temporaryDirectoryRemoved'] is True, 'cycle temporary directory retained')
-    allocations(value['providerLifetime'], 0 if mode == 'png-decode-draw' else ordinal)
+    allocations(value['providerLifetime'], 0 if mode == 'png-decode-draw' else ordinal, provider_bytes)
     writes = value['writtenOutputs']
     need(type(writes) is list and len(writes) == (3 if mode == 'png-write' else 0), 'written output count differs')
     for record, role in zip(writes, ROLES):
@@ -578,7 +681,8 @@ def validate_consumer(report, assets, certificate):
     need(mode in CONSUMERS, 'invalid consumer')
     cycles = report['cycles']
     need(type(cycles) is list and len(cycles) == 10, 'requires exactly 2 warmup + 8 measured cycles')
-    total = sum(validate_cycle(cycle, mode, index, assets, certificate) for index, cycle in enumerate(cycles, 1))
+    total = sum(validate_cycle(cycle, mode, index, assets, certificate, report.get('certificateSHA256'))
+                for index, cycle in enumerate(cycles, 1))
     need(total <= MAX_OUTPUT, 'writer output aggregate exceeds bound')
     equal_int(report['retainedOutputBytes'], total, 'retained output bytes')
     equal_int(report['retainedOutputFileCount'], 30 if mode == 'png-write' else 0, 'retained output count')
@@ -589,7 +693,9 @@ def validate_consumer(report, assets, certificate):
         equal_int(report[field], 0, field)
     equal_int(report['retainedValidationDestinationBytes'], sum(w*h*4 for w, h in DIMENSIONS.values()), 'retained comparison destination bytes')
     allocations(report['destinationLifetime'], 1)
-    allocations(report['providerLifetime'], 0 if mode == 'png-decode-draw' else 10)
+    provider_bytes = ({r['role']: r['ownedBytes'] for r in cycles[-1]['preservedInputs']}
+                      if mode == PRESERVED_DECODE_MODE else None)
+    allocations(report['providerLifetime'], 0 if mode == 'png-decode-draw' else 10, provider_bytes)
     timeline = [report['entryMemory'], report['afterInputLoadMemory'], report['afterPreparationMemory']]
     for index, cycle in enumerate(cycles, 1):
         timeline += [cycle['beforeMemory'], cycle['afterReleaseMemory']]
@@ -602,7 +708,7 @@ def validate_consumer(report, assets, certificate):
 def validate_common(report, mode, installed, manifest_hash, manifest, certificate_hash=None):
     additional = {'assets'} if mode == 'prepare' else set(LOADED_FIELDS)
     if mode == 'certify':
-        additional |= {'validations'}
+        additional |= {'validations', 'preservingValidations'}
     elif mode in CONSUMERS:
         additional |= CONSUMER_FIELDS
     elif mode == 'verify-writes':
@@ -796,6 +902,14 @@ def metrics(report):
             result['normalizationMethod'] = NORMALIZATION_METHOD
             result['operationCountsPerCycle']['ownedNormalizationCount'] = cycles[0]['ownedNormalizationCount']
             result['normalizationStagesByCycle'] = []
+        if report['mode'] == PRESERVED_DECODE_MODE:
+            result['copyMethod'] = PRESERVING_COPY_METHOD
+            result['rawSampleValidationInMeasuredProcess'] = False
+            result['rawSampleValidationSource'] = RAW_SAMPLE_SOURCE
+            result['rawSampleCertificateSHA256'] = report['certificateSHA256']
+            for name in ('ownedPreservingCopyCount', 'preservedCopyFallbackCount', 'preservedCopyFailureCount'):
+                result['operationCountsPerCycle'][name] = cycles[0][name]
+            result['preservingCopyStagesByCycle'] = []
         for cycle in cycles:
             stages = ['beforeMemory', 'afterCreationMemory', 'afterValidationMemory']
             stages += (['afterRestoreMemory', 'afterPinOpenMemory', 'afterApplyMemory', 'afterFreshRenderMemory']
@@ -817,6 +931,22 @@ def metrics(report):
                             'elapsedSeconds': record[b]['uptimeSeconds'] - record[a]['uptimeSeconds']}
                             for a, b in zip(NORMALIZATION_MEMORY, NORMALIZATION_MEMORY[1:])]}
                         for record in cycle['normalizedInputs']]})
+            if report['mode'] == PRESERVED_DECODE_MODE:
+                checkpoints += [r[name] for r in cycle['preservedInputs'] for name in PRESERVING_COPY_MEMORY]
+                result['preservingCopyStagesByCycle'].append({'ordinal': cycle['ordinal'],
+                    'creationElapsedSeconds': cycle['afterCreationMemory']['uptimeSeconds'] - cycle['creationStartUptime'],
+                    'validationElapsedSeconds': cycle['afterValidationMemory']['uptimeSeconds'] - cycle['afterCreationMemory']['uptimeSeconds'],
+                    'cycleElapsedSeconds': cycle['elapsedSeconds'],
+                    'inputs': [{'role': record['role'], 'ownedBytes': record['ownedBytes'],
+                        'inputMetadata': record['inputMetadata'], 'preservedMetadata': record['preservedMetadata'],
+                        'rawSampleValidationSource': record['rawSampleValidationSource'],
+                        'rawSampleCertificateSHA256': record['rawSampleCertificateSHA256'],
+                        'checkpoints': [{'stage': name, 'uptimeSeconds': record[name]['uptimeSeconds'],
+                                         'bytes': record[name]['counters']} for name in PRESERVING_COPY_MEMORY],
+                        'boundaries': [{'from': a, 'to': b, 'deltaBytes': delta(record[a], record[b]),
+                            'elapsedSeconds': record[b]['uptimeSeconds'] - record[a]['uptimeSeconds']}
+                            for a, b in zip(PRESERVING_COPY_MEMORY, PRESERVING_COPY_MEMORY[1:])]}
+                        for record in cycle['preservedInputs']]})
             checkpoint_peak = {name: max(point['counters'][name] for point in checkpoints) for name in MEMORY}
             result['checkpointNetDeltasByCycle'].append({'ordinal': cycle['ordinal'],
                 'sampledPeakBytes': report['sampledMemory']['phases'][f"{cycle['phase']}-{cycle['index']}"]['sampledPeakBytes'],
@@ -870,6 +1000,8 @@ def check(app, expected_source, root, stage='complete'):
         'memoryStabilityAssessed': False, 'productMemoryRemedyClaim': False,
         'inputManifestSHA256': manifest_hash, 'inputFileBytesVerified': True,
         'certificateSHA256': cert_hashes['componentSHA256'], 'completeRGBAReferencesBound': True,
+        'preservingValidations': cert['preservingValidations'],
+        'rawSampleValidationSource': RAW_SAMPLE_SOURCE,
         'allThirtyWrittenOutputsPostExitVerified': stage == 'complete',
         'ownedExitConfirmed': True, 'processIdentifiers': {mode: r['processIdentifier'] for mode, r in reports.items()},
         'evidenceBindings': hashes, 'observations': {mode: metrics(r) for mode, r in reports.items() if mode in CONSUMERS},

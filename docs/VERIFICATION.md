@@ -2,6 +2,8 @@
 
 ## Held 0.16 component results
 
+[Build 118](EditableObservation118.md) completes the eight-process matrix and the timestamp regressions, including 287 focused cases on each architecture. It demonstrates the limited benefit and cold/peak tradeoffs of canonical owned decoding. The editable cell's large entry-to-final RSS and general source-format fidelity remain open; no production decoder, full end-to-end or installer acceptance is implied.
+
 [Build 117 component observations](EditableObservation117.md) record three complete ARM controls, the separate 30-output PNG verification, and an editable-document fidelity failure before its first completed cycle. PNG decode/draw has continued ~78 MiB measured-interval RSS growth; raw/write retain substantial entry-to-final RSS with different kernel classifications. Both architectures pass 282 focused cases, and the ARM 24-case/432-attempt output guard passes, but the matrix and 0.16 acceptance remain incomplete. Proposed timestamp and full-size owned-normalization changes require fresh native evidence and do not replace the accepted versions below.
 
 ## Accepted ARM 0.15.1 reported-effect-failure hotfix

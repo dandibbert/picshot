@@ -128,19 +128,81 @@ class FixtureSourceBinding(unittest.TestCase):
         self.assertIn('"pngDecodeCount": 3, "ownedNormalizationCount": 3', candidate)
         self.assertIn('"decodedInputReferencesReleasedBeforeValidation": true', candidate)
 
-    def test_runner_requires_all_five_consumers_in_fresh_processes(self):
+    def test_runner_requires_all_six_consumers_in_fresh_processes(self):
         runner = (ROOT / 'scripts/editable-components-diagnostic.sh').read_text()
         consumers = re.search(r'for mode in (.*?); do launch "\$mode"; done', runner).group(1).split()
         self.assertEqual(consumers, ['raw-draw', 'png-write', 'png-decode-draw',
-                                    'png-decode-owned-draw', 'editable-render-pin'])
+                                    'png-decode-owned-draw', 'png-decode-preserved-draw', 'editable-render-pin'])
         self.assertEqual(re.findall(r'^launch ([-a-z]+)$', runner, re.M), ['prepare', 'certify', 'verify-writes'])
-        self.assertEqual(len(consumers) + 3, 8)
+        self.assertEqual(len(consumers) + 3, 9)
         self.assertIn('--timeout-seconds 620 --grace-seconds 5', runner)
         source = (ROOT / 'Sources/PicShot/EditableComponentFixture.swift').read_text()
         self.assertIn('deadlineSeconds = 300.0', source)
         self.assertIn('sourceWidth = 3840, sourceHeight = 2160, warmups = 2, measured = 8', source)
         self.assertIn('} else if mode == .pngDecodeOwnedDraw {', source)
         self.assertIn('try ownedDecodeCycle(input, destinations: destinations, trackers: trackers, deadline: deadline)', source)
+
+    def test_preserving_candidate_keeps_existing_canonical_cell_byte_identical(self):
+        source = (ROOT / 'Sources/PicShot/EditableComponentFixture.swift').read_text()
+        start = source.index('    private static func ownedDecodeCycle(')
+        end = source.index('    private static func editableCycle(', start)
+        self.assertEqual(hashlib.sha256(source[start:end].encode()).hexdigest(),
+                         '8575366ea40a5211446f5c57db39fdacba3c15e8ac949df724dab50b1aed1926')
+
+    def test_preserving_helper_uses_source_format_bounded_owned_storage_without_drawing(self):
+        source = (ROOT / 'Sources/PicShot/SourceFormatOwnedCopy.swift').read_text()
+        for required in ['kvImageNoAllocate', 'calloc(1, count)', 'free(pointer)',
+                         'Unmanaged.passUnretained(color)', 'bitmapInfo: source.bitmapInfo',
+                         'bitsPerComponent: UInt32(source.bitsPerComponent)',
+                         'bitsPerPixel: UInt32(source.bitsPerPixel)',
+                         'version: 0, decode: nil, renderingIntent: source.renderingIntent',
+                         'rowBytes: source.bytesPerRow', 'buffer.data == bytes.pointer',
+                         'shouldInterpolate: source.shouldInterpolate', 'intent: source.renderingIntent',
+                         'image.decode != nil', 'multipliedReportingOverflow',
+                         'case unchanged(image: CGImage, reason: UnsupportedReason)',
+                         'owner.callback(count)', 'Unmanaged<Bytes>.fromOpaque(info).takeRetainedValue()']:
+            self.assertIn(required, source)
+        for forbidden in ['CGContext(', '.draw(', 'makeImage(', 'CGImageSourceCreateThumbnail',
+                          'CGColorSpace(name:', 'dataProvider?.data', 'CFDataGetBytePtr', 'weak var']:
+            self.assertNotIn(forbidden, source)
+        copy_start = source.index('    static func copy(')
+        fallback = source.index('if let reason = unsupported(source)', copy_start)
+        admission = source.index('let byteCount = try checkedStorage(', copy_start)
+        allocation = source.index('let bytes = try Bytes(', copy_start)
+        self.assertLess(fallback, admission)
+        self.assertLess(admission, allocation)
+        self.assertLess(source.index('try tracker?.reserve(count)'), source.index('calloc(1, count)'))
+        calls = []
+        for path in (ROOT / 'Sources').rglob('*.swift'):
+            if 'SourceFormatOwnedCopy.copy(' in path.read_text():
+                calls.append(path.name)
+        self.assertEqual(calls, ['EditableComponentFixture.swift'])
+
+    def test_raw_preservation_oracle_is_outside_measured_cycles(self):
+        source = (ROOT / 'Sources/PicShot/EditableComponentFixture.swift').read_text()
+        start = source.index('    private static func preservedDecodeCycle(')
+        end = source.index('    private static func certifyPreservingCopies(', start)
+        cycle = source[start:end]
+        for forbidden in ['dataProvider', 'comparePreservedSamples(', 'CFDataGetBytePtr',
+                          'rawSampleValidation": raw', 'afterRawValidationMemory']:
+            self.assertNotIn(forbidden, cycle)
+        for required in ['"rawSampleValidationInMeasuredProcess": false',
+                         '"rawSampleValidationSource": "fresh-certification-process"',
+                         '"rawSampleCertificateSHA256": input.certificateHash!',
+                         'SourceFormatOwnedCopy.copy(decoded',
+                         'guard case .owned(let image, let ownedBytes) = outcome',
+                         '"imageCreationCount": 6', '"pngDecodeCount": 3, "ownedPreservingCopyCount": 3',
+                         '"preservedCopyFallbackCount": 0', '"preservedCopyFailureCount": 0']:
+            self.assertIn(required, cycle)
+        self.assertLess(cycle.index('record["afterDecodedInputReleaseMemory"]'),
+                        cycle.index('try destinations[asset.role]!.compare('))
+        certificate = source[end:source.index('    // Verbatim fixture generators', end)]
+        self.assertIn('let raw = try comparePreservedSamples(decoded, image)', certificate)
+        self.assertIn('source.dataProvider?.data', certificate)
+        self.assertIn('owned.dataProvider?.data', certificate)
+        self.assertIn('memcmp(original.advanced(by: offset)', certificate)
+        self.assertIn('state.releaseCallbacks == 1 && state.deallocations == 1', certificate)
+        self.assertIn('report["preservingValidations"] = try certifyPreservingCopies(bundle!)', source)
 
     def test_opt_in_route_leaves_existing_editable_path_intact(self):
         source = (ROOT / 'Sources/PicShot/SmokeVerification.swift').read_text()

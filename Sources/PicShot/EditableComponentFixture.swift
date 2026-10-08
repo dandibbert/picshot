@@ -24,8 +24,9 @@ import PicShotCore
     enum Mode: String, CaseIterable {
         case prepare, certify, rawDraw = "raw-draw", pngWrite = "png-write"
         case pngDecodeDraw = "png-decode-draw", pngDecodeOwnedDraw = "png-decode-owned-draw"
+        case pngDecodePreservedDraw = "png-decode-preserved-draw"
         case editableRenderPin = "editable-render-pin", verifyWrites = "verify-writes"
-        var consumer: Bool { [.rawDraw, .pngWrite, .pngDecodeDraw, .pngDecodeOwnedDraw, .editableRenderPin].contains(self) }
+        var consumer: Bool { [.rawDraw, .pngWrite, .pngDecodeDraw, .pngDecodeOwnedDraw, .pngDecodePreservedDraw, .editableRenderPin].contains(self) }
     }
     private static var claimed = false
     struct Request { let mode: Mode; let input: URL?; let certificate: URL?; let writes: URL? }
@@ -78,6 +79,7 @@ import PicShotCore
                 report["afterInputLoadMemory"] = try O.memory()
                 if request.mode == .certify {
                     report["validations"] = try certify(bundle!)
+                    report["preservingValidations"] = try certifyPreservingCopies(bundle!)
                     report["status"] = "certified"
                 } else if request.mode == .verifyWrites {
                     try verifyWrites(bundle!, root: request.writes!, report: &report, deadline: deadline)
@@ -209,6 +211,24 @@ import PicShotCore
             }
             for i in assets.indices { assets[i].decodedMetadata = records[i]["imageMetadata"] as? [String: Any]
                 try O.require(assets[i].decodedMetadata != nil, "Certificate decoded metadata missing") }
+            let preserving = try O.required(cert["preservingValidations"] as? [[String: Any]], "Preservation certificate missing")
+            try O.require(preserving.count == roles.count && preserving.compactMap { $0["role"] as? String } == roles,
+                "Preservation certificate roles incomplete")
+            for (asset, record) in zip(assets, preserving) {
+                let source = try O.required(record["inputMetadata"] as? [String: Any], "Preservation input metadata missing")
+                let owned = try O.required(record["preservedMetadata"] as? [String: Any], "Preservation output metadata missing")
+                let raw = try O.required(record["rawSampleValidation"] as? [String: Any], "Preservation raw samples missing")
+                try O.require(NSDictionary(dictionary: source).isEqual(to: asset.decodedMetadata!)
+                    && NSDictionary(dictionary: owned).isEqual(to: source)
+                    && record["ownedBytes"] as? Int == preservingStorage(asset)
+                    && raw["exact"] as? Bool == true && raw["excludesRowPadding"] as? Bool == true
+                    && raw["comparedBytes"] as? Int == asset.byteCount
+                    && raw["method"] as? String == "CGDataProviderCopyData/active-row-bytes",
+                    "Preservation certificate samples/metadata differ")
+                let rawHash = try O.required(raw["sourceSHA256"] as? String, "Preservation sample digest missing")
+                try O.require(rawHash.count == 64 && rawHash.allSatisfy { "0123456789abcdef".contains($0) }
+                    && raw["preservedSHA256"] as? String == rawHash, "Preservation sample digest differs")
+            }
             certificateHash = hash(data)
         }
         try O.require(total + documentData.count == manifest["totalBytes"] as? Int && total + documentData.count <= maximumBundleBytes, "Bundle total mismatch")
@@ -255,7 +275,10 @@ import PicShotCore
     }
     private static func consume(_ mode: Mode, input: Input, directory: URL, report: inout [String: Any],
         sampler: EditableAnnotationMemorySampler, deadline: Double) async throws {
-        let trackers = Dictionary(uniqueKeysWithValues: input.assets.map { ($0.role, ImageDrawAllocationTracker(maximumAllocations: 10, allocationBytes: $0.byteCount)) })
+        let trackers = try Dictionary(uniqueKeysWithValues: input.assets.map { asset in
+            (asset.role, ImageDrawAllocationTracker(maximumAllocations: 10,
+                allocationBytes: mode == .pngDecodePreservedDraw ? try preservingStorage(asset) : asset.byteCount))
+        })
         let destinationTrackers = Dictionary(uniqueKeysWithValues: input.assets.map { ($0.role, ImageDrawAllocationTracker(maximumAllocations: 1, allocationBytes: $0.byteCount)) })
         var destinations = try Dictionary(uniqueKeysWithValues: input.assets.map { ($0.role, try Destination(asset: $0, tracker: destinationTrackers[$0.role]!)) })
         defer { destinations.values.forEach { $0.close() } }
@@ -269,6 +292,9 @@ import PicShotCore
         report["inputScope"] = "The same full immutable PNG and raw references/document are owned once per consumer; all file handles close before preparation baseline. Three fixed draw destinations are retained equally in every cell. Each nondecode cycle copies three raw providers; decode cell instead creates three ImageIO images. Extra editable render validations remain explicit unequal work."
         if mode == .pngDecodeOwnedDraw {
             report["inputScope"] = "The same full immutable PNG and raw references/document and three fixed validation destinations are retained once. Three full-size ImageIO decodes use unchanged cache options, each converted by vImage directly into explicitly owned canonical RGBA8 sRGB storage. Supplied decoded image/source references and their nested autorelease pools end before any actual validation draw. Private framework retention and all-color/depth fidelity remain unproved."
+        }
+        if mode == .pngDecodePreservedDraw {
+            report["inputScope"] = "The same immutable full PNG/raw references/document and fixed validation destinations are retained once. Three full ImageIO decodes keep the existing cache options, then matching-format vImage copies own bounded source-stride storage. Raw active-row byte fidelity is checked only in the separate certification process and native unit fixtures. These consumer cycles compare source metadata, end decoded input scopes, then make the same three canonical reference draws. No full raw provider readback occurs here; private framework retention remains unproved."
         }
         var records: [[String: Any]] = [], outputBytes = 0
         records.reserveCapacity(10)
@@ -287,6 +313,10 @@ import PicShotCore
                 } else if mode == .pngDecodeOwnedDraw {
                     cycle = try autoreleasepool {
                         try ownedDecodeCycle(input, destinations: destinations, trackers: trackers, deadline: deadline)
+                    }
+                } else if mode == .pngDecodePreservedDraw {
+                    cycle = try autoreleasepool {
+                        try preservedDecodeCycle(input, destinations: destinations, trackers: trackers, deadline: deadline)
                     }
                 } else {
                     cycle = try autoreleasepool {
@@ -731,6 +761,131 @@ import PicShotCore
         let data = try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys])
         try O.require(data.count <= 2_097_152, "Component report exceeds 2 MiB")
         try data.write(to: url, options: .atomic)
+    }
+
+    // Source-format candidate. Canonical validation is additional evidence;
+    // it cannot substitute for the raw provider sample comparison below.
+    private static func preservingStorage(_ asset: Asset) throws -> Int {
+        let metadata = try O.required(asset.decodedMetadata, "Preserving copy needs certified metadata")
+        return try SourceFormatOwnedCopy.checkedStorage(width: asset.width, height: asset.height,
+            bitsPerPixel: integer(metadata["bitsPerPixel"]), bytesPerRow: integer(metadata["bytesPerRow"]),
+            limits: preservingLimits)
+    }
+    private static var preservingLimits: SourceFormatOwnedCopy.Limits {
+        let maximum = (sourceWidth * 4 + 256) * sourceHeight
+        return .init(maximumDimension: sourceWidth, maximumOwnedBytes: maximum, maximumCopyWorkBytes: maximum * 2)
+    }
+    private static func preservedDecodeCycle(_ input: Input, destinations: [String: Destination],
+        trackers: [String: ImageDrawAllocationTracker], deadline: Double) throws -> [String: Any] {
+        var images: [CGImage] = [], preservedInputs: [[String: Any]] = []
+        let creationStart = ProcessInfo.processInfo.systemUptime
+        for asset in input.assets {
+            try check(deadline)
+            let result: (CGImage, [String: Any]) = try autoreleasepool {
+                let beforeDecode = try O.memory()
+                let decoded = try decode(asset.png, asset: asset)
+                let afterDecode = try O.memory(), inputMetadata = metadata(decoded)
+                let beforeCopy = try O.memory()
+                let outcome = try SourceFormatOwnedCopy.copy(decoded, limits: preservingLimits,
+                    tracker: trackers[asset.role]!, isCancelled: {
+                        Task.isCancelled || ProcessInfo.processInfo.systemUptime >= deadline
+                    })
+                guard case .owned(let image, let ownedBytes) = outcome else {
+                    throw O.failure("Preserving diagnostic requires an owned result; fallback is not success")
+                }
+                let afterCopy = try O.memory()
+                try O.require(ownedBytes == preservingStorage(asset)
+                    && SourceFormatOwnedCopy.metadataMatches(decoded, image)
+                    && NSDictionary(dictionary: metadata(image)).isEqual(to: inputMetadata), "Source metadata or owned storage changed")
+                withExtendedLifetime(decoded) { }
+                try check(deadline)
+                return (image, ["role": asset.role, "sourcePNGBytes": asset.png.count, "sourcePNGSHA256": asset.pngHash,
+                    "sourceRawBytes": asset.raw.count, "sourceRawSHA256": asset.rawHash,
+                    "inputMetadata": inputMetadata, "preservedMetadata": metadata(image), "ownedBytes": ownedBytes,
+                    "copyError": 0, "copyFlags": Int(kvImageNoAllocate),
+                    "rawSampleValidationSource": "fresh-certification-process", "rawSampleCertificateSHA256": input.certificateHash!,
+                    "beforeDecodeMemory": beforeDecode, "afterDecodeMemory": afterDecode,
+                    "beforeCopyMemory": beforeCopy, "afterCopyMemory": afterCopy])
+            }
+            var record = result.1
+            record["afterDecodedInputReleaseMemory"] = try O.memory()
+            images.append(result.0); preservedInputs.append(record)
+        }
+        let afterCreation = try O.memory()
+        var validations: [[String: Any]] = []
+        for (asset, image) in zip(input.assets, images) {
+            try check(deadline)
+            validations.append(try destinations[asset.role]!.compare(image, asset: asset, label: asset.role))
+        }
+        let afterValidation = try O.memory(), writeStart = ProcessInfo.processInfo.systemUptime
+        let afterWrites = try O.memory()
+        withExtendedLifetime(images) { }
+        return ["validations": validations, "writtenOutputs": [[String: Any]](), "imageCreationCount": 6,
+            "pngDecodeCount": 3, "ownedPreservingCopyCount": 3, "preservedCopyFallbackCount": 0, "preservedCopyFailureCount": 0,
+            "pngWriteCount": 0, "editableRestoreCount": 0, "pinApplyCount": 0, "freshRenderCount": 0,
+            "copyMethod": "vImageBuffer_InitWithCGImage/kvImageNoAllocate/matching-source-format",
+            "rawSampleValidationInMeasuredProcess": false,
+            "decodedInputReferencesReleasedBeforeValidation": true, "preservedInputs": preservedInputs,
+            "creationStartUptime": creationStart, "afterCreationMemory": afterCreation,
+            "afterValidationMemory": afterValidation, "afterWritesMemory": afterWrites,
+            "writeSeconds": ProcessInfo.processInfo.systemUptime - writeStart]
+    }
+    private static func certifyPreservingCopies(_ input: Input) throws -> [[String: Any]] {
+        var records: [[String: Any]] = []
+        for asset in input.assets {
+            // This fresh certification process may materialize raw provider
+            // data. No raw readback, copied Data or CGImage escapes to consumers.
+            var tracker: ImageDrawAllocationTracker?
+            var record: [String: Any] = try autoreleasepool {
+                let decoded = try decode(asset.png, asset: asset)
+                let bytes = decoded.bytesPerRow * decoded.height
+                let lifetime = ImageDrawAllocationTracker(maximumAllocations: 1, allocationBytes: bytes)
+                tracker = lifetime
+                guard case .owned(let image, let ownedBytes) = try SourceFormatOwnedCopy.copy(decoded,
+                    limits: preservingLimits, tracker: lifetime) else {
+                    throw O.failure("Preservation certificate requires an owned result")
+                }
+                try O.require(ownedBytes == bytes && SourceFormatOwnedCopy.metadataMatches(decoded, image),
+                    "Preservation certificate metadata changed")
+                let raw = try comparePreservedSamples(decoded, image)
+                return ["role": asset.role, "inputMetadata": metadata(decoded), "preservedMetadata": metadata(image),
+                    "ownedBytes": ownedBytes, "rawSampleValidation": raw]
+            }
+            let state = try O.required(tracker, "Preservation certificate tracker missing").snapshot()
+            try O.require(state.allocations == 1 && state.releaseCallbacks == 1 && state.deallocations == 1
+                && state.activeBytes == 0 && state.callbackSizesMatch, "Preservation certificate provider retained")
+            record["providerLifetime"] = try object(JSONEncoder().encode(state))
+            records.append(record)
+        }
+        return records
+    }
+    private static func comparePreservedSamples(_ source: CGImage, _ owned: CGImage) throws -> [String: Any] {
+        // This full-size cell is the certificate's straight RGBA8 layout. It
+        // compares every color and alpha byte; row padding is not a sample.
+        try O.require(source.bitsPerPixel == 32 && source.bitsPerComponent == 8
+            && [.first, .last, .premultipliedFirst, .premultipliedLast].contains(source.alphaInfo),
+            "Raw component comparison requires alpha-bearing RGBA8")
+        let sourceBytes = try O.required(source.dataProvider?.data, "Decoded raw provider bytes unavailable")
+        let ownedBytes = try O.required(owned.dataProvider?.data, "Owned raw provider bytes unavailable")
+        let count = source.bytesPerRow * source.height, rowBytes = source.width * 4
+        try O.require(CFDataGetLength(sourceBytes) >= count && CFDataGetLength(ownedBytes) == count,
+            "Raw provider data is incomplete")
+        let original = try O.required(CFDataGetBytePtr(sourceBytes), "Source raw pointer unavailable")
+        let copy = try O.required(CFDataGetBytePtr(ownedBytes), "Owned raw pointer unavailable")
+        var sourceHash = SHA256(), ownedHash = SHA256()
+        for row in 0..<source.height {
+            let offset = row * source.bytesPerRow
+            try O.require(memcmp(original.advanced(by: offset), copy.advanced(by: offset), rowBytes) == 0,
+                "Source-format copy changed raw samples")
+            sourceHash.update(bufferPointer: UnsafeRawBufferPointer(start: original.advanced(by: offset), count: rowBytes))
+            ownedHash.update(bufferPointer: UnsafeRawBufferPointer(start: copy.advanced(by: offset), count: rowBytes))
+        }
+        let originalHash = sourceHash.finalize().map { String(format: "%02x", $0) }.joined()
+        let copyHash = ownedHash.finalize().map { String(format: "%02x", $0) }.joined()
+        try O.require(originalHash == copyHash, "Raw sample digest differs")
+        return ["exact": true, "comparedBytes": rowBytes * source.height,
+            "sourceSHA256": originalHash, "preservedSHA256": copyHash,
+            "excludesRowPadding": true, "method": "CGDataProviderCopyData/active-row-bytes"]
     }
 
     // Verbatim fixture generators from the held owner; checker binds their bytes.
