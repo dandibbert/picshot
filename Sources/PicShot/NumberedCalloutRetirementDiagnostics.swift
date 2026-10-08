@@ -130,8 +130,15 @@ enum NumberedCalloutDiagnosticDestination {
                   !isWithin(lexicalDestination, root: root.standardizedFileURL.path) else {
                 throw invalid("Sidecar must be outside the accepted evidence subtree")
             }
+            // Use the opened directory's identity; Darwin.stat can resolve to
+            // the struct initializer in Swift. Each loop iteration owns one FD.
+            let protectedDirectory = resolved.withCString {
+                Darwin.open($0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            }
+            guard protectedDirectory >= 0 else { throw posixFailure() }
+            defer { Darwin.close(protectedDirectory) }
             var identity = stat()
-            guard resolved.withCString({ Darwin.stat($0, &identity) }) == 0 else { throw posixFailure() }
+            guard Darwin.fstat(protectedDirectory, &identity) == 0 else { throw posixFailure() }
             protectedIdentities.append(identity)
         }
         // lstat deliberately rejects existing dangling symlinks too. O_EXCL
