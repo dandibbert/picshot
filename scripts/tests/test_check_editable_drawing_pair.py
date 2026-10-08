@@ -630,7 +630,7 @@ class DrawingPairTests(unittest.TestCase):
 
     def test_real_file_load_and_four_process_comparison(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve(strict=True)
             identity = identity_at(root)
             values = {}
             for index, (name, strategy, mode) in enumerate(C.CELLS):
@@ -678,7 +678,7 @@ class DrawingPairTests(unittest.TestCase):
         }
         for name, mutate in mutations.items():
             with self.subTest(change=name), tempfile.TemporaryDirectory() as temporary:
-                root = Path(temporary)
+                root = Path(temporary).resolve(strict=True)
                 identity = identity_at(root)
                 directory, arm = materialize(root, identity)
                 mutate(arm)
@@ -689,7 +689,7 @@ class DrawingPairTests(unittest.TestCase):
     def test_actual_png_bytes_crc_rgba_and_regular_files_are_verified(self):
         for change in ('missing', 'linked', 'bytes', 'crc', 'rgba', 'log-size', 'report-link', 'stale-native-bytes', 'launcher-status'):
             with self.subTest(change=change), tempfile.TemporaryDirectory() as temporary:
-                root = Path(temporary)
+                root = Path(temporary).resolve(strict=True)
                 identity = identity_at(root)
                 directory, arm = materialize(root, identity)
                 entry = arm['native']['functionalCases'][0]['visualEvidence'][0]
@@ -734,7 +734,7 @@ class DrawingPairTests(unittest.TestCase):
         }
         for name, mutate in mutations.items():
             with self.subTest(change=name), tempfile.TemporaryDirectory() as temporary:
-                root = Path(temporary)
+                root = Path(temporary).resolve(strict=True)
                 identity = identity_at(root)
                 directory, arm = materialize(root, identity, 'reference', True, 2)
                 mutate(arm['native'])

@@ -1285,9 +1285,10 @@ jobs:
     - name: Check paired drawing and owned guard contracts
       timeout-minutes: 3
       run: |
+        set -o pipefail
         mkdir -p dist
-        python3 -m unittest discover -s scripts/tests -p '*drawing*.py' -v
-        python3 -O -m unittest discover -s scripts/tests -p '*drawing*.py' -v
+        python3 -m unittest discover -s scripts/tests -p '*drawing*.py' -v 2>&1 | tee dist/drawing-contracts.log
+        python3 -O -m unittest discover -s scripts/tests -p '*drawing*.py' -v 2>&1 | tee dist/drawing-contracts-optimized.log
     - name: Package one signed application without user installers
       timeout-minutes: 31
       env:
