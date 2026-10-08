@@ -15,15 +15,34 @@ enum MultiWindowCaptureResourceFixture {
     static let reportName = "multi-window-resource.json"
     private static let maximumDiskBytes = 2 * MultiWindowCaptureLimits.temporaryBytes
 
+    /// This environment key affects this diagnostic fixture only. Normal capture
+    /// always uses MultiWindowCompositionMode.production.
+    static func compositionMode(environment: [String: String]) throws -> MultiWindowCompositionMode {
+        guard let value = environment["PICSHOT_MULTIWINDOW_COMPOSITION"] else { return .production }
+        guard let mode = MultiWindowCompositionMode(rawValue: value) else { throw MultiWindowCaptureError.incomplete }
+        return mode
+    }
+
     @MainActor static func verify(evidenceDirectory: URL) async throws -> [String: Any] {
+        let mode = try compositionMode(environment: ProcessInfo.processInfo.environment)
+        let normalizationBytes = mode == .normalizedCandidate ? width * height * 4 : 0
         let began = ProcessInfo.processInfo.systemUptime, deadline = began + deadlineSeconds
         let manager = FileManager.default
         try manager.createDirectory(at: evidenceDirectory, withIntermediateDirectories: true)
         let root = manager.temporaryDirectory.appendingPathComponent("PicShot-MultiWindow-Resource-" + UUID().uuidString, isDirectory: true)
         let reportURL = evidenceDirectory.appendingPathComponent(reportName)
+        let environment = ProcessInfo.processInfo.environment
+        let diagnosticTailStripFirst = environment["PICSHOT_MULTIWINDOW_DIAGNOSTIC_TAIL_FIRST"] == "1"
+        try require(!diagnosticTailStripFirst || mode == .coreGraphicsBaseline, "Tail-first diagnostic requires CoreGraphics baseline mode")
+        let diagnosticTrace = environment["PICSHOT_MULTIWINDOW_DIAGNOSTIC_BOUNDARIES"] == "1" ? MultiWindowDiagnosticTrace() : nil
+        let diagnosticObserve: MultiWindowDiagnosticObserver?
+        if let trace = diagnosticTrace {
+            diagnosticObserve = { event, window, top in trace.record(event, window: window, stripTop: top) }
+        } else { diagnosticObserve = nil }
         var report: [String: Any] = [
             "status": "running", "observationsComplete": false, "activePhase": "inputPreparation", "activeCycleIndex": 0,
-            "remainingWarmupCycles": warmupCount, "remainingMeasuredCycles": measuredCount, "fixture": "multi-window-imageio-production-composition-v1",
+            "remainingWarmupCycles": warmupCount, "remainingMeasuredCycles": measuredCount, "fixture": "multi-window-imageio-composition-comparison-v2",
+            "compositionMode": mode.rawValue, "productionCompositionMode": MultiWindowCompositionMode.production.rawValue,
             "pid": getpid(), "processName": ProcessInfo.processInfo.processName,
             "executablePath": Bundle.main.executableURL?.path ?? ProcessInfo.processInfo.arguments.first ?? "unknown",
             "bundlePath": Bundle.main.bundlePath, "bundleIdentifier": Bundle.main.bundleIdentifier ?? "none",
@@ -32,7 +51,13 @@ enum MultiWindowCaptureResourceFixture {
             "warmupCycles": warmupCount, "measuredCycles": measuredCount, "windowsPerCycle": 2,
             "sourceWidth": width, "sourceHeight": height, "logicalSourceWidth": 1920, "logicalSourceHeight": 1080,
             "pixelsPerPoint": 2, "outputWidth": 4480, "outputHeight": 2520,
-            "maximumSimultaneousProductionRasterBytes": (4480 * 2520 + width * height) * 4,
+            "diagnosticTailStripFirst": diagnosticTailStripFirst,
+            "diagnosticBoundariesEnabled": diagnosticTrace != nil,
+            "diagnosticTraceAllocatedBytesBeforeEntry": diagnosticTrace?.allocatedBytes ?? 0,
+            "diagnosticStripScope": "Default order remains 0,128,...,2048. Tail-first visits 2048,0,128,...,1920; same 17 clips per input and 128-row maximum. No change to z-order, source identities, decode settings or digest.",
+            "maximumSimultaneousProductionRasterBytes": (4480 * 2520 + width * height) * 4 + normalizationBytes,
+            "normalizationRasterBytes": normalizationBytes, "ownedRasterLimitBytes": MultiWindowCaptureLimits.ownedRasterBytes,
+            "normalizationScope": "Caller-owned extra RGBA raster only; private vImage/ColorSync/decoder scratch remains separate process accounting",
             "maximumTemporaryPNGBytes": maximumDiskBytes, "maximumConcurrentCycleTasks": 1,
             "cooperativeDeadlineSeconds": deadlineSeconds, "perCompositionDeadlineSeconds": 20,
             "outerDeadlineRequiredForNoncooperativeNativeCalls": true,
@@ -82,6 +107,8 @@ enum MultiWindowCaptureResourceFixture {
                 phase = index < warmupCount ? "warmup" : "measured"
                 cycleIndex = index < warmupCount ? index + 1 : index - warmupCount + 1
                 let label = "\(phase).\(cycleIndex)", ownership = MultiWindowResourceOwnership()
+                diagnosticTrace?.begin(phase: phase == "warmup" ? 1 : 2, cycle: cycleIndex)
+                let rasterProbe = MultiWindowCompositionResourceProbe()
                 sampler.setPhase(label + ".before")
                 activeCycle = ["phase": phase, "index": cycleIndex, "before": try memory()]
                 activeOwnership = ownership
@@ -90,12 +117,18 @@ enum MultiWindowCaptureResourceFixture {
                 try write(report, to: reportURL)
                 let cycleStarted = ProcessInfo.processInfo.systemUptime
                 try await runCycle(layout: layout, inputs: inputs, expectedDigest: prepared.expectedOutputSHA256,
-                    ownership: ownership, root: root, deadline: deadline, label: label, sampler: sampler, cycle: &activeCycle)
+                    ownership: ownership, root: root, deadline: deadline, label: label, sampler: sampler,
+                    mode: mode, rasterProbe: rasterProbe,
+                    diagnosticTailStripFirst: diagnosticTailStripFirst, diagnosticObserve: diagnosticObserve, cycle: &activeCycle)
+                activeCycle["ownedRasterProbe"] = rasterProbe.snapshot
+                try require(rasterProbe.snapshot["currentRasterBytes"] == 0, "Completed cycle retained an explicit raster")
+                try require(rasterProbe.snapshot["normalizationCount"] == (mode == .normalizedCandidate ? 2 : 0), "Unexpected normalization count")
                 try require(ownership.allReleased, "A completed cycle retained an input, decoder or output object")
                 let handles = try ownedFileDescriptors(root, identities: ownedIdentities)
                 try require(handles.isEmpty, "A completed cycle left an owned PNG descriptor open")
                 sampler.setPhase(label + ".released")
                 try await settle(deadline)
+                diagnosticObserve?(.cycleAfterRelease, 0, -1)
                 activeCycle["afterRelease"] = try memory(); activeCycle["elapsedSeconds"] = ProcessInfo.processInfo.systemUptime - cycleStarted
                 activeCycle["ownership"] = ownership.report; activeCycle["ownedOpenFileDescriptorsAfter"] = handles.count
                 activeCycle["transientSampledPeaksByPhase"] = sampler.phases(prefix: label + ".")
@@ -108,12 +141,15 @@ enum MultiWindowCaptureResourceFixture {
             }
             phase = "cancellation"; report["activePhase"] = phase; try write(report, to: reportURL)
             sampler.setPhase("cancellation.before")
+            diagnosticTrace?.begin(phase: 3, cycle: 0)
             let cancelledOwnership = MultiWindowResourceOwnership()
             let cancelled = Task { @MainActor in
-                try await SequentialMultiWindowCapture.capture(layout: layout, deadline: min(deadline, ProcessInfo.processInfo.systemUptime + 20),
+                try await SequentialMultiWindowCapture.capture(layout: layout, deadline: min(deadline, ProcessInfo.processInfo.systemUptime + 20), mode: mode,
+                    diagnosticTailStripFirst: diagnosticTailStripFirst, diagnosticObserve: diagnosticObserve,
                     validate: { try check(deadline) }, frame: { window, _ in
                         try require(cancelledOwnership.liveInputs == 0, "Cancellation acquired overlapping source frames")
-                        let image = try await decode(inputs[window.id == 101 ? 0 : 1], expected: window, ownership: cancelledOwnership, deadline: deadline)
+                        let image = try await decode(inputs[window.id == 101 ? 0 : 1], expected: window, ownership: cancelledOwnership,
+                            deadline: deadline, diagnosticObserve: diagnosticObserve)
                         withUnsafeCurrentTask { $0?.cancel() }
                         return image
                     })
@@ -125,6 +161,7 @@ enum MultiWindowCaptureResourceFixture {
             catch is CancellationError {}
             try check(deadline)
             try require(cancelledOwnership.inputCount == 1 && cancelledOwnership.allReleased, "Cancellation did not release its sole decoded input")
+            diagnosticObserve?(.cancellationAfterRelease, 0, -1)
             report["cancellation"] = ["status": "passed", "ownership": cancelledOwnership.report,
                                       "after": try memory(), "ownedOpenFileDescriptors": try ownedFileDescriptors(root, identities: ownedIdentities).count]
             try require(try ownedFileDescriptors(root, identities: ownedIdentities).isEmpty, "Cancellation left an owned file descriptor open")
@@ -140,6 +177,7 @@ enum MultiWindowCaptureResourceFixture {
             report["measuredBoundaryIncrements"] = increments(cycles)
             report["setupTransientSampledPeaks"] = sampler.phases(prefix: "setup.")
             sampler.stop(); report["transientSampler"] = sampler.report
+            if let diagnosticTrace { report["diagnosticBoundaryTrace"] = diagnosticTrace.report }
             report["warmups"] = warmups; report["cycles"] = cycles
             report["completedWarmupCycles"] = warmups.count; report["completedMeasuredCycles"] = cycles.count
             report["status"] = "observed"; report["observationsComplete"] = true; report["activePhase"] = "completed"
@@ -163,6 +201,7 @@ enum MultiWindowCaptureResourceFixture {
             report["temporaryDirectoryRemoved"] = !manager.fileExists(atPath: root.path)
             report["ownedOpenFileDescriptorsAfterFailure"] = try? ownedFileDescriptors(root, identities: ownedIdentities).count
             report["transientSampler"] = sampler.report; report["finalAfterFailure"] = try? memory()
+            if let diagnosticTrace { report["diagnosticBoundaryTrace"] = diagnosticTrace.report }
             report["elapsedSeconds"] = ProcessInfo.processInfo.systemUptime - began
             try write(report, to: reportURL)
             throw original
@@ -171,13 +210,18 @@ enum MultiWindowCaptureResourceFixture {
 
     @MainActor private static func runCycle(layout: MultiWindowCaptureLayout, inputs: [URL], expectedDigest: String,
         ownership: MultiWindowResourceOwnership, root: URL, deadline: TimeInterval, label: String,
-        sampler: MultiWindowResourceSampler, cycle: inout [String: Any]) async throws {
+        sampler: MultiWindowResourceSampler, mode: MultiWindowCompositionMode,
+        rasterProbe: MultiWindowCompositionResourceProbe, diagnosticTailStripFirst: Bool,
+        diagnosticObserve: MultiWindowDiagnosticObserver?, cycle: inout [String: Any]) async throws {
         sampler.setPhase(label + ".composition")
         let output = try await SequentialMultiWindowCapture.capture(layout: layout,
-            deadline: min(deadline, ProcessInfo.processInfo.systemUptime + 20), validate: { try check(deadline) }, frame: { window, _ in
+            deadline: min(deadline, ProcessInfo.processInfo.systemUptime + 20), mode: mode, resourceProbe: rasterProbe,
+            diagnosticTailStripFirst: diagnosticTailStripFirst, diagnosticObserve: diagnosticObserve,
+            validate: { try check(deadline) }, frame: { window, _ in
                 try require(ownership.liveInputs == 0 && ownership.liveDecoders == 0, "A prior source survived into the next acquisition")
                 sampler.setPhase(label + ".decode." + String(window.id))
-                let image = try await decode(inputs[window.id == 101 ? 0 : 1], expected: window, ownership: ownership, deadline: deadline)
+                let image = try await decode(inputs[window.id == 101 ? 0 : 1], expected: window, ownership: ownership,
+                    deadline: deadline, diagnosticObserve: diagnosticObserve)
                 sampler.setPhase(label + ".composition")
                 return image
             })
@@ -186,16 +230,21 @@ enum MultiWindowCaptureResourceFixture {
         try require(ownership.liveInputs == 0 && ownership.liveDecoders == 0, "Completed composition retained an input")
         cycle["afterCompositionBeforeDigest"] = try memory()
         sampler.setPhase(label + ".outputDigest")
+        diagnosticObserve?(.digestBefore, 0, -1)
         let work = Task.detached(priority: .userInitiated) { try digestOutput(output, deadline: deadline) }
         let digest = try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
         try require(digest == expectedDigest, "Real composed RGBA digest does not match the independent procedural oracle")
         cycle["rgbaSHA256"] = digest; cycle["exactOutputPixels"] = output.width * output.height
-        try withExtendedLifetime(output) { cycle["afterDigestBeforeOutputRelease"] = try memory() }
+        try withExtendedLifetime(output) {
+            cycle["afterDigestBeforeOutputRelease"] = try memory()
+            diagnosticObserve?(.digestAfter, 0, -1)
+        }
         // No image escapes: caller retains scalar report and weak probes only.
     }
 
     private static func decode(_ url: URL, expected: MultiWindowDescriptor, ownership: MultiWindowResourceOwnership,
-                               deadline: TimeInterval) async throws -> CGImage {
+                               deadline: TimeInterval, diagnosticObserve: MultiWindowDiagnosticObserver? = nil) async throws -> CGImage {
+        diagnosticObserve?(.decodeBefore, expected.id, -1)
         let work = Task.detached(priority: .userInitiated) {
             try autoreleasepool {
                 try check(deadline)
@@ -212,11 +261,14 @@ enum MultiWindowCaptureResourceFixture {
                 guard image.bitsPerComponent == 8, image.bitsPerPixel <= 32,
                       image.bytesPerRow <= MultiWindowCaptureLimits.framePixels * 4 / image.height else { throw MultiWindowCaptureError.pixelLimit }
                 ownership.recordInput(image, decoder: source)
+                diagnosticObserve?(.decodeImageCreated, expected.id, -1)
                 try check(deadline)
                 return image
             }
         }
-        return try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
+        let image = try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
+        diagnosticObserve?(.decodeReturned, expected.id, -1)
+        return image
     }
 
     private struct Prepared: @unchecked Sendable { let inputs: [[String: Any]]; let expectedOutputSHA256: String }

@@ -25,6 +25,9 @@ public enum MultiWindowCaptureLimits {
     public static let framePixels = 16_000_000
     public static let totalInputPixels = 64_000_000
     public static let outputPixels = 32_000_000
+    /// App-owned canvas + admitted source raster + explicit normalization raster.
+    /// Decoder/framework scratch and mapped PNG bytes are measured separately.
+    public static let ownedRasterBytes = 192_000_000
     public static let temporaryBytes = 80 * 1_024 * 1_024
     public static let acquisitionSeconds: TimeInterval = 20
     public static let selectionSeconds: TimeInterval = 180
@@ -111,6 +114,29 @@ public struct MultiWindowCaptureLayout: Equatable, Sendable {
             let right = ((window.bounds.maxX - minX) * scale).rounded(), bottom = ((window.bounds.maxY - minY) * scale).rounded()
             return MultiWindowPlacement(window: window, pixelBounds: CGRect(x: left, y: top, width: right - left, height: bottom - top))
         }
+    }
+
+    /// The diagnostic normalized renderer owns an additional tightly packed RGBA
+    /// source. Reject impossible maximum-density layouts before allocating the
+    /// output. Actual row padding is checked again before normalization.
+    public func validateNormalizedRasterBudget() throws {
+        for placement in placements {
+            _ = try normalizedRasterBytes(width: placement.window.maximumWidth,
+                height: placement.window.maximumHeight, bytesPerRow: placement.window.maximumWidth * 4)
+        }
+    }
+
+    public func normalizedRasterBytes(width sourceWidth: Int, height sourceHeight: Int, bytesPerRow: Int) throws -> Int {
+        guard MultiWindowCaptureLimits.allows(width: sourceWidth, height: sourceHeight, pixels: MultiWindowCaptureLimits.framePixels),
+              bytesPerRow > 0, bytesPerRow <= MultiWindowCaptureLimits.framePixels * 4 / sourceHeight else {
+            throw MultiWindowCaptureError.pixelLimit
+        }
+        let canvas = width * height * 4, source = bytesPerRow * sourceHeight, normalized = sourceWidth * sourceHeight * 4
+        guard source <= MultiWindowCaptureLimits.ownedRasterBytes - canvas,
+              normalized <= MultiWindowCaptureLimits.ownedRasterBytes - canvas - source else {
+            throw MultiWindowCaptureError.pixelLimit
+        }
+        return canvas + source + normalized
     }
 
     /// Unselected windows may appear/disappear, but selected identities, geometry,

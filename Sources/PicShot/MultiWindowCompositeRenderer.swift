@@ -1,7 +1,39 @@
+import Accelerate
 import CoreGraphics
 import Foundation
 import Darwin
 import PicShotCore
+
+/// Production stays on the existing implementation until native differential
+/// and fresh-process resource evidence pass. Only diagnostics select the candidate.
+enum MultiWindowCompositionMode: String, CaseIterable, Sendable {
+    case coreGraphicsBaseline
+    case normalizedCandidate
+    static let production: Self = .coreGraphicsBaseline
+}
+
+/// Counts only explicit allocations and the admitted source's row-stride bytes.
+/// kvImageNoAllocate controls its destination, not private vImage/ColorSync or
+/// decoder scratch. Never interpret this counter as a process-memory cap.
+final class MultiWindowCompositionResourceProbe: @unchecked Sendable {
+    enum Kind { case canvas, normalization, admittedSource }
+    private let lock = NSLock()
+    private var canvas = 0, normalization = 0, source = 0, peak = 0, conversions = 0
+    var snapshot: [String: Int] {
+        lock.lock(); defer { lock.unlock() }
+        return ["canvasBytes": canvas, "normalizationBytes": normalization, "admittedSourceBytes": source,
+            "currentRasterBytes": canvas + normalization + source, "peakRasterBytes": peak, "normalizationCount": conversions]
+    }
+    fileprivate func change(_ kind: Kind, by bytes: Int) {
+        lock.lock(); defer { lock.unlock() }
+        switch kind {
+        case .canvas: canvas += bytes
+        case .normalization: normalization += bytes; if bytes > 0 { conversions += 1 }
+        case .admittedSource: source += bytes
+        }
+        peak = max(peak, canvas + normalization + source)
+    }
+}
 
 /// Serialized actor owns one RGBA canvas and one source raster at a time. Capture
 /// never stores a screenshot array or a full-desktop background. Transparent gaps
@@ -9,26 +41,43 @@ import PicShotCore
 private final class MultiWindowCanvasStorage: @unchecked Sendable {
     let pointer: UnsafeMutableRawPointer
     let byteCount: Int
-    init(byteCount: Int) throws {
+    private let probe: MultiWindowCompositionResourceProbe?
+    private let kind: MultiWindowCompositionResourceProbe.Kind
+    init(byteCount: Int, probe: MultiWindowCompositionResourceProbe? = nil,
+         kind: MultiWindowCompositionResourceProbe.Kind = .canvas) throws {
         guard let pointer = calloc(1, byteCount) else { throw MultiWindowCaptureError.pixelLimit }
-        self.pointer = pointer; self.byteCount = byteCount
+        self.pointer = pointer; self.byteCount = byteCount; self.probe = probe; self.kind = kind
+        probe?.change(kind, by: byteCount)
     }
-    deinit { free(pointer) }
+    deinit { free(pointer); probe?.change(kind, by: -byteCount) }
 }
 
 actor MultiWindowCompositeRenderer {
     let layout: MultiWindowCaptureLayout
+    let mode: MultiWindowCompositionMode
+    private let resourceProbe: MultiWindowCompositionResourceProbe?
     private var context: CGContext?
     private var storage: MultiWindowCanvasStorage?
     private var next = 0
     private var inputPixels = 0
     private var isAppending = false
-    init(layout: MultiWindowCaptureLayout) throws {
+    private let diagnosticTailStripFirst: Bool
+    private let diagnosticObserve: MultiWindowDiagnosticObserver?
+    init(layout: MultiWindowCaptureLayout, mode: MultiWindowCompositionMode = .production,
+         resourceProbe: MultiWindowCompositionResourceProbe? = nil,
+         diagnosticTailStripFirst: Bool = false, diagnosticObserve: MultiWindowDiagnosticObserver? = nil) throws {
         try Task.checkCancellation()
         guard MultiWindowCaptureLimits.allows(width: layout.width, height: layout.height, pixels: MultiWindowCaptureLimits.outputPixels) else {
             throw MultiWindowCaptureError.pixelLimit
         }
-        let storage = try MultiWindowCanvasStorage(byteCount: layout.width * layout.height * 4)
+        if mode == .normalizedCandidate { try layout.validateNormalizedRasterBudget() }
+        self.layout = layout; self.mode = mode; self.resourceProbe = resourceProbe
+        self.diagnosticTailStripFirst = diagnosticTailStripFirst; self.diagnosticObserve = diagnosticObserve
+        diagnosticObserve?(.canvasBeforeAllocation, 0, -1)
+        let storage = try MultiWindowCanvasStorage(byteCount: layout.width * layout.height * 4, probe: resourceProbe)
+        self.storage = storage
+        // The candidate never creates a CGContext or asks one to draw a CGImage.
+        guard mode == .coreGraphicsBaseline else { diagnosticObserve?(.canvasAfterAllocation, 0, -1); return }
         guard let space = CGColorSpace(name: CGColorSpace.sRGB) else { throw MultiWindowCaptureError.pixelLimit }
         let contextOwnership = Unmanaged.passRetained(storage)
         guard let canvas = CGContext(data: storage.pointer, width: layout.width, height: layout.height, bitsPerComponent: 8,
@@ -39,13 +88,14 @@ actor MultiWindowCompositeRenderer {
                   }, releaseInfo: contextOwnership.toOpaque()) else {
             contextOwnership.release(); throw MultiWindowCaptureError.pixelLimit
         }
-        self.layout = layout; context = canvas; self.storage = storage
+        context = canvas
         canvas.clear(CGRect(x: 0, y: 0, width: layout.width, height: layout.height))
         canvas.interpolationQuality = .none; canvas.setShouldAntialias(false); canvas.setBlendMode(.normal)
+        diagnosticObserve?(.canvasAfterAllocation, 0, -1)
     }
     func append(_ image: CGImage, windowID: UInt32, deadline: TimeInterval) async throws {
         try check(deadline)
-        guard let canvas = context, let storage else { throw MultiWindowCaptureError.finished }
+        guard let storage else { throw MultiWindowCaptureError.finished }
         defer { withExtendedLifetime(storage) {} }
         guard !isAppending, next < layout.placements.count else { throw MultiWindowCaptureError.incomplete }
         isAppending = true
@@ -59,29 +109,132 @@ actor MultiWindowCompositeRenderer {
         }
         let cost = image.width * image.height
         guard cost <= MultiWindowCaptureLimits.totalInputPixels - inputPixels else { throw MultiWindowCaptureError.pixelLimit }
+        let sourceBytes = image.bytesPerRow * image.height
+        resourceProbe?.change(.admittedSource, by: sourceBytes)
+        defer { resourceProbe?.change(.admittedSource, by: -sourceBytes) }
+        switch mode {
+        case .coreGraphicsBaseline:
+            try await appendBaseline(image, placement: placement, deadline: deadline)
+        case .normalizedCandidate:
+            // Admission includes all three live rasters, including source padding,
+            // and occurs before allocating the normalization workspace.
+            _ = try layout.normalizedRasterBytes(width: image.width, height: image.height, bytesPerRow: image.bytesPerRow)
+            diagnosticObserve?(.normalizationBefore, windowID, -1)
+            let normalized = try normalize(image, deadline: deadline)
+            defer { withExtendedLifetime(normalized) {} }
+            diagnosticObserve?(.normalizationAfter, windowID, -1)
+            diagnosticObserve?(.candidateBlendBefore, windowID, -1)
+            try await composite(normalized, sourceWidth: image.width, sourceHeight: image.height,
+                                into: storage, placement: placement, deadline: deadline)
+            if let diagnosticObserve {
+                withExtendedLifetime(image) { diagnosticObserve(.candidateBlendAfter, windowID, -1) }
+            }
+        }
+        guard self.storage != nil else { throw MultiWindowCaptureError.finished }
+        try check(deadline)
+        inputPixels += cost; next += 1
+    }
+    private func appendBaseline(_ image: CGImage, placement: MultiWindowPlacement, deadline: TimeInterval) async throws {
+        guard let canvas = context else { throw MultiWindowCaptureError.finished }
+        let windowID = placement.window.id
         let rect = placement.pixelBounds
         let destination = CGRect(x: rect.minX, y: CGFloat(layout.height) - rect.maxY, width: rect.width, height: rect.height)
         // Strips bound cancellation latency without creating crop-backed rasters.
-        for top in stride(from: 0, to: Int(destination.height), by: 128) {
+        // The opt-in diagnostic only reorders the same disjoint clips; the
+        // source, draw count, touched pixels and maximum strip size are unchanged.
+        let stripCount = (Int(destination.height) + 127) / 128
+        let lastStripTop = (stripCount - 1) * 128
+        diagnosticObserve?(.appendBeforeDraws, windowID, -1)
+        for ordinal in 0..<stripCount {
+            let top = diagnosticTailStripFirst ? (ordinal == 0 ? lastStripTop : (ordinal - 1) * 128) : ordinal * 128
             try check(deadline)
             guard context != nil else { throw MultiWindowCaptureError.finished }
             canvas.saveGState()
             canvas.clip(to: CGRect(x: destination.minX, y: destination.minY + CGFloat(top),
                 width: destination.width, height: min(128, destination.height - CGFloat(top))))
+            diagnosticObserve?(.drawBefore, windowID, top)
             canvas.draw(image, in: destination)
+            diagnosticObserve?(.drawAfter, windowID, top)
             canvas.restoreGState()
             await Task.yield()
         }
         guard context != nil else { throw MultiWindowCaptureError.finished }
         canvas.flush()
-        try check(deadline)
-        inputPixels += cost; next += 1
+        if let diagnosticObserve {
+            withExtendedLifetime(image) { diagnosticObserve(.appendAfterFlush, windowID, -1) }
+        }
     }
+
+    private func normalize(_ image: CGImage, deadline: TimeInterval) throws -> MultiWindowCanvasStorage {
+        try check(deadline)
+        return try autoreleasepool {
+            let buffer = try MultiWindowCanvasStorage(byteCount: image.width * image.height * 4,
+                probe: resourceProbe, kind: .normalization)
+            guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+                  var format = vImage_CGImageFormat(bitsPerComponent: 8, bitsPerPixel: 32, colorSpace: space,
+                    bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue),
+                    renderingIntent: .defaultIntent) else { throw MultiWindowCaptureError.incomplete }
+            var destination = vImage_Buffer(data: buffer.pointer, height: vImagePixelCount(image.height),
+                width: vImagePixelCount(image.width), rowBytes: image.width * 4)
+            // One color-managed conversion into caller-owned storage per frame.
+            // This native call is not interruptible; late/cancelled work is rejected.
+            let result = withExtendedLifetime(space) {
+                vImageBuffer_InitWithCGImage(&destination, &format, nil, image, vImage_Flags(kvImageNoAllocate))
+            }
+            try check(deadline)
+            guard result == kvImageNoError, destination.data == buffer.pointer,
+                  destination.width == vImagePixelCount(image.width), destination.height == vImagePixelCount(image.height),
+                  destination.rowBytes == image.width * 4 else { throw MultiWindowCaptureError.incomplete }
+            return buffer
+        }
+    }
+
+    private func composite(_ source: MultiWindowCanvasStorage, sourceWidth: Int, sourceHeight: Int,
+                           into output: MultiWindowCanvasStorage, placement: MultiWindowPlacement, deadline: TimeInterval) async throws {
+        let rect = placement.pixelBounds, left = Int(rect.minX), top = Int(rect.minY)
+        let width = Int(rect.width), height = Int(rect.height)
+        guard width > 0, height > 0, left >= 0, top >= 0,
+              left <= layout.width - width, top <= layout.height - height else { throw MultiWindowCaptureError.changed }
+        let input = source.pointer.assumingMemoryBound(to: UInt8.self)
+        let destination = output.pointer.assumingMemoryBound(to: UInt8.self)
+        // CGImage/vImage rows already have top-left image order. Sampling pixel
+        // centers keeps nearest-neighbor density mapping independent of orientation.
+        for row in 0..<height {
+            if row % 32 == 0 {
+                try check(deadline)
+                guard storage != nil else { throw MultiWindowCaptureError.finished }
+            }
+            let sourceY = min(sourceHeight - 1, ((2 * row + 1) * sourceHeight) / (2 * height))
+            for column in 0..<width {
+                let sourceX = min(sourceWidth - 1, ((2 * column + 1) * sourceWidth) / (2 * width))
+                let offset = (sourceY * sourceWidth + sourceX) * 4, target = ((top + row) * layout.width + left + column) * 4
+                let alpha = Int(input[offset + 3])
+                if alpha == 0 { continue }
+                if alpha == 255 {
+                    destination[target] = input[offset]; destination[target + 1] = input[offset + 1]
+                    destination[target + 2] = input[offset + 2]; destination[target + 3] = 255
+                } else {
+                    let inverse = 255 - alpha
+                    for channel in 0..<4 {
+                        // Premultiplied source-over, rounded once per channel.
+                        // Differential tests deliberately require exact CG bytes;
+                        // native rounding/color differences block promotion.
+                        let value = Int(input[offset + channel]) + (Int(destination[target + channel]) * inverse + 127) / 255
+                        destination[target + channel] = UInt8(min(255, value))
+                    }
+                }
+            }
+            if row % 128 == 127 { await Task.yield() }
+        }
+    }
+
     func finish(deadline: TimeInterval) throws -> CGImage {
         try check(deadline)
-        guard let canvas = context else { throw MultiWindowCaptureError.finished }
-        guard !isAppending, next == layout.placements.count, let storage else { throw MultiWindowCaptureError.incomplete }
-        canvas.flush()
+        guard let storage else { throw MultiWindowCaptureError.finished }
+        guard !isAppending, next == layout.placements.count else { throw MultiWindowCaptureError.incomplete }
+        diagnosticObserve?(.finishBefore, 0, -1)
+        let diagnosticCanvas = diagnosticObserve == nil ? nil : context
+        context?.flush()
         // Transfer the same allocation into the final image; makeImage() could
         // otherwise copy the complete canvas at finish. No drawing occurs again.
         let retained = Unmanaged.passRetained(storage)
@@ -94,6 +247,9 @@ actor MultiWindowCompositeRenderer {
                   bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue),
                   provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) else { throw MultiWindowCaptureError.incomplete }
         context = nil; self.storage = nil
+        if let diagnosticObserve {
+            withExtendedLifetime(diagnosticCanvas) { diagnosticObserve(.finishAfterOwnershipTransfer, 0, -1) }
+        }
         return image
     }
     func discard() { context = nil; storage = nil }
@@ -106,18 +262,27 @@ actor MultiWindowCompositeRenderer {
 @MainActor
 enum SequentialMultiWindowCapture {
     static func capture(layout: MultiWindowCaptureLayout, deadline: TimeInterval,
+                        mode: MultiWindowCompositionMode = .production,
+                        resourceProbe: MultiWindowCompositionResourceProbe? = nil,
+                        diagnosticTailStripFirst: Bool = false, diagnosticObserve: MultiWindowDiagnosticObserver? = nil,
                         validate: () throws -> Void,
                         frame: (MultiWindowDescriptor, TimeInterval) async throws -> CGImage) async throws -> CGImage {
         try Task.checkCancellation(); try validate()
         guard ProcessInfo.processInfo.systemUptime < deadline else { throw MultiWindowCaptureError.deadline }
-        let renderer = try await Task.detached(priority: .userInitiated) { try MultiWindowCompositeRenderer(layout: layout) }.value
+        let renderer = try await Task.detached(priority: .userInitiated) {
+            try MultiWindowCompositeRenderer(layout: layout, mode: mode, resourceProbe: resourceProbe,
+                diagnosticTailStripFirst: diagnosticTailStripFirst, diagnosticObserve: diagnosticObserve)
+        }.value
         do {
             for placement in layout.placements {
                 try Task.checkCancellation(); try validate()
-                try await append(placement.window, renderer: renderer, deadline: deadline, validate: validate, frame: frame)
+                try await append(placement.window, renderer: renderer, deadline: deadline,
+                    diagnosticObserve: diagnosticObserve, validate: validate, frame: frame)
+                diagnosticObserve?(.inputAfterAppendScope, placement.window.id, -1)
             }
             try Task.checkCancellation(); try validate()
             let output = try await renderer.finish(deadline: deadline)
+            diagnosticObserve?(.outputAfterFinishScope, 0, -1)
             try Task.checkCancellation(); try validate()
             guard ProcessInfo.processInfo.systemUptime < deadline else { throw MultiWindowCaptureError.deadline }
             return output
@@ -127,11 +292,13 @@ enum SequentialMultiWindowCapture {
         }
     }
     private static func append(_ window: MultiWindowDescriptor, renderer: MultiWindowCompositeRenderer, deadline: TimeInterval,
+                               diagnosticObserve: MultiWindowDiagnosticObserver?,
                                validate: () throws -> Void,
                                frame: (MultiWindowDescriptor, TimeInterval) async throws -> CGImage) async throws {
         guard ProcessInfo.processInfo.systemUptime < deadline else { throw MultiWindowCaptureError.deadline }
         let image = try await frame(window, deadline)
         try Task.checkCancellation(); try validate()
+        diagnosticObserve?(.inputBeforeAppend, window.id, -1)
         try await renderer.append(image, windowID: window.id, deadline: deadline)
     }
 }

@@ -7,7 +7,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[recording-wait]') && 'recording-wait' || contains(github.event.head_commit.message || '', '[manual-hash]') && 'manual-hash' || contains(github.event.head_commit.message || '', '[scroll-memory]') && 'scroll-memory' || contains(github.event.head_commit.message || '', '[decode-exit-latch]') && 'decode-exit-latch' || contains(github.event.head_commit.message || '', '[decode-timing-v3]') && 'decode-timing-v3' || contains(github.event.head_commit.message || '', '[decode-large]') && 'decode-large' || contains(github.event.head_commit.message || '', '[pin-workflows]') && 'pins-010' || contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
+  group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[multiwindow-memory]') && 'multiwindow-memory' || contains(github.event.head_commit.message || '', '[recording-wait]') && 'recording-wait' || contains(github.event.head_commit.message || '', '[manual-hash]') && 'manual-hash' || contains(github.event.head_commit.message || '', '[scroll-memory]') && 'scroll-memory' || contains(github.event.head_commit.message || '', '[decode-exit-latch]') && 'decode-exit-latch' || contains(github.event.head_commit.message || '', '[decode-timing-v3]') && 'decode-timing-v3' || contains(github.event.head_commit.message || '', '[decode-large]') && 'decode-large' || contains(github.event.head_commit.message || '', '[pin-workflows]') && 'pins-010' || contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
   cancel-in-progress: true
 jobs:
   runner-check:
@@ -24,7 +24,7 @@ jobs:
         timeout-minutes: 2
         run: python3 -m unittest discover -s scripts/tests -p test_run_bounded_command.py -v
   build:
-    if: ${{ (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') && !contains(github.event.head_commit.message || '', '[codec-attribution]') && !contains(github.event.head_commit.message || '', '[runner-only]') && !contains(github.event.head_commit.message || '', '[scroll-memory]') && !contains(github.event.head_commit.message || '', '[manual-hash]') && !contains(github.event.head_commit.message || '', '[recording-wait]') }}
+    if: ${{ (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') && !contains(github.event.head_commit.message || '', '[codec-attribution]') && !contains(github.event.head_commit.message || '', '[runner-only]') && !contains(github.event.head_commit.message || '', '[scroll-memory]') && !contains(github.event.head_commit.message || '', '[manual-hash]') && !contains(github.event.head_commit.message || '', '[recording-wait]') && !contains(github.event.head_commit.message || '', '[multiwindow-memory]') }}
     strategy:
       fail-fast: false
       matrix:
@@ -715,3 +715,60 @@ jobs:
             dist/evidence/recording-wait/
           if-no-files-found: warn
           retention-days: 14
+
+
+  multiwindow-memory:
+    if: ${{ contains(github.event.head_commit.message || '', '[multiwindow-memory]') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Verify diagnostic evidence checker
+        run: |
+          mkdir -p dist
+          python3 -m unittest discover -s scripts/tests -p test_check_multiwindow_memory_comparison.py -v
+      - name: Collect native exact-pixel and lifecycle evidence
+        id: native_scope
+        continue-on-error: true
+        timeout-minutes: 10
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 540
+          --log dist/multiwindow-source-scope.log --report dist/multiwindow-source-scope.json
+          -- bash scripts/test-multiwindow-source-scope.sh
+      - name: Package signed diagnostic app with unchanged production default
+        env:
+          PICSHOT_PACKAGE_APP_ONLY: '1'
+        run: |
+          set -o pipefail
+          bash scripts/package.sh 2>&1 | tee dist/multiwindow-package.log
+      - name: Compare fresh workloads while preserving independent controls
+        timeout-minutes: 20
+        env:
+          PICSHOT_MULTIWINDOW_ALLOW_CANDIDATE: ${{ steps.native_scope.outcome == 'success' && '1' || '0' }}
+        run: |
+          set -o pipefail
+          bash scripts/multiwindow-memory-comparison.sh "$PWD/dist/PicShot.app" "$PWD/dist/evidence/multiwindow-memory" "$GITHUB_SHA" 2>&1 | tee dist/multiwindow-memory.log
+      - name: Require the original native equivalence gate
+        if: always()
+        run: >-
+          python3 -c 'import json,sys; r=json.load(open("dist/multiwindow-source-scope.json")); ok=r["status"]=="exited" and r["exit_code"]==0 and not r["log_truncated"]; sys.exit(0 if ok else "Native equivalence gate failed: "+str(r))'
+      - name: Preserve diagnostic evidence without installers
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-MultiWindow-Memory-${{ matrix.arch }}-${{ github.sha }}
+          path: |
+            dist/multiwindow-*.log
+            dist/multiwindow-*.json
+            dist/evidence/multiwindow-memory/
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 6

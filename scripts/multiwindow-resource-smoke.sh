@@ -2,8 +2,9 @@
 # One fresh installed process; complete observations are not a leak-free verdict.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-[[ $# -eq 3 ]] || exit 64
-app="$1"; root="$2"; expected="$3"
+[[ $# -eq 3 || $# -eq 4 ]] || exit 64
+app="$1"; root="$2"; expected="$3"; mode="${4:-coreGraphicsBaseline}"
+[[ "$mode" == coreGraphicsBaseline || "$mode" == normalizedCandidate ]] || exit 64
 [[ "$app" == /* && "$root" == /* && ! -e "$root" && "$expected" =~ ^[0-9a-f]{40}$ ]] || exit 64
 codesign --verify --deep --strict "$app"
 mkdir -p "$(dirname "$root")"
@@ -18,9 +19,10 @@ PY
 launch_status=0
 (
   export PICSHOT_MULTIWINDOW_RESOURCES_ONLY=1
+  export PICSHOT_MULTIWINDOW_COMPOSITION="$mode"
   swift scripts/launch-smoke-app.swift "$app" "$root/launch.json"
 ) > "$root/launcher.log" 2>&1 || launch_status=$?
-python3 - "$root" "$app" "$expected" "$launch_status" <<'PY'
+python3 - "$root" "$app" "$expected" "$launch_status" "$mode" <<'PY'
 import json,pathlib,sys
 root=pathlib.Path(sys.argv[1]); result={'status':'failed','memoryStabilityAssessed':False,'sourceCommit':sys.argv[3]}
 try:
@@ -31,6 +33,9 @@ try:
   r=json.loads((root/'multi-window-resource.json').read_text())
   assert launch['sourceCommit']==sys.argv[3] and len(launch['arguments'])==1,launch
   assert pathlib.Path(launch['bundlePath']).resolve()==pathlib.Path(sys.argv[2]).resolve()
+  assert r['compositionMode']==sys.argv[5],r
+  assert r['productionCompositionMode']=='coreGraphicsBaseline',r
+  assert r['normalizationRasterBytes']==(3840*2160*4 if sys.argv[5]=='normalizedCandidate' else 0),r
   assert r['status']=='observed' and r['observationsComplete'] is True,r
   assert r['completedWarmupCycles']==4 and r['completedMeasuredCycles']==12
   assert r['remainingWarmupCycles']==0 and r['remainingMeasuredCycles']==0
@@ -39,6 +44,9 @@ try:
   for cycle in r['warmups']+r['cycles']:
     assert cycle['rgbaSHA256']==r['expectedOutputSHA256'] and cycle['exactOutputPixels']==4480*2520,cycle
     assert cycle['ownedOpenFileDescriptorsAfter']==0,cycle
+    raster=cycle['ownedRasterProbe']
+    assert raster['currentRasterBytes']==0 and raster['peakRasterBytes']<=192_000_000,raster
+    assert raster['normalizationCount']==(2 if sys.argv[5]=='normalizedCandidate' else 0),raster
     owned=cycle['ownership']
     assert owned['inputObjectsCreated']==2 and owned['decoderObjectsCreated']==2 and owned['outputObjectsCreated']==1,owned
     assert owned['maximumConcurrentInputObjects']==1,owned
@@ -50,7 +58,7 @@ try:
   sampled=r['transientSampler']['total']; assert sampled['timerSampleCount']>0 and not sampled['missingFieldCounts'],sampled
   before=r['afterWarmupBaseline']['counters']; after=r['finalAfterCleanup']['counters']
   delta={key:after[key]-before[key] for key in before.keys() & after.keys()}
-  result.update(status='observed',observationsComplete=True,measuredCycles=12,elapsedSeconds=r['elapsedSeconds'],afterWarmupToCleanupDeltaBytes=delta,lateMeasuredIncrements=r['lateMeasuredIncrements'],sampledPeakBytes=sampled['sampledPeakBytes'],ownedExitConfirmed=True)
+  result.update(status='observed',compositionMode=sys.argv[5],observationsComplete=True,measuredCycles=12,elapsedSeconds=r['elapsedSeconds'],afterWarmupToCleanupDeltaBytes=delta,lateMeasuredIncrements=r['lateMeasuredIncrements'],sampledPeakBytes=sampled['sampledPeakBytes'],ownedExitConfirmed=True)
 except Exception as error:
   result['error']=str(error)[:4096]
 finally:

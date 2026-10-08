@@ -59,6 +59,29 @@ final class MultiWindowCaptureLayoutTests: XCTestCase {
         for (w, h) in [(0,0), (90,80), (200,180), (201,160), (Int.max,2)] { XCTAssertThrowsError(try source.validateRaster(width: w, height: h)) }
         for value in [CGFloat.nan, CGFloat.infinity, -1, 0] { XCTAssertThrowsError(try window(1, scale: value)) }
     }
+    func testNormalizedRasterBudgetIncludesSourcePaddingAndScratch() throws {
+        let layout = try MultiWindowCaptureLayout(frontToBack: [window(1, CGRect(x: 0, y: 0, width: 4_000, height: 4_000))])
+        // The exact 192 MB boundary is canvas + admitted input + normalized input.
+        XCTAssertEqual(try layout.normalizedRasterBytes(width: 4_000, height: 4_000, bytesPerRow: 16_000), 192_000_000)
+        XCTAssertNoThrow(try layout.validateNormalizedRasterBudget())
+        let padded = try MultiWindowCaptureLayout(frontToBack: [window(1, CGRect(x: 0, y: 0, width: 100, height: 100))])
+        XCTAssertEqual(try padded.normalizedRasterBytes(width: 100, height: 100, bytesPerRow: 448), 124_800)
+        for invalid in [(0,100,400), (100,0,400), (100,100,0), (100,100,Int.max), (Int.max,2,4)] {
+            XCTAssertThrowsError(try padded.normalizedRasterBytes(width: invalid.0, height: invalid.1, bytesPerRow: invalid.2))
+        }
+        let large = try MultiWindowCaptureLayout(frontToBack: [
+            window(1, CGRect(x: 0, y: 0, width: 4_000, height: 4_000)),
+            window(2, CGRect(x: 4_000, y: 0, width: 4_000, height: 4_000))])
+        XCTAssertEqual(large.width * large.height, MultiWindowCaptureLimits.outputPixels)
+        XCTAssertThrowsError(try large.validateNormalizedRasterBudget()) { XCTAssertEqual($0 as? MultiWindowCaptureError, .pixelLimit) }
+        // Padding alone can push an otherwise valid tight-input layout over budget.
+        let near = try MultiWindowCaptureLayout(frontToBack: [
+            window(1, CGRect(x: 0, y: 0, width: 3_000, height: 4_000)),
+            window(2, CGRect(x: 3_000, y: 0, width: 3_000, height: 4_000))])
+        XCTAssertNoThrow(try near.validateNormalizedRasterBudget())
+        XCTAssertEqual(try near.normalizedRasterBytes(width: 3_000, height: 4_000, bytesPerRow: 12_000), 192_000_000)
+        XCTAssertThrowsError(try near.normalizedRasterBytes(width: 3_000, height: 4_000, bytesPerRow: 12_004))
+    }
     private func window(_ id: UInt32, _ bounds: CGRect = CGRect(x: 0, y: 0, width: 10, height: 10),
                         scale: CGFloat = 1, pid: Int32 = 10, started: TimeInterval = 1) throws -> MultiWindowDescriptor {
         try MultiWindowDescriptor(id: id, ownerPID: pid, ownerStartedAt: started, label: "Window \(id)", bounds: bounds, maximumScale: scale)
