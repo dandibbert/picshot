@@ -57,6 +57,9 @@ final class ImageOutputDecorationPalette: NSObject, NSPopoverDelegate, NSTextFie
         super.init()
         buildInterface(); displayValue()
         popover.behavior = .transient; popover.delegate = self
+        // Adjacent capture palettes switch immediately. An animated close can
+        // leave the canceled draft's window over the newly selected controls.
+        popover.animates = false
         preparePreview(image)
     }
     deinit { cancellation?.cancel(); operation?.cancel(); input?.clear() }
@@ -243,7 +246,7 @@ final class ImageOutputDecorationPalette: NSObject, NSPopoverDelegate, NSTextFie
         guard !isFinished else { return }
         isFinished = true; invalidateJob(); color.deactivate(); preview.image = nil; source = nil
         onApply = nil; let callback = onDismiss; onDismiss = nil
-        popover.performClose(nil); popover.delegate = nil
+        popover.delegate = nil; popover.close()
         callback?()
     }
 }

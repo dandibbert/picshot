@@ -14,14 +14,14 @@ private final class MultiWindowCancellation: @unchecked Sendable {
 /// A system screenshot process is owned until reaped. Unlike an uncancellable
 /// SCScreenshotManager request, timeout/cancel can stop work before a new session.
 /// No user-controlled text is interpreted by the shell: the script is fixed and
-/// window ID/path are positional arguments. POSIX ulimit -f uses 512-byte blocks.
+/// window ID/path are positional arguments. The child shell alone sets its file limit.
 struct MultiWindowCommandConfiguration: @unchecked Sendable {
     let temporaryRoot: URL
     let arguments: @Sendable (MultiWindowDescriptor, URL) -> [String]
     var didLaunch: @Sendable (Int32) -> Void = { _ in }
     static var live: Self {
         Self(temporaryRoot: FileManager.default.temporaryDirectory, arguments: { window, output in
-            ["-c", MultiWindowScreenshotCommand.fileLimitPrelude(blocks: MultiWindowCaptureLimits.temporaryBytes / 512) +
+            ["-c", MultiWindowScreenshotCommand.fileLimitPrelude() +
                 "exec /usr/sbin/screencapture -x -o -t png -l \"$1\" \"$2\"",
              "PicShot-window-capture", String(window.id), output.path]
         })
@@ -29,10 +29,13 @@ struct MultiWindowCommandConfiguration: @unchecked Sendable {
 }
 
 enum MultiWindowScreenshotCommand {
-    // Explicit POSIX shell mode fixes `ulimit -f` to 512-byte blocks on macOS.
-    // The native shell-limit test verifies the actual installed /bin/sh behavior.
-    static func fileLimitPrelude(blocks: Int) -> String {
-        "set -o posix || exit 72; ulimit -f \(blocks) || exit 72; "
+    // Apple's /bin/sh uses 1,024-byte file-limit blocks, including in POSIX mode.
+    // Disable POSIX mode explicitly so newer bash versions also retain those units.
+    // Set both limits in the child before exec; never change PicShot's own limits.
+    // Native dd tests verify the actual byte boundary, including the production cap.
+    static func fileLimitPrelude(bytes: Int = MultiWindowCaptureLimits.temporaryBytes) -> String {
+        precondition(bytes > 0 && bytes.isMultiple(of: 1_024))
+        return "set +o posix || exit 72; ulimit -S -H -f \(bytes / 1_024) || exit 72; "
     }
 
     static func capture(_ window: MultiWindowDescriptor, deadline: TimeInterval,

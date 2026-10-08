@@ -20,7 +20,7 @@ final class CaptureRatioInteractionTests: XCTestCase {
         XCTAssertTrue(controls.widthField.isHiddenOrHasHiddenAncestor)
         let initialAccept = descendants(view).first { $0.identifier?.rawValue == "capture.ratioAccept" }
         XCTAssertTrue(initialAccept?.isHiddenOrHasHiddenAncestor ?? true)
-        XCTAssertTrue(view.hitTest(CGPoint(x: 300, y: 120)) === view)
+        XCTAssertTrue(view.hitTest(view.convert(CGPoint(x: 300, y: 120), to: view.superview)) === view)
         XCTAssertTrue(view.setAspectRatio(try CaptureAspectRatio(numerator: 16, denominator: 9)))
         try drag(view, CGPoint(x: 100, y: 180), CGPoint(x: 260, y: 270))
         view.layoutSubtreeIfNeeded()

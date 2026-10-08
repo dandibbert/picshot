@@ -21,6 +21,12 @@ def validate(report_path, app, source):
         assert report[key] is False, key
     for key in ('captureRatios', 'outputDecoration', 'multipleWindows', 'originalCurrentPin'):
         assert report[key]['status'] == 'passed', key
+    decoration_cases = report['outputDecoration']['cases']
+    assert {case['name'] for case in decoration_cases} == {'light', 'dark', 'edge-light', 'edge-dark'}
+    for case in decoration_cases:
+        if case['frozenCaptureOverlay']:
+            assert case['ratioDecorationSwitchVerified'] is True, case['name']
+        assert case['ownedPaletteClosed'] is True, case['name']
     pin = report['originalCurrentPin']
     for key in ('separateAssets', 'sourcePixelsUnchanged', 'currentPixelsRestoredExactly', 'temporaryDirectoryRemoved'):
         assert pin[key] is True, key

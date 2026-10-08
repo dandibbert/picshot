@@ -589,6 +589,9 @@ final class RegionSelectionView: NSView {
             elementMessage = elementEnabled ? "移动指针选择元素；拖动仍可选择矩形" : ""
             refreshElementControls()
         }
+        // Layout only after every control has been installed. An early pass
+        // before elementButtons exist leaves their default frames overlapping.
+        if geometry != nil { refreshRatioControls() }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -791,7 +794,6 @@ final class RegionSelectionView: NSView {
         ratioControls.onRatio = { [weak self] ratio in self?.setAspectRatio(ratio) ?? false }
         ratioControls.onSize = { [weak self] w, h, axis in self?.setPixelSize(width: w, height: h, axis: axis) ?? false }
         ratioControls.onCancel = { [weak self] in self?.cancelOperation(nil) }
-        refreshRatioControls()
     }
     @discardableResult
     func setAspectRatio(_ ratio: CaptureAspectRatio?) -> Bool {

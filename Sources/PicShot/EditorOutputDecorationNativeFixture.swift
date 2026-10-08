@@ -86,6 +86,26 @@ enum EditorOutputDecorationNativeFixture {
         try await settle(window)
         let anchoredImage = editor.editorImageScreenFrame, anchoredSelection = editor.editorSelectionFrame
         let anchoredWindow = window.frame
+        var paletteSwitchingVerified = false
+        if capture != nil {
+            try click("editor.captureRatio", root: window.contentView)
+            let ratioSurface: NSView = try control("editor.captureRatioPalette", root: window.contentView)
+            guard !ratioSurface.isHiddenOrHasHiddenAncestor else { throw failure("Ratio palette did not open") }
+            try click("editor.outputDecoration", root: window.contentView)
+            let draft = try unwrap(editor.outputDecorationPalette, "Decoration draft did not open")
+            guard ratioSurface.isHidden, draft.isShown else { throw failure("Decoration did not replace the ratio palette") }
+            try configure(draft)
+            let draftWindow = draft.contentView?.window
+            try click("editor.captureRatio", root: window.contentView)
+            guard editor.outputDecorationPalette == nil, !draft.isShown,
+                  draftWindow?.isVisible != true, !ratioSurface.isHiddenOrHasHiddenAncestor,
+                  editor.outputDecoration == .none, draft.displayedPreview == nil else {
+                throw failure("Canceled decoration remained visible or committed while switching to ratio")
+            }
+            try await settle(window)
+            _ = try snapshot(window.contentView, to: directory.appendingPathComponent("ui-output-ratio-switch-\(name).png"))
+            paletteSwitchingVerified = true
+        }
         try click("editor.outputDecoration", root: window.contentView)
         let palette = try unwrap(editor.outputDecorationPalette, "Decoration palette did not open")
         palette.contentView?.appearance = window.appearance
@@ -153,6 +173,7 @@ enum EditorOutputDecorationNativeFixture {
               editor.window?.contentView == nil else { throw failure("Editor close retained original/palette/window ownership") }
         return ["name": name, "sourceUnchanged": true, "annotationCoordinatesUnchanged": true,
                 "frozenCaptureOverlay": capture != nil, "imageAnchorUnchanged": true,
+                "ratioDecorationSwitchVerified": paletteSwitchingVerified,
                 "metadataApplyUndoRedo": true, "cancelPreservedCommittedValue": true,
                 "outputWidth": output.width, "outputHeight": output.height,
                 "transparentCorner": true, "disjointTransparentGap": true, "redactionRemainsOpaque": true,

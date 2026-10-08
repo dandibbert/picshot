@@ -25,6 +25,9 @@ assert batch['status']=='passed' and batch['settingsPresetRouteVerified'],batch
 assert not batch['screenCaptureStarted'] and not batch['permissionRequested'] and not batch['externalURLVisited'],batch
 for key in ['capturePresetsElements','imageExport','barcodes']:
     assert batch[key]['status']=='passed',batch[key]
+layout=batch['capturePresetsElements']['fakeProvider']['elementButtonLayout']
+assert len(layout)==3 and {item['identifier'] for item in layout}=={'capture.elements.toggle','capture.elements.parent','capture.elements.child'},layout
+assert all(item['hitTargetVerified'] is True for item in layout),layout
 assert r['codecUIPreview']['status']=='passed',r['codecUIPreview']
 save=r['saveWorkflowUI']
 assert save['status']=='passed' and save['quietAutomaticFinalizedAction'],save

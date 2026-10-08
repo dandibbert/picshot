@@ -33,6 +33,7 @@ import PicShotCore
         let point = CGPoint(x: 90, y: 85)
         view.mouseMoved(with: try mouse(.mouseMoved, point: point, view: view))
         try await waitUntil { view.elementPreviewFrame == localHit }
+        let elementButtonLayout = try verifyElementButtonLayout(view)
         try click("capture.elements.parent", in: view)
         guard view.elementPreviewFrame == localParent else { throw failure("Native parent button did not select the parent") }
         view.keyDown(with: try key(125, "\u{F701}", view: view))
@@ -56,7 +57,7 @@ import PicShotCore
         view.keyDown(with: try key(48, "\t", view: view))
         view.layoutSubtreeIfNeeded()
         guard try find("capture.ratioSurface", in: view, as: NSVisualEffectView.self).isHidden,
-              view.hitTest(CGPoint(x: 300, y: 120)) === view else {
+              view.hitTest(view.convert(CGPoint(x: 300, y: 120), to: view.superview)) === view else {
             throw failure("Tab did not make the manual fallback target reachable")
         }
         view.mouseDown(with: try mouse(.leftMouseDown, point: CGPoint(x: 300, y: 120), view: view))
@@ -113,6 +114,7 @@ import PicShotCore
             "inputEventsPosted": false, "syntheticNativeEvents": true,
             "fakeProvider": ["parentChild": true, "traversalUndo": true, "clickAccept": true,
                              "manualFallback": true, "escape": true, "frozenPixelsChecked": checkedPixels,
+                             "elementButtonLayout": elementButtonLayout,
                              "screenshotFrozenAt": frozenAt.timeIntervalSince1970],
             "presets": ["persistedRectangles": 2, "recreatedStore": true, "nativeRenameDelay": true,
                         "nativeDelete": true, "nativeCreateInvokeCancelCallbacks": true],
@@ -197,6 +199,27 @@ import PicShotCore
             isARepeat: false, keyCode: code), "No native key event")
     }
     private static func descendants(_ root: NSView) -> [NSView] { [root] + root.subviews.flatMap { descendants($0) } }
+    private static func verifyElementButtonLayout(_ view: RegionSelectionView) throws -> [[String: Any]] {
+        view.layoutSubtreeIfNeeded()
+        var frames: [CGRect] = [], result: [[String: Any]] = []
+        for id in ["capture.elements.toggle", "capture.elements.parent", "capture.elements.child"] {
+            let button = try find(id, in: view, as: NSButton.self)
+            let frame = view.convert(button.bounds, from: button)
+            guard button.window === view.window, !button.isHiddenOrHasHiddenAncestor,
+                  frame.width >= 50, frame.height >= 20, view.bounds.contains(frame),
+                  !frames.contains(where: { $0.intersects(frame) }) else {
+                throw failure("Element controls overlap, clip or have no reachable frame: " + id)
+            }
+            let point = view.convert(CGPoint(x: frame.midX, y: frame.midY), to: view.superview)
+            let hit = view.hitTest(point)
+            guard hit === button || hit?.isDescendant(of: button) == true else {
+                throw failure("Native hit testing cannot reach element control: " + id)
+            }
+            frames.append(frame)
+            result.append(["identifier": id, "frame": NSStringFromRect(frame), "hitTargetVerified": true])
+        }
+        return result
+    }
     private static func find<T: NSView>(_ id: String, in view: NSView, as type: T.Type) throws -> T {
         try unwrap(descendants(view).first(where: { $0.identifier?.rawValue == id }) as? T, "Missing native control \(id)")
     }

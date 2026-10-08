@@ -18,27 +18,27 @@ final class MultiWindowScreenshotCommandTests: XCTestCase {
         for flag in ["-l", "-o", "-t", "-x"] { XCTAssertTrue(help.contains(flag), "Installed system command does not document \(flag)") }
     }
 
-    /// Executes the installed macOS shell with the production prelude. A hard
-    /// filesize cap of two POSIX blocks must stop dd at exactly 1,024 bytes.
-    func testNativePOSIXShellFileLimitIsBytesNotAddressSpace() throws {
-        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
-        let output = root.appendingPathComponent("limit.bin"), process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", MultiWindowScreenshotCommand.fileLimitPrelude(blocks: 2) +
-            "exec /bin/dd if=/dev/zero of=\"$1\" bs=4096 count=1", "PicShot-file-limit-fixture", output.path]
-        process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
-        try process.run(); process.waitUntilExit()
-        XCTAssertNotEqual(process.terminationStatus, 0)
-        let size = try FileManager.default.attributesOfItem(atPath: output.path)[.size] as? NSNumber
-        XCTAssertEqual(size?.intValue, 1_024, "Do not claim an 80MiB hard bound unless the native shell uses 512-byte blocks")
-        XCTAssertEqual(MultiWindowCaptureLimits.temporaryBytes / 512, 163_840)
+    /// A finite 4 KiB write verifies the installed shell's actual byte boundary,
+    /// even when POSIX mode was enabled before entering the production prelude.
+    func testNativeShellFileLimitUses1024ByteBlocks() throws {
+        try assertNativeFileLimit(prelude: "set -o posix || exit 71; " +
+            MultiWindowScreenshotCommand.fileLimitPrelude(bytes: 2_048),
+            expectedBytes: 2_048, blockBytes: 4_096, blockCount: 1)
+    }
+    /// Use the same default prelude as live capture, without the polling guard.
+    /// The OS must stop an attempted 81 MiB write at exactly 80 MiB. The finite
+    /// count also bounds disk use if the production limit regresses or is absent.
+    func testNativeShellEnforcesProduction80MiBFileLimit() throws {
+        XCTAssertEqual(MultiWindowCaptureLimits.temporaryBytes, 80 * 1_024 * 1_024)
+        try assertNativeFileLimit(prelude: MultiWindowScreenshotCommand.fileLimitPrelude(),
+            expectedBytes: 80 * 1_024 * 1_024, blockBytes: 1_024 * 1_024, blockCount: 81)
     }
     func testOwnedPNGDecodeCleansTemporaryDirectoryWithoutSystemCapture() async throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let png = root.appendingPathComponent("owned source $(ignored) ' quote.png")
         try writeImage(to: png)
         let configuration = MultiWindowCommandConfiguration(temporaryRoot: root, arguments: { _, output in
-            ["-c", MultiWindowScreenshotCommand.fileLimitPrelude(blocks: 163_840) + "exec /bin/cp \"$1\" \"$2\"", "PicShot-owned-PNG-fixture", png.path, output.path]
+            ["-c", MultiWindowScreenshotCommand.fileLimitPrelude() + "exec /bin/cp \"$1\" \"$2\"", "PicShot-owned-PNG-fixture", png.path, output.path]
         })
         let result = try await MultiWindowScreenshotCommand.capture(descriptor(), deadline: uptime + 5, configuration: configuration)
         XCTAssertEqual(result.width, 2); XCTAssertEqual(result.height, 2)
@@ -70,6 +70,43 @@ final class MultiWindowScreenshotCommandTests: XCTestCase {
         do { _ = try await MultiWindowScreenshotCommand.capture(descriptor(), deadline: uptime + 5, configuration: configuration); XCTFail() }
         catch { XCTAssertTrue(error.localizedDescription.contains("37")) }
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+    }
+    private func assertNativeFileLimit(prelude: String, expectedBytes: Int, blockBytes: Int, blockCount: Int,
+                                       file: StaticString = #filePath, line: UInt = #line) throws {
+        let manager = FileManager.default, root = try directory()
+        defer { try? manager.removeItem(at: root) }
+        let output = root.appendingPathComponent("limit $(ignored) ' quote.bin"), process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", prelude +
+            // Raising only the soft limit must fail: the prelude also sets the hard limit.
+            "if ulimit -S -f \(expectedBytes / 1_024 + 1) 2>/dev/null; then exit 73; fi; " +
+            "exec /bin/dd if=/dev/zero of=\"$1\" bs=\(blockBytes) count=\(blockCount)",
+            "PicShot-file-limit-fixture", output.path]
+        process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+        try process.run()
+        defer {
+            if process.isRunning { _ = Darwin.kill(process.processIdentifier, SIGKILL) }
+            process.waitUntilExit()
+        }
+        let deadline = uptime + 10
+        while process.isRunning && uptime < deadline { Thread.sleep(forTimeInterval: 0.01) }
+        guard !process.isRunning else {
+            XCTFail("Owned file-limit fixture exceeded its deadline", file: file, line: line)
+            return
+        }
+        process.waitUntilExit()
+        guard process.terminationStatus != 73 else {
+            XCTFail("The child raised its soft file limit above the required hard limit", file: file, line: line)
+            return
+        }
+        XCTAssertNotEqual(process.terminationStatus, 0, file: file, line: line)
+        let attributes = try manager.attributesOfItem(atPath: output.path)
+        XCTAssertEqual(attributes[.type] as? FileAttributeType, .typeRegular, file: file, line: line)
+        XCTAssertEqual((attributes[.ownerAccountID] as? NSNumber)?.uint32Value, getuid(), file: file, line: line)
+        XCTAssertEqual((attributes[.size] as? NSNumber)?.intValue, expectedBytes,
+                       "The installed shell must enforce the exact file-size bound in bytes", file: file, line: line)
+        try manager.removeItem(at: root)
+        XCTAssertFalse(manager.fileExists(atPath: root.path), file: file, line: line)
     }
     private var uptime: TimeInterval { ProcessInfo.processInfo.systemUptime }
     private func directory() throws -> URL {

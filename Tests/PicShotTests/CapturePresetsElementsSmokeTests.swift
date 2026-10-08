@@ -9,6 +9,12 @@ import AppKit
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PicShot-Elements-Smoke-Test-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let report = try await CapturePresetsElementsSmokeFixture.verify(evidenceDirectory: directory)
+        let elements = try XCTUnwrap(report["fakeProvider"] as? [String: Any])
+        let layout = try XCTUnwrap(elements["elementButtonLayout"] as? [[String: Any]])
+        XCTAssertEqual(Set(layout.compactMap { $0["identifier"] as? String }),
+                       ["capture.elements.toggle", "capture.elements.parent", "capture.elements.child"])
+        XCTAssertEqual(layout.count, 3)
+        XCTAssertTrue(layout.allSatisfy { $0["hitTargetVerified"] as? Bool == true })
         XCTAssertEqual(report["status"] as? String, "passed")
         XCTAssertEqual(report["screenCaptureStarted"] as? Bool, false)
         XCTAssertEqual(report["permissionRequested"] as? Bool, false)
