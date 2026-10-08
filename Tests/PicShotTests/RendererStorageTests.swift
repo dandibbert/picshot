@@ -325,7 +325,15 @@ final class RendererStorageTests: XCTestCase {
         }
         XCTAssertEqual(configuration.tracker.snapshot().activeBytes, count)
         XCTAssertEqual(configuration.tracker.snapshot().releaseCallbacks, 0)
-        XCTAssertEqual((try XCTUnwrap(provider?.data) as Data).count, count)
+        // Drain temporary CFData/bridge observations before testing the last
+        // explicit provider reference. Reading provider data can itself retain
+        // autoreleased objects until the surrounding pool ends.
+        try autoreleasepool {
+            let observed = try XCTUnwrap(provider?.data) as Data
+            XCTAssertEqual(observed.count, count)
+        }
+        XCTAssertEqual(configuration.tracker.snapshot().activeBytes, count)
+        XCTAssertEqual(configuration.tracker.snapshot().releaseCallbacks, 0)
         provider = nil
         assertBalanced(configuration.tracker, allocations: 1, callbacks: 1)
     }
