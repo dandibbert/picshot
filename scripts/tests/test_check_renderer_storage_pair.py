@@ -116,6 +116,9 @@ class RendererStoragePairTests(unittest.TestCase):
     def test_every_finite_comparison_has_four_complete_independent_processes(self):
         for kind in R.COMPARISON_KINDS:
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as root:
+                # macOS may return /var while the real directory is /private/var.
+                # Bind fixtures and the strict CLI checker to one canonical root.
+                root = str(Path(root).resolve(strict=True))
                 identity = F.identity_at(Path(root))
                 strategies, cells, _ = R.comparison_contract(kind)
                 self.assertEqual(len(strategies), 2)
