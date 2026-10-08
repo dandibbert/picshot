@@ -103,7 +103,9 @@ struct PinImageState {
     var onPixelChange: ((CGImage, Bool) throws -> Void)?
     var onEditablePixelChange: ((CGImage, EditableCapturePayload) throws -> Void)?
     var onAnnotationError: ((Error) -> Void)?
-    private var loadEditableCapture: (() throws -> EditableCapturePayload?)?
+    private var loadEditableCapture: ((PinEditableWork) throws -> EditableCapturePayload?)?
+    private var editableWorkAdmission: ((PinEditableWork, EditableCapturePayload?) throws -> Void)?
+    private var annotationEditorSharedOriginalBytes = 0
     private var transientEditableCapture: EditableCapturePayload?
     private(set) var hasEditableCapture = false
     private(set) var annotationsHidden = false
@@ -115,24 +117,52 @@ struct PinImageState {
     var displayedImage: CGImage { hiddenAnnotationPreview ?? state.current }
     var retainedAnnotationPreviewCount: Int { hiddenAnnotationPreview == nil ? 0 : 1 }
     var retainedEditableBaseCount: Int { transientEditableCapture == nil ? 0 : 1 }
-    var estimatedRetainedRasterBytes: Int {
-        let images = [state.original, state.current] + [hiddenAnnotationPreview,
+    var retainedRasterImagesForAdmission: [CGImage] {
+        [state.original, state.current] + [hiddenAnnotationPreview,
             transientEditableCapture?.originalImage, transientEditableCapture?.baseImage].compactMap { $0 }
-        return EditorAdmissionPolicy.sum([EditorRasterEstimate.retainedBytes(images), annotationEditor?.estimatedAdmissionRasterBytes ?? 0,
-            visibilityTicket?.reservedBytes ?? 0])
+    }
+    var estimatedOutputProjectionReservationBytes: Int {
+        EditorAdmissionPolicy.sum([visibilityTicket?.reservedBytes ?? 0,
+            annotationEditor?.estimatedOutputProjectionReservationBytes ?? 0])
+    }
+    var estimatedRetainedRasterBytes: Int {
+        // A pin editor reuses the immutable original. Its editor estimate already
+        // includes it, so do not charge those same owned bytes twice.
+        let editorBytes = max(0, (annotationEditor?.estimatedAdmissionRasterBytes ?? 0) - annotationEditorSharedOriginalBytes)
+        return EditorAdmissionPolicy.sum([EditorRasterEstimate.retainedBytes(retainedRasterImagesForAdmission),
+            editorBytes, visibilityTicket?.reservedBytes ?? 0])
     }
 
     func configureEditableCapture(available: Bool, load: @escaping () throws -> EditableCapturePayload?) {
-        hasEditableCapture = available; loadEditableCapture = load
+        configureEditableCapture(available: available, loadForWork: { _ in try load() })
+    }
+    func configureEditableCapture(available: Bool,
+        loadForWork: @escaping (PinEditableWork) throws -> EditableCapturePayload?,
+        admission: ((PinEditableWork, EditableCapturePayload?) throws -> Void)? = nil) {
+        hasEditableCapture = available; loadEditableCapture = loadForWork; editableWorkAdmission = admission
         transientEditableCapture = nil; revealAnnotations()
     }
-    private func editableCapture() throws -> EditableCapturePayload? {
+    private func editableCapture(for work: PinEditableWork = .readOnly) throws -> EditableCapturePayload? {
         guard hasEditableCapture else { return nil }
-        guard let payload = try loadEditableCapture?() ?? transientEditableCapture else {
+        guard let payload = try loadEditableCapture?(work) ?? transientEditableCapture else {
             throw PicShotError.message("可编辑标注文件缺失。当前图片仍可复制或导出。")
         }
         try payload.validate(currentImage: state.current)
         return payload
+    }
+    private func admitEditableOperation(_ work: PinEditableWork, payload: EditableCapturePayload?) throws {
+        if let editableWorkAdmission { try editableWorkAdmission(work, payload); return }
+        let document = payload?.document, base = payload?.baseImage ?? state.current
+        if PinEditableAdmission.requiresProjection(work, document: document), EditorOutputProjection.shared.isBusy {
+            throw EditorOutputProjectionError.busy
+        }
+        let additional = PinEditableAdmission.additionalImages(payload.map { [$0.originalImage, $0.baseImage] } ?? [],
+            alreadyOwned: retainedRasterImagesForAdmission)
+        let workBytes = try PinEditableAdmission.workBytes(work, document: document, baseWidth: base.width, baseHeight: base.height)
+        _ = try PinEditableAdmission.remaining(limit: EditorAdmissionPolicy().maximumRasterBytes,
+            retained: estimatedRetainedRasterBytes, reportedProjection: estimatedOutputProjectionReservationBytes,
+            globalProjection: EditorOutputProjection.shared.reservedBytes,
+            work: EditorAdmissionPolicy.sum([additional, workBytes]))
     }
     private func annotationError(_ error: Error) {
         if let onAnnotationError { onAnnotationError(error) } else { showError(error) }
@@ -408,7 +438,8 @@ struct PinImageState {
         let payload: EditableCapturePayload?
         let anchor: PinEditorPresentation
         do {
-            payload = try editableCapture()
+            payload = try editableCapture(for: .editor)
+            try admitEditableOperation(.editor, payload: payload)
             anchor = try payload.map { try EditableCapturePresentation.editorPlacement(for: $0.document, projected: projectedAnchor) } ?? projectedAnchor
         } catch { annotationError(error); return }
         let restoreHiddenOnCancel = annotationsHidden
@@ -442,7 +473,7 @@ struct PinImageState {
         restorePinAfterAnnotations = window?.isVisible == true
         editor.onClose = { [weak self, weak editor] in
             guard let self, self.annotationGeneration == generation, self.annotationEditor === editor else { return }
-            self.annotationEditor = nil
+            self.annotationEditor = nil; self.annotationEditorSharedOriginalBytes = 0
             if restoreHiddenOnCancel && self.pixelRevision == startingRevision && !self.closed && !self.temporarilyHidden {
                 do { try self.setAnnotationsHidden(true) } catch { self.annotationError(error) }
             }
@@ -450,6 +481,9 @@ struct PinImageState {
             self.restorePinAfterAnnotations = false
             if shouldRestore { self.bringForward() }
         }
+        let editorOriginal = payload?.originalImage ?? state.original
+        annotationEditorSharedOriginalBytes = editorOriginal === state.original
+            ? EditorRasterEstimate.retainedBytes([state.original]) : 0
         annotationEditor = editor
         guard editor.showPinned(anchor, desktopVisibility: desktopVisibility) else {
             dismissAnnotations(restoringPin: false); return
@@ -494,7 +528,7 @@ struct PinImageState {
     private func dismissAnnotations(restoringPin: Bool) {
         let shouldRestore = restoringPin && restorePinAfterAnnotations && !closed && !temporarilyHidden
         annotationGeneration = UUID(); restorePinAfterAnnotations = false
-        let editor = annotationEditor; annotationEditor = nil
+        let editor = annotationEditor; annotationEditor = nil; annotationEditorSharedOriginalBytes = 0
         editor?.onClose = nil; editor?.close()
         if shouldRestore { bringForward() }
     }
@@ -524,7 +558,8 @@ struct PinImageState {
         guard !closed, annotationEditor == nil, !exportInProgress else { throw CancellationError() }
         if !hidden { revealAnnotations(); return }
         guard !annotationsHidden, visibilityTicket == nil else { return }
-        guard let payload = try editableCapture() else { return }
+        guard let payload = try editableCapture(for: .hiddenPreview) else { return }
+        try admitEditableOperation(.hiddenPreview, payload: payload)
         let document = payload.document
         let base = try EditableCapturePresentation.visibleBase(payload)
         if document.outputDecoration.isIdentity {
@@ -1062,7 +1097,7 @@ struct PinImageState {
     func windowDidResize(_ notification: Notification) { updateLayout(); updateTitle(); presentationDidChange() }
     func windowWillClose(_ notification: Notification) {
         guard !closed else { return }; closed = true
-        revealAnnotations(); transientEditableCapture = nil; loadEditableCapture = nil; hasEditableCapture = false
+        revealAnnotations(); transientEditableCapture = nil; loadEditableCapture = nil; editableWorkAdmission = nil; hasEditableCapture = false
         onEditablePixelChange = nil; onAnnotationError = nil
         if let exportCloseObserver { NotificationCenter.default.removeObserver(exportCloseObserver) }; exportCloseObserver = nil
         imageExportController?.cancelExport(); imageExportController = nil

@@ -41,15 +41,20 @@ try:
     pid = checker.integer(lifecycle['processIdentifier'], 1, 2**31 - 1)
     report_path = root / 'editable-annotation-native.json'
     report = checker.read_report(report_path)
-    result.update(checker.validate(report, checker.bundle_identity(app, source), mode == 'resources', pid))
+    result.update(checker.validate(report, checker.bundle_identity(app, source), mode == 'resources', pid, root))
+    checker.need(result['visualFilesVerified'] is True, 'native visual files were not verified')
     result['ownedExitConfirmed'] = True
     result['reportSHA256'] = checker.hashlib.sha256(report_path.read_bytes()).hexdigest()
     if mode == 'resources':
+        result['entryToBeforeWarmupDeltaBytes'] = checker.delta(report['entryMemory'], report['resources']['beforeWarmup'])
+        result['entryToAfterWarmupDeltaBytes'] = checker.delta(report['entryMemory'], report['resources']['afterWarmupBaseline'])
         result['afterWarmupToMeasuredDeltaBytes'] = report['resources']['afterWarmupToMeasuredDeltaBytes']
         result['lateMeasuredIncrements'] = report['resources']['lateMeasuredIncrements']
         result['afterWarmupToFinalCleanupDeltaBytes'] = checker.delta(report['resources']['afterWarmupBaseline'], report['finalMemory'])
         result['measuredToFinalCleanupDeltaBytes'] = checker.delta(report['resources']['afterMeasuredCycles'], report['finalMemory'])
     result['sampledPeakBytes'] = report['sampledMemory']['total']['sampledPeakBytes']
+    shots = report['functionalCases'][0]['visualEvidence']
+    result['functionalSnapshotObservedPeakBytes'] = {field: max(shot['whileSnapshotLiveMemory']['counters'][field] for shot in shots) for field in checker.MEMORY}
 except Exception as error:
     result['error'] = str(error)[:4096]
 finally:

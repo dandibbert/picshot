@@ -112,7 +112,7 @@ jobs:
           python3 -m unittest discover -s scripts/tests -p test_native_test_shards.py -v
           python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/native-test-discovery.log --report dist/native-test-discovery-report.json -- swift test list --skip-build
           python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --output dist/native-tests-plan.json
-          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --selection-regex 'EditableAnnotation|EditableCapture|AnnotationEditing|CaptureAspectRatio|CaptureRatio|MultiWindow|ImageOutputDecoration|EditorOutput|PinOriginalCurrent|ManualScroll|ScrollPreview|ScrollSequencePreview|AnnotationFreehand|AnnotationTextLine|NumberedCallout|AutomaticMosaic|RepeatedRegion|AutomaticPinOCR|PinOCR|TextResultSourceSelection|PinWorkflow|LaTeXPin|PinLaTeX|PinGroup|PinDesktop|EditorToolbarHierarchy|SaveWorkflow|OwnedVideoExportStage|ImageBacking|Codec|NativeExport|AnimatedWebP|WebPContainer|RecordingWebP|CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' --output dist/focused-tests-plan.json
+          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --selection-regex 'PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|AnnotationEditing|CaptureAspectRatio|CaptureRatio|MultiWindow|ImageOutputDecoration|EditorOutput|PinOriginalCurrent|ManualScroll|ScrollPreview|ScrollSequencePreview|AnnotationFreehand|AnnotationTextLine|NumberedCallout|AutomaticMosaic|RepeatedRegion|AutomaticPinOCR|PinOCR|TextResultSourceSelection|PinWorkflow|LaTeXPin|PinLaTeX|PinGroup|PinDesktop|EditorToolbarHierarchy|SaveWorkflow|OwnedVideoExportStage|ImageBacking|Codec|NativeExport|AnimatedWebP|WebPContainer|RecordingWebP|CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' --output dist/focused-tests-plan.json
       - name: Upload test compilation evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -127,10 +127,16 @@ jobs:
         timeout-minutes: 16
         run: |
           set -o pipefail
-          for shard in 0 1; do
-            python3 scripts/native-test-shards.py run --plan dist/focused-tests-plan.json --index "$shard" --directory dist/focused-test-shards
-          done 2>&1 | tee dist/critical-tests.log
+          execution_status=0
+          {
+            shard_failed=0
+            for shard in 0 1; do
+              python3 scripts/native-test-shards.py run --plan dist/focused-tests-plan.json --index "$shard" --directory dist/focused-test-shards || shard_failed=1
+            done
+            test "$shard_failed" -eq 0
+          } 2>&1 | tee dist/critical-tests.log || execution_status=$?
           python3 scripts/native-test-shards.py check --plan dist/focused-tests-plan.json --directory dist/focused-test-shards --output dist/critical-tests-report.json
+          test "$execution_status" -eq 0
       - name: Upload focused native test evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -154,10 +160,16 @@ jobs:
         timeout-minutes: 16
         run: |
           set -o pipefail
-          for shard in 0 1; do
-            python3 scripts/native-test-shards.py run --plan dist/native-tests-plan.json --index "$shard" --directory dist/native-test-shards
-          done 2>&1 | tee dist/test.log
+          execution_status=0
+          {
+            shard_failed=0
+            for shard in 0 1; do
+              python3 scripts/native-test-shards.py run --plan dist/native-tests-plan.json --index "$shard" --directory dist/native-test-shards || shard_failed=1
+            done
+            test "$shard_failed" -eq 0
+          } 2>&1 | tee dist/test.log || execution_status=$?
           python3 scripts/native-test-shards.py check --plan dist/native-tests-plan.json --directory dist/native-test-shards --output dist/test-report.json
+          test "$execution_status" -eq 0
       - name: Upload full native test evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -884,15 +896,21 @@ jobs:
         run: |
           python3 -m unittest discover -s scripts/tests -p test_native_test_shards.py -v
           python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/native-test-discovery.log --report dist/editable-discovery.json -- swift test list --skip-build
-          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --selection-regex 'EditableAnnotation|EditableCapture|ImageEditorTests|EditorOutputProjection|AnnotationEditing|PinOriginalCurrent|PinSession|History|Retention|AutomaticMosaic' --output dist/editable-tests-plan.json
+          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --selection-regex 'PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|ImageEditorTests|EditorOutputProjection|AnnotationEditing|PinOriginalCurrent|PinSession|History|Retention|AutomaticMosaic' --output dist/editable-tests-plan.json
       - name: Exercise editable state and existing crop/pin/history behavior
         timeout-minutes: 16
         run: |
           set -o pipefail
-          for shard in 0 1; do
-            python3 scripts/native-test-shards.py run --plan dist/editable-tests-plan.json --index "$shard" --directory dist/editable-test-shards
-          done 2>&1 | tee dist/editable-tests.log
+          execution_status=0
+          {
+            shard_failed=0
+            for shard in 0 1; do
+              python3 scripts/native-test-shards.py run --plan dist/editable-tests-plan.json --index "$shard" --directory dist/editable-test-shards || shard_failed=1
+            done
+            test "$shard_failed" -eq 0
+          } 2>&1 | tee dist/editable-tests.log || execution_status=$?
           python3 scripts/native-test-shards.py check --plan dist/editable-tests-plan.json --directory dist/editable-test-shards --output dist/editable-tests-report.json
+          test "$execution_status" -eq 0
       - name: Preserve focused evidence without installers
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

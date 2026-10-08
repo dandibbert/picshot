@@ -173,7 +173,9 @@ final class EditableCapturePersistenceTests: XCTestCase {
         let entry = try pins.add(originalImage: payload.originalImage, currentImage: rendered(payload), editable: payload)
         let editable = try XCTUnwrap(entry.editableCapture)
         try FileManager.default.removeItem(at: directory.appendingPathComponent(editable.base.filename))
+        let afterBaseRemoval = try snapshot(directory)
         let reopened = try PinSessionStore(directory: directory)
+        XCTAssertEqual(try snapshot(directory), afterBaseRemoval)
         XCTAssertNotNil(reopened.entry(id: entry.id)); XCTAssertThrowsError(try reopened.editablePayload(id: entry.id))
         XCTAssertNotNil(reopened.image(id: entry.id)); XCTAssertNotNil(reopened.image(id: entry.id, original: true))
         // Removing the source must fail a subsequent replacement before index commit.
@@ -181,6 +183,54 @@ final class EditableCapturePersistenceTests: XCTestCase {
         let before = try snapshot(directory), beforeIndex = reopened.index
         XCTAssertThrowsError(try reopened.replaceImage(rendered(payload), id: entry.id, editable: payload))
         XCTAssertEqual(reopened.index, beforeIndex); XCTAssertEqual(try snapshot(directory), before)
+    }
+
+    @MainActor func testCorruptDistinctEditableBaseKeepsOriginalCurrentAndSavedMetadata() throws {
+        for preserveLength in [true, false] {
+            let directory = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+            let payload = try fixture(distinctBase: true)
+            let pins = try PinSessionStore(directory: directory)
+            let entry = try pins.add(originalImage: payload.originalImage, currentImage: rendered(payload), editable: payload)
+            let editable = try XCTUnwrap(entry.editableCapture)
+            XCTAssertNotEqual(editable.base.filename, entry.original.filename)
+            XCTAssertNotEqual(editable.base.filename, entry.current.filename)
+            let byteCount = preserveLength ? Int(editable.base.byteCount) : 7
+            try Data(repeating: 0x78, count: byteCount).write(to: directory.appendingPathComponent(editable.base.filename))
+            let before = try snapshot(directory)
+            let reopened = try PinSessionStore(directory: directory)
+            XCTAssertEqual(reopened.entry(id: entry.id), entry)
+            XCTAssertThrowsError(try reopened.editablePayload(id: entry.id)) {
+                XCTAssertEqual($0 as? PinSessionError, .invalidImage)
+            }
+            let current = try XCTUnwrap(reopened.image(id: entry.id))
+            let original = try XCTUnwrap(reopened.image(id: entry.id, original: true))
+            XCTAssertEqual(try pixels(current), try pixels(rendered(payload)))
+            XCTAssertEqual(try pixels(original), try pixels(payload.originalImage))
+            XCTAssertEqual(try snapshot(directory), before, "Opening a damaged base must not rewrite or retire its bundle")
+        }
+    }
+
+    @MainActor func testDistinctEditableBaseSymlinkStillRejectsCatalogWithoutTouchingTargets() throws {
+        let directory = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let payload = try fixture(distinctBase: true)
+        let pins = try PinSessionStore(directory: directory)
+        let entry = try pins.add(originalImage: payload.originalImage, currentImage: rendered(payload), editable: payload)
+        let editable = try XCTUnwrap(entry.editableCapture)
+        let outside = directory.deletingLastPathComponent().appendingPathComponent(UUID().uuidString + ".png")
+        defer { try? FileManager.default.removeItem(at: outside) }
+        try payload.baseImage.writePNG(to: outside)
+        let externalBytes = try Data(contentsOf: outside)
+        let original = try Data(contentsOf: directory.appendingPathComponent(entry.original.filename))
+        let current = try Data(contentsOf: directory.appendingPathComponent(entry.current.filename))
+        let index = try Data(contentsOf: directory.appendingPathComponent("index.json"))
+        let baseURL = directory.appendingPathComponent(editable.base.filename)
+        try FileManager.default.removeItem(at: baseURL)
+        try FileManager.default.createSymbolicLink(at: baseURL, withDestinationURL: outside)
+        XCTAssertThrowsError(try PinSessionStore(directory: directory)) { XCTAssertEqual($0 as? PinSessionError, .unsafePath) }
+        XCTAssertEqual(try Data(contentsOf: outside), externalBytes)
+        XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent(entry.original.filename)), original)
+        XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent(entry.current.filename)), current)
+        XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("index.json")), index)
     }
 
     @MainActor func testLegacyHistoryAndPinsStayExplicitlyFlattenedAndResetClearsDocument() throws {

@@ -4,6 +4,7 @@ Synthetic checker tests are schema tests, not evidence of native execution.
 """
 import argparse
 import hashlib
+import importlib.util
 import json
 import math
 from pathlib import Path
@@ -26,7 +27,7 @@ FLAGS_FALSE = {'screenCaptureStarted', 'permissionRequests', 'globalInputPosted'
                'generalPasteboardUsed', 'standardDefaultsWritten', 'memoryPressureOrPurgeRequested',
                'physicalMultiDisplayVerified', 'appMainHistoryGridDoubleClickExercised',
                'memoryStabilityAssessed', 'zeroLeakClaim'}
-CASE_FIELDS = {'width', 'height', 'fullBasePixels', 'viewportPixels', 'outputWidth', 'outputHeight',
+CASE_FIELDS = {'visualEvidence', 'width', 'height', 'fullBasePixels', 'viewportPixels', 'outputWidth', 'outputHeight',
                'layerCount', 'originalAndBaseAreDistinct', 'sourcePixelsSHA256', 'basePixelsSHA256',
                'expectedOutputPixelsSHA256', 'persistedOutputPixelsSHA256', 'reopenedOutputPixelsSHA256',
                'hiddenPixelsSHA256', 'ordinaryExportPixelsSHA256', 'originalExportPixelsSHA256',
@@ -105,6 +106,95 @@ def observation(value):
         source = raw['purgeable']['ledgerBytes'] if field.startswith('ledger_') else (
             raw['purgeable']['bytes'] if field.startswith('purgeable_') else raw['standard']['bytes'])
         need(field in source and source[field] == count, 'flattened memory differs from actual returned accounting')
+
+
+VISUAL_NAMES = {
+    'editable-reopened-light.png': ('reopenedEditor', 'light'),
+    'editable-reopened-dark.png': ('reopenedEditor', 'dark'),
+    'editable-hidden-pin.png': ('hiddenPin', 'dark'),
+    'editable-restored-pin.png': ('restoredPin', 'dark'),
+}
+VISUAL_CONTROLS = {'editor.tool.rectangle', 'editor.cancel', 'editor.copy', 'editor.applyToPin',
+                   'editor.outputDecoration', 'editor.more'}
+
+
+def rectangle(value):
+    need(type(value) is list and len(value) == 4, 'invalid visual rectangle')
+    for number_value in value:
+        number(number_value, -1000000, 1000000)
+    need(value[2] > 0 and value[3] > 0, 'empty visual rectangle')
+    return value
+
+
+def within(inner, outer):
+    return (inner[0] >= outer[0] - 1 and inner[1] >= outer[1] - 1
+            and inner[0] + inner[2] <= outer[0] + outer[2] + 1
+            and inner[1] + inner[3] <= outer[1] + outer[3] + 1)
+
+
+def visual_evidence(values, expected, directory=None):
+    need(type(values) is list and len(values) == (4 if expected else 0), 'visual evidence count/scope changed')
+    if not expected:
+        return
+    need({item.get('filename') for item in values if type(item) is dict} == set(VISUAL_NAMES), 'visual filenames missing/duplicated/unsafe')
+    items = {}
+    for item in values:
+        keys(item, {'filename', 'sha256', 'rgbaSHA256', 'byteCount', 'pixelWidth', 'pixelHeight', 'kind', 'appearance',
+                    'windowFrame', 'contentBounds', 'imageScreenFrame', 'viewportScreenFrame', 'cropViewportInBase',
+                    'toolbarFrame', 'controls', 'imageNativeHitVerified', 'whileSnapshotLiveMemory', 'scope'})
+        name = item['filename']; items[name] = item
+        need((item['kind'], item['appearance']) == VISUAL_NAMES[name], 'visual surface/appearance changed')
+        sha(item['sha256']); sha(item['rgbaSHA256']); integer(item['byteCount'], 1, 8 * 1024 * 1024)
+        width = integer(item['pixelWidth'], 1, 1280); height = integer(item['pixelHeight'], 1, 900)
+        bounds = rectangle(item['contentBounds'])
+        need(width == math.ceil(bounds[2]) and height == math.ceil(bounds[3]), 'snapshot scale differs from one pixel per point')
+        for field in ('windowFrame', 'imageScreenFrame', 'viewportScreenFrame', 'cropViewportInBase'):
+            rectangle(item[field])
+        need(item['cropViewportInBase'] == [80, 40, 400, 260], 'snapshot is not the restored small crop')
+        need(item['imageNativeHitVerified'] is True, 'image hit target not verified')
+        observation(item['whileSnapshotLiveMemory'])
+        string(item['scope'])
+        need(type(item['controls']) is list, 'invalid visual controls')
+        if item['kind'] == 'reopenedEditor':
+            bar = rectangle(item['toolbarFrame'])
+            need(24 <= bar[3] <= 56 and within(bar, bounds), 'compact toolbar clipped/oversized')
+            need(len(item['controls']) == 6 and {c.get('id') for c in item['controls'] if type(c) is dict} == VISUAL_CONTROLS,
+                 'native hit targets incomplete')
+            for control in item['controls']:
+                keys(control, {'id', 'frame', 'nativeHitVerified'})
+                frame = rectangle(control['frame'])
+                need(control['nativeHitVerified'] is True and frame[2] >= 16 and frame[3] >= 16 and within(frame, bounds),
+                     'native target obscured/clipped/small')
+        else:
+            need(item['toolbarFrame'] == [] and item['controls'] == [], 'pin snapshot fabricated editor controls')
+        if directory is not None:
+            directory = Path(directory).resolve(strict=True)
+            path = directory / name
+            info = path.lstat()
+            need(stat.S_ISREG(info.st_mode) and path.resolve().parent == directory and info.st_size == item['byteCount'],
+                 'visual file missing/linked/outside bound')
+            data = path.read_bytes()
+            need(hashlib.sha256(data).hexdigest() == item['sha256'], 'visual file hash mismatch')
+            need(len(data) >= 33 and data[:8] == b'\x89PNG\r\n\x1a\n'
+                 and struct.unpack_from('>II', data, 16) == (width, height), 'visual PNG dimensions mismatch')
+            spec = importlib.util.spec_from_file_location('editable_visual_png', Path(__file__).with_name('check-automatic-mosaic-report.py'))
+            decoder = importlib.util.module_from_spec(spec); spec.loader.exec_module(decoder)
+            decoded_width, decoded_height, pixels = decoder.png_rgba(data)
+            need((decoded_width, decoded_height) == (width, height), 'decoded visual dimensions differ')
+            need(hashlib.sha256(pixels).hexdigest() == item['rgbaSHA256'], 'visual RGBA hash mismatch')
+            need(all(alpha == 255 for alpha in pixels[3::4]), 'visual native backdrop not opaque')
+            colors = set()
+            for offset in range(0, len(pixels), 4):
+                colors.add(pixels[offset:offset + 4])
+                if len(colors) >= 16:
+                    break
+            need(len(colors) >= 16, 'visual snapshot is blank or lacks the authored source')
+    for first, second in [('editable-reopened-light.png', 'editable-reopened-dark.png'),
+                          ('editable-hidden-pin.png', 'editable-restored-pin.png')]:
+        a, b = items[first], items[second]
+        need(a['rgbaSHA256'] != b['rgbaSHA256'], 'paired visual states did not change pixels')
+        for field in ('windowFrame', 'contentBounds', 'imageScreenFrame', 'viewportScreenFrame'):
+            need(a[field] == b[field], 'appearance/visibility moved the native geometry')
 
 
 def ownership(value):
@@ -191,6 +281,7 @@ def resources(value):
         need(type(value[field]) is list and len(value[field]) == count, 'missing resource cycles')
         for index, entry in enumerate(value[field], 1):
             case(entry, 3840, 2160, cycle=True)
+            visual_evidence(entry['visualEvidence'], expected=False)
             need(entry['index'] == index and entry['phase'] == phase, 'cycle sequence changed')
     need(len({c['expectedOutputPixelsSHA256'] for c in value['warmups'] + value['cycles']}) == 1, 'repeated workload changed pixels')
     for item in [value['afterWarmupToMeasuredDeltaBytes']] + value['lateMeasuredIncrements']:
@@ -236,12 +327,12 @@ def samples(value, include_resources):
         need(value['total']['sampledMinimumBytes'][key] == min(p['sampledMinimumBytes'][key] for p in phases.values()), 'minimum aggregation mismatch')
 
 
-def validate(report, identity, include_resources, process_id=None):
+def validate(report, identity, include_resources, process_id=None, evidence_directory=None):
     keys(report, ROOT_FIELDS)
     pid = integer(report['processIdentifier'], 1, 2**31 - 1)
     if process_id is not None:
         need(pid == process_id, 'report process does not match the owned installed launch')
-    need(integer(report['schemaVersion']) == 1 and report['status'] == 'passed', 'native acceptance did not pass')
+    need(integer(report['schemaVersion']) == 2 and report['status'] == 'passed', 'native acceptance did not pass')
     need(type(report['sourceCommit']) is str and re.fullmatch(r'[0-9a-f]{40}', report['sourceCommit']) is not None, 'invalid source commit')
     for field in ('sourceCommit', 'version', 'buildVersion', 'bundlePath', 'executableSHA256', 'executableBytes', 'architecture'):
         need(report[field] == identity[field], 'installed executable identity mismatch: ' + field)
@@ -260,6 +351,7 @@ def validate(report, identity, include_resources, process_id=None):
     need(type(report['functionalCases']) is list and len(report['functionalCases']) == 2, 'small/4K functional cases incomplete')
     for item, profile, width, height in zip(report['functionalCases'], ['small', '4k'], [640, 3840], [360, 2160]):
         case(item, width, height); need(item['profile'] == profile, 'functional profile mismatch')
+        visual_evidence(item['visualEvidence'], expected=profile == 'small', directory=evidence_directory)
     if include_resources:
         resources(report['resources'])
     else:
@@ -268,7 +360,8 @@ def validate(report, identity, include_resources, process_id=None):
     need(report['ownedTemporaryDirectoryRemoved'] is True, 'temporary directory survived')
     need(integer(report['ownedOpenDescriptorsAfterCleanup']) == 0, 'linked/unlinked owned descriptor survived')
     return {'status': 'passed', 'resourceObservationsComplete': include_resources, 'nativeExecutionAttestedByChecker': False,
-            'memoryStabilityAssessed': False, 'zeroLeakClaim': False, 'sourceCommit': report['sourceCommit']}
+            'memoryStabilityAssessed': False, 'zeroLeakClaim': False, 'sourceCommit': report['sourceCommit'],
+            'visualFilesVerified': evidence_directory is not None}
 
 
 def strict_pairs(pairs):
@@ -308,7 +401,7 @@ def main():
     parser.add_argument('--source', required=True); parser.add_argument('--resources', action='store_true')
     parser.add_argument('--output', type=Path); parser.add_argument('--process-id', type=int)
     args = parser.parse_args()
-    result = validate(read_report(args.report), bundle_identity(args.app, args.source), args.resources, args.process_id)
+    result = validate(read_report(args.report), bundle_identity(args.app, args.source), args.resources, args.process_id, args.report.parent)
     result['reportSHA256'] = hashlib.sha256(args.report.read_bytes()).hexdigest()
     text = json.dumps(result, indent=2) + '\n'
     if args.output:

@@ -28,7 +28,7 @@ import PicShotCore
         #else
         let architecture = "x86_64"
         #endif
-        var report: [String: Any] = ["schemaVersion": 1, "status": "running", "sourceCommit": source,
+        var report: [String: Any] = ["schemaVersion": 2, "status": "running", "sourceCommit": source,
             "processIdentifier": Int(ProcessInfo.processInfo.processIdentifier),
             "version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown",
             "buildVersion": Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown",
@@ -51,7 +51,8 @@ import PicShotCore
                 let directory = root.appendingPathComponent(profile)
                 let lifetime = EditableAnnotationLifetime()
                 var result = try await functional(directory: directory, width: width, height: height,
-                    lifetime: lifetime, identities: &identities, deadline: deadline)
+                    lifetime: lifetime, identities: &identities, deadline: deadline,
+                    visualDirectory: profile == "small" ? evidenceDirectory : nil)
                 try await release(lifetime, deadline: deadline)
                 result["ownershipAfterRelease"] = lifetime.report
                 result["windowContentGraphsAfterRelease"] = lifetime.windowContentGraphs
@@ -93,7 +94,9 @@ import PicShotCore
     }
 
     private static func functional(directory: URL, width: Int, height: Int, lifetime: EditableAnnotationLifetime,
-        identities: inout Set<O.OwnedFileIdentity>, deadline: Double) async throws -> [String: Any] {
+        identities: inout Set<O.OwnedFileIdentity>, deadline: Double, visualDirectory: URL? = nil) async throws -> [String: Any] {
+        try O.require(visualDirectory == nil || (width == 640 && height == 360), "Visual evidence is restricted to the small functional profile")
+        var visualEvidence: [[String: Any]] = []
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let history = HistoryStore(directory: directory.appendingPathComponent("history"))
         lifetime.observe(history, role: "store")
@@ -207,6 +210,21 @@ import PicShotCore
                       "Hidden preview changed geometry")
         lifetime.image(pin.displayedImage, role: "current")
         let hiddenHash = try O.digest(pin.displayedImage, lifetime: lifetime)
+        if let visualDirectory {
+            let window = try O.required(pin.window, "Pin window missing for evidence")
+            let previousAppearance = window.appearance
+            window.appearance = NSAppearance(named: .darkAqua)
+            try await settle(deadline)
+            visualEvidence.append(try snapshotPin(pin, name: "editable-hidden-pin.png", kind: "hiddenPin", directory: visualDirectory, crop: crop))
+            try pinMenu("toggleAnnotationsHidden", pin)
+            try O.require(!pin.annotationsHidden, "Visual restore action failed")
+            try await settle(deadline)
+            visualEvidence.append(try snapshotPin(pin, name: "editable-restored-pin.png", kind: "restoredPin", directory: visualDirectory, crop: crop))
+            try pinMenu("toggleAnnotationsHidden", pin); try await visibilityDrained(pin, deadline)
+            window.appearance = previousAppearance
+            try O.require(pin.annotationsHidden && (try O.digest(pin.displayedImage, lifetime: lifetime)) == hiddenHash,
+                          "Visual toggle changed the hidden preview or saved pixels")
+        }
         let annotatedExportHash = try await exportHash(pin: pin, original: false, lifetime: lifetime, deadline: deadline)
         try O.require(annotatedExportHash == expectedHash && hiddenHash != annotatedExportHash, "Hidden preview escaped through ordinary export")
         let originalExportHash = try await exportHash(pin: pin, original: true, lifetime: lifetime, deadline: deadline)
@@ -218,6 +236,16 @@ import PicShotCore
         try O.require(pinEditor.annotationCanvas.annotations.count == payload.document.annotations.count
             && (try EditableAnnotationDocumentCodec.encode(pinEditor.editablePayload().document)) == originalDocument,
             "Space fabricated, dropped or changed saved layers")
+        if let visualDirectory {
+            let window = try O.required(pinEditor.window, "Reopened editor window missing for evidence")
+            let previousAppearance = window.appearance
+            for (appearance, name) in [(NSAppearance.Name.aqua, "light"), (.darkAqua, "dark")] {
+                window.appearance = NSAppearance(named: appearance)
+                try await settle(deadline)
+                visualEvidence.append(try snapshotEditor(pinEditor, appearance: name, directory: visualDirectory, crop: crop))
+            }
+            window.appearance = previousAppearance
+        }
         try nativeMark(pinEditor); try click("editor.cancel", editor: pinEditor)
         try await visibilityDrained(pin, deadline)
         try O.require(pin.annotationsHidden && (try O.digest(pin.currentImage, lifetime: lifetime)) == expectedHash, "Cancel changed pin or lost hidden state")
@@ -273,6 +301,7 @@ import PicShotCore
         let result: [String: Any] = ["width": width, "height": height, "fullBasePixels": width * height,
             "viewportPixels": Int(crop.width * crop.height), "outputWidth": expected.width, "outputHeight": expected.height,
             "layerCount": payload.document.annotations.count, "originalAndBaseAreDistinct": true,
+            "visualEvidence": visualEvidence,
             "sourcePixelsSHA256": sourceHash, "basePixelsSHA256": baseHash,
             "expectedOutputPixelsSHA256": expectedHash, "persistedOutputPixelsSHA256": persistedHash,
             "reopenedOutputPixelsSHA256": replayHash, "hiddenPixelsSHA256": hiddenHash,
@@ -285,6 +314,79 @@ import PicShotCore
         try FileManager.default.removeItem(at: directory)
         return result
     }
+
+    private static func snapshotEditor(_ editor: ImageEditorController, appearance: String,
+        directory: URL, crop: CGRect) throws -> [String: Any] {
+        let window = try O.required(editor.window, "Reopened editor window missing")
+        let root = try O.required(window.contentView, "Reopened editor content missing")
+        root.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        let toolbar = editor.floatingToolbarFrame
+        try O.require(toolbar.height >= 24 && toolbar.height <= 56 && root.bounds.insetBy(dx: -1, dy: -1).contains(toolbar),
+                      "Compact toolbar is oversized or clipped")
+        let ids = ["editor.tool.rectangle", "editor.cancel", "editor.copy", "editor.applyToPin", "editor.outputDecoration", "editor.more"]
+        let targets: [[String: Any]] = try ids.map { id in
+            let control = try O.required(descendants(root).first { $0.identifier?.rawValue == id } as? NSControl,
+                                         "Visual native target missing: " + id)
+            try O.require(control.isEnabled && !control.isHiddenOrHasHiddenAncestor, "Visual native target disabled/hidden: " + id)
+            let frame = root.convert(control.bounds, from: control)
+            let hit = try O.required(root.hitTest(CGPoint(x: frame.midX, y: frame.midY)), "Visual native hit target missed: " + id)
+            try O.require((hit === control || hit.isDescendant(of: control)) && root.bounds.insetBy(dx: -1, dy: -1).contains(frame),
+                          "Visual native target obscured/clipped: " + id)
+            return ["id": id, "frame": rectangle(frame), "nativeHitVerified": true]
+        }
+        return try snapshot(window: window, canvas: editor.annotationCanvas,
+            imageFrame: O.required(editor.editorImageScreenFrame, "Editor image frame missing"),
+            viewportFrame: O.required(editor.pinnedViewportScreenFrame, "Editor viewport missing"),
+            crop: crop, name: "editable-reopened-" + appearance + ".png", kind: "reopenedEditor",
+            appearance: appearance, controls: targets, toolbar: toolbar, directory: directory)
+    }
+    private static func snapshotPin(_ pin: PinController, name: String, kind: String,
+        directory: URL, crop: CGRect) throws -> [String: Any] {
+        let placement = try O.required(pin.annotationPresentation, "Visual pin placement missing")
+        return try snapshot(window: O.required(pin.window, "Visual pin window missing"), canvas: pinCanvas(pin),
+            imageFrame: placement.imageFrame, viewportFrame: placement.viewportFrame, crop: crop,
+            name: name, kind: kind, appearance: "dark", controls: [], toolbar: nil, directory: directory)
+    }
+    /// AppKit cache of owned views at one pixel per point, composited over the
+    /// resolved native window background. No desktop pixels or TCC are acquired.
+    private static func snapshot(window: NSWindow, canvas: NSView, imageFrame: CGRect, viewportFrame: CGRect,
+        crop: CGRect, name: String, kind: String, appearance: String, controls: [[String: Any]],
+        toolbar: CGRect?, directory: URL) throws -> [String: Any] {
+        let root = try O.required(window.contentView, "Visual root missing")
+        root.layoutSubtreeIfNeeded(); root.displayIfNeeded()
+        let point = root.convert(CGPoint(x: canvas.bounds.midX, y: canvas.bounds.midY), from: canvas)
+        let hit = try O.required(root.hitTest(point), "Visual image hit target missed")
+        try O.require(hit === canvas || hit.isDescendant(of: canvas), "Visual image is obscured")
+        let width = Int(ceil(root.bounds.width)), height = Int(ceil(root.bounds.height))
+        try O.require(width > 0 && height > 0 && width <= 1280 && height <= 900, "Visual snapshot exceeds bounded small-profile size")
+        let bitmap = try O.required(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+            bytesPerRow: width * 4, bitsPerPixel: 32), "Visual bitmap allocation failed")
+        bitmap.size = root.bounds.size; root.cacheDisplay(in: root.bounds, to: bitmap)
+        let context = try context(width, height)
+        var background = CGColor(gray: 1, alpha: 1)
+        root.effectiveAppearance.performAsCurrentDrawingAppearance { background = NSColor.windowBackgroundColor.cgColor }
+        context.setFillColor(background); context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        context.draw(try O.required(bitmap.cgImage, "Native view snapshot missing pixels"), in: CGRect(x: 0, y: 0, width: width, height: height))
+        let image = try O.required(context.makeImage(), "Visual composition failed")
+        try O.require(context.bytesPerRow == width * 4, "Unexpected visual raster row stride")
+        let pixels = Data(bytesNoCopy: try O.required(context.data, "Visual pixel data missing"),
+            count: width * height * 4, deallocator: .none)
+        let rgbaHash = withExtendedLifetime(context) { digest(pixels) }
+        let url = directory.appendingPathComponent(name)
+        try image.writePNG(to: url)
+        let bytes = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        try O.require(bytes > 0 && bytes <= 8 * 1_024 * 1_024, "Visual PNG exceeds evidence byte bound")
+        let whileLive = try withExtendedLifetime((bitmap, context, image)) { try O.memory() }
+        return ["filename": name, "sha256": try O.fileDigest(url), "rgbaSHA256": rgbaHash, "byteCount": bytes,
+            "pixelWidth": width, "pixelHeight": height, "kind": kind, "appearance": appearance,
+            "windowFrame": rectangle(window.frame), "contentBounds": rectangle(root.bounds),
+            "imageScreenFrame": rectangle(imageFrame), "viewportScreenFrame": rectangle(viewportFrame),
+            "cropViewportInBase": rectangle(crop), "toolbarFrame": toolbar.map(rectangle) ?? [],
+            "controls": controls, "imageNativeHitVerified": true, "whileSnapshotLiveMemory": whileLive,
+            "scope": "Owned AppKit view cache, one pixel per point, composited native window background; no desktop capture"]
+    }
+    private static func rectangle(_ rect: CGRect) -> [Double] { [Double(rect.minX), Double(rect.minY), Double(rect.width), Double(rect.height)] }
 
     private static func resources(root: URL, sampler: EditableAnnotationMemorySampler,
         identities: inout Set<O.OwnedFileIdentity>, deadline: Double,

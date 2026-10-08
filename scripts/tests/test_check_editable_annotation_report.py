@@ -1,5 +1,7 @@
 """Hostile report-schema checks only. None of these inputs is native evidence."""
 import copy
+import functools
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -7,10 +9,39 @@ import plistlib
 import struct
 import tempfile
 import unittest
+import zlib
 
 SPEC = importlib.util.spec_from_file_location('editable_check', Path(__file__).resolve().parents[1] / 'check-editable-annotation-report.py')
 CHECK = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CHECK)
+
+
+def png(width, height, color):
+    def chunk(kind, payload):
+        return struct.pack('>I', len(payload)) + kind + payload + struct.pack('>I', zlib.crc32(kind + payload) & 0xffffffff)
+    row = b''.join(bytes([(color + x % 32) % 256, color // 2, 31, 255]) for x in range(width))
+    body = (b'\0' + row) * height
+    data = (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 6, 0, 0, 0))
+            + chunk(b'IDAT', zlib.compress(body)) + chunk(b'IEND', b''))
+    return data, hashlib.sha256(row * height).hexdigest()
+
+
+@functools.lru_cache(maxsize=1)
+def visuals():
+    result, files = [], {}
+    for index, (name, (kind, appearance)) in enumerate(CHECK.VISUAL_NAMES.items()):
+        width, height = (640, 360) if kind == 'reopenedEditor' else (414, 274)
+        data, pixels = png(width, height, 70 + 35 * index); files[name] = data
+        controls = [{'id': value, 'frame': [12 + 40 * n, 310, 32, 32], 'nativeHitVerified': True}
+                    for n, value in enumerate(sorted(CHECK.VISUAL_CONTROLS))] if kind == 'reopenedEditor' else []
+        result.append({'filename': name, 'sha256': hashlib.sha256(data).hexdigest(), 'rgbaSHA256': pixels,
+            'byteCount': len(data), 'pixelWidth': width, 'pixelHeight': height, 'kind': kind, 'appearance': appearance,
+            'windowFrame': [100, 200, width, height], 'contentBounds': [0, 0, width, height],
+            'imageScreenFrame': [220, 220, 400, 260] if controls else [100, 200, width, height],
+            'viewportScreenFrame': [216, 206, 414, 274] if controls else [100, 200, width, height],
+            'cropViewportInBase': [80, 40, 400, 260], 'toolbarFrame': [8, 306, 300, 40] if controls else [],
+            'controls': controls, 'imageNativeHitVerified': True, 'whileSnapshotLiveMemory': memory(index), 'scope': 'Synthetic schema PNG, never native evidence'})
+    return result, files
 
 
 def memory(index=0):
@@ -38,6 +69,7 @@ def case(width, height, profile=None, index=None, phase=None):
               'viewportPixels': (width // 640 * 400) * (width // 640 * 260),
               'outputWidth': width // 640 * 400 + 14, 'outputHeight': width // 640 * 260 + 14,
               'layerCount': 7, 'originalAndBaseAreDistinct': True,
+              'visualEvidence': copy.deepcopy(visuals()[0]) if profile == 'small' and index is None else [],
               'sourcePixelsSHA256': 'b' * 64, 'basePixelsSHA256': 'c' * 64,
               'expectedOutputPixelsSHA256': output, 'persistedOutputPixelsSHA256': output,
               'reopenedOutputPixelsSHA256': output, 'ordinaryExportPixelsSHA256': output,
@@ -67,7 +99,7 @@ def statistics(index=0):
 def report(resources=False):
     identity = {'sourceCommit': '2' * 40, 'version': '0.16.0', 'buildVersion': '105',
                 'bundlePath': '/test/PicShot.app', 'architecture': 'arm64', 'executableSHA256': '3' * 64, 'executableBytes': 1024}
-    result = dict(identity, processIdentifier=1234, schemaVersion=1, status='passed', deadlineSeconds=300, elapsedSeconds=120,
+    result = dict(identity, processIdentifier=1234, schemaVersion=2, status='passed', deadlineSeconds=300, elapsedSeconds=120,
                   resourcesRequested=resources, entryMemory=memory(), finalMemory=memory(20), resources=None,
                   functionalCases=[case(640, 360, 'small'), case(3840, 2160, '4k')],
                   flags={**dict.fromkeys(CHECK.FLAGS_TRUE, True), **dict.fromkeys(CHECK.FLAGS_FALSE, False)},
@@ -104,6 +136,7 @@ class EditableReportTests(unittest.TestCase):
         value, identity = report()
         checked = CHECK.validate(value, identity, False)
         self.assertFalse(checked['nativeExecutionAttestedByChecker'])
+        self.assertFalse(checked['visualFilesVerified'])
         self.assertFalse(checked['memoryStabilityAssessed'])
         with self.assertRaises(ValueError):
             CHECK.validate(value, identity, False, process_id=4321)
@@ -164,6 +197,58 @@ class EditableReportTests(unittest.TestCase):
                 value, identity = report(True); mutate(value)
                 with self.assertRaises((ValueError, TypeError, KeyError)):
                     CHECK.validate(value, identity, True)
+
+    def test_visual_metadata_scope_geometry_and_native_targets_rejected(self):
+        mutations = [
+            lambda r: r.update(schemaVersion=1),
+            lambda r: r['functionalCases'][0]['visualEvidence'].pop(),
+            lambda r: r['functionalCases'][0]['visualEvidence'][0].update(filename='../escape.png'),
+            lambda r: r['functionalCases'][0]['visualEvidence'][0].update(pixelWidth=1281),
+            lambda r: r['functionalCases'][0]['visualEvidence'][0]['controls'][0].update(nativeHitVerified=False),
+            lambda r: r['functionalCases'][0]['visualEvidence'][0].update(imageNativeHitVerified=False),
+            lambda r: r['functionalCases'][0]['visualEvidence'][1].update(windowFrame=[101, 200, 640, 360]),
+            lambda r: r['functionalCases'][1].update(visualEvidence=copy.deepcopy(visuals()[0])),
+            lambda r: r['resources']['cycles'][0].update(visualEvidence=copy.deepcopy(visuals()[0])),
+        ]
+        for index, mutate in enumerate(mutations):
+            with self.subTest(index=index):
+                value, identity = report(True); mutate(value)
+                with self.assertRaises((ValueError, TypeError, KeyError)):
+                    CHECK.validate(value, identity, True)
+
+    def test_visual_png_files_hashes_and_rgba_are_checked(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name, data in visuals()[1].items():
+                (root / name).write_bytes(data)
+            value, identity = report()
+            checked = CHECK.validate(value, identity, False, evidence_directory=root)
+            self.assertTrue(checked['visualFilesVerified'])
+            value['functionalCases'][0]['visualEvidence'][0]['rgbaSHA256'] = '0' * 64
+            with self.assertRaises(ValueError):
+                CHECK.validate(value, identity, False, evidence_directory=root)
+            value, identity = report()
+            entry = value['functionalCases'][0]['visualEvidence'][0]
+            data = bytearray((root / entry['filename']).read_bytes()); data[-15] ^= 1
+            (root / entry['filename']).write_bytes(data)
+            entry['sha256'] = hashlib.sha256(data).hexdigest()
+            with self.assertRaisesRegex(ValueError, 'CRC'):
+                CHECK.validate(value, identity, False, evidence_directory=root)
+
+    def test_linked_or_missing_visual_png_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name, data in visuals()[1].items():
+                (root / name).write_bytes(data)
+            value, identity = report()
+            name = value['functionalCases'][0]['visualEvidence'][0]['filename']
+            (root / name).unlink()
+            with self.assertRaises(FileNotFoundError):
+                CHECK.validate(value, identity, False, evidence_directory=root)
+            target = root / 'linked-target.png'; target.write_bytes(visuals()[1][name])
+            (root / name).symlink_to(target)
+            with self.assertRaises(ValueError):
+                CHECK.validate(value, identity, False, evidence_directory=root)
 
     def test_duplicate_nonfinite_oversized_and_linked_reports_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

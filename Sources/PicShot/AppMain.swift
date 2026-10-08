@@ -40,16 +40,25 @@ import ImageIO
     var busy=false
     private var captureTask:Task<Void,Never>?
     private var activePresetOperation: UUID?
+    private weak var activeScrollCapture: ScrollCaptureController?
+    let pendingCaptureRecovery = PendingCaptureRecovery()
+    private var pendingCaptureController: PendingCaptureController?
+    /// Encoded providers stay retained by their editor CGImages; record that cost
+    /// until the editor actually closes, without retaining an extra image.
+    private var editorEncodedBackingBytes: [ObjectIdentifier: Int] = [:]
     private var capturePresetStore: CapturePresetStore?
     weak var capturePresetController: CapturePresetController?
     private var barcodeTask: Task<Void, Never>?
     private var barcodeGeneration = UUID()
     weak var barcodeResultController: BarcodeResultController?
     private let frozenEditorAdmission = FrozenEditorCaptureAdmission<ImageEditorController>()
-    private let editorAdmission = EditorAdmissionPolicy()
+    private let editorAdmission: EditorAdmissionPolicy
+    private let editorAdmissionNoticeOverride: (() -> Void)?
+    private let isolatedSaveWorkflow: SaveWorkflowPresenter?
     private var editorAdmissionNotices = EditorAdmissionNotices()
     let smoke=ProcessInfo.processInfo.environment["PICSHOT_SMOKE_REPORT"]
     override init(){
+        editorAdmission = EditorAdmissionPolicy(); editorAdmissionNoticeOverride = nil; isolatedSaveWorkflow = nil
         if ProcessInfo.processInfo.environment["PICSHOT_SMOKE_REPORT"] != nil {history=HistoryStore(directory:FileManager.default.temporaryDirectory.appendingPathComponent("PicShot-Smoke-\(UUID().uuidString)"))} else {history=HistoryStore()}
         super.init()
         // Smoke must neither read nor write the user's saved session or preferences.
@@ -57,6 +66,13 @@ import ImageIO
             do {pinSession=PinSessionCoordinator(store:try PinSessionStore(),ocrPreferences:pinOCRPreferences);pinSession?.onError={showError($0)}}
             catch {pinSessionLoadError=error}
         }
+    }
+    /// Inject isolated history/admission for native transaction tests without
+    /// restoring or writing the user's pin session or saved preferences.
+    init(history: HistoryStore, isolatedDefaults: UserDefaults, editorAdmission: EditorAdmissionPolicy = .init(), admissionNotice: (() -> Void)? = nil) {
+        self.history = history; self.editorAdmission = editorAdmission; editorAdmissionNoticeOverride = admissionNotice
+        isolatedSaveWorkflow = SaveWorkflowPresenter(defaults: isolatedDefaults, isSmoke: true)
+        super.init()
     }
     func applicationDidFinishLaunching(_ notification:Notification){
         AppAppearancePreference.applySaved(isSmoke:smoke != nil)
@@ -97,6 +113,9 @@ import ImageIO
         do{try pinSession?.prepareForTermination()}catch{NSLog("Could not save pin presentation before exit: %@",error.localizedDescription)}
     }
     func applicationShouldTerminate(_ sender:NSApplication)->NSApplication.TerminateReply {
+        // A failed disk write has no durable copy. Quit must not silently release
+        // the only owner; Save or explicit Discard in the panel resolves it first.
+        if pendingCaptureRecovery.blocksCapture { showPendingCapture(); return .terminateCancel }
         let state=recorder.controlState
         guard state.terminationAction != .none else{isTerminating=true;return .terminateNow}
         let alert=NSAlert()
@@ -114,6 +133,9 @@ import ImageIO
                     cancelCountdown:{await self.recorder.cancel()},
                     save:{_ = try await self.recorder.stop()},
                     preserve:{try await self.recorder.retryPendingTakePreservation(presentRecovery:false)})
+                if self.pendingCaptureRecovery.blocksCapture {
+                    self.showPendingCapture(); sender.reply(toApplicationShouldTerminate:false); return
+                }
                 self.isTerminating=true
                 sender.reply(toApplicationShouldTerminate:true)
             } catch {
@@ -140,6 +162,7 @@ import ImageIO
         edit.addItem(withTitle:"撤销",action:Selector(("undo:")),keyEquivalent:"z");let redo=edit.addItem(withTitle:"重做",action:Selector(("redo:")),keyEquivalent:"Z");redo.keyEquivalentModifierMask=[.command,.shift]
         for (title,selector,key) in [("剪切","cut:","x"),("复制","copy:","c"),("粘贴","paste:","v"),("全选","selectAll:","a")] {edit.addItem(withTitle:title,action:Selector(selector),keyEquivalent:key)}
         let windowItem=NSMenuItem();menu.addItem(windowItem);let wm=NSMenu(title:"窗口");windowItem.submenu=wm;NSApp.windowsMenu=wm
+        wm.addItem(withTitle:"未保存的截图…",action:#selector(showPendingCapture),keyEquivalent:"").target=self
         wm.addItem(withTitle:"恢复未完成的录屏…",action:#selector(recoverRecordings),keyEquivalent:"").target=self
         wm.addItem(withTitle:"历史记录",action:#selector(showMain),keyEquivalent:"0").target=self;wm.addItem(withTitle:"贴图组与历史…",action:#selector(managePinGroups),keyEquivalent:"").target=self
         wm.addItem(withTitle:"文件或文件夹贴图…",action:#selector(importFilePin),keyEquivalent:"").target=self
@@ -164,7 +187,7 @@ import ImageIO
     @objc func region(){startCapture(.region)}
     @objc func systemRegion(){
         let options=ScreenshotPreferences.options
-        runCapture { [capture] in try await capture.capture(mode:.region,options:options) }
+        runCaptureForEditing { [capture] in try await capture.captureSystemForEditing(mode:.region,options:options) }
     }
     @objc func windowCapture(){startCapture(.window)}
     @objc func captureMultipleWindows(){
@@ -173,7 +196,7 @@ import ImageIO
     }
     @objc func full(){startCapture(.fullScreen)}
     @objc func allScreens(){startCapture(.allScreens)}
-    @objc func cancelCapture(){captureTask?.cancel()}
+    @objc func cancelCapture(){captureTask?.cancel();if pendingCaptureRecovery.blocksCapture{showPendingCapture()}}
     func startCapture(_ mode:CaptureMode){
         let options=ScreenshotPreferences.options
         runCaptureForEditing { [capture] in try await capture.captureForEditing(mode:mode,options:options) }
@@ -188,10 +211,9 @@ import ImageIO
     private func runCapture(title:String="截图",operation:@escaping @MainActor () async throws -> CGImage){
         runCaptureForEditing(title:title) { CapturedImage(image:try await operation(),presentation:nil) }
     }
-    private func runCaptureForEditing(title:String="截图",presetOperation:UUID?=nil,operation:@escaping @MainActor () async throws -> CapturedImage){
+    func runCaptureForEditing(title:String="截图",presetOperation:UUID?=nil,operation:@escaping @MainActor () async throws -> CapturedImage){
         // This check must precede window hiding, delays, and every capture API.
-        guard frozenEditorAdmission.shouldStart(isBusy:busy || captureTask != nil,
-            isClosed:{$0.isClosed},focus:{self.focusEditor($0)}) else{return}
+        guard canStartCapture() else{return}
         busy=true;activePresetOperation=presetOperation;mainWindow.orderOut(nil)
         captureTask=Task { [weak self] in
             guard let self else{return}
@@ -200,14 +222,57 @@ import ImageIO
                 try await Task.sleep(nanoseconds:180_000_000)
                 let result=try await operation()
                 try Task.checkCancellation()
-                // A failed automatic history write must not discard the captured pixels.
-                var historyError: Error?
-                do { try self.history.add(result.image, title: title, capturedAt: result.presentation?.capturedAt) }
-                catch { historyError = error }
-                self.openEditor(result.image, presentation: result.presentation, baseProvenance: .originalCapture)
-                if let historyError { showError(historyError) }
+                try self.completeCapture(result, title: title)
             }catch CaptureError.cancelled{}catch is CancellationError{}catch{self.showMain();showError(error)}
         }
+    }
+    private func editorCosts(_ editors: [ImageEditorController]) -> [Int] {
+        editors.map { EditorAdmissionPolicy.sum([$0.estimatedAdmissionRasterBytes,
+            editorEncodedBackingBytes[ObjectIdentifier($0)] ?? 0]) }
+    }
+    private func drainingProjectionBytes(_ editors: [ImageEditorController]) -> Int {
+        let reported = EditorAdmissionPolicy.sum(editors.map(\.estimatedOutputProjectionReservationBytes))
+        return max(0, EditorOutputProjection.shared.reservedBytes - reported)
+    }
+    /// All screenshot entry points, including scroll/preset acquisition, gate
+    /// before hiding windows, delaying, or calling a screenshot API.
+    private func canStartCapture() -> Bool {
+        if pendingCaptureRecovery.blocksCapture { showPendingCapture(); return false }
+        if let activeScrollCapture { activeScrollCapture.showWindow(nil); return false }
+        guard frozenEditorAdmission.shouldStart(isBusy: busy || captureTask != nil,
+            isClosed: { $0.isClosed }, focus: { self.focusEditor($0) }) else { return false }
+        let editors = controllers.compactMap { $0 as? ImageEditorController }.filter { !$0.isClosed }
+        guard CaptureRecoveryPolicy.preflight(editorPolicy: editorAdmission, existingRasterBytes: editorCosts(editors),
+            drainingBytes: drainingProjectionBytes(editors), pendingBytes: pendingCaptureRecovery.retainedBytes) == nil else {
+            showEditorAdmissionNotice(); return false
+        }
+        return true
+    }
+    private func completeCapture(_ result: CapturedImage, title: String) throws {
+        let outcome = try CaptureCompletion.finish(result, title: title, recovery: pendingCaptureRecovery,
+            saveHistory: { result, title in
+                try self.history.add(result.image, title: title, capturedAt: result.capturedAt)
+            }, openEditor: { result in
+                self.openEditor(result.image, presentation: result.presentation, captureDate: result.capturedAt,
+                    baseProvenance: .originalCapture, encodedBackingBytes: result.encodedBackingBytes,
+                    showAdmissionNotice: false)
+            }, reportHistoryError: { showError($0) })
+        if outcome == .pending { showPendingCapture() }
+        else if outcome == .history { showEditorAdmissionNotice() }
+    }
+    @objc func showPendingCapture() {
+        guard pendingCaptureRecovery.blocksCapture else { return }
+        if pendingCaptureController == nil {
+            let controller = PendingCaptureController(recovery: pendingCaptureRecovery)
+            controller.onRetry = { [weak self] capture in
+                self?.openEditor(capture.image, captureDate: capture.capturedAt, baseProvenance: .originalCapture,
+                    encodedBackingBytes: capture.encodedBackingBytes, transferringPendingID: capture.id,
+                    showAdmissionNotice: false) ?? false
+            }
+            controller.onResolved = { [weak self] in self?.pendingCaptureController = nil }
+            pendingCaptureController = controller
+        }
+        pendingCaptureController?.showWindow(nil); NSApp.activate(ignoringOtherApps: true)
     }
     @objc func elementCapture() {
         let options = ScreenshotPreferences.options
@@ -258,8 +323,7 @@ import ImageIO
         } catch { showError(error) }
     }
     private func createCapturePreset(name: String, delay: ScreenshotDelay, manager: CapturePresetController?) {
-        guard frozenEditorAdmission.shouldStart(isBusy: busy || captureTask != nil,
-            isClosed: { $0.isClosed }, focus: { self.focusEditor($0) }) else {
+        guard canStartCapture() else {
             manager?.showError(PicShotError.message("请先完成当前截图或编辑，再创建预设。")); return
         }
         busy = true; activePresetOperation = UUID(); mainWindow.orderOut(nil)
@@ -335,26 +399,31 @@ import ImageIO
         });retain(c);c.showWindow(nil)
     }
     func recognizeTable(_ image:CGImage){let c=TableRecognitionController(image:image){[weak self] table,warnings in guard let self else{return};let editor=TableEditorController(table:table,sourceImage:image);self.retain(editor);editor.showWindow(nil);if !warnings.isEmpty{let alert=NSAlert();alert.messageText="请核对表格识别结果";alert.informativeText=warnings.joined(separator:"\n");alert.runModal()}};retain(c);c.showWindow(nil)}
-    func openEditor(_ image: CGImage, presentation: FrozenCapturePresentation? = nil,
+    @discardableResult func openEditor(_ image: CGImage, presentation: FrozenCapturePresentation? = nil,
                     captureDate: Date? = nil, editable: EditableCapturePayload? = nil,
-                    historyRecordID: UUID? = nil, baseProvenance: EditableAnnotationBaseProvenance = .legacyRaster) {
+                    historyRecordID: UUID? = nil, baseProvenance: EditableAnnotationBaseProvenance = .legacyRaster,
+                    encodedBackingBytes: Int = 0, transferringPendingID: UUID? = nil,
+                    showAdmissionNotice: Bool = true) -> Bool {
         if presentation != nil, !frozenEditorAdmission.shouldStart(isBusy: false,
-            isClosed: { $0.isClosed }, focus: { self.focusEditor($0) }) { return }
+            isClosed: { $0.isClosed }, focus: { self.focusEditor($0) }) { return false }
         let editors = controllers.compactMap { $0 as? ImageEditorController }.filter { !$0.isClosed }
-        let reportedProjectionBytes = editors.reduce(0) { $0 + $1.estimatedOutputProjectionReservationBytes }
-        let drainingProjectionBytes = max(0, EditorOutputProjection.shared.reservedBytes - reportedProjectionBytes)
+        let drainingProjectionBytes = drainingProjectionBytes(editors)
         let incoming: Int
         if let editable {
             incoming = EditorAdmissionPolicy.sum([
                 EditorRasterEstimate.retainedBytes([editable.originalImage, editable.baseImage]),
-                EditorRasterEstimate.redrawBytes(editable.baseImage), drainingProjectionBytes])
+                EditorRasterEstimate.redrawBytes(editable.baseImage), encodedBackingBytes])
         } else {
             incoming = EditorAdmissionPolicy.sum([
-                EditorRasterEstimate.openingBytes(image: image, presentation: presentation), drainingProjectionBytes])
+                EditorRasterEstimate.openingBytes(image: image, presentation: presentation), encodedBackingBytes])
         }
-        guard editorAdmission.refusal(existingRasterBytes: editors.map(\.estimatedAdmissionRasterBytes),
-                                      incomingRasterBytes: incoming) == nil else {
-            if editorAdmissionNotices.recordRefusal() { showEditorAdmissionNotice() }; return
+        let transferringPending = transferringPendingID != nil && transferringPendingID == pendingCaptureRecovery.pending?.id
+            && pendingCaptureRecovery.pending?.image === image
+        let admittedBytes = CaptureRecoveryPolicy.admissionBytes(incomingBytes: incoming,
+            drainingBytes: drainingProjectionBytes, pendingBytes: pendingCaptureRecovery.retainedBytes,
+            transferringPending: transferringPending)
+        guard editorAdmission.refusal(existingRasterBytes: editorCosts(editors), incomingRasterBytes: admittedBytes) == nil else {
+            if showAdmissionNotice && editorAdmissionNotices.recordRefusal() { showEditorAdmissionNotice() }; return false
         }
         let knownCaptureDate = presentation?.capturedAt ?? captureDate
         let c = ImageEditorController(image: editable?.baseImage ?? image, presentation: presentation,
@@ -364,7 +433,7 @@ import ImageIO
             }, onPin: { [weak self] img in self?.pin(img) },
             onOCR: { [weak self] img in self?.recognize(img) },
             onTranslate: { [weak self] img in self?.translateImage(img) },
-            captureDate: knownCaptureDate, saveWorkflow: smoke == nil ? saveWorkflows : nil,
+            captureDate: knownCaptureDate, saveWorkflow: isolatedSaveWorkflow ?? (smoke == nil ? saveWorkflows : nil),
             onPinWithOriginal: { [weak self] original, current in
                 self?.pin(originalImage: original, currentImage: current) ?? false
             }, onSaveEditable: { [weak self] current, payload in
@@ -382,21 +451,26 @@ import ImageIO
         c.onClose = { [weak self, weak c] in
             guard let self, let c else { return }
             self.frozenEditorAdmission.editorDidClose(c)
+            self.editorEncodedBackingBytes.removeValue(forKey: ObjectIdentifier(c))
             self.controllers.removeAll { $0 === c }
         }
         do { if let editable { try c.restoreEditablePayload(editable) } }
-        catch { c.window?.close(); showError(error); return }
+        catch { c.window?.close(); showError(error); return false }
         if historyRecordID != nil { c.window?.title = "PicShot · 编辑历史截图" }
         if presentation != nil { frozenEditorAdmission.register(c) }
-        retain(c); focusEditor(c)
+        editorEncodedBackingBytes[ObjectIdentifier(c)] = encodedBackingBytes
+        retain(c); focusEditor(c); return true
     }
     private func focusEditor(_ editor:ImageEditorController){
         editor.showWindow(nil);editor.window?.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true)
     }
     private func showEditorAdmissionNotice(importedCount:Int=0){
+        if let editorAdmissionNoticeOverride { editorAdmissionNoticeOverride(); return }
         let alert=NSAlert();alert.messageText="图片编辑窗口已达到资源保护上限"
         let saved=importedCount > 0 ? "\(importedCount) 张图片已保存到历史记录，暂未打开编辑窗口。\n" : "已保存到历史记录的图片仍可稍后打开。\n"
-        alert.informativeText=saved+"最多同时打开 6 个编辑窗口，估算的保留图像预算为 768 MiB（不是总进程内存上限）。请先保存并关闭不再需要的编辑窗口，再从历史记录打开图片。"
+        let pending = pendingCaptureRecovery.retainedBytes > 0
+            ? "待处理截图另占 \(pendingCaptureRecovery.retainedBytes) 字节，已计入新窗口准入。\n" : ""
+        alert.informativeText=saved+pending+"最多同时打开 6 个编辑窗口，估算的保留图像预算为 768 MiB（不是总进程内存上限）。请先保存并关闭不再需要的编辑窗口，再从历史记录打开图片。"
         alert.addButton(withTitle:"知道了");alert.runModal()
     }
     func translateImage(_ image:CGImage){
@@ -409,7 +483,16 @@ import ImageIO
         }catch{showError(error)}}
     }
     func retain(_ controller:NSWindowController){controllers.append(controller)}
-    @objc func windowClosed(_ n:Notification){guard let w=n.object as? NSWindow else{return};let closedSettings=settingsController?.window === w;controllers.removeAll{$0.window === w};pins.removeAll{$0.window === w};if closedSettings{settingsController=nil;refreshHotkeys()}}
+    @objc func windowClosed(_ n:Notification){
+        guard let w=n.object as? NSWindow else{return}
+        if activeScrollCapture?.window === w{activeScrollCapture=nil}
+        for editor in controllers.compactMap({ $0 as? ImageEditorController }) where editor.window === w {
+            editorEncodedBackingBytes.removeValue(forKey: ObjectIdentifier(editor))
+        }
+        let closedSettings=settingsController?.window === w
+        controllers.removeAll{$0.window === w};pins.removeAll{$0.window === w}
+        if closedSettings{settingsController=nil;refreshHotkeys()}
+    }
     func pin(_ image:CGImage){ _ = pin(originalImage:image,currentImage:image) }
     @discardableResult func pin(originalImage:CGImage,currentImage:CGImage)->Bool{
         if let pinSession {do{try pinSession.add(originalImage:originalImage,currentImage:currentImage);return true}catch{showError(error);return false}}
@@ -536,16 +619,22 @@ import ImageIO
     func translate(_ text:String){if #available(macOS 15.0,*){let c=LocalTranslationController(text:text);retain(c);c.showWindow(nil)}else{showError(PicShotError.message("本机翻译需要 macOS 15 或更新版本；当前系统可正常截图和识别文字。"))}}
     func openRecord(_ record: CaptureRecord) {
         do {
+            // Known-full capacity is refused before even a legacy raster decode.
+            let currentEditors = controllers.compactMap { $0 as? ImageEditorController }.filter { !$0.isClosed }
+            guard CaptureRecoveryPolicy.preflight(editorPolicy: editorAdmission, existingRasterBytes: editorCosts(currentEditors),
+                drainingBytes: drainingProjectionBytes(currentEditors), pendingBytes: pendingCaptureRecovery.retainedBytes) == nil else {
+                if editorAdmissionNotices.recordRefusal() { showEditorAdmissionNotice() }; return
+            }
             if let descriptor = record.editableCapture {
                 let editors = controllers.compactMap { $0 as? ImageEditorController }.filter { !$0.isClosed }
-                let retained = EditorAdmissionPolicy.sum(editors.map(\.estimatedAdmissionRasterBytes))
-                let reported = editors.reduce(0) { $0 + $1.estimatedOutputProjectionReservationBytes }
-                let draining = max(0, EditorOutputProjection.shared.reservedBytes - reported)
+                let retained = EditorAdmissionPolicy.sum(editorCosts(editors) + [pendingCaptureRecovery.retainedBytes])
+                let draining = drainingProjectionBytes(editors)
                 let redraw = EditorAdmissionPolicy.rasterBytes(bytesPerRow:
                     EditorAdmissionPolicy.rasterBytes(bytesPerRow: descriptor.base.width, height: 4),
                     height: descriptor.base.height)
-                let incoming = EditorAdmissionPolicy.sum([descriptor.decodedRasterByteEstimate, redraw, draining])
-                guard editorAdmission.refusal(existingRasterBytes: editors.map(\.estimatedAdmissionRasterBytes),
+                let incoming = EditorAdmissionPolicy.sum([descriptor.decodedRasterByteEstimate, redraw, draining,
+                    pendingCaptureRecovery.retainedBytes])
+                guard editorAdmission.refusal(existingRasterBytes: editorCosts(editors),
                                               incomingRasterBytes: incoming) == nil else {
                     if editorAdmissionNotices.recordRefusal() { showEditorAdmissionNotice() }; return
                 }
@@ -581,7 +670,13 @@ import ImageIO
         }
         if let image=CGImage.read(url:url){do{try history.add(image,title:url.deletingPathExtension().lastPathComponent);openEditor(image)}catch{showError(error)}}else{showError(PicShotError.message("无法读取图片。支持 PNG、JPEG、GIF、TIFF 等系统可解码格式；动态 GIF / WebP 会作为动态贴图打开"))}
     }
-    @objc func scroll(){guard frozenEditorAdmission.shouldStart(isBusy:busy || captureTask != nil,isClosed:{$0.isClosed},focus:{self.focusEditor($0)}) else{return};let c=ScrollCaptureController{[weak self] image in do{try self?.history.add(image,title:"长截图");self?.openEditor(image)}catch{showError(error)}};retain(c);c.showWindow(nil)}
+    @objc func scroll(){
+        guard canStartCapture() else{return}
+        let c=ScrollCaptureController{[weak self] image in
+            do{try self?.completeCapture(CapturedImage(image:image,presentation:nil),title:"长截图")}catch{showError(error)}
+        }
+        activeScrollCapture=c;retain(c);c.showWindow(nil)
+    }
     private func setupRecordingRecovery() {
         guard smoke == nil else{return}
         recorder.onPendingTakePreserved={ [weak self] in self?.recoverRecordings() }

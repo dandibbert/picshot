@@ -169,14 +169,19 @@ enum CaptureAssetWritePoint: Equatable { case rasterWritten, documentWritten, be
         try payload.validate()
         return payload
     }
-    func validateFileBoundaries(_ asset: EditableCaptureAsset) throws {
+    func validateFileBoundaries(_ asset: EditableCaptureAsset, allowingUnavailableBase: Bool = false) throws {
         guard asset.isValid else { throw PinSessionError.invalidManifest }
         // A broken editable document is not a reason to delete otherwise valid images.
-        // Missing files are reported on open; size mismatches block catalog rewrites.
+        // A distinct optional base can fail lazily while original/current remain usable.
+        // Its expected size/digest are never rewritten to bless externally changed bytes.
         for name in asset.assetFilenames {
             let target = try url(name)
             if manager.fileExists(atPath: target.path) || (try? manager.destinationOfSymbolicLink(atPath: target.path)) != nil {
                 let size = try checkedFile(target).fileSize ?? Int.max
+                // Always check regular-file/symlink boundaries above, even for a base
+                // whose missing or damaged content is deferred until layer restoration.
+                if allowingUnavailableBase, name == asset.base.filename,
+                   name != asset.original.filename, name != asset.current?.filename { continue }
                 let expected = name == asset.documentFilename ? asset.documentByteCount : (asset.rasters + (asset.current.map { [$0] } ?? [])).first(where: { $0.filename == name })!.byteCount
                 guard Int64(size) == expected else { throw PinSessionError.invalidManifest }
             }

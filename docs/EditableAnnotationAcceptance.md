@@ -33,6 +33,14 @@ A fresh store reads real PNGs and metadata. Exact canonical RGBA hashes compare 
 
 While annotations are hidden, the real pin Save menu opens the shared export controller. The encoded PNG artifact is decoded and compared with the saved annotated output. The separate original-save action is compared with the original raster. No file picker is submitted and no general pasteboard is used. Legacy raster history remains without invented editable layers.
 
+## Bounded native visual evidence
+
+Report schema 2 adds exactly four PNGs for the small functional case: the reopened cropped in-place editor in light/dark appearances, and the same pin with annotations temporarily hidden/restored. Each is an AppKit cache of the fixture's owned view, capped at 1280×900 pixels and 8 MiB, composited onto the resolved native window background. This does not capture the desktop behind a translucent pin.
+
+Each entry records the filename, encoded and decoded RGBA hashes, frame/crop geometry, native image hit test and six reachable compact-editor controls. The checker validates actual PNG CRCs, dimensions, byte/hash identity, opacity, paired geometry and distinct paired pixels. The CLI and launch wrapper require the PNG files; schema-only unit calls explicitly return visualFilesVerified=false. Visual files still need human inspection before visual acceptance is claimed.
+
+Snapshots run only in the small functional profile. They perform no PNG encoding, appearance switch or extra hide/show in the 4K functional/resource cycles. Their allocations and any retained framework backing are part of process entry-to-before-warmup and entry-to-after-warmup accounting; each snapshot also preserves an observation while its bitmap/context/image are alive. Those observations supplement the 50 ms timer, which can miss transients. Zero owned-reference endpoints do not mean RSS or native backing was released. The 2+8 workload and 300-second fixture/600-second launch deadlines are unchanged.
+
 ## Resource scope
 
 Resource mode performs two warmups and eight measured cycles. Each repeats the entire native 4K functional path with actual PNG/metadata writes and reads, native export encoding, failure/retry, close/reopen and cleanup. It creates and releases its own original/base inputs per cycle; no input raster is retained at endpoints. Original and base are distinct 4K images, so a small viewport cannot substitute for full-base memory accounting.

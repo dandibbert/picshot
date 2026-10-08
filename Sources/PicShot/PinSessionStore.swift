@@ -57,15 +57,17 @@ import PicShotCore
             catch let error as PinSessionError { throw error }
             catch { throw PinSessionError.invalidManifest }
         }
-        // Header checks do not decode image pixels. Missing/corrupted assets are omitted,
-        // while unsafe paths and symlinks reject the session without overwriting anything.
+        // Header checks do not decode image pixels. Invalid legacy assets are omitted;
+        // digest-bound originals/current images and unsafe paths remain strict.
         var loaded = index
         var usable: [PinSessionEntry] = []
         for entry in loaded.entries {
-            if let editable = entry.editableCapture { try editableAssets.validateFileBoundaries(editable) }
+            if let editable = entry.editableCapture { try editableAssets.validateFileBoundaries(editable, allowingUnavailableBase: true) }
             var assets: [String: PinRasterAsset] = [:]
             var complete = true
-            for asset in entry.assets {
+            // A distinct layer base is not needed to display the saved original/current.
+            // Its pixels and digest are checked by the explicit editablePayload read.
+            for asset in entry.assets where asset.filename == entry.original.filename || asset.filename == entry.current.filename {
                 guard let verified = try inspectedAsset(asset) else { complete = false; break }
                 assets[asset.filename] = verified
             }
