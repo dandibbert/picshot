@@ -249,11 +249,41 @@ class CalloutDiagnosticTests(unittest.TestCase):
     def test_workflow_isolates_marker_at_workflow_level_and_launches_once(self):
         workflow = (ROOT / '.github/workflows/macos.yml').read_text()
         group = next(line for line in workflow.splitlines() if line.startswith('  group:'))
-        self.assertIn("${{ contains(github.event.head_commit.message || '', '[callout-retirement]') && 'callout-retirement' ||", group)
-        self.assertIn("cancel-in-progress: ${{ !contains(github.event.head_commit.message || '', '[callout-retirement]') }}", workflow)
+        prefix = '  group: picshot-${{ github.ref }}-${{ '
+        self.assertTrue(group.startswith(prefix))
+        remaining = group[len(prefix):]
+        rules = []
+        condition = re.compile(r"contains\(github\.event\.head_commit\.message \|\| '', '([^']+)'\) && '([^']+)' \|\| ")
+        while match := condition.match(remaining):
+            rules.append(match.groups())
+            remaining = remaining[match.end():]
+        self.assertEqual(remaining, "'current' }}")
+        self.assertEqual(rules[:2], [('[editable-observation]', 'editable-observation'),
+                                    ('[callout-retirement]', 'callout-retirement')])
+        cancellation = next(line for line in workflow.splitlines() if line.startswith('  cancel-in-progress:'))
+        non_cancelling = ['[callout-retirement]', '[editable-observation]']
+        self.assertEqual(cancellation, '  cancel-in-progress: ${{ '
+                         + ' && '.join(f"!contains(github.event.head_commit.message || '', '{marker}')"
+                                       for marker in non_cancelling) + ' }}')
+        # Evaluate the validated contains/&&/|| chain in production order.
+        for message, expected_group, expected_cancel in [
+            ('Ordinary release commit', 'current', True),
+            ('[verify-installers] release', 'current', True),
+            ('[intel-only] release', 'intel-05', True),
+            ('[callout-retirement] diagnostic', 'callout-retirement', False),
+            ('[editable-observation] diagnostic', 'editable-observation', False),
+            ('[callout-retirement] [editable-observation]', 'editable-observation', False),
+        ]:
+            with self.subTest(message=message):
+                selected = next((route for marker, route in rules if marker in message), 'current')
+                self.assertEqual(selected, expected_group)
+                self.assertEqual(all(marker not in message for marker in non_cancelling), expected_cancel)
         build = workflow.split('  build:\n', 1)[1].split('\n    strategy:', 1)[0]
         self.assertIn("!contains(github.event.head_commit.message || '', '[callout-retirement]')", build)
-        diagnostic = workflow.split('  callout-retirement:\n', 1)[1]
+        self.assertIn("!contains(github.event.head_commit.message || '', '[editable-observation]')", build)
+        # Later jobs have their own always() uploads; inspect this job only.
+        diagnostic = re.search(r'^  callout-retirement:\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow, re.M | re.S)[1]
+        self.assertIn("if: ${{ contains(github.event.head_commit.message || '', '[callout-retirement]') }}", diagnostic)
         self.assertIn('runs-on: macos-15-intel', diagnostic)
         self.assertEqual(diagnostic.count('-- bash scripts/run-callout-retirement-diagnostic.sh'), 1)
         self.assertNotIn('continue-on-error', diagnostic)

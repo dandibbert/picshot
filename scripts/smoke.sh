@@ -128,6 +128,7 @@ for c in save['resourceCycles']:
 print(json.dumps(r,indent=2))
 PY
   python3 scripts/check-capture-output-report.py "$PWD/dist/evidence/$format/capture-output/capture-output-workflow.json" "$app" "$(git rev-parse HEAD)"
+  python3 scripts/check-effect-output-failure-report.py "$PWD/dist/evidence/$format/capture-output/effect-output-failure.json" "$app" "$(git rev-parse HEAD)" "$PWD/dist/evidence/$format/launch.json.launcher.json"
   if [[ "$format" == zip ]];then
     bash scripts/multiwindow-resource-smoke.sh "$app" "$PWD/dist/evidence/$format/multiwindow-resources" "$(git rev-parse HEAD)"
   fi

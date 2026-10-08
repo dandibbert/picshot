@@ -78,6 +78,7 @@ print('Continuous manual scroll native functional evidence passed')
 PY_CHECK
 
 python3 scripts/check-capture-output-report.py "$PWD/dist/evidence/ui/capture-output/capture-output-workflow.json" "$app" "$(git rev-parse HEAD)"
+python3 scripts/check-effect-output-failure-report.py "$PWD/dist/evidence/ui/capture-output/effect-output-failure.json" "$app" "$(git rev-parse HEAD)" "$PWD/dist/evidence/ui/preview.json.launcher.json"
 
 # Reopen actual saved annotation documents in a fresh owned installed process.
 bash scripts/editable-annotation-smoke.sh "$app" "$PWD/dist/evidence/ui/editable-annotations" "$(git rev-parse HEAD)" functional
