@@ -23,7 +23,12 @@ class CalloutDiagnosticTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix='explicitly-synthetic-callout-')
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        self.prepare_fixture(self.temporary.name)
+
+    def prepare_fixture(self, directory):
+        # Match the production runner's canonical paths, including macOS temp
+        # aliases and explicit symlink roots used by the portable regression.
+        self.root = Path(directory).resolve()
         self.output = self.root / 'capture'
         self.output.mkdir()
         callout = FIXTURE.modules()[2]
@@ -64,11 +69,11 @@ class CalloutDiagnosticTests(unittest.TestCase):
             path = self.output / name; path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(value))
 
-    def run_capture(self, optimized=False):
+    def run_capture(self, optimized=False, capture_root=None):
         self.save()
         result = self.root / 'result.json'
         command = [sys.executable] + (['-O'] if optimized else [])
-        command += [str(SCRIPTS / 'check-callout-retirement-diagnostic.py'), 'capture', str(self.output), SOURCE, str(result)]
+        command += [str(SCRIPTS / 'check-callout-retirement-diagnostic.py'), 'capture', str(self.output if capture_root is None else capture_root), SOURCE, str(result)]
         for path in self.processes:
             command += ['--process-report', str(path)]
         process = subprocess.run(command, capture_output=True, text=True, timeout=10)
@@ -82,6 +87,31 @@ class CalloutDiagnosticTests(unittest.TestCase):
             self.assertEqual(report['diagnosticCompleteness'], 'captured')
             self.assertTrue(report['originalNativeFixturesPassed'])
             self.assertFalse(report['fullInstallerAcceptanceClaimed'])
+
+    def test_symlink_fixture_root_uses_canonical_environment_in_both_modes(self):
+        physical = self.root / 'physical-root'
+        physical.mkdir()
+        alias = self.root / 'lexical-alias'
+        alias.symlink_to(physical, target_is_directory=True)
+        self.prepare_fixture(alias)
+        self.assertNotEqual(alias, physical.resolve())
+        self.assertEqual(self.root, physical.resolve())
+        environment = self.data['identity.json']['fixtureEnvironment']
+        canonical = str((physical / 'capture/retirement-sidecar.json').resolve())
+        self.assertEqual(environment['PICSHOT_CALLOUT_RETIREMENT_DIAGNOSTIC_PATH'], canonical)
+        for optimized in (False, True):
+            with self.subTest(optimized=optimized):
+                # A lexical CLI root is safe when the runner-recorded sidecar
+                # path is canonical. Reproduce the old malformed record too.
+                environment['PICSHOT_CALLOUT_RETIREMENT_DIAGNOSTIC_PATH'] = canonical
+                code, report = self.run_capture(optimized, alias / 'capture')
+                self.assertEqual(code, 0, report)
+                self.assertEqual(report['diagnosticCompleteness'], 'captured')
+                environment['PICSHOT_CALLOUT_RETIREMENT_DIAGNOSTIC_PATH'] = str(alias / 'capture/retirement-sidecar.json')
+                code, report = self.run_capture(optimized, alias / 'capture')
+                self.assertEqual(code, 1, report)
+                self.assertEqual(report['error'], 'fixture ordering/environment changed')
+                self.assertEqual(report['diagnosticCompleteness'], 'incomplete')
 
     def test_original_failure_remains_failure_despite_earlier_weak_nil(self):
         for name in ('ui/preview.json', 'ui/annotation-details/annotation-details.json', 'ui/annotation-details/callouts/annotation-callouts.json'):
@@ -122,33 +152,44 @@ class CalloutDiagnosticTests(unittest.TestCase):
 
     def test_optimized_checker_rejects_changed_bounds_identity_and_routes(self):
         original = copy.deepcopy(self.data)
+        def change_original_bound(data):
+            for life in (data['retirement-sidecar.json']['observedLifecycle'],
+                         data['ui/annotation-details/callouts/annotation-callouts.json']['commentLifecycle']):
+                life['maximumSamples'] = 257
         changes = [
-            lambda d: d['identity.json'].update(sourceCommit='2' * 40),
-            lambda d: d['identity.json'].update(architecture='arm64'),
-            lambda d: d['identity.json'].update(executionsRequested=2),
-            lambda d: d['identity.json'].update(executionsRequested=True),
-            lambda d: d['identity.json'].update(nativeDeadlineMilliseconds=2001),
-            lambda d: d['identity.json']['fixtureEnvironment'].update(PICSHOT_ANNOTATION_DETAILS_ONLY='1'),
-            lambda d: d['retirement-sidecar.json']['observedLifecycle'].update(maximumSamples=257),
-            lambda d: d['retirement-sidecar.json']['cycles'][0].update(closedAtUptime=200),
-            lambda d: d['retirement-sidecar.json']['cycles'][0]['input'].update(sourceWasWeakNil=1),
-            lambda d: d['retirement-sidecar.json']['cycles'][0]['input'].update(weakCheckFinishedUptime=104),
-            lambda d: d['retirement-sidecar.json'].update(acceptanceStatus='failed'),
+            (lambda d: d['identity.json'].update(sourceCommit='2' * 40), 'diagnostic identity mismatch'),
+            (lambda d: d['identity.json'].update(architecture='arm64'), 'diagnostic identity mismatch'),
+            (lambda d: d['identity.json'].update(executionsRequested=2), 'diagnostic bounds or invocation count changed'),
+            (lambda d: d['identity.json'].update(executionsRequested=True), 'invalid identity bounds'),
+            (lambda d: d['identity.json'].update(nativeDeadlineMilliseconds=2001), 'diagnostic bounds or invocation count changed'),
+            (lambda d: d['identity.json']['fixtureEnvironment'].update(PICSHOT_ANNOTATION_DETAILS_ONLY='1'), 'fixture ordering/environment changed'),
+            (change_original_bound, 'original bounds/claim changed'),
+            (lambda d: d['retirement-sidecar.json']['observedLifecycle'].update(maximumSamples=257), 'sidecar must preserve original lifecycle/status exactly'),
+            (lambda d: d['retirement-sidecar.json']['cycles'][0].update(closedAtUptime=200), 'close/snapshot order'),
+            (lambda d: d['retirement-sidecar.json']['cycles'][0]['input'].update(sourceWasWeakNil=1), 'invalid callback flags'),
+            (lambda d: d['retirement-sidecar.json']['cycles'][0]['input'].update(weakCheckFinishedUptime=104), 'callback/snapshot clock order'),
+            (lambda d: d['retirement-sidecar.json'].update(acceptanceStatus='failed'), 'sidecar must preserve original lifecycle/status exactly'),
         ]
-        for change in changes:
-            self.data = copy.deepcopy(original); change(self.data)
-            code, report = self.run_capture(True)
-            self.assertEqual(code, 1, report)
-            self.assertEqual(report['diagnosticCompleteness'], 'incomplete')
+        for change, expected_error in changes:
+            with self.subTest(reason=expected_error):
+                self.data = copy.deepcopy(original); change(self.data)
+                code, report = self.run_capture(True)
+                self.assertEqual(code, 1, report)
+                self.assertEqual(report['diagnosticCompleteness'], 'incomplete')
+                self.assertEqual(report['error'], expected_error)
 
     def test_optimized_checker_requires_complete_bounded_processes(self):
-        for change in [dict(status='timeout'), dict(exit_code=1), dict(exit_code=False),
-                       dict(log_truncated=True), dict(timeout_seconds=541)]:
-            self.processes[0].write_text(json.dumps(dict(status='exited', exit_code=0, log_truncated=False,
-                                                       timeout_seconds=540) | change))
-            code, report = self.run_capture(True)
-            self.assertEqual(code, 1, report)
-            self.assertEqual(report['diagnosticCompleteness'], 'incomplete')
+        process_error = 'bounded process incomplete: ' + str(self.processes[0])
+        for change, expected_error in [(dict(status='timeout'), process_error), (dict(exit_code=1), process_error),
+                       (dict(exit_code=False), process_error), (dict(log_truncated=True), process_error),
+                       (dict(timeout_seconds=541), 'process timeout changed')]:
+            with self.subTest(change=change):
+                self.processes[0].write_text(json.dumps(dict(status='exited', exit_code=0, log_truncated=False,
+                                                           timeout_seconds=540) | change))
+                code, report = self.run_capture(True)
+                self.assertEqual(code, 1, report)
+                self.assertEqual(report['diagnosticCompleteness'], 'incomplete')
+                self.assertEqual(report['error'], expected_error)
 
     def test_reported_pass_must_satisfy_unchanged_original_lifecycle_checker(self):
         for life in [self.data['retirement-sidecar.json']['observedLifecycle'],
@@ -157,6 +198,7 @@ class CalloutDiagnosticTests(unittest.TestCase):
         code, report = self.run_capture(True)
         self.assertEqual(code, 1, report)
         self.assertEqual(report['diagnosticCompleteness'], 'incomplete')
+        self.assertEqual(report['error'], 'comment lifecycle release exceeded native input deadline')
 
     def test_native_requires_all_eleven_unique_completions_under_optimization(self):
         source = ROOT / 'Tests/PicShotTests/NumberedCalloutRetirementDiagnosticsTests.swift'
@@ -167,6 +209,8 @@ class CalloutDiagnosticTests(unittest.TestCase):
             command = [sys.executable, '-O', str(SCRIPTS / 'check-callout-retirement-diagnostic.py'), 'native', str(self.processes[0]), str(log), str(source)]
             process = subprocess.run(command, capture_output=True, text=True, timeout=10)
             self.assertEqual(process.returncode == 0, success, process.stderr)
+            if not success:
+                self.assertIn('ValueError: native diagnostic completions missing, duplicated or unexpected', process.stderr)
 
 
     def test_partial_failure_snapshot_does_not_complete_missing_cycles(self):
@@ -187,10 +231,12 @@ class CalloutDiagnosticTests(unittest.TestCase):
 
     def test_original_functional_callout_check_is_not_relaxed(self):
         checks = self.data['ui/annotation-details/callouts/annotation-callouts.json']['checks']
-        checks[next(iter(checks))] = False
+        failed_check = next(iter(checks))
+        checks[failed_check] = False
         code, report = self.run_capture(True)
         self.assertEqual(code, 1, report)
         self.assertEqual(report['diagnosticCompleteness'], 'incomplete')
+        self.assertEqual(report['error'], 'missing/failed assertion: ' + failed_check)
 
     def test_new_python_checks_do_not_use_removable_assert_statements(self):
         paths = [SCRIPTS / 'check-callout-retirement-diagnostic.py']
