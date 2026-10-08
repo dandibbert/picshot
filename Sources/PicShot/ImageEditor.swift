@@ -1846,10 +1846,13 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         if let onOutputError { onOutputError(error) } else { showError(error) }
     }
     func cancelDecorationWork() {
+        let hadWork = projectionTicket != nil || outputDecorationPalette != nil
         projectionGeneration = UUID(); projectionTicket?.cancel()
         outputDecorationPalette?.cancel(); outputDecorationPalette = nil
         // A cancelling operation still owns its reservation until completion.
-        if !isClosed { updateStatus() }
+        // An idle mouse-down must not recenter a zoomed canvas before its
+        // already-recorded window coordinates are converted to image pixels.
+        if hadWork && !isClosed { updateStatus() }
     }
     @discardableResult
     func applyOutputDecoration(_ value: ImageOutputDecoration) throws -> Bool {

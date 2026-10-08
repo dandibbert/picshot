@@ -8,6 +8,23 @@ final class EditorOutputProjectionTests: XCTestCase {
     private let decoration = ImageOutputDecoration(enabled: true, cornerRadius: 18, borderEnabled: true,
         borderWidth: 2, shadowEnabled: true, shadowBlur: 3, shadowOffsetX: 4, shadowOffsetY: 6)
 
+    func testIdleCancellationDoesNotMoveZoomedCanvasBeforeMouseCoordinateConversion() throws {
+        let editor = try makeEditor(); defer { editor.close() }
+        editor.showWindow(nil); editor.window?.contentView?.layoutSubtreeIfNeeded()
+        let canvas = editor.annotationCanvas
+        for zoom in [CGFloat(0.5), CGFloat(2)] {
+            canvas.zoom = zoom
+            let local = CGPoint(x: 40 * zoom, y: 40 * canvas.displayScaleY)
+            let windowPoint = canvas.convert(local, to: nil)
+            let frame = canvas.convert(canvas.bounds, to: nil)
+            editor.cancelDecorationWork()
+            XCTAssertEqual(canvas.convert(canvas.bounds, to: nil), frame,
+                           "Idle cancellation must not trigger layout during mouse-down")
+            XCTAssertEqual(canvas.convert(windowPoint, from: nil), local)
+            XCTAssertFalse(editor.outputProjectionIsPending)
+        }
+    }
+
     func testMetadataApplyUndoRedoCancelAndCropPreserveInitialSourceAndAnnotationCoordinates() throws {
         let editor = try makeEditor(); defer { editor.close() }
         let source = editor.annotationCanvas.image
