@@ -26,6 +26,27 @@ STRATEGIES = ('reference', 'owned-srgb8')
 CELLS = [('baseline-certification', 'reference', 'certify'),
          ('candidate-certification', 'owned-srgb8', 'certify'),
          ('baseline', 'reference', 'resources'), ('candidate', 'owned-srgb8', 'resources')]
+COMPARISON_KINDS = ('drawing-input', 'renderer-final-storage')
+
+
+def comparison_contract(kind):
+    # A closed contract, not mutable validation globals or caller-defined paths.
+    N.need(kind in COMPARISON_KINDS, 'unknown comparison kind')
+    if kind == 'drawing-input':
+        return STRATEGIES, CELLS, 'scripts/launch-editable-drawing-pair.swift'
+    return ('native', 'owned-srgb8'), [
+        ('baseline-certification', 'native', 'certify'),
+        ('candidate-certification', 'owned-srgb8', 'certify'),
+        ('baseline', 'native', 'resources'), ('candidate', 'owned-srgb8', 'resources')
+    ], 'scripts/launch-renderer-storage-pair.swift'
+
+
+def drawing_strategy(strategy, kind):
+    strategies, _, _ = comparison_contract(kind)
+    N.need(strategy in strategies, 'unknown comparison strategy')
+    return strategy if kind == 'drawing-input' else 'owned-srgb8'
+
+
 DRAWING_INTEGERS = {'referenceCount', 'eligibleCount', 'ownedCount', 'seededContextCount',
     'presentationReuseCount', 'presentationFallbackCount', 'failureCount', 'allocations',
     'deallocations', 'releaseCallbacks', 'allocatedBytes', 'deallocatedBytes', 'callbackBytes',
@@ -287,18 +308,24 @@ def validate_pair_sidecar(pair, native, native_bytes, diagnostic, strategy, reso
     return normalized
 
 
-def validate_launch(launcher, wrapper, envelope, native, identity, directory, strategy, mode):
+def validate_launch(launcher, wrapper, envelope, native, identity, directory, strategy, mode, comparison_kind='drawing-input'):
+    _, _, launch_script = comparison_contract(comparison_kind)
+    expected_drawing = drawing_strategy(strategy, comparison_kind)
+    extra_fields = {'rendererStorageStrategy', 'comparisonKind'} if comparison_kind == 'renderer-final-storage' else set()
     N.keys(launcher, {'schemaVersion', 'status', 'launcherExitCode', 'drawingStrategy', 'drawingMode',
         'hashObservation', 'selectedAppPath', 'createsNewApplicationInstance', 'timeoutSeconds', 'elapsedSeconds',
         'launchBeganUptimeSeconds', 'finishUptimeSeconds', 'callbackReceived', 'ownedExitConfirmed',
-        'processStartMemoryCaptured', 'scope', 'processIdentifier', 'launchedAppPath', 'launchedExecutablePath'})
+        'processStartMemoryCaptured', 'scope', 'processIdentifier', 'launchedAppPath', 'launchedExecutablePath', *extra_fields})
     for key, expected in [('schemaVersion', 1), ('launcherExitCode', 0), ('processIdentifier', native['processIdentifier'])]:
         equal_int(launcher[key], expected, 'launcher ' + key)
     N.need(launcher['status'] == 'exited' and launcher['callbackReceived'] is True
            and launcher['ownedExitConfirmed'] is True and launcher['createsNewApplicationInstance'] is True,
            'fresh owned application exit unverified')
     N.need(launcher['processStartMemoryCaptured'] is False, 'launcher incorrectly claims birth memory')
-    N.need(launcher['drawingStrategy'] == strategy and launcher['drawingMode'] == mode
+    if comparison_kind == 'renderer-final-storage':
+        N.need(launcher['rendererStorageStrategy'] == strategy and launcher['comparisonKind'] == comparison_kind,
+               'launcher renderer storage selection differs')
+    N.need(launcher['drawingStrategy'] == expected_drawing and launcher['drawingMode'] == mode
            and launcher['hashObservation'] == ('certify' if mode == 'certify' else 'vimage'), 'launcher selection differs')
     executable = str(Path(identity['bundlePath']) / 'Contents/MacOS/PicShot')
     N.need(launcher['selectedAppPath'] == launcher['launchedAppPath'] == identity['bundlePath']
@@ -332,7 +359,7 @@ def validate_launch(launcher, wrapper, envelope, native, identity, directory, st
     duration = N.number(wrapper['duration_seconds'], 0, 620)
     N.need(duration > 0 and duration + .1 >= launcher['elapsedSeconds'], 'wrapper interval shorter than launch')
     C.validate_group_observation(wrapper['group_observation'], duration)
-    N.need(wrapper['command'] == ['swift', 'scripts/launch-editable-drawing-pair.swift', identity['bundlePath'],
+    N.need(wrapper['command'] == ['swift', launch_script, identity['bundlePath'],
         str(directory / 'launch.json'), strategy, mode], 'bounded command selection differs')
     N.string(wrapper['started_at'])
     start = datetime.datetime.fromisoformat(wrapper['started_at'])
@@ -341,8 +368,9 @@ def validate_launch(launcher, wrapper, envelope, native, identity, directory, st
             'wrapperStartEpochSeconds': start.timestamp(), 'wrapperDurationSeconds': duration}
 
 
-def load_cell(directory, identity, strategy, mode, launcher_status=0):
-    N.need(strategy in STRATEGIES and mode in ('certify', 'resources'), 'unknown pair selection')
+def load_cell(directory, identity, strategy, mode, launcher_status=0, comparison_kind='drawing-input'):
+    expected_drawing = drawing_strategy(strategy, comparison_kind)
+    N.need(mode in ('certify', 'resources'), 'unknown pair selection')
     equal_int(launcher_status, 0, 'invoked launcher exit')
     directory = Path(directory).absolute()
     N.need(directory.resolve(strict=True) == directory and directory.is_dir(), 'evidence directory linked/missing')
@@ -356,10 +384,10 @@ def load_cell(directory, identity, strategy, mode, launcher_status=0):
     N.need(checked['visualFilesVerified'] is True, 'native screenshots not independently verified')
     native_bytes = paths['native'].read_bytes()
     inputs = O.validate_diagnostic(values['diagnostic'], native, native_bytes, 'vimage' if resources else 'certify', resources)
-    documents = validate_pair_sidecar(values['drawing'], native, native_bytes, values['diagnostic'], strategy, resources)
+    documents = validate_pair_sidecar(values['drawing'], native, native_bytes, values['diagnostic'], expected_drawing, resources)
     all_memory(native)
     native_memory_timeline(native)
-    lifecycle = validate_launch(values['launcher'], values['wrapper'], values['envelope'], native, identity, directory, strategy, mode)
+    lifecycle = validate_launch(values['launcher'], values['wrapper'], values['envelope'], native, identity, directory, strategy, mode, comparison_kind)
     for key in ('native', 'diagnostic', 'drawing'):
         observation_times(values[key], lifecycle['launchBeganUptimeSeconds'], lifecycle['finishUptimeSeconds'])
     bounds = values['drawing']['sessionDateBounds']
@@ -431,8 +459,9 @@ def metrics(arm):
     return output
 
 
-def compare(arms, stage):
-    expected = CELLS[:2] if stage == 'certification' else CELLS
+def compare(arms, stage, comparison_kind='drawing-input'):
+    _, selected_cells, _ = comparison_contract(comparison_kind)
+    expected = selected_cells[:2] if stage == 'certification' else selected_cells
     N.need(stage in ('certification', 'pair') and set(arms) == {c[0] for c in expected}, 'required fresh cells missing/extra')
     first = arms['baseline-certification']
     previous = None
@@ -440,7 +469,10 @@ def compare(arms, stage):
         arm = arms[name]
         for field in ('sourceCommit', 'executableSHA256', 'executableBytes', 'architecture', 'bundlePath', 'version', 'buildVersion'):
             N.need(arm['native'][field] == first['native'][field], 'paired installed binary identity differs: ' + field)
-        N.need(arm['drawing']['drawingStrategy'] == strategy and arm['native']['resourcesRequested'] is (mode == 'resources'), 'arm selection differs')
+        N.need(arm['drawing']['drawingStrategy'] == drawing_strategy(strategy, comparison_kind)
+               and arm['native']['resourcesRequested'] is (mode == 'resources'), 'arm selection differs')
+        if comparison_kind == 'renderer-final-storage':
+            N.need(arm['rendererStorage']['rendererStorageStrategy'] == strategy, 'renderer arm selection differs')
         if previous:
             N.need(previous['finishUptimeSeconds'] <= arm['lifecycle']['launchBeganUptimeSeconds'], 'fresh owned launches overlap or reordered')
         previous = arm['lifecycle']

@@ -158,14 +158,11 @@ enum ImageEditorRenderer {
 
     static func render(image: CGImage, annotations: [ImageAnnotation],
                        drawingRaster: DrawingRasterConfiguration = .process,
+                       rendererStorage: RendererStorageConfiguration = .process,
+                       isCancelled: () -> Bool = { false },
                        effectPatchRenderer: EffectPatchRenderer = ImageEditorRenderer.renderEffectPatch) -> CGImage? {
-        guard let context = makeContext(width: image.width, height: image.height) else { return nil }
-        let extent = CGRect(x: 0, y: 0, width: CGFloat(image.width), height: CGFloat(image.height))
-        do { try DrawingRaster.seedFreshSRGB8Context(context, from: image, configuration: drawingRaster) }
-        catch { return nil } // A partially seeded destination must never become an output.
-        guard drawAnnotations(annotations, in: context, extent: extent, baseImage: image,
-                              effectPatchRenderer: effectPatchRenderer) else { return nil }
-        return context.makeImage()
+        try? RendererStorage.render(image: image, annotations: annotations, configuration: rendererStorage,
+            drawingRaster: drawingRaster, isCancelled: isCancelled, effectPatchRenderer: effectPatchRenderer)
     }
 
     /// Draw into an existing bottom-left, image-pixel context. Ordinary vector tools

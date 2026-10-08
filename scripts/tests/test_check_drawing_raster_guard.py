@@ -30,7 +30,7 @@ class DrawingGuardCheckerTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.directory = Path(self.temporary.name)
+        self.directory = Path(self.temporary.name).resolve(strict=True)
         fixture = NATIVE_TESTS.EffectGuardCheckerTests()
         fixture.setUp()
         native, self.app, self.source, launcher = fixture.write_cli_inputs(self.directory)

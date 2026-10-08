@@ -2,6 +2,8 @@
 
 ## Held 0.16 component results
 
+[Build 121](EditableObservation121.md) completes the four-process full native drawing comparison with exact pixels/documents and both-architecture 320/320 focused coverage. Repeated RSS growth improves, but candidate native-entry→final RSS remains +530.875 MiB, volatile backing +267.96875 MiB and footprint +92.563904 MiB; footprint peaks worsen. Production remains reference and 0.16 stays held. The next final-renderer-storage experiment changes one separate boundary.
+
 [Build 119](EditableObservation119.md) passes 299 selected native cases on each architecture and completes all nine ARM component processes. Source-format sample fidelity passes, but preserved-format drawing retains +624.015625 MiB post-warmup RSS and +622.375 MiB volatile backing. The memory candidate is rejected; production decoding remains unchanged. A separate [full drawing-only pair](editable-drawing-pair-diagnostic.md) is authored and awaits native qualification, with no installer or ledger promotion.
 
 [Build 118](EditableObservation118.md) completes the eight-process matrix and the timestamp regressions, including 287 focused cases on each architecture. It demonstrates the limited benefit and cold/peak tradeoffs of canonical owned decoding. The editable cell's large entry-to-final RSS and general source-format fidelity remain open; no production decoder, full end-to-end or installer acceptance is implied.

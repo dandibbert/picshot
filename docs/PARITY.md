@@ -6,6 +6,8 @@ Baseline: [PixPin 3.5.5.1, released 11 September 2026][release]. Vendor research
 
 ## Current acceptance: ARM 0.15.1 and Intel 0.11
 
+The [full build 121 drawing diagnostic](EditableObservation121.md) passes its pixels/documents/guard contracts, but substantial cold memory and adverse footprint remain. Production drawing stays reference; 0.16 remains held and no feature row is promoted.
+
 Build 119 [qualifies tested source-format fidelity but fails the memory objective](EditableObservation119.md). The new drawing-only comparison remains diagnostic and unaccepted; originals and production drawing defaults remain unchanged. No behavior row is promoted.
 
 **ARM 0.15.1/build 111 at [0199b9c6e5c16610b78b072945e45f8183d730c2](https://github.com/dandibbert/picshot/commit/0199b9c6e5c16610b78b072945e45f8183d730c2) is accepted for the bounded reported-effect-failure hotfix workload.** [ARM job 113285943782](https://github.com/dandibbert/picshot/actions/runs/37769699261/job/113285943782) ends success. Independent audits verify **1,586 ordinary selected IDs: 1,583 passed + 3 expected pre-weight model skips**, **1,108/1,108 focused passes**, and **12/12 actual-model passes with zero skips**, including all previously skipped weight-dependent cases. Stages overlap and are not additive. Both actual installed ZIP and DMG pass the new **8-case/144-rejected-attempt** output guard, normal effect pixels, prior-feature/model/recording and cleanup checks. All **18 unchanged assertion/checker groups** pass; **11 owned installed launches** have confirmed exits. Exact package bytes and resource observations are in [VERIFICATION.md](VERIFICATION.md#accepted-arm-0151-reported-effect-failure-hotfix).

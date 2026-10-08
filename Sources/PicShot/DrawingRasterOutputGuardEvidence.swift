@@ -47,5 +47,6 @@ import PicShotCore
         ]
         try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
             .write(to: evidenceDirectory.appendingPathComponent(filename), options: .atomic)
+        try RendererStorageOutputGuardEvidence.writeIfRequested(evidenceDirectory: evidenceDirectory)
     }
 }
