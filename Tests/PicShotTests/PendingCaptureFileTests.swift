@@ -56,26 +56,46 @@ final class PendingCaptureFileTests: XCTestCase {
         }
     }
 
-    @MainActor func testSystemDecodedPixelsSurviveSourceDeletionAndProviderReleasesAfterDiscard() throws {
+    @MainActor func testSystemDecodedPixelsSurviveSourceDeletionAndDiscardClearsReservation() throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let url = root.appendingPathComponent("input.png"), original = try raster()
         try original.writePNG(to: url)
         let bytes = try Data(contentsOf: url).count
         let recovery = PendingCaptureRecovery()
-        weak var imageProbe: CGImage?
-        weak var providerProbe: CGDataProvider?
         try autoreleasepool {
             let result = try SystemCaptureDecoder.read(url: url, capturedAt: Date(timeIntervalSince1970: 99))
             XCTAssertEqual(result.encodedBackingBytes, bytes)
-            imageProbe = result.image; providerProbe = result.image.dataProvider
             try recovery.retain(PendingCapture(result, title: "system"), error: CaptureRecoveryError.writeFailed)
             try FileManager.default.removeItem(at: url)
         }
-        XCTAssertNotNil(imageProbe); XCTAssertNotNil(providerProbe)
         XCTAssertEqual(try pixels(XCTUnwrap(recovery.pending?.image)), try pixels(original))
         XCTAssertEqual(recovery.retainedBytes, try XCTUnwrap(recovery.pending?.image).bytesPerRow * original.height + bytes)
         XCTAssertTrue(recovery.discard())
-        XCTAssertNil(imageProbe); XCTAssertNil(providerProbe, "Owned decoder provider must release with recovery")
+        XCTAssertNil(recovery.pending); XCTAssertEqual(recovery.retainedBytes, 0)
+        XCTAssertFalse(recovery.blocksCapture)
+        // ImageIO's private CGDataProvider is not weak-referenceable on every
+        // runtime. This test proves pixel survival and release of our reservation,
+        // not private provider reclamation or a process-memory plateau.
+    }
+
+    @MainActor func testDiscardReleasesExplicitlyOwnedProviderAndBackingReservation() throws {
+        let recovery = PendingCaptureRecovery(), counter = CaptureTestProviderCounter()
+        try autoreleasepool {
+            let image = try CaptureTestProviderCounter.image(width: 16, height: 12, counter: counter)
+            try recovery.retain(PendingCapture(CapturedImage(image: image, presentation: nil), title: "owned"),
+                                error: CaptureRecoveryError.writeFailed)
+        }
+        XCTAssertEqual(counter.callbacks, 0); XCTAssertEqual(counter.deallocations, 0)
+        XCTAssertEqual(counter.liveBytes, 16 * 12 * 4)
+        XCTAssertEqual(recovery.retainedBytes, 16 * 12 * 4)
+        let observed = try autoreleasepool { try pixels(XCTUnwrap(recovery.pending?.image)) }
+        XCTAssertEqual(observed, Data(Array(repeating: [UInt8(64), 128, 192, 255], count: 16 * 12).flatMap { $0 }))
+        autoreleasepool { XCTAssertTrue(recovery.discard()) }
+        XCTAssertNil(recovery.pending); XCTAssertEqual(recovery.retainedBytes, 0)
+        XCTAssertEqual(counter.callbacks, 1); XCTAssertEqual(counter.deallocations, 1)
+        XCTAssertEqual(counter.liveBytes, 0)
+        // A public supplied-provider callback proves this owned control's lifetime;
+        // it does not substitute for observing an opaque ImageIO provider.
     }
 
     func testSystemDecoderRefusesMissingMalformedAndOversizedInputWithoutRasterCopy() throws {
@@ -100,7 +120,7 @@ final class PendingCaptureFileTests: XCTestCase {
     }
     private func pixels(_ image: CGImage) throws -> Data {
         let context = try XCTUnwrap(CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
-            bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue))
         context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
         return Data(bytes: try XCTUnwrap(context.data), count: image.width * image.height * 4)
     }

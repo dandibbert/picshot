@@ -72,21 +72,24 @@ final class PendingCaptureRecoveryTests: XCTestCase {
         XCTAssertNil(recovery.pending); XCTAssertEqual(recovery.retainedBytes, 0)
     }
 
-    @MainActor func testPendingReleasesFrozenPresentationAndSelectedProviderOnlyOnDiscard() throws {
-        let recovery = PendingCaptureRecovery()
-        weak var frozenProbe: CGImage?
-        weak var selectedProbe: CGImage?
+    @MainActor func testPendingReleasesFrozenInputAndSelectedPixelsSurviveUntilDiscard() throws {
+        let recovery = PendingCaptureRecovery(), frozen = CaptureTestProviderCounter()
+        var expectedSelected = Data()
         try autoreleasepool {
-            let frozen = try raster(16, 16); frozenProbe = frozen
-            let result = try CapturedImage.frozenPixelRegion(image: frozen, displayID: 0,
+            let source = try CaptureTestProviderCounter.image(width: 16, height: 16, counter: frozen)
+            let result = try CapturedImage.frozenPixelRegion(image: source, displayID: 0,
                 displayFrame: CGRect(x: 0, y: 0, width: 16, height: 16), pixelFrame: CGRect(x: 1, y: 2, width: 8, height: 8),
                 capturedAt: Date(timeIntervalSince1970: 99))
-            selectedProbe = result.image
+            expectedSelected = try pixels(result.image)
             try recovery.retain(PendingCapture(result, title: "fixture"), error: CaptureRecoveryError.writeFailed)
         }
-        XCTAssertNil(frozenProbe, "Pending must not retain the frozen desktop")
-        XCTAssertNotNil(selectedProbe); XCTAssertEqual(recovery.pending?.capturedAt, Date(timeIntervalSince1970: 99))
-        XCTAssertTrue(recovery.discard()); XCTAssertNil(selectedProbe)
+        XCTAssertEqual(frozen.callbacks, 1, "Pending must not retain the supplied frozen desktop provider")
+        XCTAssertEqual(frozen.deallocations, 1); XCTAssertEqual(frozen.liveBytes, 0)
+        XCTAssertEqual(recovery.pending?.capturedAt, Date(timeIntervalSince1970: 99))
+        XCTAssertEqual(try pixels(XCTUnwrap(recovery.pending?.image)), expectedSelected)
+        XCTAssertEqual(recovery.retainedBytes, 8 * 8 * 4)
+        XCTAssertTrue(recovery.discard()); XCTAssertNil(recovery.pending)
+        XCTAssertEqual(recovery.retainedBytes, 0); XCTAssertFalse(recovery.blocksCapture)
     }
 
     @MainActor private func pending() throws -> PendingCaptureRecovery {

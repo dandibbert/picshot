@@ -167,7 +167,7 @@ jobs:
           python3 -m unittest discover -s scripts/tests -p test_native_test_shards.py -v
           python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/native-test-discovery.log --report dist/native-test-discovery-report.json -- swift test list --skip-build
           python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$NATIVE_TEST_PROCESS_COUNT" --output dist/native-tests-plan.json
-          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$NATIVE_TEST_PROCESS_COUNT" --selection-regex 'PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|AnnotationEditing|CaptureAspectRatio|CaptureRatio|MultiWindow|ImageOutputDecoration|EditorOutput|PinOriginalCurrent|ManualScroll|ScrollPreview|ScrollSequencePreview|AnnotationFreehand|AnnotationTextLine|NumberedCallout|AutomaticMosaic|RepeatedRegion|AutomaticPinOCR|PinOCR|TextResultSourceSelection|PinWorkflow|LaTeXPin|PinLaTeX|PinGroup|PinDesktop|EditorToolbarHierarchy|SaveWorkflow|OwnedVideoExportStage|ImageBacking|Codec|NativeExport|AnimatedWebP|WebPContainer|RecordingWebP|CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' --output dist/focused-tests-plan.json
+          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$NATIVE_TEST_PROCESS_COUNT" --selection-regex 'EditableComponent|PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|AnnotationEditing|CaptureAspectRatio|CaptureRatio|MultiWindow|ImageOutputDecoration|EditorOutput|PinOriginalCurrent|ManualScroll|ScrollPreview|ScrollSequencePreview|AnnotationFreehand|AnnotationTextLine|NumberedCallout|AutomaticMosaic|RepeatedRegion|AutomaticPinOCR|PinOCR|TextResultSourceSelection|PinWorkflow|LaTeXPin|PinLaTeX|PinGroup|PinDesktop|EditorToolbarHierarchy|SaveWorkflow|OwnedVideoExportStage|ImageBacking|Codec|NativeExport|AnimatedWebP|WebPContainer|RecordingWebP|CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' --output dist/focused-tests-plan.json
       - name: Upload test compilation evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -951,7 +951,7 @@ jobs:
         run: |
           python3 -m unittest discover -s scripts/tests -p test_native_test_shards.py -v
           python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/native-test-discovery.log --report dist/editable-discovery.json -- swift test list --skip-build
-          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --selection-regex 'PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|ImageEditorTests|EditorOutputProjection|AnnotationEditing|PinOriginalCurrent|PinSession|History|Retention|AutomaticMosaic' --output dist/editable-tests-plan.json
+          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --selection-regex 'EditableComponent|PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|ImageEditorTests|EditorOutputProjection|AnnotationEditing|PinOriginalCurrent|PinSession|History|Retention|AutomaticMosaic' --output dist/editable-tests-plan.json
       - name: Exercise editable state and existing crop/pin/history behavior
         timeout-minutes: 16
         run: |
@@ -982,7 +982,7 @@ jobs:
 
   # ARM-only observation experiment. No installer or 0.16 memory acceptance.
   editable-observation:
-    if: ${{ contains(github.event.head_commit.message || '', '[editable-observation]') }}
+    if: ${{ contains(github.event.head_commit.message || '', '[editable-observation]') && !contains(github.event.head_commit.message || '', '[component-controls]') }}
     runs-on: macos-15
     # Sum of bounded stages fits with cleanup/upload headroom. This independent
     # diagnostic group neither cancels nor gates the normal release workflow.
@@ -1179,3 +1179,95 @@ jobs:
           retention-days: 14
           compression-level: 6
 
+
+  editable-components:
+    if: ${{ contains(github.event.head_commit.message || '', '[editable-observation]') && contains(github.event.head_commit.message || '', '[component-controls]') }}
+    runs-on: macos-15
+    timeout-minutes: 140
+    steps:
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      timeout-minutes: 2
+    - name: Check component provenance and rejection contracts
+      timeout-minutes: 2
+      run: |
+        mkdir -p dist
+        python3 -m unittest discover -s scripts/tests -p test_check_editable_components.py -v
+        python3 -O -m unittest discover -s scripts/tests -p test_check_editable_components.py -v
+        python3 -m unittest discover -s scripts/tests -p test_editable_component_source_binding.py -v
+    - name: Package one signed app without creating user installers
+      id: editable_components_package
+      timeout-minutes: 31
+      env:
+        PICSHOT_PACKAGE_APP_ONLY: '1'
+      run: python3 scripts/run-bounded-command.py --timeout-seconds 1800 --log dist/editable-components-package.log --report dist/editable-components-package.json -- bash scripts/package.sh
+    - name: Compile native component admission tests
+      timeout-minutes: 10
+      run: python3 scripts/run-bounded-command.py --timeout-seconds 540 --log dist/editable-components-test-build.log --report dist/editable-components-test-build.json -- swift build --build-tests
+    - name: Execute every discovered component admission case exactly once
+      timeout-minutes: 9
+      run: |
+        python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/editable-components-test-discovery.log --report dist/editable-components-test-discovery.json -- swift test list --skip-build
+        python3 scripts/run-bounded-command.py --timeout-seconds 420 --log dist/editable-components-native-tests.log --report dist/editable-components-native-tests.json -- swift test --skip-build --filter EditableComponentFixtureTests
+        python3 - <<'PYTHON'
+        import hashlib, importlib.util, json, os
+        from pathlib import Path
+        spec = importlib.util.spec_from_file_location('native_cases', 'scripts/native-test-shards.py')
+        native = importlib.util.module_from_spec(spec); spec.loader.exec_module(native)
+        inventory = Path('dist/editable-components-test-discovery.log').read_text()
+        expected = [name for name in native.discover(inventory) if name.split('/')[0] == 'PicShotTests.EditableComponentFixtureTests']
+        native.need(bool(expected), 'No native component admission cases discovered')
+        log = Path('dist/editable-components-native-tests.log').read_text()
+        process = json.loads(Path('dist/editable-components-native-tests.json').read_text())
+        native.need(process['status'] == 'exited' and process['termination_reason'] == 'exited'
+                    and process['exit_code'] == process['child_returncode'] == 0
+                    and process['timeout_seconds'] == 420 and not process['log_truncated'], 'Native process incomplete')
+        passed, skipped = native.case_results(log, expected)
+        native.need(not skipped, 'Component admission test skipped')
+        Path('dist/editable-components-native-check.json').write_text(json.dumps({
+            'status': 'passed', 'sourceCommit': os.environ['GITHUB_SHA'], 'passedTests': passed,
+            'nativeDiscoverySHA256': hashlib.sha256(inventory.encode()).hexdigest(),
+            'logSHA256': hashlib.sha256(log.encode()).hexdigest(), 'memoryStabilityAssessed': False
+        }, indent=2) + '\n')
+        PYTHON
+    - name: Relocate and verify the single exact signed ARM application
+      timeout-minutes: 2
+      run: |
+        test ! -e dist/editable-components-installed
+        mkdir -p dist/editable-components-installed
+        ditto dist/PicShot.app dist/editable-components-installed/PicShot.app
+        codesign --verify --deep --strict dist/editable-components-installed/PicShot.app
+        test "$(lipo -archs dist/editable-components-installed/PicShot.app/Contents/MacOS/PicShot)" = arm64
+        python3 - <<'PYTHON'
+        import hashlib, json, os, plistlib
+        from pathlib import Path
+        original = Path('dist/PicShot.app/Contents/MacOS/PicShot')
+        installed = Path('dist/editable-components-installed/PicShot.app')
+        executable = installed / 'Contents/MacOS/PicShot'
+        info = plistlib.loads((installed / 'Contents/Info.plist').read_bytes())
+        expected = hashlib.sha256(original.read_bytes()).hexdigest()
+        actual = hashlib.sha256(executable.read_bytes()).hexdigest()
+        if expected != actual or info['PicShotSourceCommit'] != os.environ['GITHUB_SHA']:
+            raise SystemExit('Installed binary/source mismatch')
+        Path('dist/editable-components-installed-identity.json').write_text(json.dumps({
+            'sourceCommit': info['PicShotSourceCommit'], 'executableSHA256': actual,
+            'bundlePath': str(installed.resolve()), 'architecture': 'arm64',
+            'oneBinaryForEveryCell': True, 'installerAcceptance': False
+        }, indent=2) + '\n')
+        PYTHON
+    - name: Run certified fresh-process component controls and independent output verification
+      timeout-minutes: 75
+      run: python3 scripts/run-bounded-command.py --timeout-seconds 4400 --log dist/editable-components-matrix.log --report dist/editable-components-matrix.json -- bash scripts/editable-components-diagnostic.sh "$PWD/dist/editable-components-installed/PicShot.app" "$PWD/dist/evidence/editable-components" "$GITHUB_SHA"
+    - name: Preserve all component reports and immutable pixel evidence
+      if: always()
+      timeout-minutes: 2
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Editable-Components-arm64-${{ github.sha }}
+        path: |
+          dist/editable-components-*.log
+          dist/editable-components-*.json
+          dist/evidence/editable-components/
+          dist/PicShot.app/Contents/Resources/build-info.json
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 6

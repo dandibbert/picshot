@@ -17,6 +17,16 @@ import PicShotFormulaRenderCore
                 try? FileManager.default.removeItem(at: history.directory)
                 NSApp.terminate(nil); return
             }
+            // Own cleanup begins before request parsing, including malformed selectors.
+            if ProcessInfo.processInfo.environment.keys.contains(where: { $0.hasPrefix("PICSHOT_EDITABLE_COMPONENT_") }) {
+                defer { try? FileManager.default.removeItem(at: history.directory) }
+                guard let payload = try await EditableComponentFixture.runIfRequested(evidenceDirectory: directory) else {
+                    throw PicShotError.message("Component diagnostic request disappeared")
+                }
+                try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]).write(to: url, options: .atomic)
+                try? FileManager.default.removeItem(at: history.directory)
+                NSApp.terminate(nil); return
+            }
             // Explicit diagnostic route: same installed profile/work counts,
             // synthetic media only, and no broad-smoke claim from this result.
             if ProcessInfo.processInfo.environment["PICSHOT_RECORDING_COMPOSITION_ONLY"] == "1" {
