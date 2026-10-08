@@ -7,6 +7,30 @@ import PicShotCore
 /// These fixtures require macOS/WindowServer and are not portable execution proof.
 final class CaptureRatioInteractionTests: XCTestCase {
     @MainActor
+    func testInitialPickerHidesUnusedDimensionsAndConfirmationUntilSelection() throws {
+        _ = NSApplication.shared
+        let source = try image(width: 1280, height: 800)
+        let geometry = try FrozenCaptureGeometry(pointSize: CGSize(width: 640, height: 400), pixelWidth: 1280, pixelHeight: 800)
+        let view = RegionSelectionView(frame: CGRect(x: 0, y: 0, width: 640, height: 400), frozenImage: source, geometry: geometry)
+        let window = host(view); defer { view.discard(); window.close() }
+        view.finished = { _ in }
+        let controls = try XCTUnwrap(descendants(view).compactMap { $0 as? CaptureRatioControls }.first)
+        view.layoutSubtreeIfNeeded()
+        XCTAssertFalse(controls.preset.isHiddenOrHasHiddenAncestor)
+        XCTAssertTrue(controls.widthField.isHiddenOrHasHiddenAncestor)
+        let initialAccept = descendants(view).first { $0.identifier?.rawValue == "capture.ratioAccept" }
+        XCTAssertTrue(initialAccept?.isHiddenOrHasHiddenAncestor ?? true)
+        XCTAssertTrue(view.hitTest(CGPoint(x: 300, y: 120)) === view)
+        XCTAssertTrue(view.setAspectRatio(try CaptureAspectRatio(numerator: 16, denominator: 9)))
+        try drag(view, CGPoint(x: 100, y: 180), CGPoint(x: 260, y: 270))
+        view.layoutSubtreeIfNeeded()
+        let accept = try XCTUnwrap(descendants(view).first { $0.identifier?.rawValue == "capture.ratioAccept" } as? NSButton)
+        XCTAssertFalse(controls.widthField.isHiddenOrHasHiddenAncestor)
+        XCTAssertFalse(accept.isHiddenOrHasHiddenAncestor)
+        XCTAssertTrue(accept.isEnabled)
+    }
+
+    @MainActor
     func testFrozenSelectorLocksEveryQuadrantAndCarriesExactPixelsAtFractionalDensity() throws {
         _ = NSApplication.shared
         let source = try image(width: 1397, height: 911)

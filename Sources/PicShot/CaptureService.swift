@@ -536,6 +536,7 @@ final class RegionSelectionView: NSView {
     private(set) var committedPixelFrame: CGRect?
     private let ratioControls = CaptureRatioControls(prefix: "capture")
     private let ratioSurface = NSVisualEffectView()
+    private let ratioStack = NSStackView()
     private let ratioAccept = NSButton()
     private var ratioControlsHidden = false
     private var precisionEditing = false
@@ -594,7 +595,8 @@ final class RegionSelectionView: NSView {
     override func layout() {
         super.layout()
         if geometry != nil {
-            let width = min(440, max(1, bounds.width - 16)), height = min(118, max(1, bounds.height - 16))
+            let width = min(min(440, max(260, ratioStack.fittingSize.width + 16)), max(1, bounds.width - 16))
+            let height = min(max(42, ratioStack.fittingSize.height + 12), max(1, bounds.height - 16))
             ratioSurface.frame = CGRect(x: max(8, (bounds.width - width) / 2), y: 8, width: width, height: height)
             ratioSurface.isHidden = ratioControlsHidden || bounds.width < 320 || bounds.height < 180
         }
@@ -639,7 +641,7 @@ final class RegionSelectionView: NSView {
     }
     @objc private func toggleElements() {
         elementEnabled.toggle(); elementSession?.invalidate(); elementPreviewFrame = nil; lastHover = nil
-        elementMessage = elementEnabled ? (aspectRatio == nil ? "移动指针选择元素；需要在系统设置中手动开启辅助功能权限" : "比例锁定时拖动选择矩形；选择 Free 后可使用元素选择") : ""
+        elementMessage = elementEnabled ? (aspectRatio == nil ? "移动指针选择元素；需要在系统设置中手动开启辅助功能权限" : "比例锁定时拖动选择矩形；选择自由后可使用元素选择") : ""
         refreshElementControls(); needsDisplay = true; window?.makeFirstResponder(self)
     }
     @objc private func parentElement() { traverseElement(parent: true) }
@@ -713,7 +715,7 @@ final class RegionSelectionView: NSView {
             if precisionEditing {
                 guard let ratioGeometry, let pixels = try? ratioGeometry.sourcePixelRect(rectangle),
                       let aligned = try? geometry.selectionForPixels(pixels) else {
-                    ratioControls.showError("Select at least 2 × 2 points inside this display"); return
+                    ratioControls.showError("请在当前屏幕内选择至少 2 × 2 点的区域"); return
                 }
                 if let aspectRatio, pixels.width * CGFloat(aspectRatio.denominator) != pixels.height * CGFloat(aspectRatio.numerator) {
                     ratioControls.showError("选区像素不符合比例，请重新绘制选区"); return
@@ -773,12 +775,15 @@ final class RegionSelectionView: NSView {
     @objc private func acceptRatioSelection() { if !selected.isEmpty { commitSelection(selected) } }
     private func configureRatioControls() {
         ratioSurface.material = .hudWindow; ratioSurface.blendingMode = .withinWindow; ratioSurface.state = .active
+        ratioSurface.identifier = .init("capture.ratioSurface")
         ratioSurface.wantsLayer = true; ratioSurface.layer?.cornerRadius = 8
         addSubview(ratioSurface)
         ratioAccept.title = "使用选区 · Return"; ratioAccept.target = self; ratioAccept.action = #selector(acceptRatioSelection)
         ratioAccept.identifier = .init("capture.ratioAccept"); ratioAccept.bezelStyle = .rounded; ratioAccept.controlSize = .small
         ratioAccept.isEnabled = false
-        let stack = NSStackView(views: [ratioControls, ratioAccept]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 3
+        let stack = ratioStack
+        stack.setViews([ratioControls, ratioAccept], in: .leading)
+        stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 3; stack.detachesHiddenViews = true
         stack.translatesAutoresizingMaskIntoConstraints = false; ratioSurface.addSubview(stack)
         NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo: ratioSurface.leadingAnchor, constant: 8),
             stack.topAnchor.constraint(equalTo: ratioSurface.topAnchor, constant: 6),
@@ -786,6 +791,7 @@ final class RegionSelectionView: NSView {
         ratioControls.onRatio = { [weak self] ratio in self?.setAspectRatio(ratio) ?? false }
         ratioControls.onSize = { [weak self] w, h, axis in self?.setPixelSize(width: w, height: h, axis: axis) ?? false }
         ratioControls.onCancel = { [weak self] in self?.cancelOperation(nil) }
+        refreshRatioControls()
     }
     @discardableResult
     func setAspectRatio(_ ratio: CaptureAspectRatio?) -> Bool {
@@ -819,8 +825,13 @@ final class RegionSelectionView: NSView {
     }
     private func refreshRatioControls() {
         let pixels = ratioGeometry.flatMap { try? $0.sourcePixelRect(selected) }
+        // Before a precision selection exists, show only its ratio picker and
+        // short help. Disabled dimensions/confirmation must not cover the target.
+        ratioControls.showsDimensions = precisionEditing && pixels != nil
+        ratioAccept.isHidden = !precisionEditing || pixels == nil
         ratioControls.display(ratio: aspectRatio, pixels: pixels?.size)
         ratioAccept.isEnabled = pixels != nil && start == nil && !cancelled
+        needsLayout = true; layoutSubtreeIfNeeded()
     }
     private func nudgeSelection(_ event: NSEvent) {
         guard start == nil, event.modifierFlags.intersection([.command, .control]).isEmpty,

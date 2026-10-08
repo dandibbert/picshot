@@ -51,9 +51,18 @@ import PicShotCore
         let checkedPixels = try verifyPixels(crop.image, sourceFrame: aligned.pixelFrame)
         try crop.image.writePNG(to: evidenceDirectory.appendingPathComponent("capture-elements-pixels.png"))
         selected = nil
+        // Exercise the real Tab hide route before drawing through the control
+        // band. Never bypass hit testing or relax the exact Retina result.
+        view.keyDown(with: try key(48, "\t", view: view))
+        view.layoutSubtreeIfNeeded()
+        guard try find("capture.ratioSurface", in: view, as: NSVisualEffectView.self).isHidden,
+              view.hitTest(CGPoint(x: 300, y: 120)) === view else {
+            throw failure("Tab did not make the manual fallback target reachable")
+        }
         view.mouseDown(with: try mouse(.leftMouseDown, point: CGPoint(x: 300, y: 120), view: view))
         view.mouseUp(with: try mouse(.leftMouseUp, point: CGPoint(x: 350.5, y: 160.5), view: view))
         guard selected == CGRect(x: 300, y: 120, width: 50.5, height: 40.5) else { throw failure("Manual rectangle fallback did not preserve Retina geometry") }
+        view.keyDown(with: try key(48, "\t", view: view))
         view.keyDown(with: try key(53, "\u{1b}", view: view))
         guard cancelled else { throw failure("Escape did not cancel element selection") }
         view.discard(); window.orderOut(nil)
