@@ -20,9 +20,60 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Record exact runner source and native environment
+        timeout-minutes: 1
+        run: |
+          mkdir -p dist/runner-contract
+          python3 - <<'PYTHON'
+          import json, os, platform, sys
+          from pathlib import Path
+          Path('dist/runner-contract/identity.json').write_text(json.dumps({
+              'sourceCommit': os.environ['GITHUB_SHA'], 'architecture': platform.machine(),
+              'macOS': platform.mac_ver(), 'Python': sys.version,
+              'observerCommand': ['/bin/ps', '-x', '-g', '<owned-PGID>', '-o', 'pid=,pgid=,stat='],
+              'observerEnvironment': {'COMMAND_MODE': 'unix2003', 'LC_ALL': 'C'},
+              'observerSubprocessSeconds': 0.5, 'productAcceptance': False
+          }, indent=2) + '\n')
+          PYTHON
       - name: Verify bounded cleanup and cancellation on native macOS
         timeout-minutes: 2
-        run: python3 -m unittest discover -s scripts/tests -p test_run_bounded_command.py -v
+        run: |
+          set -o pipefail
+          python3 -m unittest discover -s scripts/tests -p test_run_bounded_command.py -v 2>&1 | tee dist/runner-contract/tests.log
+      - name: Verify the same contracts with Python assertions disabled
+        timeout-minutes: 2
+        run: |
+          set -o pipefail
+          python3 -O -m unittest discover -s scripts/tests -p test_run_bounded_command.py -v 2>&1 | tee dist/runner-contract/tests-optimized.log
+      - name: Repeat the exact previously failed cmake version observation
+        timeout-minutes: 1
+        run: |
+          for sample in 1 2 3 4 5; do
+            python3 scripts/run-bounded-command.py --timeout-seconds 600 --log "dist/runner-contract/cmake-$sample.log" --report "dist/runner-contract/cmake-$sample.json" -- cmake --version
+          done
+          python3 - <<'PYTHON'
+          import json
+          from pathlib import Path
+          for sample in range(1, 6):
+              r = json.loads(Path(f'dist/runner-contract/cmake-{sample}.json').read_text())
+              if not (r['status'] == r['termination_reason'] == 'exited' and r['exit_code'] == r['child_returncode'] == 0
+                      and r['timeout_seconds'] == 600 and not r['log_truncated'] and not r['sigterm_sent'] and not r['sigkill_sent']):
+                  raise SystemExit('Incomplete cmake wrapper outcome')
+              p = r['group_observation']
+              if not (p['backend'] == 'darwin-ps-pgrp' and p['timeout_seconds'] == 0.5 and p['count'] > 0
+                      and p['failures'] == 0 and not p['atomic_snapshot'] and p['total_seconds'] >= p['max_seconds'] >= 0):
+                  raise SystemExit('Incomplete targeted group observation')
+          PYTHON
+      - name: Preserve native process-group evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Runner-Contract-${{ matrix.runner }}-${{ github.sha }}
+          path: dist/runner-contract/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
+
   build:
     if: ${{ (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') && !contains(github.event.head_commit.message || '', '[codec-attribution]') && !contains(github.event.head_commit.message || '', '[runner-only]') && !contains(github.event.head_commit.message || '', '[scroll-memory]') && !contains(github.event.head_commit.message || '', '[manual-hash]') && !contains(github.event.head_commit.message || '', '[recording-wait]') && !contains(github.event.head_commit.message || '', '[multiwindow-memory]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-documents]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
     strategy:

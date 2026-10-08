@@ -14,12 +14,24 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import select
 import selectors
 import signal
 import subprocess
 import sys
+import tempfile
 import time
+
+
+GROUP_OBSERVATION_SECONDS = 0.5
+MAX_GROUP_OBSERVATION_BYTES = 64 * 1024
+MAX_GROUP_OBSERVATION_ROWS = 1024
+# Apple ps/print.c: state plus ordered nice/traced/exit/wait/locked/session/TTY flags.
+DARWIN_GROUP_ROW = re.compile(
+    rb"[ \t]*([1-9][0-9]{0,9})[ \t]+([1-9][0-9]{0,9})[ \t]+"
+    rb"(Z[<N]?X?V?L?s?\+?|[RUSITH][<N]?X?E?V?L?s?\+?)[ \t]*\n"
+)
 
 
 def positive_seconds(value):
@@ -62,12 +74,55 @@ def write_report(path, report):
     temporary.replace(path)
 
 
+def darwin_group_snapshot(pgid):
+    """Validate one non-atomic, group-specific snapshot with an unreaped anchor."""
+    if type(pgid) is not int or not 0 < pgid <= 2147483647:
+        raise ValueError("invalid owned process group")
+    # A single -g selector takes KERN_PROC_PGRP; -x includes no-TTY children.
+    # Do not add -A/-a/-p, which can broaden selection. Legacy mode ignores -g.
+    # https://github.com/apple-oss-distributions/adv_cmds/blob/main/ps/ps.c
+    # https://github.com/apple-oss-distributions/Libc/blob/main/gen/compat.5
+    command = ["/bin/ps", "-x", "-g", str(pgid), "-o", "pid=,pgid=,stat="]
+    environment = {**os.environ, "COMMAND_MODE": "unix2003", "LC_ALL": "C"}
+    # File-backed capture avoids unbounded in-memory communicate() buffers.
+    # The existing process timeout remains 0.5s; read at most the cap plus one.
+    with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
+        subprocess.run(command, stdin=subprocess.DEVNULL, stdout=output, stderr=errors,
+                       env=environment, check=True, timeout=GROUP_OBSERVATION_SECONDS)
+        errors.seek(0)
+        if errors.read(1):
+            # Some Darwin sysctl failures print stderr but return exit status 0.
+            raise RuntimeError("Darwin process-group observation emitted a diagnostic")
+        output.seek(0)
+        data = output.read(MAX_GROUP_OBSERVATION_BYTES + 1)
+    if not data or len(data) > MAX_GROUP_OBSERVATION_BYTES or not data.endswith(b"\n"):
+        raise ValueError("empty, oversized or truncated process-group observation")
+    rows = data.splitlines(keepends=True)
+    if len(rows) > MAX_GROUP_OBSERVATION_ROWS:
+        raise ValueError("too many process-group observation rows")
+    members = {}
+    for row in rows:
+        match = DARWIN_GROUP_ROW.fullmatch(row) if len(row) <= 64 else None
+        if match is None:
+            raise ValueError("malformed or unknown process-group status")
+        pid, group = int(match[1]), int(match[2])
+        if pid > 2147483647 or group != pgid or pid in members:
+            raise ValueError("wrong group, invalid PID or duplicate process-group row")
+        members[pid] = match[3].decode("ascii")
+    if pgid not in members:
+        raise ValueError("unreaped process-group leader missing from observation")
+    return members
+
+
 def live_group_members(pgid):
-    """Prove whether a group has executable members; fail closed on probe errors."""
+    """Observe executable members; ambiguous/error observations never mean dead."""
+    if sys.platform == "darwin":
+        return any(not state.startswith("Z") for state in darwin_group_snapshot(pgid).values())
+    # Preserve the portable fallback: Linux -g does not have Darwin semantics.
     result = subprocess.run(
         ["ps", "-A", "-o", "pgid=,stat="],
         stdin=subprocess.DEVNULL, capture_output=True, text=True,
-        check=True, timeout=0.5,
+        check=True, timeout=GROUP_OBSERVATION_SECONDS,
     )
     for line in result.stdout.splitlines():
         group, state = line.split()
@@ -84,6 +139,25 @@ class ProcessGroup:
         self.retired = False
         self.exited = False
         self.watcher = None
+        self.observations = {
+            "backend": "darwin-ps-pgrp" if sys.platform == "darwin" else "portable-ps-all",
+            "timeout_seconds": GROUP_OBSERVATION_SECONDS,
+            "count": 0, "failures": 0, "total_seconds": 0.0, "max_seconds": 0.0,
+            "atomic_snapshot": False,
+        }
+
+    def observe_members(self):
+        started = time.monotonic()
+        self.observations["count"] += 1
+        try:
+            return live_group_members(self.process.pid)
+        except Exception:
+            self.observations["failures"] += 1
+            raise
+        finally:
+            elapsed = time.monotonic() - started
+            self.observations["total_seconds"] += elapsed
+            self.observations["max_seconds"] = max(self.observations["max_seconds"], elapsed)
 
     def leader_exited(self):
         if not self.exited:
@@ -113,7 +187,7 @@ class ProcessGroup:
             return False
         if not self.leader_exited():
             return True
-        if live_group_members(self.process.pid):
+        if self.observe_members():
             return True
         self.retired = True
         return False
@@ -131,7 +205,7 @@ class ProcessGroup:
             # Darwin killpg1 filters out zombies and may return EPERM for a
             # zombie-only group. EPERM alone never proves the group is dead.
             # https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_sig.c
-            if live_group_members(self.process.pid):
+            if self.observe_members():
                 raise
             self.retired = True
             return False
@@ -316,6 +390,8 @@ def run(args):
                 except Exception as error:
                     cleanup_error(error)
         report.update(exit_code=exit_code, duration_seconds=round(time.monotonic() - start, 3))
+        if group is not None and hasattr(group, "observations"):
+            report["group_observation"] = group.observations
         try:
             try:
                 write_report(args.report, report)

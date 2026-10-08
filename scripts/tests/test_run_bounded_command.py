@@ -98,6 +98,12 @@ class BoundedCommandTests(unittest.TestCase):
         self.assertEqual(self.log.read_bytes(), stdout)
         self.assertFalse(report["log_truncated"])
         self.assertFalse(report["sigterm_sent"])
+        observations = report["group_observation"]
+        self.assertGreater(observations["count"], 0)
+        self.assertEqual(observations["failures"], 0)
+        self.assertEqual(observations["timeout_seconds"], 0.5)
+        self.assertGreaterEqual(observations["total_seconds"], observations["max_seconds"])
+        self.assertFalse(observations["atomic_snapshot"])
 
     def test_failure_preserves_exit_status(self):
         report, _ = self.finish(self.start("import sys; print('failure'); sys.exit(23)"))
@@ -335,7 +341,7 @@ class ProcessGroupTests(unittest.TestCase):
             ("43210 Z\n43210 S\n", True),
             ("123 S\n", False),
         ):
-            with self.subTest(output=output), mock.patch.object(
+            with self.subTest(output=output), mock.patch.object(BOUNDED.sys, "platform", "linux"), mock.patch.object(
                 BOUNDED.subprocess, "run", return_value=SimpleNamespace(stdout=output)
             ) as probe:
                 self.assertEqual(BOUNDED.live_group_members(43210), expected)
@@ -351,10 +357,141 @@ class ProcessGroupTests(unittest.TestCase):
                 BOUNDED.subprocess, "run", side_effect=failure
             ), self.assertRaises(type(failure)):
                 BOUNDED.live_group_members(43210)
-        with mock.patch.object(BOUNDED.subprocess, "run", return_value=SimpleNamespace(stdout="invalid")):
-            with self.assertRaises(ValueError):
+        with mock.patch.object(BOUNDED.sys, "platform", "linux"), mock.patch.object(
+            BOUNDED.subprocess, "run", return_value=SimpleNamespace(stdout="invalid")
+        ), self.assertRaises(ValueError):
+            BOUNDED.live_group_members(43210)
+
+    def darwin_probe(self, output, errors=b""):
+        def run(command, **kwargs):
+            self.assertEqual(command, ["/bin/ps", "-x", "-g", "43210", "-o", "pid=,pgid=,stat="])
+            self.assertEqual(kwargs["timeout"], 0.5)
+            self.assertTrue(kwargs["check"])
+            self.assertEqual(kwargs["env"]["COMMAND_MODE"], "unix2003")
+            self.assertEqual(kwargs["env"]["LC_ALL"], "C")
+            self.assertNotEqual(kwargs["stdout"], subprocess.PIPE)
+            self.assertNotEqual(kwargs["stderr"], subprocess.PIPE)
+            kwargs["stdout"].write(output)
+            kwargs["stderr"].write(errors)
+            return SimpleNamespace(returncode=0)
+        return mock.patch.object(BOUNDED.subprocess, "run", side_effect=run)
+
+    def test_darwin_group_query_is_targeted_and_overrides_only_child_mode(self):
+        for output, expected in (
+            (b"43210 43210 Zs\n", False),
+            (b"43210 43210 Zs\n43211 43210 Z+\n", False),
+            (b"43210 43210 Zs\n43211 43210 S\n", True),
+            (b"43210 43210 R<s\n", True),
+        ):
+            with self.subTest(output=output), mock.patch.object(BOUNDED.sys, "platform", "darwin"), \
+                 mock.patch.dict(BOUNDED.os.environ, {"COMMAND_MODE": "legacy", "LC_ALL": "invalid-locale"}), \
+                 self.darwin_probe(output):
+                self.assertEqual(BOUNDED.live_group_members(43210), expected)
+                self.assertEqual(BOUNDED.os.environ["COMMAND_MODE"], "legacy")
+                self.assertEqual(BOUNDED.os.environ["LC_ALL"], "invalid-locale")
+
+    def test_darwin_observation_rejects_ambiguous_malformed_and_truncated_records(self):
+        anchor = b"43210 43210 Zs\n"
+        invalid = [b"", b"\n", b"43211 43210 Z\n", b"43210 99 Z\n", anchor + anchor,
+                   b"43210 43210 Z", anchor + b"43211 43210", b"43210 43210 ?\n",
+                   b"43210 43210 Zunknown\n", b"43210 43210 ZE\n", b"43210 43210 Z\x00\n",
+                   b"43210 43210 Z\r\n", b"43210 43210 Z\xff\n", b"0 43210 Z\n",
+                   b"-1 43210 Z\n", b"43210 43210 Z extra\n", b"2147483648 43210 Z\n" + anchor,
+                   anchor + b"1 43210 Z" + b" " * 65 + b"\n",
+                   anchor + b"x" * BOUNDED.MAX_GROUP_OBSERVATION_BYTES,
+                   anchor + b"".join(f"{n} 43210 Z\n".encode() for n in range(1, 1025)),
+                   b"43210 43210 S\nmalformed\n"]
+        for output in invalid:
+            with self.subTest(output=output[:80]), mock.patch.object(BOUNDED.sys, "platform", "darwin"), \
+                 self.darwin_probe(output), self.assertRaises(ValueError):
                 BOUNDED.live_group_members(43210)
 
+    def test_darwin_diagnostic_even_with_zero_exit_never_retires_owned_group(self):
+        group = self.group()
+        group.exited = True
+        with mock.patch.object(BOUNDED.sys, "platform", "darwin"), \
+             self.darwin_probe(b"43210 43210 Zs\n", b"Failure calling sysctl: permission denied\n"), \
+             self.assertRaises(RuntimeError):
+            group.alive()
+        self.assertFalse(group.retired)
+
+    def test_darwin_query_failures_and_invalid_group_ids_fail_closed(self):
+        for failure in (subprocess.TimeoutExpired("ps", 0.5), subprocess.CalledProcessError(1, "ps"),
+                        PermissionError(errno.EPERM, "observation denied"), FileNotFoundError("/bin/ps")):
+            with self.subTest(failure=failure), mock.patch.object(BOUNDED.sys, "platform", "darwin"), \
+                 mock.patch.object(BOUNDED.subprocess, "run", side_effect=failure), self.assertRaises(type(failure)):
+                BOUNDED.live_group_members(43210)
+        for pgid in (0, -1, True, "43210", 43210.0, 2147483648):
+            with self.subTest(pgid=pgid), mock.patch.object(BOUNDED.subprocess, "run") as probe, \
+                 self.assertRaises(ValueError):
+                BOUNDED.darwin_group_snapshot(pgid)
+            probe.assert_not_called()
+
+    def test_observer_timings_include_failed_attempts_without_changing_deadline(self):
+        group = self.group()
+        with mock.patch.object(BOUNDED.time, "monotonic", side_effect=[1.0, 1.1, 2.0, 2.3]), \
+             mock.patch.object(BOUNDED, "live_group_members", side_effect=[True, subprocess.TimeoutExpired("ps", 0.5)]):
+            self.assertTrue(group.observe_members())
+            with self.assertRaises(subprocess.TimeoutExpired):
+                group.observe_members()
+        self.assertEqual(group.observations["count"], 2)
+        self.assertEqual(group.observations["failures"], 1)
+        self.assertAlmostEqual(group.observations["total_seconds"], 0.4)
+        self.assertAlmostEqual(group.observations["max_seconds"], 0.3)
+        self.assertEqual(group.observations["timeout_seconds"], 0.5)
+        self.assertFalse(group.retired)
+
+    @unittest.skipUnless(sys.platform == "darwin", "requires the actual Darwin ps selector and zombie semantics")
+    def test_native_darwin_selector_keeps_zombie_anchor_and_finds_no_tty_descendant(self):
+        for descendant in (False, True):
+            with self.subTest(descendant=descendant), tempfile.TemporaryDirectory() as tmp:
+                marker = Path(tmp) / "descendant.pid"
+                descendant_code = ("import os,signal,time; from pathlib import Path; "
+                                   "signal.signal(signal.SIGTERM,signal.SIG_IGN); "
+                                   f"Path({str(marker)!r}).write_text(str(os.getpid())); time.sleep(30)")
+                code = ("import os,sys,subprocess,time; from pathlib import Path\n"
+                        "try: fd=os.open('/dev/tty',os.O_RDONLY)\n"
+                        "except OSError: pass\n"
+                        "else: os.close(fd); sys.exit(77)\n")
+                if descendant:
+                    code += (f"subprocess.Popen([sys.executable,'-c',{descendant_code!r}])\n"
+                             f"while not Path({str(marker)!r}).exists(): time.sleep(0.01)\n")
+                code += "sys.exit(23)\n"
+                child = subprocess.Popen([sys.executable, "-c", code], start_new_session=True,
+                                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                group = BOUNDED.ProcessGroup(child)
+                try:
+                    until = time.monotonic() + 3
+                    while not group.leader_exited() and time.monotonic() < until:
+                        time.sleep(0.01)
+                    self.assertTrue(group.leader_exited())
+                    self.assertIsNone(child.returncode)  # Leader is still unreaped.
+                    snapshot = BOUNDED.darwin_group_snapshot(child.pid)
+                    self.assertTrue(snapshot[child.pid].startswith("Z"))
+                    self.assertEqual(group.observe_members(), descendant)
+                    if descendant:
+                        self.assertFalse(snapshot[int(marker.read_text())].startswith("Z"))
+                        self.assertTrue(group.send(signal.SIGKILL))
+                        until = time.monotonic() + 3
+                        while group.alive() and time.monotonic() < until:
+                            time.sleep(0.01)
+                        self.assertFalse(group.alive())
+                    print("[darwin-group-acceptance] " + json.dumps({
+                        "descendant": descendant, "snapshot": snapshot, "observations": group.observations,
+                        "leaderUnreapedDuringObservation": child.returncode is None,
+                    }, sort_keys=True))
+                    group.close()
+                    self.assertEqual(child.wait(timeout=1), 23)
+                    with mock.patch.object(BOUNDED.os, "killpg") as kill:
+                        self.assertFalse(group.send(signal.SIGKILL))
+                        kill.assert_not_called()
+                finally:
+                    try:
+                        if not group.retired:
+                            group.send(signal.SIGKILL)
+                    finally:
+                        group.close()
+                        child.wait(timeout=1)
     def test_permission_error_requires_proof_of_no_live_members(self):
         for signum in (signal.SIGTERM, signal.SIGKILL):
             for live in (False, True):
