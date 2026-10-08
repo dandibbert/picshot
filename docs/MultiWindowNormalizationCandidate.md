@@ -1,8 +1,8 @@
 # Multi-window normalization candidate
 
-`normalizedCandidate` is an **opt-in diagnostic candidate**. Production remains `coreGraphicsBaseline`. The implementation now performs one caller-owned vImage conversion per source, wraps that buffer in a zero-copy canonical `CGImage`, and uses the original Quartz strip drawing loop for sampling and source-over blending. It does not emulate Quartz's sampling arithmetic.
+`normalizedCandidate` is now selected for the **0.15 production-candidate build**, after the bounded ARM diagnostic comparison below. This is not installed-package acceptance. The previous path remains available as an explicit `coreGraphicsBaseline` diagnostic control. The implementation now performs one caller-owned vImage conversion per source, wraps that buffer in a zero-copy canonical `CGImage`, and uses the original Quartz strip drawing loop for sampling and source-over blending. It does not emulate Quartz's sampling arithmetic.
 
-The fixture reports `candidateImplementation: vimage-canonical-cgimage-quartz-strips-v1` so results cannot be confused with the earlier CPU prototype under the same experimental mode name. The corrected candidate still needs native exact-byte and fresh-process resource evidence. No installer publication or production-default change is part of this correction.
+The fixture reports `candidateImplementation: vimage-canonical-cgimage-quartz-strips-v1` so results cannot be confused with the earlier CPU prototype under the same experimental mode name. Build101 establishes native exact-byte and bounded ARM fresh-process evidence for the corrected implementation. The subsequent production-default build still requires all focused, ordinary, real-model, UI, actual ZIP/DMG and installed 4+12 resource gates before delivery.
 
 ## Why the CPU implementation was rejected
 
@@ -42,7 +42,7 @@ Cancellation/deadline checks remain before/after normalization and between Quart
 
 Run `bash scripts/test-multiwindow-source-scope.sh` on macOS. The same exact tests and expected bytes cover all 65,536 source/destination alpha pairs, fractional placement and density, orientation, z-order, gaps, sRGB/P3/linear profiles, alpha conventions, byte order, padding, grayscale, RGB, decode arrays and PNG decoding. Wrapper/provider lifetime assertions and a first-strip cancellation test extend the previous ownership checks.
 
-There is no tolerance, expected-failure marker, test exclusion, or production switch. A new failure blocks the candidate and must be investigated.
+There is no tolerance change, expected-failure marker or test exclusion. The production-default selection is explicit in code and tested without passing a mode argument. A new failure blocks the candidate and must be investigated.
 
 After exact tests pass, run the same provenance-verified binary in separate fresh processes:
 
@@ -51,7 +51,7 @@ bash scripts/multiwindow-resource-smoke.sh /absolute/PicShot.app /absolute/new-b
 bash scripts/multiwindow-resource-smoke.sh /absolute/PicShot.app /absolute/new-candidate-evidence SOURCE_COMMIT normalizedCandidate
 ```
 
-The fixture-only key remains `PICSHOT_MULTIWINDOW_COMPOSITION`. The independent tail-first control remains restricted to baseline. No ordinary capture reads this diagnostic mode selector.
+The fixture-only key remains `PICSHOT_MULTIWINDOW_COMPOSITION`. The independent tail-first control remains restricted to baseline. No ordinary capture reads this diagnostic mode selector. The three-argument installed resource runner unsets inherited composition, tail-first and trace selectors. Its raw and checked reports must state `compositionModeSource: productionDefault` and a null override. Four-argument comparisons require an explicit, matching diagnostic override.
 
 For the two-window 4K workload, tight explicit raster accounting is:
 
@@ -66,6 +66,19 @@ The report adds canonical wrapper creation/live counts to actual source-stride a
 
 These tools diagnose the rejected CPU assumption; they do not establish a universal Quartz arithmetic contract or modify rendering. Their native output should accompany the next comparison run.
 
-## Authoring validation
+## Verified diagnostic evidence and remaining acceptance
 
-The isolated correction was authored against the supplied run100 source. Shell syntax and embedded Python compile checks passed, and the sampling analyzer passed synthetic tie/non-tie classification checks. Native compilation, sampling observations, corrected exact-byte tests and memory comparison are still pending from the macOS run.
+Source `00a1b9973571d8cef23aca6ba934daf52f2ed2e9`, run `37737735045`, build 101: ARM and Intel source-scoped native suites each passed 33/33 tests, including the unchanged fractional pixel expectation and cancellation after the first Quartz strip. Raw runner reports confirmed exit 0, no timeout and no truncated log. Continued GitHub step conclusions are not used as test-pass evidence.
+
+The ARM six-cell comparison completed in six distinct exited processes with identical source/output hashes and workloads: four warmups plus twelve measured cycles, two fresh 3840×2160 PNG decodes per cycle, and a 4480×2520 output. Candidate and candidate-traced records passed the strict 1,574-event topology, required counter availability, canonical/source/provider/output cleanup, cancellation and temporary-file checks. All counters below are MiB, measured in this one bounded synthetic workload:
+
+| ARM untraced cell | Entry RSS | After PNG preparation | After four warmups | Final after twelve measurements | Sampled RSS peak |
+|---|---:|---:|---:|---:|---:|
+| Baseline |66.719|109.031|166.063|206.922|236.922|
+| Normalized Quartz |66.531|108.813|152.484|153.688|185.234|
+
+Candidate total entry-to-cleanup RSS rise remains 87.156 MiB:42.281 MiB during preparation,43.672 MiB during warmup, then1.203 MiB after warmup. Traced candidate post-warmup RSS rises1.266 MiB. Both candidate cells have zero measured and late-cycle volatile resident/virtual growth, while baseline adds 39.375 MiB volatile resident and tail-first adds 45 MiB. Candidate final volatile resident/virtual remains 16 KiB; sampled transient volatile peak is 31.656 MiB. Footprint rises 0.516 MiB untraced and0.469 MiB traced after warmup. Candidate late RSS still increases by32–192 KiB per interval; these observations do not establish an overall RSS plateau or leak-free behavior.
+
+The untraced candidate completes the same 4+12 workload in 3.648 s versus baseline 5.429 s. Sampled peaks are lower bounds at sampled times. Kernel lifetime peaks are 185.422 MiB RSS / 95.049 MiB footprint for the untraced candidate and 186.969 / 98.190 MiB for the traced candidate; the sampled untraced footprint peak was only 79.534 MiB. Kernel lifetime peaks cover the entire fresh process lifetime, whereas phase samples cover the fixture. Neither implies a guaranteed product memory maximum. Private graphics/decoder backing remains outside the 192,000,000-byte explicit-raster admission. No screenshot permissions, real foreign-window capture, physical multi-display configuration, system pressure or user assets are involved.
+
+This supports testing the production replacement for the repeated final-band growth. The actual installed production-default resource run and complete 0.15 functional/model/install gates remain pending. Other export/preview backing observations and the accepted 0.14 memory caveats remain separate; no universal memory remedy is claimed.

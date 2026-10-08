@@ -30,7 +30,9 @@ jobs:
       matrix:
         include: ${{ fromJSON(contains(github.event.head_commit.message || '', '[intel-only]') && '[{"runner":"macos-15-intel","arch":"x86_64"}]' || '[{"runner":"macos-15","arch":"arm64"},{"runner":"macos-15-intel","arch":"x86_64"}]') }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    # Full Intel model/install validation exceeded the former aggregate budget.
+    # Individual test, product, cancellation and smoke deadlines stay unchanged.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       - name: Test bounded CI command runner and annotation evidence checker
@@ -40,6 +42,8 @@ jobs:
           python3 -m unittest discover -s scripts/tests -p test_check_annotation_details_report.py -v
           python3 -m unittest discover -s scripts/tests -p test_check_scroll_manual_resource_report.py -v
           python3 -m unittest discover -s scripts/tests -p test_check_manual_hash_comparison.py -v
+          python3 -m unittest discover -s scripts/tests -p test_check_multiwindow_memory_comparison.py -v
+          python3 -m unittest discover -s scripts/tests -p test_multiwindow_resource_smoke_selection.py -v
       - name: Package signed native app for early pixel review
         run: |
           mkdir -p dist
@@ -759,7 +763,7 @@ jobs:
         run: |
           python3 scripts/run-bounded-command.py --timeout-seconds 150 --log dist/multiwindow-nearest.log --report dist/multiwindow-nearest-process.json -- swift scripts/probe-multiwindow-nearest.swift "$PWD/dist/multiwindow-nearest-maps.json"
           python3 scripts/analyze-multiwindow-nearest.py dist/multiwindow-nearest-maps.json dist/multiwindow-nearest-analysis.json
-      - name: Package signed diagnostic app with unchanged production default
+      - name: Package signed diagnostic app with current production default
         env:
           PICSHOT_PACKAGE_APP_ONLY: '1'
         run: |

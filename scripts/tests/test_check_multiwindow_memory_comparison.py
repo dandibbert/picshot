@@ -72,7 +72,8 @@ def cell(number, name, mode, tail_first, traced):
             **{key:dict(counters=counters(30+index)) for key in ('before','afterCompositionBeforeDigest','afterDigestBeforeOutputRelease','afterRelease')})
     report = dict(syntheticFixture=True, status='observed', observationsComplete=True, pid=pid,
         bundlePath=app, executablePath=app+'/Contents/MacOS/PicShot', compiledArchitecture='arm64', osVersion='explicitly synthetic macOS',
-        compositionMode=mode, productionCompositionMode='coreGraphicsBaseline',
+        compositionMode=mode, productionCompositionMode='normalizedCandidate',
+        compositionModeSource='diagnosticOverride', diagnosticCompositionOverride=mode,
         candidateImplementation='vimage-canonical-cgimage-quartz-strips-v1',
         diagnosticTailStripFirst=tail_first, diagnosticBoundariesEnabled=traced,
         diagnosticTraceAllocatedBytesBeforeEntry=2048 * 800 if traced else 0,
@@ -93,6 +94,7 @@ def cell(number, name, mode, tail_first, traced):
         lateMeasuredIncrements=[], transientSampler=dict(total=dict(sampledPeakBytes=counters(50), timerSampleCount=20, sampleCount=30, missingFieldCounts={})))
     if traced: report['diagnosticBoundaryTrace'] = trace(mode=='normalizedCandidate', tail_first)
     checked = dict(status='observed', observationsComplete=True, sourceCommit=SOURCE, compositionMode=mode,
+        productionCompositionMode='normalizedCandidate', compositionModeSource='diagnosticOverride', diagnosticCompositionOverride=mode,
         ownedExitConfirmed=True, memoryStabilityAssessed=False, measuredCycles=12, elapsedSeconds=5, afterWarmupToCleanupDeltaBytes=counters(10), sampledPeakBytes=counters(50))
     increments=[dict(fromMeasuredCycle=i,toMeasuredCycle=i+1,counterDeltaBytes=counters(1)) for i in range(1,12)]
     report['measuredBoundaryIncrements']=increments
@@ -142,6 +144,26 @@ class ComparisonCheckerTests(unittest.TestCase):
         self.assertEqual(len(result['cells']), 6)
         self.assertEqual(result['cells'][0]['measuredDelta'], counters(10))
         self.assertEqual(result['cells'][0]['sampledPeaks'], counters(50))
+
+    def test_comparison_rejects_implicit_default_even_when_mode_matches(self):
+        for filename in ('multi-window-resource.json','checked-resource.json'):
+            self.mutate('candidate',filename,lambda d:d.update(compositionModeSource='productionDefault',diagnosticCompositionOverride=None))
+        with self.assertRaises(ValueError): namespace['validate'](self.root,SOURCE)
+
+    def test_missing_raw_selector_origin_rejected(self):
+        self.reject('candidate','multi-window-resource.json',lambda d:d.pop('compositionModeSource'))
+
+    def test_missing_checked_selector_origin_rejected(self):
+        self.reject('candidate','checked-resource.json',lambda d:d.pop('compositionModeSource'))
+
+    def test_absent_raw_override_rejected(self):
+        self.reject('baseline','multi-window-resource.json',lambda d:d.update(diagnosticCompositionOverride=None))
+
+    def test_wrong_checked_override_rejected(self):
+        self.reject('baseline','checked-resource.json',lambda d:d.update(diagnosticCompositionOverride='normalizedCandidate'))
+
+    def test_checked_production_default_mismatch_rejected(self):
+        self.reject('candidate','checked-resource.json',lambda d:d.update(productionCompositionMode='coreGraphicsBaseline'))
 
     def test_trace_counts_are_1446_and_1574(self):
         self.assertEqual(len(trace(False, False)['observations']), 1446)

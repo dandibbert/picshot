@@ -13,7 +13,7 @@ final class MultiWindowDiagnosticTests: XCTestCase {
         var outputs: [Data] = []
         for tailFirst in [false, true] {
             let log = MultiWindowDiagnosticDrawLog()
-            let renderer = try MultiWindowCompositeRenderer(layout: layout,
+            let renderer = try MultiWindowCompositeRenderer(layout: layout, mode: .coreGraphicsBaseline,
                 diagnosticTailStripFirst: tailFirst, diagnosticObserve: { event, window, top in
                     if event == .drawBefore { log.append(window: window, top: top) }
                 })
@@ -33,7 +33,7 @@ final class MultiWindowDiagnosticTests: XCTestCase {
         let source = try image(seed: 19)
         let log = MultiWindowDiagnosticDrawLog()
         let task = Task {
-            let renderer = try MultiWindowCompositeRenderer(layout: layout,
+            let renderer = try MultiWindowCompositeRenderer(layout: layout, mode: .coreGraphicsBaseline,
                 diagnosticTailStripFirst: true, diagnosticObserve: { event, window, top in
                     if event == .drawAfter {
                         log.append(window: window, top: top)

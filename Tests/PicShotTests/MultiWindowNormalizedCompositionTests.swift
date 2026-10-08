@@ -9,10 +9,33 @@ import PicShotCore
 /// No tolerance or production default is changed by this diagnostic suite.
 final class MultiWindowNormalizedCompositionTests: XCTestCase {
     func testProductionDefaultAndDiagnosticParsing() throws {
-        XCTAssertEqual(MultiWindowCompositionMode.production, .coreGraphicsBaseline)
-        XCTAssertEqual(try MultiWindowCaptureResourceFixture.compositionMode(environment: [:]), .coreGraphicsBaseline)
+        XCTAssertEqual(MultiWindowCompositionMode.production, .normalizedCandidate)
+        XCTAssertEqual(try MultiWindowCaptureResourceFixture.compositionMode(environment: [:]), .normalizedCandidate)
         XCTAssertEqual(try MultiWindowCaptureResourceFixture.compositionMode(environment: ["PICSHOT_MULTIWINDOW_COMPOSITION": "normalizedCandidate"]), .normalizedCandidate)
         XCTAssertThrowsError(try MultiWindowCaptureResourceFixture.compositionMode(environment: ["PICSHOT_MULTIWINDOW_COMPOSITION": "typo"]))
+        XCTAssertThrowsError(try MultiWindowCaptureResourceFixture.compositionSelection(environment: ["PICSHOT_MULTIWINDOW_COMPOSITION": ""]))
+        let implicit = try MultiWindowCaptureResourceFixture.compositionSelection(environment: [:])
+        XCTAssertEqual(implicit.mode, .production); XCTAssertEqual(implicit.source, "productionDefault")
+        XCTAssertNil(implicit.diagnosticOverride)
+        for mode in MultiWindowCompositionMode.allCases {
+            let explicit = try MultiWindowCaptureResourceFixture.compositionSelection(environment: ["PICSHOT_MULTIWINDOW_COMPOSITION": mode.rawValue])
+            XCTAssertEqual(explicit.mode, mode); XCTAssertEqual(explicit.source, "diagnosticOverride")
+            XCTAssertEqual(explicit.diagnosticOverride, mode.rawValue, "Explicit production mode is still an override")
+        }
+    }
+
+    @MainActor func testSequentialCaptureWithoutModeUsesProductionNormalization() async throws {
+        let layout = try MultiWindowCaptureLayout(frontToBack: [window(1, width: 2, height: 2)])
+        let probe = MultiWindowCompositionResourceProbe()
+        let output = try await SequentialMultiWindowCapture.capture(layout: layout, deadline: deadline,
+            resourceProbe: probe, validate: {}, frame: { _, _ in
+                try self.pattern(width: 2, height: 2, seed: 17)
+            })
+        XCTAssertEqual(output.width, 2)
+        XCTAssertEqual(probe.snapshot["normalizationCount"], 1)
+        XCTAssertEqual(probe.snapshot["canonicalImagesCreated"], 1)
+        XCTAssertEqual(probe.snapshot["liveCanonicalImages"], 0)
+        withExtendedLifetime(output) {}
     }
 
     func testEverySourceAndDestinationAlphaMatchesBaselineExactly() async throws {

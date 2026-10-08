@@ -4,14 +4,14 @@ import Foundation
 import Darwin
 import PicShotCore
 
-/// Production stays on the existing implementation until native differential
-/// and fresh-process resource evidence pass. Only diagnostics select the candidate.
+/// Normal capture uses the admitted normalization and Quartz composition path.
+/// The previous CoreGraphics path remains selectable for explicit diagnostics.
 enum MultiWindowCompositionMode: String, CaseIterable, Sendable {
     case coreGraphicsBaseline
     /// Normalize once, then preserve Quartz's sampling and blending behavior.
     /// Replaces the rejected CPU prototype preserved at commit 83406c0d.
     case normalizedCandidate
-    static let production: Self = .coreGraphicsBaseline
+    static let production: Self = .normalizedCandidate
 }
 
 /// Counts only explicit allocations and the admitted source's row-stride bytes.

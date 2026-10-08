@@ -17,21 +17,32 @@ enum MultiWindowCaptureResourceFixture {
 
     /// This environment key affects this diagnostic fixture only. Normal capture
     /// always uses MultiWindowCompositionMode.production.
-    static func compositionMode(environment: [String: String]) throws -> MultiWindowCompositionMode {
-        guard let value = environment["PICSHOT_MULTIWINDOW_COMPOSITION"] else { return .production }
+    struct CompositionSelection {
+        let mode: MultiWindowCompositionMode
+        let diagnosticOverride: String?
+        var source: String { diagnosticOverride == nil ? "productionDefault" : "diagnosticOverride" }
+    }
+    static func compositionSelection(environment: [String: String]) throws -> CompositionSelection {
+        guard let value = environment["PICSHOT_MULTIWINDOW_COMPOSITION"] else {
+            return CompositionSelection(mode: .production, diagnosticOverride: nil)
+        }
         guard let mode = MultiWindowCompositionMode(rawValue: value) else { throw MultiWindowCaptureError.incomplete }
-        return mode
+        return CompositionSelection(mode: mode, diagnosticOverride: value)
+    }
+    static func compositionMode(environment: [String: String]) throws -> MultiWindowCompositionMode {
+        try compositionSelection(environment: environment).mode
     }
 
     @MainActor static func verify(evidenceDirectory: URL) async throws -> [String: Any] {
-        let mode = try compositionMode(environment: ProcessInfo.processInfo.environment)
+        let environment = ProcessInfo.processInfo.environment
+        let selection = try compositionSelection(environment: environment)
+        let mode = selection.mode
         let normalizationBytes = mode == .coreGraphicsBaseline ? 0 : width * height * 4
         let began = ProcessInfo.processInfo.systemUptime, deadline = began + deadlineSeconds
         let manager = FileManager.default
         try manager.createDirectory(at: evidenceDirectory, withIntermediateDirectories: true)
         let root = manager.temporaryDirectory.appendingPathComponent("PicShot-MultiWindow-Resource-" + UUID().uuidString, isDirectory: true)
         let reportURL = evidenceDirectory.appendingPathComponent(reportName)
-        let environment = ProcessInfo.processInfo.environment
         let diagnosticTailStripFirst = environment["PICSHOT_MULTIWINDOW_DIAGNOSTIC_TAIL_FIRST"] == "1"
         try require(!diagnosticTailStripFirst || mode == .coreGraphicsBaseline, "Tail-first diagnostic requires CoreGraphics baseline mode")
         let diagnosticTrace = environment["PICSHOT_MULTIWINDOW_DIAGNOSTIC_BOUNDARIES"] == "1" ? MultiWindowDiagnosticTrace() : nil
@@ -43,6 +54,8 @@ enum MultiWindowCaptureResourceFixture {
             "status": "running", "observationsComplete": false, "activePhase": "inputPreparation", "activeCycleIndex": 0,
             "remainingWarmupCycles": warmupCount, "remainingMeasuredCycles": measuredCount, "fixture": "multi-window-imageio-composition-comparison-v2",
             "compositionMode": mode.rawValue, "productionCompositionMode": MultiWindowCompositionMode.production.rawValue,
+            "compositionModeSource": selection.source,
+            "diagnosticCompositionOverride": selection.diagnosticOverride.map { $0 as Any } ?? NSNull(),
             "candidateImplementation": "vimage-canonical-cgimage-quartz-strips-v1",
             "pid": getpid(), "processName": ProcessInfo.processInfo.processName,
             "executablePath": Bundle.main.executableURL?.path ?? ProcessInfo.processInfo.arguments.first ?? "unknown",

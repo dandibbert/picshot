@@ -18,6 +18,7 @@ COUNTERS = ('resident_size', 'phys_footprint', 'purgeable_volatile_resident',
             'purgeable_volatile_virtual', 'compressed', 'ledger_purgeable_volatile_compressed')
 OUTPUT_SHA256 = '5b8033659faae766800872f3684782128355a46fc4603aa5718e3134b2ac941d'
 CANDIDATE_IMPLEMENTATION = 'vimage-canonical-cgimage-quartz-strips-v1'
+PRODUCTION_DEFAULT = 'normalizedCandidate'
 
 
 def require(condition, message):
@@ -153,7 +154,11 @@ def validate(root, source):
         executable = bundle / 'Contents/MacOS/PicShot'
         require(pathlib.Path(report['executablePath']).resolve() == executable, name + ': executable mismatch')
         require(len(launch['arguments']) == 1 and pathlib.Path(launch['arguments'][0]).resolve() == executable, name + ': unexpected process operands')
-        require(report['compositionMode'] == checked['compositionMode'] == mode and report['productionCompositionMode'] == 'coreGraphicsBaseline', name + ': wrong mode')
+        require(report['compositionMode'] == checked['compositionMode'] == mode and report['productionCompositionMode'] == checked['productionCompositionMode'] == PRODUCTION_DEFAULT, name + ': wrong mode')
+        require(report['compositionModeSource'] == checked['compositionModeSource'] == 'diagnosticOverride',
+                name + ': comparison cell must explicitly select its renderer')
+        require(report['diagnosticCompositionOverride'] == checked['diagnosticCompositionOverride'] == mode,
+                name + ': missing or mismatched diagnostic renderer override')
         require(report['candidateImplementation'] == CANDIDATE_IMPLEMENTATION, name + ': wrong candidate implementation')
         require(report['diagnosticTailStripFirst'] is tail_first and report['diagnosticBoundariesEnabled'] is traced, name + ': wrong control flags')
         workload = dict(warmupCycles=4, measuredCycles=12, windowsPerCycle=2,
@@ -230,7 +235,7 @@ def validate(root, source):
             lateMeasuredIncrements=increments[-4:], sampledPeaks=peaks))
     require(len(identities) == len(inputs) == len(outputs) == len(architectures) == len(systems) == 1, 'cells do not share binary/input/system identity')
     require(len(pids) == len(PROFILES), 'Every cell requires a distinct, confirmed-exited process')
-    return dict(status='observed', observationsComplete=True, sourceCommit=source, productionDefault='coreGraphicsBaseline',
+    return dict(status='observed', observationsComplete=True, sourceCommit=source, productionDefault=PRODUCTION_DEFAULT,
                 candidateImplementation=CANDIDATE_IMPLEMENTATION,
                 memoryStabilityAssessed=False, productionPromotionApproved=False, cells=cells)
 
