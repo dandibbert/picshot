@@ -371,8 +371,14 @@ private struct EditableAnnotationColorRecord: Codable {
     var components: [CGFloat]
     private static let namedSpaces: [CFString] = [CGColorSpace.sRGB, CGColorSpace.linearSRGB,
         CGColorSpace.extendedSRGB, CGColorSpace.extendedLinearSRGB, CGColorSpace.displayP3,
-        CGColorSpace.genericRGB, CGColorSpace.genericGray, CGColorSpace.genericGrayGamma2_2,
-        CGColorSpace.linearGray, CGColorSpace.extendedGray, CGColorSpace.extendedLinearGray]
+        CGColorSpace.genericGrayGamma2_2, CGColorSpace.linearGray,
+        CGColorSpace.extendedGray, CGColorSpace.extendedLinearGray] + [
+            // The legacy space constants are Swift-unavailable. Obtain their
+            // exact names from the supported generic constructors, without
+            // converting generic RGB/gray into a different color profile.
+            CGColor(red: 0, green: 0, blue: 0, alpha: 1).colorSpace?.name,
+            CGColor(gray: 0, alpha: 1).colorSpace?.name
+        ].compactMap { $0 }
 
     init(_ color: CGColor) throws {
         guard let source = color.colorSpace, let values = color.components else {

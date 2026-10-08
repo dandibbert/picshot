@@ -412,7 +412,8 @@ final class ImageEditorCanvas: NSView {
     }
 
     func restoreCaptureTimestamp(_ date: Date, timeZoneIdentifier: String, known: Bool) {
-        captureDate = date; captureTimeZoneIdentifier = timeZoneIdentifier
+        captureDate = !known && date == Date(timeIntervalSince1970: 0) ? Date() : date
+        captureTimeZoneIdentifier = timeZoneIdentifier
         captureTimestampKnown = known
         style.watermarkTemplate = known ? "PicShot · $yyyy-MM-dd HH:mm:ss$" : "PicShot · 编辑于 $yyyy-MM-dd HH:mm:ss$"
     }
@@ -1736,6 +1737,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         canvas.restoreCaptureTimestamp(document.capturedAt, timeZoneIdentifier: document.captureTimeZoneIdentifier, known: document.captureTimestampKnown)
         initialOriginalImage = payload.originalImage; outputDecoration = document.outputDecoration
         canvas.setContent(image: payload.baseImage, annotations: document.annotations, numberSequence: document.numberSequence, cropViewportInBase: document.cropViewportInBase)
+        canvas.tool = .select
         updateStatus(); layoutInterface()
     }
 
@@ -1754,7 +1756,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
             originalAssetID: originalAssetID, originalPixelWidth: original.width, originalPixelHeight: original.height,
             baseAssetID: baseAssetID, basePixelWidth: canvas.image.width, basePixelHeight: canvas.image.height,
             baseCropInOriginal: baseCropInOriginal, cropViewportInBase: canvas.cropViewportInBase, baseProvenance: baseProvenance,
-            capturedAt: canvas.captureTimestampKnown ? canvas.captureDate : Date(timeIntervalSince1970: 0),
+            capturedAt: canvas.captureDate,
             captureTimeZoneIdentifier: canvas.captureTimeZoneIdentifier, captureTimestampKnown: canvas.captureTimestampKnown, annotations: canvas.annotations,
             numberSequence: canvas.numberSequence, outputDecoration: outputDecoration)
         let payload = EditableCapturePayload(document: document, originalImage: original, baseImage: canvas.image)

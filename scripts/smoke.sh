@@ -136,4 +136,9 @@ PY
   python3 scripts/check-annotation-details-report.py "$PWD/dist/evidence/$format/annotation-details/annotation-details.json" "$app" "$(git rev-parse HEAD)" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")" --full
   bash scripts/pin-workflows-smoke.sh "$app" "$PWD/dist/evidence/$format/pin-workflows" "$(git rev-parse HEAD)"
   bash scripts/manual-scroll-smoke.sh "$app" "$PWD/dist/evidence/$format/manual-scroll" "$(git rev-parse HEAD)" "$format"
+  if [[ "$format" == zip ]];then
+    bash scripts/editable-annotation-smoke.sh "$app" "$PWD/dist/evidence/$format/editable-annotations" "$(git rev-parse HEAD)" resources
+  else
+    bash scripts/editable-annotation-smoke.sh "$app" "$PWD/dist/evidence/$format/editable-annotations" "$(git rev-parse HEAD)" functional
+  fi
 done

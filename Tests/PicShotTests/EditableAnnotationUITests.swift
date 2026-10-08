@@ -148,6 +148,8 @@ import XCTest
         var payload = try editor.editablePayload()
         XCTAssertTrue(payload.document.annotations.isEmpty)
         XCTAssertEqual(payload.document.baseProvenance, .legacyRaster)
+        XCTAssertFalse(payload.document.captureTimestampKnown)
+        XCTAssertNotEqual(payload.document.capturedAt, Date(timeIntervalSince1970: 0), "Unknown capture time still preserves a real editing timestamp")
         payload.document.capturedAt = Date(timeIntervalSince1970: 1_700_000_000)
         payload.document.captureTimeZoneIdentifier = "Asia/Shanghai"
         payload.document.captureTimestampKnown = true

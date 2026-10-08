@@ -48,6 +48,7 @@ final class EditableAnnotationDocumentTests: XCTestCase {
         let spaces = [CGColorSpace.sRGB, CGColorSpace.displayP3, CGColorSpace.extendedSRGB,
                       CGColorSpace.extendedLinearSRGB, CGColorSpace.genericGrayGamma2_2]
         var colors = [CGColor(gray: 0.33, alpha: 0.75), CGColor(srgbRed: 0.23, green: 0.41, blue: 0.77, alpha: 0.8),
+                      CGColor(red: 0.23, green: 0.41, blue: 0.77, alpha: 0.8),
                       NSColor.systemRed.cgColor, NSColor.systemBlue.cgColor, NSColor.white.cgColor]
         for name in spaces {
             let space = try XCTUnwrap(CGColorSpace(name: name))
@@ -68,6 +69,24 @@ final class EditableAnnotationDocumentTests: XCTestCase {
         mark.color = try XCTUnwrap(CGColor(colorSpace: CGColorSpaceCreateDeviceCMYK(), components: [0, 1, 1, 0, 1]))
         XCTAssertThrowsError(try EditableAnnotationDocumentCodec.encode(makeDocument([mark]))) {
             XCTAssertEqual($0 as? EditableAnnotationDocumentError, .unsupportedColor)
+        }
+    }
+
+    func testGenericConstructorColorsKeepExactNamedProfilesAndComponents() throws {
+        for color in [CGColor(red: 0.23, green: 0.41, blue: 0.77, alpha: 0.8), CGColor(gray: 0.33, alpha: 0.75)] {
+            let space = try XCTUnwrap(color.colorSpace), name = try XCTUnwrap(space.name)
+            XCTAssertTrue(CFEqual(space, try XCTUnwrap(CGColorSpace(name: name))))
+            var mark = styledMark(.rectangle); mark.color = color; mark.fillColor = color; mark.textOutlineColor = color
+            let document = makeDocument([mark])
+            let json = try object(document)
+            let annotation = try XCTUnwrap((json["annotations"] as? [[String: Any]])?.first)
+            for key in ["color", "fillColor", "textOutlineColor"] {
+                let stored = try XCTUnwrap(annotation[key] as? [String: Any])
+                XCTAssertEqual(stored["space"] as? String, name as String)
+            }
+            let decoded = try EditableAnnotationDocumentCodec.decode(EditableAnnotationDocumentCodec.encode(document))
+            assertEqual(mark, try XCTUnwrap(decoded.annotations.first))
+            XCTAssertEqual(decoded.annotations[0].color.components, color.components)
         }
     }
 
