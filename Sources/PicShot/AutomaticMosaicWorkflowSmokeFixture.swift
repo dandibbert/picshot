@@ -318,7 +318,8 @@ import PicShotCore
                 try nativeTool(.crop, in: editor!)
                 try drag(editor!.annotationCanvas, rect: CGRect(x: 10, y: 10, width: 690, height: 450))
                 try click("editor.applyCrop", in: editor!)
-                try require(editor!.annotationCanvas.image.width == 690 && editor!.annotationCanvas.image.height == 450, "Native crop did not change source revision")
+                try require(editor!.annotationCanvas.outputPixelWidth == 690 && editor!.annotationCanvas.outputPixelHeight == 450
+                    && editor!.annotationCanvas.cropViewportInBase == CGRect(x: 10, y: 10, width: 690, height: 450), "Native crop did not preserve the selected viewport")
             case "edit":
                 try nativeTool(.rectangle, in: editor!)
                 try drag(editor!.annotationCanvas, rect: CGRect(x: 250, y: 240, width: 80, height: 40))

@@ -335,9 +335,14 @@ enum ImageEditorHistoryBudget {
 @MainActor
 final class ImageEditorCanvas: NSView {
     var image: CGImage
-    let captureDate: Date
-    let captureTimeZoneIdentifier: String
-    let captureTimestampKnown: Bool
+    /// A nondestructive viewport. Layers remain in full-base pixel coordinates.
+    private(set) var cropViewportInBase: CGRect?
+    var visibleImageRect: CGRect { cropViewportInBase ?? CGRect(x: 0, y: 0, width: image.width, height: image.height) }
+    var outputPixelWidth: Int { Int(visibleImageRect.width) }
+    var outputPixelHeight: Int { Int(visibleImageRect.height) }
+    private(set) var captureDate: Date
+    private(set) var captureTimeZoneIdentifier: String
+    private(set) var captureTimestampKnown: Bool
     var annotations: [ImageAnnotation] = []
     var tool: ImageEditorTool = .arrow { didSet { finishNumberComment(commit: true); cancelInteraction(); cropRect = nil; needsDisplay = true } }
     var style = ImageAnnotation(tool: .arrow, points: [], color: NSColor.systemRed.cgColor, fontSize: 20)
@@ -400,23 +405,40 @@ final class ImageEditorCanvas: NSView {
     override var isOpaque: Bool { true }
 
     private func resizeCanvas() {
-        setFrameSize(NSSize(width: CGFloat(image.width) * zoom, height: CGFloat(image.height) * displayScaleY))
+        let viewport = visibleImageRect
+        setFrameSize(NSSize(width: viewport.width * zoom, height: viewport.height * displayScaleY))
+        setBoundsOrigin(CGPoint(x: viewport.minX * zoom, y: viewport.minY * displayScaleY))
         needsDisplay = true
     }
 
-    func setContent(image: CGImage, annotations: [ImageAnnotation], numberSequence: NumberedCalloutSequence? = nil) {
+    func restoreCaptureTimestamp(_ date: Date, timeZoneIdentifier: String, known: Bool) {
+        captureDate = date; captureTimeZoneIdentifier = timeZoneIdentifier
+        captureTimestampKnown = known
+        style.watermarkTemplate = known ? "PicShot · $yyyy-MM-dd HH:mm:ss$" : "PicShot · 编辑于 $yyyy-MM-dd HH:mm:ss$"
+    }
+
+    func setContent(image: CGImage, annotations: [ImageAnnotation], numberSequence: NumberedCalloutSequence? = nil, cropViewportInBase: CGRect? = nil) {
         finishNumberComment(commit: false)
         contentRevision &+= 1; onContentInvalidated?()
-        self.image = image; self.annotations = annotations
+        self.image = image; self.annotations = annotations; self.cropViewportInBase = cropViewportInBase
         if let numberSequence { self.numberSequence = numberSequence }
         selection = nil; draft = nil; freehandGesture = nil; polylinePreviewPoint = nil; cropRect = nil; cachedImage = nil
         movingOriginal = nil; dragOrigin = nil; activeHandle = nil; didBeginMoving = false
         resizeCanvas(); onChange?()
     }
 
-    func flattened() -> CGImage? { ImageEditorRenderer.render(image: image, annotations: annotations) }
+    func flattened() -> CGImage? {
+        // Reuse a valid presentation cache instead of retaining a second full
+        // rendered stack while cutting the final viewport.
+        let reusable = editingAnnotationID == nil ? cachedImage : nil
+        guard let full = reusable ?? ImageEditorRenderer.render(image: image, annotations: annotations) else { return nil }
+        if let cropViewportInBase { return ImageEditorRenderer.crop(image: full, to: cropViewportInBase) }
+        return full
+    }
     func rasterForBoundaryPreview() -> CGImage? {
-        if cachedImage == nil { cachedImage = flattened() }
+        if cachedImage == nil { cachedImage = ImageEditorRenderer.render(image: image, annotations: annotations) }
+        guard let cachedImage else { return nil }
+        if let cropViewportInBase { return ImageEditorRenderer.crop(image: cachedImage, to: cropViewportInBase) }
         return cachedImage
     }
     func releasePresentationCache() { cachedImage = nil }
@@ -475,8 +497,8 @@ final class ImageEditorCanvas: NSView {
         let rect = selected.numberCommentRect.applying(selected.transform)
         let width = min(max(100, selected.numberCommentRect.width * zoom), max(80, bounds.width))
         let height = min(max(64, selected.numberCommentRect.height * displayScaleY), max(40, bounds.height))
-        let frame = CGRect(x: min(max(0, rect.minX * zoom), max(0, bounds.width - width)),
-                           y: min(max(0, rect.minY * displayScaleY), max(0, bounds.height - height)), width: width, height: height)
+        let frame = CGRect(x: min(max(bounds.minX, rect.minX * zoom), max(bounds.minX, bounds.maxX - width)),
+                           y: min(max(bounds.minY, rect.minY * displayScaleY), max(bounds.minY, bounds.maxY - height)), width: width, height: height)
         let session = NumberedCalloutCommentSession(annotation: selected, frame: frame, zoom: zoom, verticalZoom: displayScaleY)
         session.box.onAccept = { [weak self] in self?.finishNumberComment(commit: true) }
         session.box.onCancel = { [weak self] in self?.finishNumberComment(commit: false) }
@@ -623,7 +645,8 @@ final class ImageEditorCanvas: NSView {
         let viewPoint = convert(event.locationInWindow, from: nil)
         let point = CGPoint(x: viewPoint.x / zoom, y: viewPoint.y / displayScaleY)
         guard clamped else { return point }
-        return CGPoint(x: min(max(0, point.x), CGFloat(image.width)), y: min(max(0, point.y), CGFloat(image.height)))
+        let viewport = visibleImageRect
+        return CGPoint(x: min(max(viewport.minX, point.x), viewport.maxX), y: min(max(viewport.minY, point.y), viewport.maxY))
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -1139,7 +1162,7 @@ final class EditorSaveActionsButton: NSPopUpButton {
 
 @MainActor
 final class ImageEditorController: NSWindowController, NSWindowDelegate {
-    private struct Snapshot { var image: CGImage; var annotations: [ImageAnnotation]; var selectionFrame: CGRect?; var pinPresentation: PinEditorPresentation?; var numberSequence: NumberedCalloutSequence; var aspectRatio: CaptureAspectRatio?; var outputDecoration: ImageOutputDecoration }
+    private struct Snapshot { var image: CGImage; var annotations: [ImageAnnotation]; var selectionFrame: CGRect?; var pinPresentation: PinEditorPresentation?; var numberSequence: NumberedCalloutSequence; var aspectRatio: CaptureAspectRatio?; var outputDecoration: ImageOutputDecoration; var baseAssetID: UUID; var baseCropInOriginal: CGRect?; var cropViewportInBase: CGRect?; var baseProvenance: EditableAnnotationBaseProvenance }
     private let canvas: ImageEditorCanvas
     private let scrollView = NSScrollView()
     private let workspace = EditorWorkspaceView(frame: .zero)
@@ -1154,6 +1177,15 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     private let onSave: (CGImage) -> Void
     private let onPin: (CGImage) -> Void
     private let onPinWithOriginal: ((CGImage, CGImage) -> Bool)?
+    /// Throwing callbacks return only after the source, layers and projection commit together.
+    private let onSaveEditable: ((CGImage, EditableCapturePayload) throws -> Void)?
+    private let onPinEditable: ((CGImage, EditableCapturePayload) throws -> Void)?
+    private let onApplyEditable: ((CGImage, EditableCapturePayload) throws -> Void)?
+    private var editableDocumentID = UUID()
+    private var originalAssetID = UUID()
+    private var baseAssetID = UUID()
+    private var baseCropInOriginal: CGRect?
+    private var baseProvenance: EditableAnnotationBaseProvenance = .legacyRaster
     /// Immutable while the editor is open; released on close. Crop/recrop and
     /// output decoration never replace this initial capture.
     private(set) var initialOriginalImage: CGImage?
@@ -1273,11 +1305,18 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     init(image: CGImage, presentation: FrozenCapturePresentation? = nil,
          onSave: @escaping (CGImage) -> Void, onPin: @escaping (CGImage) -> Void,
          onOCR: @escaping (CGImage) -> Void, onTranslate: ((CGImage) -> Void)? = nil,
-         onApply: ((CGImage) -> Bool)? = nil, captureDate: Date? = nil, saveWorkflow: SaveWorkflowPresenter? = nil, copyAction: ((CGImage) -> Void)? = nil, onPinWithOriginal: ((CGImage, CGImage) -> Bool)? = nil) {
+         onApply: ((CGImage) -> Bool)? = nil, captureDate: Date? = nil, saveWorkflow: SaveWorkflowPresenter? = nil, copyAction: ((CGImage) -> Void)? = nil, onPinWithOriginal: ((CGImage, CGImage) -> Bool)? = nil,
+         onSaveEditable: ((CGImage, EditableCapturePayload) throws -> Void)? = nil,
+         onPinEditable: ((CGImage, EditableCapturePayload) throws -> Void)? = nil,
+         onApplyEditable: ((CGImage, EditableCapturePayload) throws -> Void)? = nil,
+         baseProvenance: EditableAnnotationBaseProvenance = .legacyRaster) {
         canvas = ImageEditorCanvas(image: image, captureDate: presentation?.capturedAt ?? captureDate)
         self.presentation = presentation
         self.onSave = onSave; self.onPin = onPin; self.onOCR = onOCR
         self.onPinWithOriginal = onPinWithOriginal; initialOriginalImage = image
+        self.onSaveEditable = onSaveEditable; self.onPinEditable = onPinEditable; self.onApplyEditable = onApplyEditable
+        let initialAssetID = UUID(); originalAssetID = initialAssetID; baseAssetID = initialAssetID
+        self.baseProvenance = presentation == nil ? baseProvenance : .originalCapture
         self.onTranslate = onTranslate; self.onApply = onApply; self.saveWorkflow = saveWorkflow ?? SaveWorkflowPresenter.application
         self.copyAction = copyAction ?? { copyImage($0) }
         let window: NSWindow
@@ -1373,7 +1412,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     /// its unused area is transparent and no desktop pixels are acquired.
     @discardableResult
     func showPinned(_ placement: PinEditorPresentation, desktopVisibility: PinDesktopVisibility = .defaultMode) -> Bool {
-        guard presentation == nil, onApply != nil,
+        guard presentation == nil, (onApply != nil || onApplyEditable != nil),
               [placement.viewportFrame.minX, placement.viewportFrame.minY, placement.viewportFrame.width, placement.viewportFrame.height,
                placement.imageFrame.minX, placement.imageFrame.minY, placement.imageFrame.width, placement.imageFrame.height].allSatisfy({ $0.isFinite }),
               placement.viewportFrame.width > 0, placement.viewportFrame.height > 0,
@@ -1493,7 +1532,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         divider()
         toolbar.addArrangedSubview(iconButton("text.viewfinder", title: "识别文字", id: "editor.ocr", action: #selector(recognizeResult)))
         if onTranslate != nil { toolbar.addArrangedSubview(iconButton("character.bubble", title: "翻译", id: "editor.translate", action: #selector(translateResult))) }
-        if onApply != nil {
+        if onApply != nil || onApplyEditable != nil {
             toolbar.addArrangedSubview(iconButton("checkmark.circle", title: "应用到贴图", id: "editor.applyToPin", action: #selector(applyResult)))
         } else { toolbar.addArrangedSubview(iconButton("pin", title: "贴图", id: "editor.pin", action: #selector(pinResult))) }
         toolbar.addArrangedSubview(iconButton("arrow.down.to.line", title: "保存图片… · ⌘S", id: "editor.save", action: #selector(exportResult)))
@@ -1517,6 +1556,9 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         let decorationItem = NSMenuItem(title: "圆角 · 边框 · 阴影…", action: #selector(editOutputDecoration), keyEquivalent: "")
         decorationItem.target = self; decorationItem.identifier = .init("editor.context.outputDecoration")
         canvas.menu?.addItem(decorationItem)
+        let uncrop = NSMenuItem(title: "取消裁剪（恢复完整底图）", action: #selector(restoreFullCrop), keyEquivalent: "")
+        uncrop.target = self; uncrop.identifier = .init("editor.restoreFullCrop")
+        canvas.menu?.addItem(uncrop)
         if presentation != nil {
             let item = NSMenuItem(title: "截图区域比例与像素尺寸…", action: #selector(toggleCaptureRatio), keyEquivalent: "")
             item.target = self; canvas.menu?.addItem(item)
@@ -1534,12 +1576,13 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         }
         overflow.menu?.addItem(.separator())
         if presentation != nil { addMenu("截图区域比例与像素尺寸…", action: #selector(toggleCaptureRatio)) }
+        addMenu("取消裁剪（恢复完整底图）", action: #selector(restoreFullCrop))
         addMenu("圆角 · 边框 · 阴影…", action: #selector(editOutputDecoration))
         addMenu("自动马赛克…", action: #selector(chooseAutomaticMosaicTool))
         addMenu("查找所选区域的相同内容…", action: #selector(startAutomaticMosaic))
         addMenu("模糊", action: #selector(selectBlur)); addMenu("创建标注副本 · ⌘D", action: #selector(duplicateAnnotation))
         addMenu("删除标注 · Delete", action: #selector(deleteAnnotation)); overflow.menu?.addItem(.separator())
-        addMenu(onApply == nil ? "保存到历史" : "保存编辑", action: #selector(saveResult))
+        addMenu(onApply == nil && onApplyEditable == nil ? "保存到历史" : "保存编辑", action: #selector(saveResult))
         if saveWorkflow != nil {
             addMenu("快速保存 PNG", action: #selector(quickSaveResult)); addMenu("保存 PNG 并复制", action: #selector(saveCopyResult))
             addMenu("保存与命名设置…", action: #selector(openSaveSettings))
@@ -1587,15 +1630,15 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         } else if let presentation {
             selection = boundaryPreviewFrame ?? presentation.selectionFrame
             if boundaryPreviewFrame == nil {
-                canvas.verticalZoom = selection.height / CGFloat(canvas.image.height)
-                canvas.zoom = selection.width / CGFloat(canvas.image.width)
+                canvas.verticalZoom = selection.height / CGFloat(canvas.outputPixelHeight)
+                canvas.zoom = selection.width / CGFloat(canvas.outputPixelWidth)
                 canvas.frame = selection
             }
         } else {
             let available = CGRect(x: 22, y: 126, width: max(1, workspace.bounds.width - 44), height: max(1, workspace.bounds.height - 164))
-            let imageSize = CGSize(width: canvas.image.width, height: canvas.image.height)
+            let imageSize = CGSize(width: canvas.outputPixelWidth, height: canvas.outputPixelHeight)
             if fitToWindow && (needsFit || lastLayoutSize != workspace.bounds.size || lastImageSize != imageSize) {
-                canvas.zoom = min(1, max(0.05, min(available.width / CGFloat(canvas.image.width), available.height / CGFloat(canvas.image.height))))
+                canvas.zoom = min(1, max(0.05, min(available.width / CGFloat(canvas.outputPixelWidth), available.height / CGFloat(canvas.outputPixelHeight))))
             }
             needsFit = false; lastLayoutSize = workspace.bounds.size; lastImageSize = imageSize
             let displayed = CGSize(width: min(available.width, canvas.frame.width), height: min(available.height, canvas.frame.height))
@@ -1606,7 +1649,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         if let presentation, boundaryPreviewFrame != nil {
             workspace.pixelSize = CGSize(width: (selection.width * CGFloat(presentation.frozenImage.width) / presentation.displayFrame.width).rounded(),
                                          height: (selection.height * CGFloat(presentation.frozenImage.height) / presentation.displayFrame.height).rounded())
-        } else { workspace.pixelSize = CGSize(width: canvas.image.width, height: canvas.image.height) }
+        } else { workspace.pixelSize = CGSize(width: canvas.outputPixelWidth, height: canvas.outputPixelHeight) }
         workspace.aspectRatio = presentation?.aspectRatio
         captureRatioControls.display(ratio: presentation?.aspectRatio, pixels: workspace.pixelSize)
         captureRatioSurface.isHidden = !ratioControlsVisible || presentation == nil || automaticMosaicBlocksOutput
@@ -1639,9 +1682,9 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
             let focusedMosaic = automaticMosaicReviewState.flatMap { state -> CGRect? in
                 guard state.candidates.indices.contains(state.selectedIndex) else { return nil }
                 let rect = state.candidates[state.selectedIndex].rect
-                return CGRect(x: pin.imageFrame.minX + rect.minX * pin.imageFrame.width / CGFloat(canvas.image.width),
-                    y: pin.imageFrame.minY + rect.minY * pin.imageFrame.height / CGFloat(canvas.image.height),
-                    width: rect.width * pin.imageFrame.width / CGFloat(canvas.image.width), height: rect.height * pin.imageFrame.height / CGFloat(canvas.image.height))
+                return CGRect(x: pin.imageFrame.minX + (rect.minX - canvas.visibleImageRect.minX) * pin.imageFrame.width / CGFloat(canvas.outputPixelWidth),
+                    y: pin.imageFrame.minY + (rect.minY - canvas.visibleImageRect.minY) * pin.imageFrame.height / CGFloat(canvas.outputPixelHeight),
+                    width: rect.width * pin.imageFrame.width / CGFloat(canvas.outputPixelWidth), height: rect.height * pin.imageFrame.height / CGFloat(canvas.outputPixelHeight))
             }
             let mosaicFrame = AutomaticMosaicReviewSurface.frame(image: selection, available: availableBounds,
                 avoiding: [frames.toolbar] + (inspector.isHidden ? [] : [frames.palette]), focusedCandidate: focusedMosaic)
@@ -1653,8 +1696,8 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
             let dx = -window.frame.minX, dy = -window.frame.minY
             workspace.selectionFrame = pin.viewportFrame.offsetBy(dx: dx, dy: dy)
             pinClipView.frame = workspace.selectionFrame
-            canvas.verticalZoom = pin.imageFrame.height / CGFloat(canvas.image.height)
-            canvas.zoom = pin.imageFrame.width / CGFloat(canvas.image.width)
+            canvas.verticalZoom = pin.imageFrame.height / CGFloat(canvas.outputPixelHeight)
+            canvas.zoom = pin.imageFrame.width / CGFloat(canvas.outputPixelWidth)
             canvas.frame = CGRect(x: pin.imageFrame.minX - pin.viewportFrame.minX, y: pin.imageFrame.minY - pin.viewportFrame.minY,
                                   width: pin.imageFrame.width, height: pin.imageFrame.height)
             toolbar.frame = frames.toolbar.offsetBy(dx: dx, dy: dy); inspector.frame = frames.palette.offsetBy(dx: dx, dy: dy)
@@ -1667,7 +1710,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         ratioButton?.state = ratioControlsVisible ? .on : .off
         status.stringValue = "\(Int(workspace.pixelSize.width)) × \(Int(workspace.pixelSize.height)) px"
         if let ratio = presentation?.aspectRatio { status.stringValue += " · \(ratio.label) 精确" }
-        if !outputDecoration.isIdentity, let output = try? ImageOutputDecorationLayout.make(width: canvas.image.width, height: canvas.image.height, decoration: outputDecoration) {
+        if !outputDecoration.isIdentity, let output = try? ImageOutputDecorationLayout.make(width: canvas.outputPixelWidth, height: canvas.outputPixelHeight, decoration: outputDecoration) {
             status.stringValue += " · 输出 \(output.width) × \(output.height) px"
         }
         if let ticket = projectionTicket { status.stringValue += ticket.cancellation.isCancelled ? " · 正在取消…" : " · 正在生成装饰…" }
@@ -1680,10 +1723,55 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         if pinPresentation == nil { layoutAutomaticMosaicReview() }
     }
 
-    func setVerificationAnnotations(_ annotations: [ImageAnnotation]) {
-        recordChange(); canvas.setContent(image: canvas.image, annotations: annotations); canvas.displayIfNeeded()
+    /// Install only before presentation or any editing. Corrupt documents fail
+    /// explicitly; callers may offer their separately stored raster as a legacy image.
+    func restoreEditablePayload(_ payload: EditableCapturePayload) throws {
+        guard !isClosed, undoStates.isEmpty, redoStates.isEmpty, canvas.annotations.isEmpty,
+              !outputProjectionIsPending else { throw EditorOutputProjectionError.invalidOwner }
+        try payload.validate()
+        let document = payload.document
+        editableDocumentID = document.documentID
+        originalAssetID = document.originalAssetID; baseAssetID = document.baseAssetID
+        baseCropInOriginal = document.baseCropInOriginal; baseProvenance = document.baseProvenance
+        canvas.restoreCaptureTimestamp(document.capturedAt, timeZoneIdentifier: document.captureTimeZoneIdentifier, known: document.captureTimestampKnown)
+        initialOriginalImage = payload.originalImage; outputDecoration = document.outputDecoration
+        canvas.setContent(image: payload.baseImage, annotations: document.annotations, numberSequence: document.numberSequence, cropViewportInBase: document.cropViewportInBase)
+        updateStatus(); layoutInterface()
     }
-    private var snapshot: Snapshot { Snapshot(image: canvas.image, annotations: canvas.annotations, selectionFrame: presentation?.selectionFrame, pinPresentation: pinPresentation, numberSequence: canvas.numberSequence, aspectRatio: presentation?.aspectRatio, outputDecoration: outputDecoration) }
+
+    /// Legacy raster edits keep the pin's original copy separate from its current base.
+    func useOriginalImage(_ original: CGImage) {
+        guard !isClosed, undoStates.isEmpty, redoStates.isEmpty else { return }
+        if !(original === canvas.image) { originalAssetID = UUID(); baseProvenance = .derivedRaster }
+        initialOriginalImage = original
+    }
+
+    /// Contains value metadata and shared immutable image references, never a
+    /// flattened-raster undo history or native view/controller references.
+    func editablePayload() throws -> EditableCapturePayload {
+        guard !isClosed, let original = initialOriginalImage else { throw EditorOutputProjectionError.invalidOwner }
+        let document = EditableAnnotationDocument(documentID: editableDocumentID,
+            originalAssetID: originalAssetID, originalPixelWidth: original.width, originalPixelHeight: original.height,
+            baseAssetID: baseAssetID, basePixelWidth: canvas.image.width, basePixelHeight: canvas.image.height,
+            baseCropInOriginal: baseCropInOriginal, cropViewportInBase: canvas.cropViewportInBase, baseProvenance: baseProvenance,
+            capturedAt: canvas.captureTimestampKnown ? canvas.captureDate : Date(timeIntervalSince1970: 0),
+            captureTimeZoneIdentifier: canvas.captureTimeZoneIdentifier, captureTimestampKnown: canvas.captureTimestampKnown, annotations: canvas.annotations,
+            numberSequence: canvas.numberSequence, outputDecoration: outputDecoration)
+        let payload = EditableCapturePayload(document: document, originalImage: original, baseImage: canvas.image)
+        try payload.validate()
+        return payload
+    }
+
+    var retainedUndoRasterCount: Int {
+        var identities = Set<ObjectIdentifier>()
+        for state in undoStates + redoStates { identities.insert(ObjectIdentifier(state.image)) }
+        return identities.count
+    }
+
+    func setVerificationAnnotations(_ annotations: [ImageAnnotation]) {
+        recordChange(); canvas.setContent(image: canvas.image, annotations: annotations, cropViewportInBase: canvas.cropViewportInBase); canvas.displayIfNeeded()
+    }
+    private var snapshot: Snapshot { Snapshot(image: canvas.image, annotations: canvas.annotations, selectionFrame: presentation?.selectionFrame, pinPresentation: pinPresentation, numberSequence: canvas.numberSequence, aspectRatio: presentation?.aspectRatio, outputDecoration: outputDecoration, baseAssetID: baseAssetID, baseCropInOriginal: baseCropInOriginal, cropViewportInBase: canvas.cropViewportInBase, baseProvenance: baseProvenance) }
     private func recordChange() { cancelDecorationWork(); undoStates.append(snapshot); redoStates.removeAll(); trimHistory(preferUndo: true); updateStatus() }
     private func trimHistory(preferUndo: Bool) {
         let first = preferUndo ? redoStates : undoStates, second = preferUndo ? undoStates : redoStates
@@ -1694,11 +1782,12 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     }
     private func restore(_ state: Snapshot) {
         cancelDecorationWork(); outputDecoration = state.outputDecoration
+        baseAssetID = state.baseAssetID; baseCropInOriginal = state.baseCropInOriginal; baseProvenance = state.baseProvenance
         if pinPresentation != nil { pinPresentation = state.pinPresentation }
         if let old = presentation, let frame = state.selectionFrame {
             presentation = FrozenCapturePresentation(frozenImage: old.frozenImage, displayID: old.displayID, displayFrame: old.displayFrame, selectionFrame: frame, capturedAt: old.capturedAt, aspectRatio: state.aspectRatio)
         }
-        canvas.setContent(image: state.image, annotations: state.annotations, numberSequence: state.numberSequence); updateStatus(); layoutInterface()
+        canvas.setContent(image: state.image, annotations: state.annotations, numberSequence: state.numberSequence, cropViewportInBase: state.cropViewportInBase); updateStatus(); layoutInterface()
     }
     private func updateStatus() {
         let outputIDs: Set<String> = ["editor.copy", "editor.save", "editor.pin", "editor.applyToPin", "editor.ocr", "editor.translate", "editor.saveActions"]
@@ -1713,11 +1802,12 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
                 }
                 if automaticMosaicOutputAction(item.action) { item.isEnabled = !automaticMosaicBlocksOutput && !outputProjectionIsPending && !isClosed }
                 if item.action == #selector(editOutputDecoration) { item.isEnabled = !automaticMosaicBlocksOutput && !isClosed }
+                if item.action == #selector(restoreFullCrop) { item.isEnabled = canvas.cropViewportInBase != nil && !isClosed }
             }
         }
         outputDecorationButton?.isEnabled = !automaticMosaicBlocksOutput && !isClosed
         outputDecorationButton?.state = outputDecoration.enabled ? .on : .off
-        status.stringValue = "\(canvas.image.width) × \(canvas.image.height) px · \(canvas.annotations.count) 个标注"
+        status.stringValue = "\(canvas.outputPixelWidth) × \(canvas.outputPixelHeight) px · \(canvas.annotations.count) 个标注"
         undoButton?.isEnabled = !undoStates.isEmpty || canvas.pendingPolylinePointCount > 0; redoButton?.isEnabled = !redoStates.isEmpty && canvas.pendingPolylinePointCount == 0
         cropButton?.isHidden = canvas.tool != .crop
         cropButton?.isEnabled = (canvas.cropRect?.width ?? 0) >= 1 && (canvas.cropRect?.height ?? 0) >= 1
@@ -1774,27 +1864,61 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         undoStates.append(snapshot); trimHistory(preferUndo: true); restore(state)
     }
     @objc private func applyCrop() {
-        cancelDecorationWork()
-        canvas.finishNumberComment(commit: true)
-        finishInlineText(commit: true)
-        guard let rect = canvas.cropRect, let flattened = canvas.flattened(), let cropped = ImageEditorRenderer.crop(image: flattened, to: rect) else { return }
+        cancelDecorationWork(); cancelAutomaticMosaic()
+        canvas.finishNumberComment(commit: true); finishInlineText(commit: true); canvas.finishPolyline()
+        guard let rect = canvas.cropRect else { return }
+        let previous = canvas.visibleImageRect
+        let clipped = rect.standardized.integral.intersection(previous)
+        guard !clipped.isNull, clipped.width >= 1, clipped.height >= 1 else { return }
         recordChange()
         if let old = presentation {
-            let scaleX = old.selectionFrame.width / CGFloat(canvas.image.width), scaleY = old.selectionFrame.height / CGFloat(canvas.image.height)
-            let clipped = rect.standardized.integral.intersection(CGRect(x: 0, y: 0, width: canvas.image.width, height: canvas.image.height))
+            let scaleX = old.selectionFrame.width / previous.width, scaleY = old.selectionFrame.height / previous.height
             presentation = FrozenCapturePresentation(frozenImage: old.frozenImage, displayID: old.displayID, displayFrame: old.displayFrame,
-                selectionFrame: CGRect(x: old.selectionFrame.minX + clipped.minX * scaleX, y: old.selectionFrame.minY + clipped.minY * scaleY, width: clipped.width * scaleX, height: clipped.height * scaleY), capturedAt: old.capturedAt)
+                selectionFrame: CGRect(x: old.selectionFrame.minX + (clipped.minX - previous.minX) * scaleX,
+                    y: old.selectionFrame.minY + (clipped.minY - previous.minY) * scaleY,
+                    width: clipped.width * scaleX, height: clipped.height * scaleY), capturedAt: old.capturedAt)
         }
         if let pin = pinPresentation {
-            let clipped = rect.standardized.integral.intersection(CGRect(x: 0, y: 0, width: canvas.image.width, height: canvas.image.height))
-            let scaleX = pin.imageFrame.width / CGFloat(canvas.image.width), scaleY = pin.imageFrame.height / CGFloat(canvas.image.height)
-            let frame = CGRect(x: pin.imageFrame.minX + clipped.minX * scaleX, y: pin.imageFrame.minY + clipped.minY * scaleY,
-                               width: clipped.width * scaleX, height: clipped.height * scaleY)
+            let scaleX = pin.imageFrame.width / previous.width, scaleY = pin.imageFrame.height / previous.height
+            let frame = CGRect(x: pin.imageFrame.minX + (clipped.minX - previous.minX) * scaleX,
+                y: pin.imageFrame.minY + (clipped.minY - previous.minY) * scaleY,
+                width: clipped.width * scaleX, height: clipped.height * scaleY)
             pinPresentation = PinEditorPresentation(viewportFrame: pin.viewportFrame, imageFrame: frame, opacity: pin.opacity, level: pin.level)
         }
-        presentation?.aspectRatio = nil
-        canvas.setContent(image: cropped, annotations: []); fitImage()
+        // No full raster or translated/reconstructed layers enter crop history.
+        // Full-stack rendering happens before the viewport is cut, so effects
+        // keep sampling the same source pixels beyond the visible crop edges.
+        canvas.setContent(image: canvas.image, annotations: canvas.annotations,
+            numberSequence: canvas.numberSequence, cropViewportInBase: clipped)
+        fitImage()
     }
+    /// Saved viewport metadata remains reversible after a fresh reopen even
+    /// though native undo history is intentionally not persisted.
+    @objc private func restoreFullCrop() {
+        guard !isClosed, let crop = canvas.cropViewportInBase else { return }
+        cancelDecorationWork(); cancelAutomaticMosaic()
+        canvas.finishNumberComment(commit: true); finishInlineText(commit: true); canvas.finishPolyline()
+        recordChange()
+        if let old = presentation {
+            let sx = old.selectionFrame.width / crop.width, sy = old.selectionFrame.height / crop.height
+            let frame = CGRect(x: old.selectionFrame.minX - crop.minX * sx,
+                y: old.selectionFrame.minY - crop.minY * sy,
+                width: CGFloat(canvas.image.width) * sx, height: CGFloat(canvas.image.height) * sy)
+            presentation = FrozenCapturePresentation(frozenImage: old.frozenImage, displayID: old.displayID,
+                displayFrame: old.displayFrame, selectionFrame: frame, capturedAt: old.capturedAt)
+        }
+        if let pin = pinPresentation {
+            let sx = pin.imageFrame.width / crop.width, sy = pin.imageFrame.height / crop.height
+            let frame = CGRect(x: pin.imageFrame.minX - crop.minX * sx,
+                y: pin.imageFrame.minY - crop.minY * sy,
+                width: CGFloat(canvas.image.width) * sx, height: CGFloat(canvas.image.height) * sy)
+            pinPresentation = PinEditorPresentation(viewportFrame: pin.viewportFrame.union(frame),
+                imageFrame: frame, opacity: pin.opacity, level: pin.level)
+        }
+        canvas.setContent(image: canvas.image, annotations: canvas.annotations, numberSequence: canvas.numberSequence)
+        fitImage()
+    }
+
     @objc private func fitImage() { canvas.finishNumberComment(commit: true); finishInlineText(commit: true); fitToWindow = true; needsFit = true; layoutInterface() }
     @objc private func actualSize() { guard presentation == nil else { return }; canvas.finishNumberComment(commit: true); finishInlineText(commit: true); fitToWindow = false; canvas.zoom = 1; layoutInterface() }
     /// One seam for all CURRENT final-image routes. OCR/translation intentionally
@@ -1814,7 +1938,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         let service = EditorOutputProjection.shared
         var reservation: EditorOutputProjection.Ticket?
         do {
-            let ticket = try service.reserve(width: canvas.image.width, height: canvas.image.height, decoration: outputDecoration)
+            let ticket = try service.reserve(width: canvas.outputPixelWidth, height: canvas.outputPixelHeight, decoration: outputDecoration)
             reservation = ticket
             guard let image = canvas.flattened() else { throw ImageOutputDecorationError.allocationFailed }
             let generation = UUID(); projectionGeneration = generation; projectionTicket = ticket
@@ -1858,7 +1982,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     func applyOutputDecoration(_ value: ImageOutputDecoration) throws -> Bool {
         guard !isClosed else { return false }
         if value.enabled { try value.validate() }
-        _ = try ImageOutputDecorationLayout.make(width: canvas.image.width, height: canvas.image.height, decoration: value)
+        _ = try ImageOutputDecorationLayout.make(width: canvas.outputPixelWidth, height: canvas.outputPixelHeight, decoration: value)
         guard value != outputDecoration else { return false }
         recordChange(); outputDecoration = value; updateStatus(); return true
     }
@@ -1892,8 +2016,14 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         }
     }
     @objc private func saveResult() {
-        let workflow = saveWorkflow, action = onSave
-        requestOutput(for: .history) { image in action(image); workflow?.save(image: image, automatic: true) }
+        requestOutput(for: .history) { [weak self] image in
+            guard let self, !self.isClosed else { return }
+            do {
+                if let commit = self.onSaveEditable { try commit(image, self.editablePayload()) }
+                else { self.onSave(image) }
+                self.saveWorkflow?.save(image: image, automatic: true)
+            } catch { self.presentOutputError(error) }
+        }
     }
     @objc private func pinResult() {
         requestOutput(for: .pin) { [weak self] image in
@@ -1903,7 +2033,10 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
             // outside its flattened-input/renderer reservation.
             let workflow = self.saveWorkflow, action = self.onPin
             let originalAction = self.onPinWithOriginal, original = self.initialOriginalImage
-            if let originalAction {
+            if let commit = self.onPinEditable {
+                do { try commit(image, self.editablePayload()) }
+                catch { self.presentOutputError(error); return }
+            } else if let originalAction {
                 guard let original, originalAction(original, image) else { return }
             } else {
                 // Legacy callbacks report completion by returning; keep their API intact.
@@ -1930,8 +2063,15 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     @objc private func recognizeResult() { requestOutput(for: .recognition, close: presentation != nil, completion: onOCR) }
     @objc private func translateResult() { if let onTranslate { requestOutput(for: .translation, close: presentation != nil, completion: onTranslate) } }
     @objc private func applyResult() {
-        guard let onApply else { return }
-        requestOutput(for: .applyToPin) { [weak self] image in if onApply(image) { self?.window?.close() } }
+        guard onApply != nil || onApplyEditable != nil else { return }
+        requestOutput(for: .applyToPin) { [weak self] image in
+            guard let self, !self.isClosed else { return }
+            do {
+                if let commit = self.onApplyEditable { try commit(image, self.editablePayload()) }
+                else if self.onApply?(image) != true { return }
+                self.window?.close()
+            } catch { self.presentOutputError(error) }
+        }
     }
     @objc private func cancelEditor() { cancelDecorationWork(); finishInlineText(commit: false); window?.close() }
 
@@ -1974,6 +2114,39 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
             return try commitCaptureBoundary(frame, ratio: presentation.aspectRatio)
         } catch { captureRatioControls.showError(error.localizedDescription); return false }
     }
+    private func replaceCaptureBoundary(_ requested: CGRect, previous: FrozenCapturePresentation) throws {
+        if let crop = canvas.cropViewportInBase {
+            let sx = previous.selectionFrame.width / crop.width, sy = previous.selectionFrame.height / crop.height
+            let sourceFrame = CGRect(x: previous.selectionFrame.minX - crop.minX * sx,
+                y: previous.selectionFrame.minY - crop.minY * sy,
+                width: CGFloat(canvas.image.width) * sx, height: CGFloat(canvas.image.height) * sy)
+            let basePresentation = FrozenCapturePresentation(frozenImage: previous.frozenImage,
+                displayID: previous.displayID, displayFrame: previous.displayFrame,
+                selectionFrame: sourceFrame, capturedAt: previous.capturedAt)
+            let union = sourceFrame.union(requested)
+            let next = try EditorBoundaryRenderer.recrop(union, presentation: basePresentation, previousImage: canvas.image)
+            guard let expanded = next.presentation else { throw CaptureError.invalidRegion }
+            let offset = EditorBoundaryRenderer.annotationOffset(from: sourceFrame, to: expanded.selectionFrame, presentation: previous)
+            let viewport = CGRect(x: ((requested.minX - expanded.selectionFrame.minX) / sx).rounded(),
+                y: ((requested.minY - expanded.selectionFrame.minY) / sy).rounded(),
+                width: (requested.width / sx).rounded(), height: (requested.height / sy).rounded())
+            let annotations = canvas.annotations.map { $0.rebasedForEditableCapture(by: offset) }
+            recordChange(); baseAssetID = UUID(); baseCropInOriginal = nil; baseProvenance = .derivedRaster
+            presentation = FrozenCapturePresentation(frozenImage: previous.frozenImage, displayID: previous.displayID,
+                displayFrame: previous.displayFrame, selectionFrame: requested, capturedAt: previous.capturedAt,
+                aspectRatio: previous.aspectRatio)
+            canvas.setContent(image: next.image, annotations: annotations, cropViewportInBase: viewport)
+        } else {
+            let next = try EditorBoundaryRenderer.recrop(requested, presentation: previous, previousImage: canvas.image)
+            guard let nextPresentation = next.presentation else { throw CaptureError.invalidRegion }
+            let offset = EditorBoundaryRenderer.annotationOffset(from: previous.selectionFrame,
+                to: nextPresentation.selectionFrame, presentation: previous)
+            let annotations = canvas.annotations.map { $0.rebasedForEditableCapture(by: offset) }
+            recordChange(); baseAssetID = UUID(); baseCropInOriginal = nil; baseProvenance = .derivedRaster
+            presentation = nextPresentation; canvas.setContent(image: next.image, annotations: annotations)
+        }
+    }
+
     @discardableResult
     private func commitCaptureBoundary(_ frame: CGRect, ratio: CaptureAspectRatio?) throws -> Bool {
         guard let previous = presentation else { return false }
@@ -1985,11 +2158,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
             if ratio != previous.aspectRatio { recordChange(); presentation?.aspectRatio = ratio }
         } else {
             canvas.releasePresentationCache()
-            let next = try EditorBoundaryRenderer.recrop(aligned, presentation: target, previousImage: canvas.image)
-            guard let nextPresentation = next.presentation else { return false }
-            let offset = EditorBoundaryRenderer.annotationOffset(from: previous.selectionFrame, to: nextPresentation.selectionFrame, presentation: previous)
-            let annotations = canvas.annotations.map { $0.translated(by: offset) }
-            recordChange(); presentation = nextPresentation; canvas.setContent(image: next.image, annotations: annotations)
+            try replaceCaptureBoundary(aligned, previous: target)
         }
         window?.makeFirstResponder(workspace); updateStatus(); workspace.needsDisplay = true; return true
     }
@@ -2047,13 +2216,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         // motion made no raster copies and did not touch the annotation/history model.
         canvas.releasePresentationCache()
         do {
-            let next = try EditorBoundaryRenderer.recrop(requested, presentation: previous, previousImage: canvas.image)
-            guard let nextPresentation = next.presentation else { return }
-            let offset = EditorBoundaryRenderer.annotationOffset(from: previous.selectionFrame, to: nextPresentation.selectionFrame, presentation: previous)
-            let translated = canvas.annotations.map { $0.translated(by: offset) }
-            recordChange()
-            presentation = nextPresentation
-            canvas.setContent(image: next.image, annotations: translated)
+            try replaceCaptureBoundary(requested, previous: previous)
         } catch { showError(error) }
         layoutInterface(); workspace.needsDisplay = true; window?.makeFirstResponder(ratioControlsVisible ? workspace : canvas)
     }
@@ -2067,8 +2230,8 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         let zoom = canvas.zoom, scaleY = canvas.displayScaleY
         let width = min(max(150, (existing?.localBounds.width ?? 260 / zoom) * zoom + 8), max(80, canvas.bounds.width))
         let height = min(max(58, (existing?.localBounds.height ?? 66 / scaleY) * scaleY + 8), max(40, canvas.bounds.height))
-        let origin = CGPoint(x: min(max(0, point.x * zoom), max(0, canvas.bounds.width - width)),
-                             y: min(max(0, point.y * scaleY - (existing == nil ? height : 0)), max(0, canvas.bounds.height - height)))
+        let origin = CGPoint(x: min(max(canvas.bounds.minX, point.x * zoom), max(canvas.bounds.minX, canvas.bounds.maxX - width)),
+                             y: min(max(canvas.bounds.minY, point.y * scaleY - (existing == nil ? height : 0)), max(canvas.bounds.minY, canvas.bounds.maxY - height)))
         if existing == nil { annotation.points = [CGPoint(x: origin.x / zoom, y: origin.y / scaleY)] }
         let box = InlineAnnotationTextBox(frame: CGRect(origin: origin, size: CGSize(width: width, height: height)), annotation: annotation, zoom: zoom)
         box.onAccept = { [weak self] in self?.finishInlineText(commit: true) }

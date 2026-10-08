@@ -18,6 +18,8 @@ import PicShotCore
     var cachedThumbnailCount: Int { thumbnails.count }
     private static let thumbnailByteLimit = 12 * 1_024 * 1_024
     private static let thumbnailCountLimit = 24
+    var failureInjector: ((CaptureAssetWritePoint) throws -> Void)?
+    private var editableAssets: EditableCaptureAssetStore { EditableCaptureAssetStore(directory: directory) }
     private let fileManager = FileManager.default
     private static let maximumManifestBytes = 2 * 1_024 * 1_024
 
@@ -45,7 +47,13 @@ import PicShotCore
         if fileManager.fileExists(atPath: manifest.path) {
             let info = try checkedRegularFile(manifest)
             guard (info.fileSize ?? Int.max) <= Self.maximumManifestBytes else { throw PinSessionError.invalidManifest }
-            do { index = try JSONDecoder().decode(PinSessionIndex.self, from: Data(contentsOf: manifest)).validated() }
+            do {
+                let handle = try FileHandle(forReadingFrom: manifest)
+                defer { try? handle.close() }
+                let data = try handle.read(upToCount: Self.maximumManifestBytes + 1) ?? Data()
+                guard data.count <= Self.maximumManifestBytes else { throw PinSessionError.invalidManifest }
+                index = try JSONDecoder().decode(PinSessionIndex.self, from: data).validated()
+            }
             catch let error as PinSessionError { throw error }
             catch { throw PinSessionError.invalidManifest }
         }
@@ -54,12 +62,16 @@ import PicShotCore
         var loaded = index
         var usable: [PinSessionEntry] = []
         for entry in loaded.entries {
+            if let editable = entry.editableCapture { try editableAssets.validateFileBoundaries(editable) }
             var assets: [String: PinRasterAsset] = [:]
             var complete = true
             for asset in entry.assets {
                 guard let verified = try inspectedAsset(asset) else { complete = false; break }
                 assets[asset.filename] = verified
             }
+            // Editable-source damage never causes the valid paired image files to be
+            // discarded. Keep its descriptors for a truthful, retryable load error.
+            if !complete, entry.editableCapture != nil { usable.append(entry); continue }
             if complete, let rich = entry.richContent { complete = try inspectedRichAsset(rich) }
             if complete, let original = assets[entry.original.filename], let current = assets[entry.current.filename] {
                 var verified = entry; verified.original = original; verified.current = current
@@ -68,8 +80,10 @@ import PicShotCore
         }
         loaded.entries = usable
         loaded.entries = try policy.retaining(loaded)
+        try editableAssets.recoverTransactions(referenced: Set(index.entries.flatMap(\.assetFilenames)))
         try commit(loaded)
         cleanupStaleFiles()
+        editableAssets.cleanupTemporaryFiles()
     }
 
     @discardableResult func add(rich prepared: PreparedRichPin, presentation: PinPresentation = PinPresentation(),
@@ -88,7 +102,7 @@ import PicShotCore
         guard try inspectedRichAsset(rich) else { throw RichPinError.invalidContent }
         let entry = PinSessionEntry(groupID: index.activeGroupID, title: prepared.title, original: poster,
                                     presentation: presentation.normalized(), richContent: rich)
-        var next = index; next.version = PinSessionIndex.schemaVersion; next.entries.insert(entry, at: 0)
+        var next = index; next.version = max(next.version, 2); next.entries.insert(entry, at: 0)
         if revealingGroup {
             next.allHidden = false
             if let position = next.groups.firstIndex(where: { $0.id == next.activeGroupID }) { next.groups[position].isHidden = false }
@@ -154,14 +168,26 @@ import PicShotCore
         catch { return false }
     }
 
+    /// nil means a legacy flattened image. A damaged editable capture throws.
+    func editablePayload(id: UUID, reusingOriginal: CGImage? = nil,
+                         maximumRasterBytes: Int = EditorAdmissionPolicy().maximumRasterBytes) throws -> EditableCapturePayload? {
+        guard let entry = entry(id: id) else { throw PinSessionError.missingPin }
+        guard let editable = entry.editableCapture else { return nil }
+        let payload = try editableAssets.read(editable, reusingOriginal: reusingOriginal, maximumRasterBytes: maximumRasterBytes)
+        let size = try payload.document.expectedOutputPixelSize()
+        guard size.width == CGFloat(entry.current.width), size.height == CGFloat(entry.current.height),
+              try inspectedAsset(entry.current) == entry.current else { throw PinSessionError.invalidManifest }
+        return payload
+    }
+
     func entry(id: UUID) -> PinSessionEntry? { index.entry(id: id) }
 
     @discardableResult func add(image: CGImage, title: String = "贴图", groupID: UUID? = nil,
                                presentation: PinPresentation = PinPresentation(),
                                protecting protectedIDs: Set<UUID> = [],
-                               revealingGroup: Bool = false) throws -> PinSessionEntry {
+                               revealingGroup: Bool = false, editable: EditableCapturePayload? = nil) throws -> PinSessionEntry {
         try add(originalImage: image, currentImage: image, title: title, groupID: groupID,
-                presentation: presentation, protecting: protectedIDs, revealingGroup: revealingGroup)
+                presentation: presentation, protecting: protectedIDs, revealingGroup: revealingGroup, editable: editable)
     }
 
     /// Stage source and decorated pixels before publishing one complete entry. The original
@@ -170,25 +196,31 @@ import PicShotCore
                                title: String = "贴图", groupID: UUID? = nil,
                                presentation: PinPresentation = PinPresentation(),
                                protecting protectedIDs: Set<UUID> = [],
-                               revealingGroup: Bool = false) throws -> PinSessionEntry {
+                               revealingGroup: Bool = false, editable: EditableCapturePayload? = nil) throws -> PinSessionEntry {
         let groupID = groupID ?? index.activeGroupID
         guard index.groups.contains(where: { $0.id == groupID }) else { throw PinSessionError.missingGroup }
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard PinSessionIndex.validName(title, limit: 120) else { throw PinSessionError.invalidName }
+        try editable?.validate(currentImage: currentImage)
+        if let editable { guard editable.originalImage === originalImage else { throw PinSessionError.invalidImage } }
         var staged: [String] = []
         var committed = false
-        defer { if !committed { staged.forEach { removeAssetIfSafe($0) } } }
-        let original = try writeAsset(originalImage)
-        staged.append(original.filename)
-        let current: PinRasterAsset
-        if originalImage === currentImage { current = original }
-        else {
-            current = try writeAsset(currentImage)
-            staged.append(current.filename)
+        defer { if !committed { staged.forEach { removeAssetIfSafe($0) } }; editableAssets.finish(staged, committed: committed) }
+        let originalRaster = try writeEditableAsset(originalImage, staged: &staged)
+        let original = pinAsset(originalRaster, preservingDigest: editable != nil)
+        let currentRaster: EditableRasterAsset
+        if originalImage === currentImage { currentRaster = originalRaster }
+        else { currentRaster = try writeEditableAsset(currentImage, staged: &staged) }
+        let current = pinAsset(currentRaster, preservingDigest: editable != nil)
+        let document = try editable.map { payload in
+            try editableAssets.stage(payload, current: currentRaster, reusingOriginal: EditableRasterAsset(assetID: payload.document.originalAssetID,
+                filename: original.filename, width: original.width, height: original.height, byteCount: original.byteCount, sha256: originalRaster.sha256),
+                maximumPixels: 32_000_000, maximumBytes: policy.maxDiskBytes, staged: &staged, failure: failureInjector)
         }
         let entry = PinSessionEntry(groupID: groupID, title: title, original: original, current: current,
-                                    presentation: presentation.normalized())
+                                    presentation: presentation.normalized(), editableCapture: document)
         var next = index; next.entries.insert(entry, at: 0)
+        if document != nil { next.version = 3 }
         // A user-created pin can reveal its group in the same atomic transaction.
         // A failed manifest write must not save/evict a pin or change visibility alone.
         if revealingGroup {
@@ -201,13 +233,32 @@ import PicShotCore
     }
 
     /// Save only after a pixel edit, not on move/resize/opacity events. Preserves the original PNG.
-    func replaceImage(_ image: CGImage, id: UUID, protecting protectedIDs: Set<UUID> = []) throws {
+    func replaceImage(_ image: CGImage, id: UUID, protecting protectedIDs: Set<UUID> = [],
+                      editable: EditableCapturePayload? = nil) throws {
         guard let position = index.entries.firstIndex(where: { $0.id == id }) else { throw PinSessionError.missingPin }
-        guard index.entries[position].richContent == nil else { throw RichPinError.invalidContent }
-        let asset = try writeAsset(image)
-        var committed = false
-        defer { if !committed { removeAssetIfSafe(asset.filename) } }
+        let previous = index.entries[position]
+        guard previous.richContent == nil else { throw RichPinError.invalidContent }
+        try verifyContent(previous.original)
+        try editable?.validate(currentImage: image)
+        var staged: [String] = [], committed = false
+        defer { if !committed { staged.forEach { removeAssetIfSafe($0) } }; editableAssets.finish(staged, committed: committed) }
+        let raster = try writeEditableAsset(image, staged: &staged)
+        let asset = pinAsset(raster, preservingDigest: editable != nil || previous.original.sha256 != nil)
+        let document = try editable.map { payload in
+            let source = previous.editableCapture?.original ?? EditableRasterAsset(assetID: payload.document.originalAssetID,
+                filename: previous.original.filename, width: previous.original.width,
+                height: previous.original.height, byteCount: previous.original.byteCount, sha256: previous.original.sha256)
+            return try editableAssets.stage(payload, current: raster, reusingOriginal: source, maximumPixels: 32_000_000,
+                maximumBytes: policy.maxDiskBytes, staged: &staged, failure: failureInjector)
+        }
         var next = index; next.entries[position].current = asset; next.entries[position].updatedAt = Date()
+        next.entries[position].editableCapture = document
+        if let document {
+            // First edit of a hashless pin adopts the verified checksum without
+            // replacing its immutable source file or publishing a partial upgrade.
+            next.entries[position].original = document.original.pinAsset
+            next.version = 3
+        }
         next.entries = try policy.retaining(next, requiring: [id], protecting: protectedIDs)
         try commit(next); committed = true
         removeThumbnail(id: id)
@@ -216,7 +267,9 @@ import PicShotCore
     func resetImage(id: UUID) throws {
         guard let position = index.entries.firstIndex(where: { $0.id == id }) else { throw PinSessionError.missingPin }
         guard index.entries[position].richContent == nil else { throw RichPinError.invalidContent }
+        try verifyContent(index.entries[position].original)
         var next = index; next.entries[position].current = next.entries[position].original
+        next.entries[position].editableCapture = nil
         next.entries[position].updatedAt = Date(); try commit(next)
         removeThumbnail(id: id)
     }
@@ -323,6 +376,7 @@ import PicShotCore
     func image(id: UUID, original: Bool = false) -> CGImage? {
         guard let entry = entry(id: id) else { return nil }
         let asset = original ? entry.original : entry.current
+        guard (try? verifyContent(asset)) != nil else { return nil }
         guard let inspected = try? inspectedAsset(asset), inspected == asset,
               let url = try? assetURL(asset.filename),
               let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary)
@@ -336,7 +390,9 @@ import PicShotCore
             thumbnailRecency.removeAll { $0 == id }; thumbnailRecency.append(id)
             return cached.image
         }
-        guard let entry = entry(id: id), let inspected = try? inspectedAsset(entry.current), inspected == entry.current,
+        guard let entry = entry(id: id) else { return nil }
+        guard (try? verifyContent(entry.current)) != nil else { return nil }
+        guard let inspected = try? inspectedAsset(entry.current), inspected == entry.current,
               let url = try? assetURL(entry.current.filename),
               let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
               let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
@@ -370,6 +426,18 @@ import PicShotCore
         entry(id: id)?.presentation.normalized(screens: screens.map { PinWindowFrame($0) })
     }
 
+    private func pinAsset(_ raster: EditableRasterAsset, preservingDigest: Bool) -> PinRasterAsset {
+        PinRasterAsset(filename: raster.filename, width: raster.width, height: raster.height,
+            byteCount: raster.byteCount, sha256: preservingDigest ? raster.sha256 : nil)
+    }
+    private func writeEditableAsset(_ image: CGImage, staged: inout [String]) throws -> EditableRasterAsset {
+        guard image.width > 0, image.height > 0, image.height <= 32_000_000,
+              image.width <= 32_000_000 / image.height else { throw PinSessionError.invalidImage }
+        guard Int64(image.width) * Int64(image.height) <= policy.maxPixelCount else { throw PinSessionError.capacityExceeded }
+        return try editableAssets.raster(image, maximumPixels: 32_000_000,
+            maximumBytes: policy.maxDiskBytes, staged: &staged, failure: failureInjector)
+    }
+
     private func writeAsset(_ image: CGImage) throws -> PinRasterAsset {
         guard image.width > 0, image.height > 0, image.height <= 32_000_000,
               image.width <= 32_000_000 / image.height else { throw PinSessionError.invalidImage }
@@ -387,16 +455,22 @@ import PicShotCore
     }
 
     private func assetURL(_ filename: String) throws -> URL {
-        guard PinRasterAsset.isSafeFilename(filename) || PinRichAsset.isSafeFilename(filename) else { throw PinSessionError.unsafePath }
+        guard PinRasterAsset.isSafeFilename(filename) || PinRichAsset.isSafeFilename(filename) || EditableCaptureAsset.isSafeDocumentFilename(filename) else { throw PinSessionError.unsafePath }
         let url = directory.appendingPathComponent(filename)
         guard url.standardizedFileURL.deletingLastPathComponent().path == directory.path else { throw PinSessionError.unsafePath }
         return url
     }
     private func checkedRegularFile(_ url: URL) throws -> URLResourceValues {
+        try editableAssets.requireDirectory()
         guard (try? fileManager.destinationOfSymbolicLink(atPath: url.path)) == nil else { throw PinSessionError.unsafePath }
         let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
         guard values.isRegularFile == true, values.isSymbolicLink != true else { throw PinSessionError.unsafePath }
         return values
+    }
+    private func verifyContent(_ asset: PinRasterAsset) throws {
+        guard asset.sha256 != nil else { return } // Existing flattened entries have no invented digest.
+        _ = try editableAssets.inspect(EditableRasterAsset(assetID: UUID(), filename: asset.filename,
+            width: asset.width, height: asset.height, byteCount: asset.byteCount, sha256: asset.sha256))
     }
     private func inspectedAsset(_ asset: PinRasterAsset) throws -> PinRasterAsset? {
         let url = try assetURL(asset.filename)
@@ -404,29 +478,46 @@ import PicShotCore
         let values: URLResourceValues
         do { values = try checkedRegularFile(url) }
         catch let error as PinSessionError { throw error }
-        catch { return nil }
+        catch { if asset.sha256 != nil { throw PinSessionError.invalidImage }; return nil }
+        if asset.sha256 != nil {
+            guard values.fileSize == Int(asset.byteCount) else { throw PinSessionError.invalidManifest }
+        }
         guard let byteCount = values.fileSize, byteCount > 0, byteCount <= 536_870_912,
               let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
               CGImageSourceGetType(source) as String? == UTType.png.identifier,
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
               let width = properties[kCGImagePropertyPixelWidth] as? Int,
               let height = properties[kCGImagePropertyPixelHeight] as? Int,
-              width == asset.width, height == asset.height else { return nil }
-        let verified = PinRasterAsset(filename: asset.filename, width: width, height: height, byteCount: Int64(byteCount))
+              width == asset.width, height == asset.height else {
+            if asset.sha256 != nil { throw PinSessionError.invalidImage }
+            return nil
+        }
+        let verified = PinRasterAsset(filename: asset.filename, width: width, height: height, byteCount: Int64(byteCount), sha256: asset.sha256)
         return verified.isValid ? verified : nil
     }
 
     private func commit(_ proposed: PinSessionIndex) throws {
+        try editableAssets.requireDirectory()
         let next = try proposed.validated()
-        let data = try JSONEncoder().encode(next)
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(next)
         guard data.count <= Self.maximumManifestBytes else { throw PinSessionError.invalidManifest }
         let manifest = directory.appendingPathComponent("index.json")
         guard (try? fileManager.destinationOfSymbolicLink(atPath: manifest.path)) == nil else { throw PinSessionError.unsafePath }
         if fileManager.fileExists(atPath: manifest.path) { _ = try checkedRegularFile(manifest) }
+        let keep = Set(next.entries.flatMap(\.assetFilenames))
+        // Rich-content cleanup retains its existing behavior; this transaction journal
+        // records the raster and editable metadata assets supported by this helper.
+        let retired = index.entries.flatMap(\.assetFilenames).filter {
+            !keep.contains($0) && (PinRasterAsset.isSafeFilename($0) || EditableCaptureAsset.isSafeDocumentFilename($0))
+        }
+        let retirement = try editableAssets.beginRetirement(retired)
+        var committed = false
+        defer { editableAssets.finishRetirement(retirement, committed: committed) }
+        try failureInjector?(.beforeIndexCommit)
         try data.write(to: manifest, options: .atomic)
         let previous = index
-        index = next
-        let keep = Set(next.entries.flatMap(\.assetFilenames))
+        index = next; committed = true
         for filename in previous.entries.flatMap(\.assetFilenames) where !keep.contains(filename) { removeAssetIfSafe(filename) }
         let keptIDs = Set(next.entries.map(\.id))
         for entry in previous.entries where !keptIDs.contains(entry.id) { removeThumbnail(id: entry.id) }
@@ -442,7 +533,7 @@ import PicShotCore
             let name = file.lastPathComponent
             let suffix = String(name.dropFirst(".pin-write-".count))
             let temporary = name.hasPrefix(".pin-write-") && (PinRasterAsset.isSafeFilename(suffix) || PinRichAsset.isSafeFilename(suffix))
-            let orphan = (PinRasterAsset.isSafeFilename(name) || PinRichAsset.isSafeFilename(name)) && !referenced.contains(name)
+            let orphan = (PinRasterAsset.isSafeFilename(name) || PinRichAsset.isSafeFilename(name) || EditableCaptureAsset.isSafeDocumentFilename(name)) && !referenced.contains(name)
             guard temporary || orphan, (try? checkedRegularFile(file)) != nil else { continue }
             try? fileManager.removeItem(at: file)
         }

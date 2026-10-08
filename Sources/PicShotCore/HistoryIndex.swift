@@ -13,16 +13,26 @@ public struct CaptureRecord: Codable, Identifiable, Equatable, Sendable {
     /// Present only when the source capture time is known. Imports and older
     /// history records must not mistake their library insertion time for it.
     public var capturedAt: Date?
-    public init(id: UUID = UUID(), createdAt: Date = Date(), title: String, filename: String, width: Int, height: Int, byteCount: Int64, text: String = "", starred: Bool = false, capturedAt: Date? = nil) {
-        self.id=id; self.createdAt=createdAt; self.title=title; self.filename=filename; self.width=width; self.height=height; self.byteCount=byteCount; self.text=text; self.starred=starred; self.capturedAt=capturedAt
+    public var editableCapture: EditableCaptureAsset?
+    public init(id: UUID = UUID(), createdAt: Date = Date(), title: String, filename: String, width: Int, height: Int, byteCount: Int64, text: String = "", starred: Bool = false, capturedAt: Date? = nil, editableCapture: EditableCaptureAsset? = nil) {
+        self.id=id; self.createdAt=createdAt; self.title=title; self.filename=filename; self.width=width; self.height=height; self.byteCount=byteCount; self.text=text; self.starred=starred; self.capturedAt=capturedAt; self.editableCapture=editableCapture
     }
     public var hasSafeStorageMetadata: Bool {
         guard filename.hasSuffix(".png"), filename.count == 40, UUID(uuidString: String(filename.dropLast(4))) != nil,
               width > 0, height > 0, width <= 100_000_000 / height, byteCount >= 0, byteCount <= 1_073_741_824,
               text.utf8.count <= 1_048_576, title.utf8.count <= 4_096,
               capturedAt.map({ $0.timeIntervalSinceReferenceDate.isFinite }) ?? true else { return false }
+        if let editableCapture {
+            guard editableCapture.isValid, let current = editableCapture.current,
+                  current.filename == filename, current.width == width, current.height == height, current.byteCount == byteCount else { return false }
+            for raster in editableCapture.rasters where raster.filename == filename {
+                guard raster.width == width, raster.height == height, raster.byteCount == byteCount else { return false }
+            }
+        }
         return true
     }
+    public var storedByteCount: Int64 { byteCount + (editableCapture?.additionalByteCount(excluding: [filename]) ?? 0) }
+    public var assetFilenames: [String] { Array(Set([filename] + (editableCapture?.assetFilenames ?? []))) }
     public func matches(_ query: String) -> Bool {
         query.isEmpty || title.localizedCaseInsensitiveContains(query) || text.localizedCaseInsensitiveContains(query)
     }
@@ -40,10 +50,13 @@ public struct RetentionPolicy: Codable, Equatable, Sendable {
     public func retained(_ records: [CaptureRecord], now: Date = Date()) -> [CaptureRecord] {
         let cutoff = now.addingTimeInterval(-Double(maxDays) * 86400)
         var kept = records.filter(\.starred).sorted { $0.createdAt > $1.createdAt }
-        var bytes = kept.reduce(Int64(0)) { $0 + $1.byteCount }
+        var bytes = kept.reduce(Int64(0)) { total, item in
+            let (sum, overflow) = total.addingReportingOverflow(item.storedByteCount)
+            return overflow ? Int64.max : sum
+        }
         for r in records.filter({ !$0.starred && $0.createdAt >= cutoff }).sorted(by: { $0.createdAt > $1.createdAt }) {
-            guard kept.count < maxItems, bytes + r.byteCount <= maxBytes else { continue }
-            kept.append(r); bytes += r.byteCount
+            guard kept.count < maxItems, r.storedByteCount <= maxBytes - bytes else { continue }
+            kept.append(r); bytes += r.storedByteCount
         }
         return kept.sorted { $0.createdAt > $1.createdAt }
     }

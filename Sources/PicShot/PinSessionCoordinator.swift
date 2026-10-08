@@ -95,15 +95,16 @@ import PicShotCore
     /// Editor output keeps its undecorated source available for original-copy/save/reset.
     /// A shared image object is unmodified; distinct source/current images persist together.
     @discardableResult func add(originalImage: CGImage, currentImage: CGImage,
-                               title: String = "贴图") throws -> UUID {
+                               title: String = "贴图", editable: EditableCapturePayload? = nil) throws -> UUID {
         guard !terminated else { throw PinSessionError.missingPin }
         guard livePinCount < Self.maximumLivePins else { throw PinSessionError.capacityExceeded }
+        if let editable { try editable.validate(currentImage: currentImage) }
         let controller = makeImageController(originalImage, currentImage, !(originalImage === currentImage))
         let entry: PinSessionEntry
         do {
             entry = try store.add(originalImage: originalImage, currentImage: currentImage,
                                   title: title, presentation: controller.presentation,
-                                  protecting: livePinIDs, revealingGroup: true)
+                                  protecting: livePinIDs, revealingGroup: true, editable: editable)
         } catch {
             controller.close()
             throw error
@@ -282,6 +283,16 @@ import PicShotCore
         present(controller)
     }
     private func connect(_ controller: PinController, id: UUID) {
+        controller.configureEditableCapture(available: store.entry(id: id)?.editableCapture != nil) { [weak self, weak controller] in
+            guard let self, let controller, self.liveControllers[id] === controller, !self.terminated else { throw CancellationError() }
+            let retained = EditorAdmissionPolicy.sum(self.liveControllers.values.map(\.estimatedRetainedRasterBytes))
+            let available = max(0, EditorAdmissionPolicy().maximumRasterBytes - retained)
+            return try self.store.editablePayload(id: id, reusingOriginal: controller.image, maximumRasterBytes: available)
+        }
+        controller.onEditablePixelChange = { [weak self, weak controller] image, editable in
+            guard let self, let controller, self.liveControllers[id] === controller, !self.terminated else { throw CancellationError() }
+            try self.store.replaceImage(image, id: id, protecting: self.livePinIDs, editable: editable)
+        }
         controller.applyAutomaticOCR(ocrPreferences.automaticallyRecognizeText)
         controller.onAutomaticOCRChange = { [weak self, weak controller] enabled in
             guard let self, let controller, self.liveControllers[id] === controller else { return }
@@ -312,7 +323,7 @@ import PicShotCore
             } catch { self.onError?(error) }
         }
         controller.onPixelChange = { [weak self, weak controller] image, isOriginal in
-            guard let self, let controller, self.liveControllers[id] === controller, !self.terminated else { return }
+            guard let self, let controller, self.liveControllers[id] === controller, !self.terminated else { throw CancellationError() }
             if isOriginal { try self.store.resetImage(id: id) }
             else { try self.store.replaceImage(image, id: id, protecting: self.livePinIDs) }
         }
@@ -347,7 +358,7 @@ import PicShotCore
         guard let controller = liveControllers[id] else { return }
         defer {
             // Removing onClose preserves open state on hide/switch instead of archiving.
-            controller.onClose = nil; controller.onPixelChange = nil; controller.onPresentationChange = nil
+            controller.onClose = nil; controller.onPixelChange = nil; controller.onEditablePixelChange = nil; controller.onPresentationChange = nil
             liveControllers.removeValue(forKey: id); pendingPresentations.removeValue(forKey: id)
             controller.close()
         }

@@ -200,7 +200,12 @@ import ImageIO
                 try await Task.sleep(nanoseconds:180_000_000)
                 let result=try await operation()
                 try Task.checkCancellation()
-                try self.history.add(result.image,title:title,capturedAt:result.presentation?.capturedAt);self.openEditor(result.image,presentation:result.presentation)
+                // A failed automatic history write must not discard the captured pixels.
+                var historyError: Error?
+                do { try self.history.add(result.image, title: title, capturedAt: result.presentation?.capturedAt) }
+                catch { historyError = error }
+                self.openEditor(result.image, presentation: result.presentation, baseProvenance: .originalCapture)
+                if let historyError { showError(historyError) }
             }catch CaptureError.cancelled{}catch is CancellationError{}catch{self.showMain();showError(error)}
         }
     }
@@ -330,25 +335,60 @@ import ImageIO
         });retain(c);c.showWindow(nil)
     }
     func recognizeTable(_ image:CGImage){let c=TableRecognitionController(image:image){[weak self] table,warnings in guard let self else{return};let editor=TableEditorController(table:table,sourceImage:image);self.retain(editor);editor.showWindow(nil);if !warnings.isEmpty{let alert=NSAlert();alert.messageText="请核对表格识别结果";alert.informativeText=warnings.joined(separator:"\n");alert.runModal()}};retain(c);c.showWindow(nil)}
-    func openEditor(_ image:CGImage,presentation:FrozenCapturePresentation?=nil,captureDate:Date?=nil){
-        if presentation != nil, !frozenEditorAdmission.shouldStart(isBusy:false,
-            isClosed:{$0.isClosed},focus:{self.focusEditor($0)}) { return }
-        let editors=controllers.compactMap{$0 as? ImageEditorController}.filter{!$0.isClosed}
-        let reportedProjectionBytes=editors.reduce(0){$0 + $1.estimatedOutputProjectionReservationBytes}
-        let drainingProjectionBytes=max(0,EditorOutputProjection.shared.reservedBytes-reportedProjectionBytes)
-        guard editorAdmission.refusal(existingRasterBytes:editors.map(\.estimatedAdmissionRasterBytes),
-            incomingRasterBytes:EditorAdmissionPolicy.sum([EditorRasterEstimate.openingBytes(image:image,presentation:presentation),drainingProjectionBytes])) == nil else {
-            if editorAdmissionNotices.recordRefusal(){showEditorAdmissionNotice()};return
+    func openEditor(_ image: CGImage, presentation: FrozenCapturePresentation? = nil,
+                    captureDate: Date? = nil, editable: EditableCapturePayload? = nil,
+                    historyRecordID: UUID? = nil, baseProvenance: EditableAnnotationBaseProvenance = .legacyRaster) {
+        if presentation != nil, !frozenEditorAdmission.shouldStart(isBusy: false,
+            isClosed: { $0.isClosed }, focus: { self.focusEditor($0) }) { return }
+        let editors = controllers.compactMap { $0 as? ImageEditorController }.filter { !$0.isClosed }
+        let reportedProjectionBytes = editors.reduce(0) { $0 + $1.estimatedOutputProjectionReservationBytes }
+        let drainingProjectionBytes = max(0, EditorOutputProjection.shared.reservedBytes - reportedProjectionBytes)
+        let incoming: Int
+        if let editable {
+            incoming = EditorAdmissionPolicy.sum([
+                EditorRasterEstimate.retainedBytes([editable.originalImage, editable.baseImage]),
+                EditorRasterEstimate.redrawBytes(editable.baseImage), drainingProjectionBytes])
+        } else {
+            incoming = EditorAdmissionPolicy.sum([
+                EditorRasterEstimate.openingBytes(image: image, presentation: presentation), drainingProjectionBytes])
         }
-        let knownCaptureDate=presentation?.capturedAt ?? captureDate
-        let c=ImageEditorController(image:image,presentation:presentation,onSave:{[weak self] img in do{try self?.history.add(img,title:"编辑",capturedAt:knownCaptureDate)}catch{showError(error)}},onPin:{[weak self] img in self?.pin(img)},onOCR:{[weak self] img in self?.recognize(img)},onTranslate:{[weak self] img in self?.translateImage(img)},captureDate:knownCaptureDate,saveWorkflow:smoke == nil ? saveWorkflows : nil,onPinWithOriginal:{[weak self] original,current in self?.pin(originalImage:original,currentImage:current) ?? false})
-        c.onClose={ [weak self,weak c] in
-            guard let self,let c else{return}
+        guard editorAdmission.refusal(existingRasterBytes: editors.map(\.estimatedAdmissionRasterBytes),
+                                      incomingRasterBytes: incoming) == nil else {
+            if editorAdmissionNotices.recordRefusal() { showEditorAdmissionNotice() }; return
+        }
+        let knownCaptureDate = presentation?.capturedAt ?? captureDate
+        let c = ImageEditorController(image: editable?.baseImage ?? image, presentation: presentation,
+            onSave: { [weak self] img in
+                do { try self?.history.add(img, title: "编辑", capturedAt: knownCaptureDate) }
+                catch { showError(error) }
+            }, onPin: { [weak self] img in self?.pin(img) },
+            onOCR: { [weak self] img in self?.recognize(img) },
+            onTranslate: { [weak self] img in self?.translateImage(img) },
+            captureDate: knownCaptureDate, saveWorkflow: smoke == nil ? saveWorkflows : nil,
+            onPinWithOriginal: { [weak self] original, current in
+                self?.pin(originalImage: original, currentImage: current) ?? false
+            }, onSaveEditable: { [weak self] current, payload in
+                guard let self else { throw EditorOutputProjectionError.invalidOwner }
+                // Preserve the existing Save-to-History behavior: each explicit save
+                // creates a new record, leaving prior saved edit states available.
+                try self.history.add(current, title: "编辑", capturedAt: knownCaptureDate, editable: payload)
+            }, onPinEditable: { [weak self] current, payload in
+                guard let self else { throw EditorOutputProjectionError.invalidOwner }
+                guard let pinSession = self.pinSession else {
+                    throw self.pinSessionLoadError ?? PicShotError.message("贴图存储暂不可用，编辑内容已保留。请检查后重试。")
+                }
+                try pinSession.add(originalImage: payload.originalImage, currentImage: current, editable: payload)
+            }, baseProvenance: baseProvenance)
+        c.onClose = { [weak self, weak c] in
+            guard let self, let c else { return }
             self.frozenEditorAdmission.editorDidClose(c)
-            self.controllers.removeAll{$0 === c}
+            self.controllers.removeAll { $0 === c }
         }
-        if presentation != nil {frozenEditorAdmission.register(c)}
-        retain(c);focusEditor(c)
+        do { if let editable { try c.restoreEditablePayload(editable) } }
+        catch { c.window?.close(); showError(error); return }
+        if historyRecordID != nil { c.window?.title = "PicShot · 编辑历史截图" }
+        if presentation != nil { frozenEditorAdmission.register(c) }
+        retain(c); focusEditor(c)
     }
     private func focusEditor(_ editor:ImageEditorController){
         editor.showWindow(nil);editor.window?.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true)
@@ -494,7 +534,33 @@ import ImageIO
         }
     }
     func translate(_ text:String){if #available(macOS 15.0,*){let c=LocalTranslationController(text:text);retain(c);c.showWindow(nil)}else{showError(PicShotError.message("本机翻译需要 macOS 15 或更新版本；当前系统可正常截图和识别文字。"))}}
-    func openRecord(_ r:CaptureRecord){if let image=history.image(for:r){openEditor(image,captureDate:r.capturedAt)}}
+    func openRecord(_ record: CaptureRecord) {
+        do {
+            if let descriptor = record.editableCapture {
+                let editors = controllers.compactMap { $0 as? ImageEditorController }.filter { !$0.isClosed }
+                let retained = EditorAdmissionPolicy.sum(editors.map(\.estimatedAdmissionRasterBytes))
+                let reported = editors.reduce(0) { $0 + $1.estimatedOutputProjectionReservationBytes }
+                let draining = max(0, EditorOutputProjection.shared.reservedBytes - reported)
+                let redraw = EditorAdmissionPolicy.rasterBytes(bytesPerRow:
+                    EditorAdmissionPolicy.rasterBytes(bytesPerRow: descriptor.base.width, height: 4),
+                    height: descriptor.base.height)
+                let incoming = EditorAdmissionPolicy.sum([descriptor.decodedRasterByteEstimate, redraw, draining])
+                guard editorAdmission.refusal(existingRasterBytes: editors.map(\.estimatedAdmissionRasterBytes),
+                                              incomingRasterBytes: incoming) == nil else {
+                    if editorAdmissionNotices.recordRefusal() { showEditorAdmissionNotice() }; return
+                }
+                let remaining = max(0, editorAdmission.maximumRasterBytes - retained - draining - redraw)
+                guard let payload = try history.editablePayload(for: record, maximumRasterBytes: remaining) else {
+                    throw EditableAnnotationDocumentError.invalidDocument
+                }
+                openEditor(payload.baseImage, captureDate: record.capturedAt, editable: payload, historyRecordID: record.id)
+            } else if let image = history.image(for: record) {
+                // Legacy images remain raster backgrounds; no lost layers are inferred.
+                openEditor(image, captureDate: record.capturedAt, historyRecordID: record.id)
+            } else { throw PicShotError.message("无法读取这张历史图片，原记录已保留。") }
+        } catch { showError(error) }
+    }
+
     @objc func importImage(){let p=NSOpenPanel();p.allowedContentTypes=[.image];p.allowsMultipleSelection=true;if p.runModal() == .OK{importURLs(p.urls)}}
     private func importURLs(_ urls:[URL]){
         editorAdmissionNotices.beginBatch()
