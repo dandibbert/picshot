@@ -285,7 +285,7 @@ final class RendererStorageTests: XCTestCase {
         for fence in 1...9 {
             let configuration = RendererStorageConfiguration(strategy: .ownedSRGB8)
             var calls = 0
-            autoreleasepool {
+            try autoreleasepool {
                 XCTAssertThrowsError(try RendererStorage.render(image: image, annotations: [], configuration: configuration,
                     drawingRaster: .init(strategy: .ownedSRGB8), isCancelled: { calls += 1; return calls == fence })) {
                     XCTAssertEqual($0 as? RendererStorage.Failure, .cancelled)

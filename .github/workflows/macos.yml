@@ -1382,15 +1382,19 @@ jobs:
     steps:
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       timeout-minutes: 2
-    - name: Check renderer storage and preserved drawing contracts
+    - name: Check preserved drawing contracts
       timeout-minutes: 3
       run: |
         set -o pipefail
         mkdir -p dist
-        for pattern in '*drawing*.py' '*renderer_storage*.py'; do
-          python3 -m unittest discover -s scripts/tests -p "$pattern" -v 2>&1 | tee -a dist/renderer-storage-contracts.log
-          python3 -O -m unittest discover -s scripts/tests -p "$pattern" -v 2>&1 | tee -a dist/renderer-storage-contracts-optimized.log
-        done
+        python3 -m unittest discover -s scripts/tests -p '*drawing*.py' -v 2>&1 | tee dist/renderer-storage-contracts.log
+        python3 -O -m unittest discover -s scripts/tests -p '*drawing*.py' -v 2>&1 | tee dist/renderer-storage-contracts-optimized.log
+    - name: Check renderer storage contracts
+      timeout-minutes: 3
+      run: |
+        set -o pipefail
+        python3 -m unittest discover -s scripts/tests -p '*renderer_storage*.py' -v 2>&1 | tee -a dist/renderer-storage-contracts.log
+        python3 -O -m unittest discover -s scripts/tests -p '*renderer_storage*.py' -v 2>&1 | tee -a dist/renderer-storage-contracts-optimized.log
     - name: Package one signed application without user installers
       timeout-minutes: 31
       env:
