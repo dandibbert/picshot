@@ -1,3 +1,4 @@
+import Accelerate
 import AppKit
 import CryptoKit
 import Darwin
@@ -22,8 +23,9 @@ import PicShotCore
         "current": "b8362e485bb0bfc04471d4a9de1eaf01be470fb66f419193fa41966cdcaaaff5"]
     enum Mode: String, CaseIterable {
         case prepare, certify, rawDraw = "raw-draw", pngWrite = "png-write"
-        case pngDecodeDraw = "png-decode-draw", editableRenderPin = "editable-render-pin", verifyWrites = "verify-writes"
-        var consumer: Bool { [.rawDraw, .pngWrite, .pngDecodeDraw, .editableRenderPin].contains(self) }
+        case pngDecodeDraw = "png-decode-draw", pngDecodeOwnedDraw = "png-decode-owned-draw"
+        case editableRenderPin = "editable-render-pin", verifyWrites = "verify-writes"
+        var consumer: Bool { [.rawDraw, .pngWrite, .pngDecodeDraw, .pngDecodeOwnedDraw, .editableRenderPin].contains(self) }
     }
     private static var claimed = false
     struct Request { let mode: Mode; let input: URL?; let certificate: URL?; let writes: URL? }
@@ -265,6 +267,9 @@ import PicShotCore
         report["diskReadScope"] = "No fixture input/output file content reads during cycles; does not instrument AppKit/framework/OS disk I/O"
         report["nativeImageIOProviderCallbacksObserved"] = false
         report["inputScope"] = "The same full immutable PNG and raw references/document are owned once per consumer; all file handles close before preparation baseline. Three fixed draw destinations are retained equally in every cell. Each nondecode cycle copies three raw providers; decode cell instead creates three ImageIO images. Extra editable render validations remain explicit unequal work."
+        if mode == .pngDecodeOwnedDraw {
+            report["inputScope"] = "The same full immutable PNG and raw references/document and three fixed validation destinations are retained once. Three full-size ImageIO decodes use unchanged cache options, each converted by vImage directly into explicitly owned canonical RGBA8 sRGB storage. Supplied decoded image/source references and their nested autorelease pools end before any actual validation draw. Private framework retention and all-color/depth fidelity remain unproved."
+        }
         var records: [[String: Any]] = [], outputBytes = 0
         records.reserveCapacity(10)
         for ordinal in 1...10 {
@@ -279,6 +284,10 @@ import PicShotCore
             do {
                 if mode == .editableRenderPin {
                     cycle = try await editableCycle(input, destinations: destinations, trackers: trackers, lifetime: lifetime, deadline: deadline)
+                } else if mode == .pngDecodeOwnedDraw {
+                    cycle = try autoreleasepool {
+                        try ownedDecodeCycle(input, destinations: destinations, trackers: trackers, deadline: deadline)
+                    }
                 } else {
                     cycle = try autoreleasepool {
                         try simpleCycle(mode, input: input, destinations: destinations, trackers: trackers,
@@ -371,6 +380,82 @@ import PicShotCore
             "creationStartUptime": creationStart, "afterCreationMemory": creationEnd,
             "afterValidationMemory": afterValidation, "afterWritesMemory": afterWrites,
             "writeSeconds": ProcessInfo.processInfo.systemUptime - writeStart]
+    }
+    // This candidate owns only the new canonical provider memory. It makes no
+    // claim about ImageIO/ColorSync private allocations or process-wide release.
+    private static func ownedDecodeCycle(_ input: Input, destinations: [String: Destination],
+        trackers: [String: ImageDrawAllocationTracker], deadline: Double) throws -> [String: Any] {
+        var images: [CGImage] = [], normalizedInputs: [[String: Any]] = []
+        let creationStart = ProcessInfo.processInfo.systemUptime
+        for asset in input.assets {
+            try check(deadline)
+            // Only an explicitly owned image and scalar metadata leave this
+            // pool. No decoded image, source, native provider or drawing context
+            // is captured in the returned report or canonical provider lease.
+            let result: (CGImage, [String: Any]) = try autoreleasepool {
+                let beforeDecode = try O.memory()
+                let decoded = try decode(asset.png, asset: asset)
+                let afterDecode = try O.memory(), inputMetadata = metadata(decoded)
+                try check(deadline)
+                let bytes = try OwnedBytes(count: asset.byteCount, data: nil, tracker: trackers[asset.role]!)
+                guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+                      var format = vImage_CGImageFormat(bitsPerComponent: 8, bitsPerPixel: 32, colorSpace: space,
+                        bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue),
+                        renderingIntent: .defaultIntent) else { throw O.failure("Owned decode format failed") }
+                var buffer = vImage_Buffer(data: bytes.pointer, height: vImagePixelCount(asset.height),
+                    width: vImagePixelCount(asset.width), rowBytes: asset.width * 4)
+                let flags = vImage_Flags(kvImageNoAllocate)
+                let error = withExtendedLifetime(space) {
+                    vImageBuffer_InitWithCGImage(&buffer, &format, nil, decoded, flags)
+                }
+                try check(deadline)
+                try O.require(error == kvImageNoError && buffer.data == bytes.pointer
+                    && buffer.width == vImagePixelCount(asset.width) && buffer.height == vImagePixelCount(asset.height)
+                    && buffer.rowBytes == asset.width * 4, "Full-size owned decode conversion failed")
+                let image = try normalizedOwnedImage(bytes, asset: asset)
+                let afterConversion = try withExtendedLifetime(decoded) { try O.memory() }
+                return (image, ["role": asset.role, "sourcePNGBytes": asset.png.count, "sourcePNGSHA256": asset.pngHash,
+                    "sourceRawBytes": asset.raw.count, "sourceRawSHA256": asset.rawHash,
+                    "inputMetadata": inputMetadata, "normalizedMetadata": metadata(image),
+                    "conversionError": error, "conversionFlags": flags,
+                    "beforeDecodeMemory": beforeDecode, "afterDecodeMemory": afterDecode,
+                    "afterConversionMemory": afterConversion])
+            }
+            // This boundary proves the supplied reference/pool scope ended,
+            // not that ImageIO privately retained no objects or native backing.
+            var record = result.1
+            record["afterDecodedInputReleaseMemory"] = try O.memory()
+            images.append(result.0); normalizedInputs.append(record)
+        }
+        let afterCreation = try O.memory()
+        var validations: [[String: Any]] = []
+        for (asset, image) in zip(input.assets, images) {
+            try check(deadline)
+            validations.append(try destinations[asset.role]!.compare(image, asset: asset, label: asset.role))
+        }
+        let afterValidation = try O.memory(), writeStart = ProcessInfo.processInfo.systemUptime
+        let afterWrites = try O.memory()
+        withExtendedLifetime(images) { }
+        return ["validations": validations, "writtenOutputs": [[String: Any]](), "imageCreationCount": 6,
+            "pngDecodeCount": 3, "ownedNormalizationCount": 3, "pngWriteCount": 0,
+            "editableRestoreCount": 0, "pinApplyCount": 0, "freshRenderCount": 0,
+            "normalizationMethod": "vImageBuffer_InitWithCGImage/kvImageNoAllocate",
+            "decodedInputReferencesReleasedBeforeValidation": true, "normalizedInputs": normalizedInputs,
+            "creationStartUptime": creationStart, "afterCreationMemory": afterCreation,
+            "afterValidationMemory": afterValidation, "afterWritesMemory": afterWrites,
+            "writeSeconds": ProcessInfo.processInfo.systemUptime - writeStart]
+    }
+    private static func normalizedOwnedImage(_ bytes: OwnedBytes, asset: Asset) throws -> CGImage {
+        let retained = Unmanaged.passRetained(bytes)
+        guard let provider = CGDataProvider(dataInfo: retained.toOpaque(), data: bytes.pointer, size: bytes.count,
+            releaseData: { info, _, count in
+                guard let info else { return }
+                let owner = Unmanaged<OwnedBytes>.fromOpaque(info).takeRetainedValue(); owner.callback(count)
+            }) else { retained.release(); throw O.failure("Normalized full-size provider allocation failed") }
+        return try O.required(CGImage(width: asset.width, height: asset.height, bitsPerComponent: 8, bitsPerPixel: 32,
+            bytesPerRow: asset.width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: asset.role != "current", intent: .defaultIntent), "Normalized owned image failed")
     }
     private static func editableCycle(_ input: Input, destinations: [String: Destination],
         trackers: [String: ImageDrawAllocationTracker], lifetime: EditableAnnotationLifetime,

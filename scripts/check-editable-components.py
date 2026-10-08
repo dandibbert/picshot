@@ -23,7 +23,15 @@ import zlib
 PROTOCOL = 'editable-components-v1'
 FIXTURE_SOURCE = 'c80e94de9cf712e118009700feacbd707356e0a3'
 ROLES = ('original', 'base', 'current')
-CONSUMERS = ('raw-draw', 'png-write', 'png-decode-draw', 'editable-render-pin')
+CONSUMERS = ('raw-draw', 'png-write', 'png-decode-draw', 'png-decode-owned-draw', 'editable-render-pin')
+OWNED_DECODE_MODE = 'png-decode-owned-draw'
+NORMALIZATION_METHOD = 'vImageBuffer_InitWithCGImage/kvImageNoAllocate'
+NORMALIZATION_MEMORY = ('beforeDecodeMemory', 'afterDecodeMemory', 'afterConversionMemory',
+                        'afterDecodedInputReleaseMemory')
+NORMALIZATION_FIELDS = {'role', 'sourcePNGBytes', 'sourcePNGSHA256', 'sourceRawBytes', 'sourceRawSHA256',
+    'inputMetadata', 'normalizedMetadata', 'conversionError', 'conversionFlags', *NORMALIZATION_MEMORY}
+OWNED_DECODE_CYCLE_FIELDS = {'ownedNormalizationCount', 'decodedInputReferencesReleasedBeforeValidation',
+                            'normalizationMethod', 'normalizedInputs'}
 DIMENSIONS = {'original': (3840, 2160), 'base': (3840, 2160), 'current': (2414, 1574)}
 EXPECTED_HASHES = {
     'original': 'c7819513b71c4ad1675665feece59747ff9a518db5766c5a8de973f65fdf19c6',
@@ -473,14 +481,53 @@ def ownership(value, editable):
         equal_int(count, 0, 'AppKit-only weak observer known bytes')
 
 
+def validate_normalization(value, assets, certificate):
+    equal_int(value['ownedNormalizationCount'], 3, 'owned normalization count')
+    need(value['decodedInputReferencesReleasedBeforeValidation'] is True,
+         'decoded input references were not released before validation')
+    need(value['normalizationMethod'] == NORMALIZATION_METHOD, 'owned normalization method differs')
+    records = value['normalizedInputs']
+    need(type(records) is list and len(records) == 3, 'exactly three normalized inputs required')
+    timeline = [value['beforeMemory']]
+    for index, (record, role) in enumerate(zip(records, ROLES)):
+        keys(record, NORMALIZATION_FIELDS, 'normalized input')
+        need(record['role'] == role, 'normalized input roles/order differ')
+        asset = assets[role]
+        equal_int(record['sourcePNGBytes'], asset['pngBytes'], 'normalization source PNG bytes')
+        equal_int(record['sourceRawBytes'], asset['rawBytes'], 'normalization source raw bytes')
+        need(sha(record['sourcePNGSHA256']) == asset['pngSHA256'], 'normalization source PNG hash differs')
+        need(sha(record['sourceRawSHA256']) == asset['rawSHA256'] == EXPECTED_HASHES[role],
+             'normalization source raw hash differs')
+        profile = asset['canonical']['colorSpaceICC_SHA256']
+        image_metadata(record['inputMetadata'], role, profile, decoded=True)
+        need(record['inputMetadata'] == certificate['validations'][index]['imageMetadata'],
+             'normalization input metadata differs from certificate')
+        image_metadata(record['normalizedMetadata'], role, profile, owned=True)
+        need(record['normalizedMetadata'] == value['validations'][index]['imageMetadata'],
+             'normalized metadata differs from validation image')
+        equal_int(record['conversionError'], 0, 'normalization conversion error')
+        equal_int(record['conversionFlags'], 512, 'normalization conversion flags')
+        timeline += [record[name] for name in NORMALIZATION_MEMORY]
+    timeline += [value['afterCreationMemory']]
+    for record in value['validations']:
+        timeline += [record[name] for name in ('beforeDrawMemory', 'afterDrawMemory', 'afterCompareMemory')]
+    timeline += [value['afterValidationMemory']]
+    ordered_observations(timeline)
+    need(value['creationStartUptime'] <= records[0]['beforeDecodeMemory']['uptimeSeconds'],
+         'owned normalization began before creation start')
+
+
 def validate_cycle(value, mode, ordinal, assets, certificate):
     editable = mode == 'editable-render-pin'
+    normalized = mode == OWNED_DECODE_MODE
     extra = {'documentChanged', 'persistenceCommitCount', 'afterRestoreMemory', 'afterPinOpenMemory', 'afterApplyMemory', 'afterFreshRenderMemory'} if editable else {'creationStartUptime', 'afterWritesMemory', 'writeSeconds'}
+    if normalized:
+        extra |= OWNED_DECODE_CYCLE_FIELDS
     keys(value, CYCLE_FIELDS | extra, 'consumer cycle')
     equal_int(value['ordinal'], ordinal, 'cycle ordinal')
     equal_int(value['index'], ordinal if ordinal <= 2 else ordinal - 2, 'cycle index')
     need(value['phase'] == ('warmup' if ordinal <= 2 else 'measured'), 'cycle phase differs')
-    for name, expected in {'imageCreationCount': 3, 'pngDecodeCount': 3 if mode == 'png-decode-draw' else 0,
+    for name, expected in {'imageCreationCount': 6 if normalized else 3, 'pngDecodeCount': 3 if mode in ('png-decode-draw', OWNED_DECODE_MODE) else 0,
         'pngWriteCount': 3 if mode == 'png-write' else 0, 'editableRestoreCount': 2 if editable else 0,
         'pinApplyCount': 1 if editable else 0, 'freshRenderCount': 1 if editable else 0}.items():
         equal_int(value[name], expected, 'operation ' + name)
@@ -506,6 +553,8 @@ def validate_cycle(value, mode, ordinal, assets, certificate):
     number(value['elapsedSeconds'], 0, 300)
     for record in value['validations']:
         need(value['afterCreationMemory']['uptimeSeconds'] <= record['beforeDrawMemory']['uptimeSeconds'] <= record['afterCompareMemory']['uptimeSeconds'] <= value['afterWorkMemory']['uptimeSeconds'], 'draw checkpoint outside cycle')
+    if normalized:
+        validate_normalization(value, assets, certificate)
     ownership(value['ownershipAfterRelease'], editable)
     for field in ('windowContentGraphsAfterRelease', 'ownedOpenDescriptorsAfter', 'ownedInputOpenDescriptorsAfter', 'activeExportControllersAfter',
                   'projectionReservedBytesAfter', 'exportQueueOperationsAfter', 'measuredDiskReads'):
@@ -703,10 +752,15 @@ def metrics(report):
     result = {'entryBytes': report['entryMemory']['counters'], 'finalBytes': report['finalMemory']['counters'],
         'entryToFinalDeltaBytes': delta(report['entryMemory'], report['finalMemory']),
         'sampledPeakBytes': report['sampledMemory']['total']['sampledPeakBytes'],
+        'entryToSampledPeakDeltaBytes': {name: report['sampledMemory']['total']['sampledPeakBytes'][name] -
+            report['entryMemory']['counters'][name] for name in MEMORY},
         'sampledMinimumBytes': report['sampledMemory']['total']['sampledMinimumBytes'],
         'kernelReportedPeakBytesAtCleanup': {
             'resident_size_peak': report['finalMemory']['backingAccounting']['standard']['bytes']['resident_size_peak'],
             'ledger_phys_footprint_peak': report['finalMemory']['backingAccounting']['standard']['ledgerBytes']['ledger_phys_footprint_peak']},
+        'entryToKernelReportedPeakDeltaBytes': {
+            'resident_size': report['finalMemory']['backingAccounting']['standard']['bytes']['resident_size_peak'] - report['entryMemory']['counters']['resident_size'],
+            'phys_footprint': report['finalMemory']['backingAccounting']['standard']['ledgerBytes']['ledger_phys_footprint_peak'] - report['entryMemory']['counters']['phys_footprint']},
         'elapsedSeconds': report['elapsedSeconds']}
     if report['mode'] in CONSUMERS:
         cycles = report['cycles']
@@ -723,6 +777,12 @@ def metrics(report):
                 {'fromMeasuredIndex': a['index'], 'toMeasuredIndex': b['index'],
                  'deltaBytes': delta(a['afterReleaseMemory'], b['afterReleaseMemory'])}
                 for a, b in zip(cycles[2:], cycles[3:])],
+            'measuredReleaseIncrements': [
+                {'from': 'afterWarmupMemory' if index == 0 else f'measured-{index}-afterReleaseMemory',
+                 'toMeasuredIndex': cycle['index'],
+                 'deltaBytes': delta(report['afterWarmupMemory'] if index == 0 else cycles[index+1]['afterReleaseMemory'],
+                                     cycle['afterReleaseMemory'])}
+                for index, cycle in enumerate(cycles[2:])],
             'cycleReleaseDeltaBytes': [delta(c['beforeMemory'], c['afterReleaseMemory']) for c in cycles],
             'warmupEndpoints': [c['afterReleaseMemory']['counters'] for c in cycles[:2]],
             'measuredEndpoints': [c['afterReleaseMemory']['counters'] for c in cycles[2:]],
@@ -731,12 +791,40 @@ def metrics(report):
             'retainedOutputFileCount': report['retainedOutputFileCount'], 'retainedOutputBytes': report['retainedOutputBytes'],
             'operationCountsPerCycle': {name: cycles[0][name] for name in ('imageCreationCount', 'pngDecodeCount', 'pngWriteCount', 'editableRestoreCount', 'pinApplyCount', 'freshRenderCount')},
             'checkpointNetDeltasByCycle': []})
+        result['finalThreeLateMeasuredIncrements'] = result['lateMeasuredIncrements'][-3:]
+        if report['mode'] == OWNED_DECODE_MODE:
+            result['normalizationMethod'] = NORMALIZATION_METHOD
+            result['operationCountsPerCycle']['ownedNormalizationCount'] = cycles[0]['ownedNormalizationCount']
+            result['normalizationStagesByCycle'] = []
         for cycle in cycles:
             stages = ['beforeMemory', 'afterCreationMemory', 'afterValidationMemory']
             stages += (['afterRestoreMemory', 'afterPinOpenMemory', 'afterApplyMemory', 'afterFreshRenderMemory']
                        if report['mode'] == 'editable-render-pin' else ['afterWritesMemory'])
             stages += ['afterWorkMemory', 'afterReleaseMemory']
+            checkpoints = [cycle[name] for name in stages]
+            checkpoints += [r[name] for r in cycle['validations']
+                            for name in ('beforeDrawMemory', 'afterDrawMemory', 'afterCompareMemory')]
+            if report['mode'] == OWNED_DECODE_MODE:
+                checkpoints += [r[name] for r in cycle['normalizedInputs'] for name in NORMALIZATION_MEMORY]
+                result['normalizationStagesByCycle'].append({'ordinal': cycle['ordinal'],
+                    'creationElapsedSeconds': cycle['afterCreationMemory']['uptimeSeconds'] - cycle['creationStartUptime'],
+                    'validationElapsedSeconds': cycle['afterValidationMemory']['uptimeSeconds'] - cycle['afterCreationMemory']['uptimeSeconds'],
+                    'cycleElapsedSeconds': cycle['elapsedSeconds'],
+                    'inputs': [{'role': record['role'],
+                        'checkpoints': [{'stage': name, 'uptimeSeconds': record[name]['uptimeSeconds'],
+                                         'bytes': record[name]['counters']} for name in NORMALIZATION_MEMORY],
+                        'boundaries': [{'from': a, 'to': b, 'deltaBytes': delta(record[a], record[b]),
+                            'elapsedSeconds': record[b]['uptimeSeconds'] - record[a]['uptimeSeconds']}
+                            for a, b in zip(NORMALIZATION_MEMORY, NORMALIZATION_MEMORY[1:])]}
+                        for record in cycle['normalizedInputs']]})
+            checkpoint_peak = {name: max(point['counters'][name] for point in checkpoints) for name in MEMORY}
             result['checkpointNetDeltasByCycle'].append({'ordinal': cycle['ordinal'],
+                'sampledPeakBytes': report['sampledMemory']['phases'][f"{cycle['phase']}-{cycle['index']}"]['sampledPeakBytes'],
+                'checkpointPeakBytes': checkpoint_peak,
+                'kernelReportedPeakBytesAfterRelease': {
+                    'resident_size_peak': cycle['afterReleaseMemory']['backingAccounting']['standard']['bytes']['resident_size_peak'],
+                    'ledger_phys_footprint_peak': cycle['afterReleaseMemory']['backingAccounting']['standard']['ledgerBytes']['ledger_phys_footprint_peak']},
+                'cycleEntryToCheckpointPeakDeltaBytes': {name: checkpoint_peak[name] - cycle['beforeMemory']['counters'][name] for name in MEMORY},
                 'boundaries': [{'from': a, 'to': b, 'deltaBytes': delta(cycle[a], cycle[b])} for a, b in zip(stages, stages[1:])],
                 'drawBoundaries': [{'label': r['label'], 'beforeToDrawDeltaBytes': delta(r['beforeDrawMemory'], r['afterDrawMemory']),
                     'drawToCompareDeltaBytes': delta(r['afterDrawMemory'], r['afterCompareMemory'])} for r in cycle['validations']]})

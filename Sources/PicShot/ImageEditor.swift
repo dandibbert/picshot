@@ -362,6 +362,8 @@ final class ImageEditorCanvas: NSView {
     private(set) var captureDate: Date
     private(set) var captureTimeZoneIdentifier: String
     private(set) var captureTimestampKnown: Bool
+    /// New marks may use this session's edit time without changing stored capture metadata.
+    private let editingStartedAt: Date
     var annotations: [ImageAnnotation] = []
     var tool: ImageEditorTool = .arrow { didSet { finishNumberComment(commit: true); cancelInteraction(); cropRect = nil; needsDisplay = true } }
     var style = ImageAnnotation(tool: .arrow, points: [], color: NSColor.systemRed.cgColor, fontSize: 20)
@@ -414,7 +416,9 @@ final class ImageEditorCanvas: NSView {
     var canCreateNumber: Bool { !numberSequence.isExhausted && annotations.lazy.filter { $0.tool == .number }.count < NumberedCalloutSequence.maximumMarks }
 
     init(image: CGImage, captureDate: Date? = nil, timeZone: TimeZone = .current) {
-        self.image = image; self.captureDate = captureDate ?? Date(); self.captureTimeZoneIdentifier = timeZone.identifier
+        let editingStartedAt = Date()
+        self.editingStartedAt = editingStartedAt
+        self.image = image; self.captureDate = captureDate ?? editingStartedAt; self.captureTimeZoneIdentifier = timeZone.identifier
         self.captureTimestampKnown = captureDate != nil
         super.init(frame: CGRect(x: 0, y: 0, width: CGFloat(image.width), height: CGFloat(image.height)))
         wantsLayer = true
@@ -434,7 +438,7 @@ final class ImageEditorCanvas: NSView {
     }
 
     func restoreCaptureTimestamp(_ date: Date, timeZoneIdentifier: String, known: Bool) {
-        captureDate = !known && date == Date(timeIntervalSince1970: 0) ? Date() : date
+        captureDate = date
         captureTimeZoneIdentifier = timeZoneIdentifier
         captureTimestampKnown = known
         style.watermarkTemplate = known ? "PicShot · $yyyy-MM-dd HH:mm:ss$" : "PicShot · 编辑于 $yyyy-MM-dd HH:mm:ss$"
@@ -471,7 +475,8 @@ final class ImageEditorCanvas: NSView {
         result.id = UUID(); result.tool = tool; result.points = points; result.text = text
         result.rotation = 0; result.textBoxSize = nil
         result.freehandCorners = []; result.freehandWasSimplified = false
-        result.frozenTimestamp = captureDate; result.frozenTimeZoneIdentifier = captureTimeZoneIdentifier
+        result.frozenTimestamp = captureTimestampKnown ? captureDate : editingStartedAt
+        result.frozenTimeZoneIdentifier = captureTimeZoneIdentifier
         result.timestampIsCaptureDate = captureTimestampKnown
         result.magnifierSource = nil; result.mosaicLink = nil
         result.numberComment = ""; result.numberCommentSize = CGSize(width: 240, height: 80)

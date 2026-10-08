@@ -16,6 +16,16 @@ class FixtureSourceBinding(unittest.TestCase):
         self.assertEqual(hashlib.sha256(block.encode()).hexdigest(),
                          'fa69a1f70ee2397b7aaf6de4c6810c1401ffec5a5cf63987403496bdc8ac42b3')
 
+    def test_candidate_keeps_all_three_independent_build113_pixel_hashes(self):
+        source = (ROOT / 'Sources/PicShot/EditableComponentFixture.swift').read_text()
+        start = source.index('    static let expectedHashes = [')
+        end = source.index('    enum Mode:', start)
+        self.assertEqual(dict(re.findall(r'"(original|base|current)": "([a-f0-9]{64})"', source[start:end])), {
+            'original': 'c7819513b71c4ad1675665feece59747ff9a518db5766c5a8de973f65fdf19c6',
+            'base': 'b41f79800dd04476e3381aa6fa9da0a2e4f61034729dce3551909a383be83fc9',
+            'current': 'b8362e485bb0bfc04471d4a9de1eaf01be470fb66f419193fa41966cdcaaaff5',
+        })
+
     def test_no_direct_or_reference_helper_weak_corefoundation_probes(self):
         source = (ROOT / 'Sources/PicShot/EditableComponentFixture.swift').read_text()
         self.assertNotIn('lifetime.image(', source)
@@ -63,6 +73,74 @@ class FixtureSourceBinding(unittest.TestCase):
         # No selection means this local cleanup scope is never entered; unrelated
         # smoke paths retain their established behavior.
         self.assertTrue(route.startswith('if ProcessInfo.processInfo.environment.keys.contains(where:'))
+
+    def test_existing_consumer_and_decode_work_is_byte_identical(self):
+        source = (ROOT / 'Sources/PicShot/EditableComponentFixture.swift').read_text()
+        # Baseline 430960b: candidate insertion must not alter the comparison
+        # cells, original ImageIO options, provider ownership or editable work.
+        blocks = [
+            ('simpleCycle', '    // This candidate owns', '67a56eff55e290b421070d0c826664d495811ad0c70f6582721be4c84af110d0'),
+            ('editableCycle', '    private static func verifyWrites(', 'b6d47f3f1b7e1a81ab9bb1d4b223712e809a3f67810211f4b8d79eceb0a9c768'),
+            ('decode', '    private static func owned(', 'f1730a192db2694e67ccff9482de4f9d198db7f7cdf2b2606e782a0a445c36af'),
+            ('owned', '    final class OwnedBytes', '69c3c595c19507ee019e2209bac459962642f5a85a0fb234d39f39b0c67d890d'),
+        ]
+        for name, end_marker, expected in blocks:
+            with self.subTest(function=name):
+                start = source.index('    private static func ' + name + '(')
+                end = source.index(end_marker, start)
+                self.assertEqual(hashlib.sha256(source[start:end].encode()).hexdigest(), expected)
+
+    def test_owned_candidate_converts_without_context_snapshot_or_preview(self):
+        source = (ROOT / 'Sources/PicShot/EditableComponentFixture.swift').read_text()
+        start = source.index('    private static func ownedDecodeCycle(')
+        end = source.index('    private static func editableCycle(', start)
+        candidate = source[start:end]
+        self.assertIn('import Accelerate', source)
+        self.assertEqual(candidate.count('try decode(asset.png, asset: asset)'), 1)
+        self.assertEqual(candidate.count('vImageBuffer_InitWithCGImage(&buffer, &format, nil, decoded, flags)'), 1)
+        self.assertEqual(candidate.count('vImage_Flags(kvImageNoAllocate)'), 1)
+        for text in ['OwnedBytes(count: asset.byteCount, data: nil',
+                     'vImage_Buffer(data: bytes.pointer, height: vImagePixelCount(asset.height)',
+                     'width: vImagePixelCount(asset.width), rowBytes: asset.width * 4',
+                     'error == kvImageNoError && buffer.data == bytes.pointer',
+                     'buffer.rowBytes == asset.width * 4',
+                     'CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue',
+                     'CGColorSpace(name: CGColorSpace.sRGB)',
+                     'try destinations[asset.role]!.compare(image, asset: asset, label: asset.role)',
+                     'owner.callback(count)', 'Unmanaged<OwnedBytes>.fromOpaque(info).takeRetainedValue()']:
+            self.assertIn(text, candidate)
+        for forbidden in ['CGContext(', 'context.draw(', 'makeImage(', 'canonicalPixels(',
+                          'owned(asset', 'asset.raw.withUnsafeBytes', 'ImageOutputDecorationRenderer',
+                          'MultiWindowCompositeRenderer', 'vImageScale', 'CGImageSourceCreateThumbnail',
+                          '.cropping(', 'lifetime.image(']:
+            self.assertNotIn(forbidden, candidate)
+        pool = candidate.index('let result: (CGImage, [String: Any]) = try autoreleasepool {')
+        returned = candidate.index('return (image, [', pool)
+        released = candidate.index('record["afterDecodedInputReleaseMemory"]', returned)
+        ready = candidate.index('let afterCreation = try O.memory()', released)
+        draw = candidate.index('try destinations[asset.role]!.compare(', ready)
+        self.assertLess(pool, returned)
+        self.assertLess(returned, released)
+        self.assertLess(released, ready)
+        self.assertLess(ready, draw)
+        self.assertIn('withExtendedLifetime(decoded) { try O.memory() }', candidate)
+        self.assertIn('"imageCreationCount": 6', candidate)
+        self.assertIn('"pngDecodeCount": 3, "ownedNormalizationCount": 3', candidate)
+        self.assertIn('"decodedInputReferencesReleasedBeforeValidation": true', candidate)
+
+    def test_runner_requires_all_five_consumers_in_fresh_processes(self):
+        runner = (ROOT / 'scripts/editable-components-diagnostic.sh').read_text()
+        consumers = re.search(r'for mode in (.*?); do launch "\$mode"; done', runner).group(1).split()
+        self.assertEqual(consumers, ['raw-draw', 'png-write', 'png-decode-draw',
+                                    'png-decode-owned-draw', 'editable-render-pin'])
+        self.assertEqual(re.findall(r'^launch ([-a-z]+)$', runner, re.M), ['prepare', 'certify', 'verify-writes'])
+        self.assertEqual(len(consumers) + 3, 8)
+        self.assertIn('--timeout-seconds 620 --grace-seconds 5', runner)
+        source = (ROOT / 'Sources/PicShot/EditableComponentFixture.swift').read_text()
+        self.assertIn('deadlineSeconds = 300.0', source)
+        self.assertIn('sourceWidth = 3840, sourceHeight = 2160, warmups = 2, measured = 8', source)
+        self.assertIn('} else if mode == .pngDecodeOwnedDraw {', source)
+        self.assertIn('try ownedDecodeCycle(input, destinations: destinations, trackers: trackers, deadline: deadline)', source)
 
     def test_opt_in_route_leaves_existing_editable_path_intact(self):
         source = (ROOT / 'Sources/PicShot/SmokeVerification.swift').read_text()

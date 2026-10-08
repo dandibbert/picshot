@@ -79,7 +79,10 @@ def image_metadata(role, decoded=False):
 
 
 def assets():
-    return {role: {'role': role, 'rawSHA256': C.EXPECTED_HASHES[role], 'canonical': canonical(role)} for role in C.ROLES}
+    return {role: {'role': role, 'rawSHA256': C.EXPECTED_HASHES[role], 'canonical': canonical(role),
+        'rawBytes': C.DIMENSIONS[role][0] * C.DIMENSIONS[role][1] * 4,
+        'pngBytes': 10 + index, 'pngSHA256': C.digest(('synthetic PNG ' + role).encode())}
+        for index, role in enumerate(C.ROLES)}
 
 
 def pixel(label, role, drawn=False, decoded=False):
@@ -110,9 +113,19 @@ def ownership(editable=False):
         for role, count in counts.items()}
 
 
+def normalized_input(role):
+    asset = assets()[role]
+    return {'role': role, 'sourcePNGBytes': asset['pngBytes'], 'sourcePNGSHA256': asset['pngSHA256'],
+        'sourceRawBytes': asset['rawBytes'], 'sourceRawSHA256': asset['rawSHA256'],
+        'inputMetadata': image_metadata(role, decoded=True), 'normalizedMetadata': image_metadata(role),
+        'conversionError': 0, 'conversionFlags': 512,
+        **{name: memory() for name in C.NORMALIZATION_MEMORY}}
+
+
 def cycle(mode='raw-draw', ordinal=1):
     editable = mode == 'editable-render-pin'
     decoded = mode == 'png-decode-draw'
+    normalized = mode == C.OWNED_DECODE_MODE
     value = {'ordinal': ordinal, 'phase': 'warmup' if ordinal <= 2 else 'measured',
         'index': ordinal if ordinal <= 2 else ordinal-2, 'beforeMemory': memory(),
         'afterReleaseMemory': memory(), 'afterWorkMemory': memory(), 'elapsedSeconds': 1,
@@ -121,7 +134,7 @@ def cycle(mode='raw-draw', ordinal=1):
         'ownedInputOpenDescriptorsAfter': 0, 'temporaryDirectoryRemoved': True, 'activeExportControllersAfter': 0,
         'projectionReservedBytesAfter': 0, 'exportQueueOperationsAfter': 0, 'measuredDiskReads': 0,
         'validations': [pixel(role, role, drawn=True, decoded=decoded) for role in C.ROLES],
-        'writtenOutputs': [], 'imageCreationCount': 3, 'pngDecodeCount': 3 if decoded else 0,
+        'writtenOutputs': [], 'imageCreationCount': 6 if normalized else 3, 'pngDecodeCount': 3 if decoded or normalized else 0,
         'pngWriteCount': 3 if mode == 'png-write' else 0, 'editableRestoreCount': 2 if editable else 0,
         'pinApplyCount': 1 if editable else 0, 'freshRenderCount': 1 if editable else 0,
         'afterCreationMemory': memory(), 'afterValidationMemory': memory()}
@@ -131,10 +144,28 @@ def cycle(mode='raw-draw', ordinal=1):
             afterPinOpenMemory=memory(), afterApplyMemory=memory(), afterFreshRenderMemory=memory())
     else:
         value.update(creationStartUptime=100, afterWritesMemory=memory(), writeSeconds=.2)
+    if normalized:
+        value.update(ownedNormalizationCount=3, decodedInputReferencesReleasedBeforeValidation=True,
+            normalizationMethod=C.NORMALIZATION_METHOD, normalizedInputs=[normalized_input(role) for role in C.ROLES])
     if mode == 'png-write':
         value['writtenOutputs'] = [{'file': f'cycle-{ordinal}-{role}.png', 'role': role, 'byteCount': 10,
             'sourceRawSHA256': C.EXPECTED_HASHES[role], 'width': C.DIMENSIONS[role][0],
             'height': C.DIMENSIONS[role][1], 'outputPixelVerificationPending': True} for role in C.ROLES]
+    return value
+
+
+def ordered_normalized_cycle():
+    value = cycle(C.OWNED_DECODE_MODE)
+    for index, record in enumerate(value['normalizedInputs']):
+        for stage, name in enumerate(C.NORMALIZATION_MEMORY):
+            record[name] = memory(t=101 + 4*index + stage)
+    value['afterCreationMemory'] = memory(t=113)
+    for index, record in enumerate(value['validations']):
+        for stage, name in enumerate(('beforeDrawMemory', 'afterDrawMemory', 'afterCompareMemory')):
+            record[name] = memory(t=114 + index + stage/10)
+    for time, name in enumerate(('afterValidationMemory', 'afterWritesMemory', 'afterWorkMemory', 'afterReleaseMemory'), 117):
+        value[name] = memory(t=time)
+    value['elapsedSeconds'] = 20
     return value
 
 
@@ -202,6 +233,8 @@ class ComponentContracts(unittest.TestCase):
         self.assertEqual(C.DIMENSIONS['current'], (2414, 1574))
         self.assertEqual(C.EXPECTED_HASHES['original'], 'c7819513b71c4ad1675665feece59747ff9a518db5766c5a8de973f65fdf19c6')
         self.assertEqual(len(set(C.EXPECTED_HASHES.values())), 3)
+        self.assertEqual(C.CONSUMERS, ('raw-draw', 'png-write', 'png-decode-draw', 'png-decode-owned-draw', 'editable-render-pin'))
+        self.assertEqual(C.NORMALIZATION_METHOD, 'vImageBuffer_InitWithCGImage/kvImageNoAllocate')
 
     def test_valid_synthetic_helper_contracts(self):
         C.validate_certificate(certificate(), assets())
@@ -272,6 +305,123 @@ class ComponentContracts(unittest.TestCase):
         report['cycles'][0]['validations'][0]['imageMetadata']['renderingIntent'] = 0
         with self.assertRaisesRegex(ValueError, 'certificate'):
             C.validate_consumer(report, assets(), certificate())
+
+    def test_owned_decode_exact_counts_method_and_release_claim(self):
+        for field, bad in [('ownedNormalizationCount', 2), ('ownedNormalizationCount', True),
+            ('imageCreationCount', 3), ('pngDecodeCount', 0), ('pngWriteCount', 1),
+            ('editableRestoreCount', 1), ('pinApplyCount', 1), ('freshRenderCount', 1),
+            ('decodedInputReferencesReleasedBeforeValidation', False),
+            ('decodedInputReferencesReleasedBeforeValidation', 1),
+            ('normalizationMethod', 'CGContext.draw'), ('normalizationMethod', '')]:
+            with self.subTest(field=field, bad=bad), self.assertRaises(ValueError):
+                value = cycle(C.OWNED_DECODE_MODE); value[field] = bad
+                C.validate_cycle(value, C.OWNED_DECODE_MODE, 1, assets(), certificate())
+
+    def test_owned_decode_cycle_and_normalization_schemas_are_closed(self):
+        for field in cycle(C.OWNED_DECODE_MODE):
+            with self.subTest(cycle_field=field), self.assertRaises(ValueError):
+                value = cycle(C.OWNED_DECODE_MODE); del value[field]
+                C.validate_cycle(value, C.OWNED_DECODE_MODE, 1, assets(), certificate())
+        for field in normalized_input('original'):
+            with self.subTest(input_field=field), self.assertRaises(ValueError):
+                value = cycle(C.OWNED_DECODE_MODE); del value['normalizedInputs'][0][field]
+                C.validate_cycle(value, C.OWNED_DECODE_MODE, 1, assets(), certificate())
+        for mutate in [lambda c: c.update(extra=True),
+            lambda c: c['normalizedInputs'][0].update(extra=True),
+            lambda c: c['normalizedInputs'][0]['inputMetadata'].update(extra=True),
+            lambda c: c['normalizedInputs'][0]['normalizedMetadata'].update(extra=True),
+            lambda c: c['normalizedInputs'].pop(),
+            lambda c: c['normalizedInputs'].append(copy.deepcopy(c['normalizedInputs'][0])),
+            lambda c: c['normalizedInputs'].reverse(),
+            lambda c: c['normalizedInputs'].__setitem__(1, copy.deepcopy(c['normalizedInputs'][0])),
+            lambda c: c.update(normalizedInputs={}),
+            lambda c: c['normalizedInputs'].__setitem__(1, None),
+            lambda c: c['validations'].pop(),
+            lambda c: c['validations'].append(copy.deepcopy(c['validations'][0]))]:
+            with self.subTest(mutation=mutate), self.assertRaises(ValueError):
+                value = cycle(C.OWNED_DECODE_MODE); mutate(value)
+                C.validate_cycle(value, C.OWNED_DECODE_MODE, 1, assets(), certificate())
+
+    def test_owned_decode_fields_do_not_leak_to_other_modes(self):
+        candidate = cycle(C.OWNED_DECODE_MODE)
+        for mode in C.CONSUMERS:
+            if mode == C.OWNED_DECODE_MODE:
+                continue
+            for field in C.OWNED_DECODE_CYCLE_FIELDS:
+                with self.subTest(mode=mode, field=field), self.assertRaises(ValueError):
+                    value = cycle(mode); value[field] = candidate[field]
+                    C.validate_cycle(value, mode, 1, assets(), certificate())
+
+    def test_owned_decode_input_identity_conversion_and_metadata_rejections(self):
+        mutations = [('role', 'base'), ('sourcePNGBytes', 1), ('sourcePNGBytes', True),
+            ('sourcePNGSHA256', assets()['base']['pngSHA256']), ('sourcePNGSHA256', 'z'*64),
+            ('sourceRawBytes', 3840*2160*3), ('sourceRawBytes', True),
+            ('sourceRawSHA256', C.EXPECTED_HASHES['base']), ('sourceRawSHA256', 'z'*64),
+            ('conversionError', 1), ('conversionError', -1), ('conversionError', False),
+            ('conversionFlags', 0), ('conversionFlags', 16), ('conversionFlags', 256), ('conversionFlags', True)]
+        for field, bad in mutations:
+            with self.subTest(field=field, bad=bad), self.assertRaises(ValueError):
+                value = cycle(C.OWNED_DECODE_MODE); value['normalizedInputs'][0][field] = bad
+                C.validate_cycle(value, C.OWNED_DECODE_MODE, 1, assets(), certificate())
+        for kind in ('inputMetadata', 'normalizedMetadata'):
+            for field, bad in [('width', 1), ('width', True), ('height', 1), ('bytesPerRow', 1),
+                ('bitsPerComponent', 16), ('bitsPerPixel', 24), ('colorSpaceModel', 2),
+                ('colorSpaceName', 'DisplayP3'), ('colorSpaceICC_SHA256', 'b'*64),
+                ('alphaInfo', 5), ('bitmapInfo', 5), ('shouldInterpolate', 1),
+                ('renderingIntent', 4)]:
+                with self.subTest(kind=kind, field=field), self.assertRaises(ValueError):
+                    value = cycle(C.OWNED_DECODE_MODE); value['normalizedInputs'][0][kind][field] = bad
+                    C.validate_cycle(value, C.OWNED_DECODE_MODE, 1, assets(), certificate())
+        for role_index, change in [(0, {'bytesPerRow': 3840*4+16}),
+                                  (0, {'shouldInterpolate': False}), (2, {'shouldInterpolate': True}),
+                                  (0, {'alphaInfo': 3, 'bitmapInfo': 3})]:
+            with self.subTest(index=role_index, change=change), self.assertRaises(ValueError):
+                value = cycle(C.OWNED_DECODE_MODE)
+                value['normalizedInputs'][role_index]['normalizedMetadata'].update(change)
+                value['validations'][role_index]['imageMetadata'].update(change)
+                C.validate_cycle(value, C.OWNED_DECODE_MODE, 1, assets(), certificate())
+
+    def test_owned_decode_input_metadata_exactly_matches_certificate(self):
+        value = cycle(C.OWNED_DECODE_MODE)
+        value['normalizedInputs'][0]['inputMetadata']['renderingIntent'] = 0
+        with self.assertRaisesRegex(ValueError, 'certificate'):
+            C.validate_cycle(value, C.OWNED_DECODE_MODE, 1, assets(), certificate())
+
+    def test_owned_decode_normalization_and_validation_checkpoints_are_ordered(self):
+        C.validate_cycle(ordered_normalized_cycle(), C.OWNED_DECODE_MODE, 1, assets(), certificate())
+        for index in range(3):
+            for stage, name in enumerate(C.NORMALIZATION_MEMORY):
+                with self.subTest(index=index, stage=name), self.assertRaises(ValueError):
+                    value = ordered_normalized_cycle()
+                    value['normalizedInputs'][index][name] = memory(t=99 + 4*index + stage)
+                    C.validate_cycle(value, C.OWNED_DECODE_MODE, 1, assets(), certificate())
+        for mutate in [lambda c: c.update(creationStartUptime=102),
+            lambda c: c.update(afterCreationMemory=memory(t=111)),
+            lambda c: c.update(afterValidationMemory=memory(t=116)),
+            lambda c: c['validations'][0].update(beforeDrawMemory=memory(t=112.5)),
+            lambda c: c['validations'][1].update(beforeDrawMemory=memory(t=114.1)),
+            lambda c: c['normalizedInputs'][2].update(afterDecodedInputReleaseMemory=memory(t=114))]:
+            with self.subTest(mutation=mutate), self.assertRaises(ValueError):
+                value = ordered_normalized_cycle(); mutate(value)
+                C.validate_cycle(value, C.OWNED_DECODE_MODE, 1, assets(), certificate())
+
+    def test_owned_decode_each_normalization_checkpoint_requires_all_counters(self):
+        for stage in C.NORMALIZATION_MEMORY:
+            for name in C.MEMORY:
+                with self.subTest(stage=stage, counter=name), self.assertRaises(ValueError):
+                    value = cycle(C.OWNED_DECODE_MODE)
+                    del value['normalizedInputs'][2][stage]['counters'][name]
+                    C.validate_cycle(value, C.OWNED_DECODE_MODE, 1, assets(), certificate())
+
+    def test_owned_decode_provider_callbacks_track_owned_allocations(self):
+        for field, bad in [('allocations', 0), ('releaseCallbacks', 0), ('deallocations', 0),
+                           ('activeBytes', 4), ('peakActiveBytes', 0), ('callbackSizesMatch', False)]:
+            for final in (False, True):
+                with self.subTest(field=field, final=final), self.assertRaises(ValueError):
+                    report = consumer(C.OWNED_DECODE_MODE)
+                    target = report if final else report['cycles'][4]
+                    target['providerLifetime']['current'][field] = bad
+                    C.validate_consumer(report, assets(), certificate())
 
     def test_every_cycle_operation_count_is_required(self):
         fields = ('imageCreationCount', 'pngDecodeCount', 'pngWriteCount', 'editableRestoreCount', 'pinApplyCount', 'freshRenderCount')
@@ -362,6 +512,61 @@ class ComponentContracts(unittest.TestCase):
             self.assertEqual(result['lateMeasuredIncrements'][0]['deltaBytes'][name], -5)
         self.assertLess(result['finalBytes']['ledger_purgeable_volatile'], 0)
         self.assertNotIn('totalCausalAllocationBytes', result)
+
+    def test_owned_decode_summary_preserves_cold_peak_and_all_measured_costs(self):
+        report = consumer(C.OWNED_DECODE_MODE)
+        report['entryMemory'] = memory(offset=40)
+        report['afterWarmupMemory'] = memory(offset=20)
+        report['finalMemory'] = memory(offset=400)
+        for index, measured in enumerate(report['cycles'][2:]):
+            measured['afterReleaseMemory'] = memory(offset=10+index)
+        value = ordered_normalized_cycle()
+        for stage, (name, offset) in enumerate(zip(C.NORMALIZATION_MEMORY, (10, 40, 90, 20))):
+            value['normalizedInputs'][0][name] = memory(t=101+stage, offset=offset)
+        report['cycles'][0] = value
+        result = C.metrics(report)
+        self.assertEqual(result['normalizationMethod'], C.NORMALIZATION_METHOD)
+        self.assertEqual(result['operationCountsPerCycle']['ownedNormalizationCount'], 3)
+        self.assertEqual(result['operationCountsPerCycle']['imageCreationCount'], 6)
+        self.assertEqual(len(result['measuredReleaseIncrements']), 8)
+        self.assertEqual(len(result['lateMeasuredIncrements']), 7)
+        self.assertEqual(result['finalThreeLateMeasuredIncrements'], result['lateMeasuredIncrements'][-3:])
+        self.assertEqual(result['finalThreeLateMeasuredIncrements'][0]['fromMeasuredIndex'], 5)
+        stages = result['normalizationStagesByCycle']
+        self.assertEqual(len(stages), 10)
+        self.assertEqual(stages[0]['creationElapsedSeconds'], 13)
+        self.assertEqual(stages[0]['validationElapsedSeconds'], 4)
+        self.assertEqual(stages[0]['cycleElapsedSeconds'], 20)
+        self.assertEqual([record['role'] for record in stages[0]['inputs']], list(C.ROLES))
+        original = stages[0]['inputs'][0]
+        self.assertEqual([item['stage'] for item in original['checkpoints']], list(C.NORMALIZATION_MEMORY))
+        self.assertEqual([item['elapsedSeconds'] for item in original['boundaries']], [1, 1, 1])
+        for name in C.MEMORY:
+            self.assertEqual(result['entryToFinalDeltaBytes'][name], 360)
+            self.assertEqual(result['entryToSampledPeakDeltaBytes'][name], -40)
+            self.assertEqual(result['measuredReleaseIncrements'][0]['deltaBytes'][name], -10)
+            self.assertEqual([v['deltaBytes'][name] for v in result['measuredReleaseIncrements'][1:]], [1]*7)
+            self.assertEqual([v['deltaBytes'][name] for v in original['boundaries']], [30, 50, -70])
+            self.assertEqual(original['checkpoints'][2]['bytes'][name], memory(offset=90)['counters'][name])
+            self.assertEqual(result['checkpointNetDeltasByCycle'][0]['cycleEntryToCheckpointPeakDeltaBytes'][name], 90)
+            self.assertEqual(result['checkpointNetDeltasByCycle'][0]['sampledPeakBytes'][name], memory()['counters'][name])
+        self.assertEqual(result['kernelReportedPeakBytesAtCleanup']['resident_size_peak'], 2000000)
+        self.assertEqual(result['kernelReportedPeakBytesAtCleanup']['ledger_phys_footprint_peak'], 2000000)
+        self.assertEqual(result['entryToKernelReportedPeakDeltaBytes'], {'resident_size': 999960, 'phys_footprint': 999960})
+        self.assertEqual(result['checkpointNetDeltasByCycle'][0]['kernelReportedPeakBytesAfterRelease'],
+                         result['kernelReportedPeakBytesAtCleanup'])
+        self.assertNotIn('totalCausalAllocationBytes', result)
+        self.assertNotIn('memoryRemedy', result)
+
+    def test_existing_mode_summaries_do_not_gain_normalization_claims(self):
+        for mode in C.CONSUMERS:
+            if mode == C.OWNED_DECODE_MODE:
+                continue
+            with self.subTest(mode=mode):
+                result = C.metrics(consumer(mode))
+                self.assertNotIn('normalizationStagesByCycle', result)
+                self.assertNotIn('normalizationMethod', result)
+                self.assertNotIn('ownedNormalizationCount', result['operationCountsPerCycle'])
 
     def test_sampler_reconciliation_and_missing_fields(self):
         C.samples(sampler(True), True)
@@ -604,6 +809,11 @@ class WrittenOutputContracts(unittest.TestCase):
                 report.update(copy.deepcopy(self.writer) if mode=='png-write' else consumer(mode))
                 report['processIdentifier']=101+index
                 report['status']='observed-pending-output-validation' if mode=='png-write' else 'observed'
+                if mode == C.OWNED_DECODE_MODE:
+                    for item in report['cycles']:
+                        for record, asset in zip(item['normalizedInputs'], manifest['assets']):
+                            record.update(sourcePNGBytes=asset['pngBytes'], sourcePNGSHA256=asset['pngSHA256'],
+                                          sourceRawBytes=asset['rawBytes'], sourceRawSHA256=asset['rawSHA256'])
             elif mode=='verify-writes':
                 report.update(copy.deepcopy(self.verifier)); report['processIdentifier']=101+index
                 report.update(status='verified',writerReportSHA256=writer_hash,writerProcessIdentifier=104)
@@ -644,7 +854,8 @@ class WrittenOutputContracts(unittest.TestCase):
         self.assertEqual(result['status'],'complete')
         self.assertFalse(result['nativeExecutionAttestedByChecker'])
         self.assertTrue(result['allThirtyWrittenOutputsPostExitVerified'])
-        self.assertEqual(len(result['observations']),4)
+        self.assertEqual(len(result['observations']),5)
+        self.assertIn(C.OWNED_DECODE_MODE, result['observations'])
         self.assertFalse(result['memoryStabilityAssessed'])
 
     def test_certify_stage_does_not_claim_output_completion(self):
@@ -656,6 +867,29 @@ class WrittenOutputContracts(unittest.TestCase):
     def test_complete_cannot_omit_post_exit_verifier(self):
         self.pipeline_fixture(); (self.root/'verify-writes/component.json').unlink()
         with self.assertRaises(FileNotFoundError): self.check_pipeline()
+
+    def test_complete_cannot_omit_owned_decode_candidate(self):
+        self.pipeline_fixture(); (self.root/C.OWNED_DECODE_MODE/'component.json').unlink()
+        with self.assertRaises(FileNotFoundError): self.check_pipeline()
+        self.assertEqual(self.check_pipeline('certify')['status'], 'certified')
+
+    def test_owned_decode_pipeline_rejects_changed_bound_input_identity(self):
+        self.pipeline_fixture()
+        for name in ('component.json', 'launch.json'):
+            path = self.root/C.OWNED_DECODE_MODE/name; value = json.loads(path.read_text())
+            value['cycles'][9]['normalizedInputs'][2]['sourcePNGSHA256'] = 'f'*64
+            path.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, 'source PNG hash differs'):
+            self.check_pipeline()
+
+    def test_owned_decode_candidate_requires_fresh_bound_process(self):
+        self.pipeline_fixture()
+        for name in ('component.json', 'launch.json', 'launch.json.launcher.json'):
+            path = self.root/C.OWNED_DECODE_MODE/name; value = json.loads(path.read_text())
+            value['processIdentifier'] = 105
+            path.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, 'distinct fresh process'):
+            self.check_pipeline()
 
     def test_cross_process_reused_pid_is_rejected(self):
         self.pipeline_fixture()

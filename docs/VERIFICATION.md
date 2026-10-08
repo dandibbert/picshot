@@ -1,5 +1,9 @@
 # Verification evidence and release boundary
 
+## Held 0.16 component results
+
+[Build 117 component observations](EditableObservation117.md) record three complete ARM controls, the separate 30-output PNG verification, and an editable-document fidelity failure before its first completed cycle. PNG decode/draw has continued ~78 MiB measured-interval RSS growth; raw/write retain substantial entry-to-final RSS with different kernel classifications. Both architectures pass 282 focused cases, and the ARM 24-case/432-attempt output guard passes, but the matrix and 0.16 acceptance remain incomplete. Proposed timestamp and full-size owned-normalization changes require fresh native evidence and do not replace the accepted versions below.
+
 ## Accepted ARM 0.15.1 reported-effect-failure hotfix
 
 **ARM [0199b9c6e5c16610b78b072945e45f8183d730c2](https://github.com/dandibbert/picshot/commit/0199b9c6e5c16610b78b072945e45f8183d730c2), tree `4ce96bd120197a2812d78f9d7924c986c4bc74e7`, version 0.15.1/build 111 is accepted for this bounded urgent output-failure correction.** [ARM job 113285943782](https://github.com/dandibbert/picshot/actions/runs/37769699261/job/113285943782) finishes success; [Intel job 113285944083](https://github.com/dandibbert/picshot/actions/runs/37769699261/job/113285944083) independently fails the focused deadline. The run-level failure does not erase the ARM-specific completed gates. No Intel acceptance transfers from ARM, and no 0.16 feature or row is promoted. ARM remains **60 Code / 55 Partial / 9 Missing**, Intel **50 / 61 / 13** across the original 124 behavior rows, with all nine context rows and all 133 original IDs retained.

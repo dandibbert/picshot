@@ -1183,7 +1183,7 @@ jobs:
   editable-components:
     if: ${{ contains(github.event.head_commit.message || '', '[editable-observation]') && contains(github.event.head_commit.message || '', '[component-controls]') }}
     runs-on: macos-15
-    timeout-minutes: 140
+    timeout-minutes: 160
     steps:
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       timeout-minutes: 2
@@ -1255,8 +1255,10 @@ jobs:
         }, indent=2) + '\n')
         PYTHON
     - name: Run certified fresh-process component controls and independent output verification
-      timeout-minutes: 75
-      run: python3 scripts/run-bounded-command.py --timeout-seconds 4400 --log dist/editable-components-matrix.log --report dist/editable-components-matrix.json -- bash scripts/editable-components-diagnostic.sh "$PWD/dist/editable-components-installed/PicShot.app" "$PWD/dist/evidence/editable-components" "$GITHUB_SHA"
+      # Eight separate processes retain their existing 300s native / 600s owned
+      # launch / 620s wrapper limits, plus bounded cleanup and checker overhead.
+      timeout-minutes: 88
+      run: python3 scripts/run-bounded-command.py --timeout-seconds 5200 --log dist/editable-components-matrix.log --report dist/editable-components-matrix.json -- bash scripts/editable-components-diagnostic.sh "$PWD/dist/editable-components-installed/PicShot.app" "$PWD/dist/evidence/editable-components" "$GITHUB_SHA"
     - name: Preserve all component reports and immutable pixel evidence
       if: always()
       timeout-minutes: 2
