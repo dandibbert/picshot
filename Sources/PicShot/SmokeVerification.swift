@@ -20,6 +20,14 @@ import PicShotFormulaRenderCore
                 try? FileManager.default.removeItem(at: history.directory)
                 NSApp.terminate(nil); return
             }
+            if ProcessInfo.processInfo.environment["PICSHOT_EDITABLE_ANNOTATIONS_ONLY"] == "1" {
+                var payload = try await EditableAnnotationNativeFixture.verify(evidenceDirectory: directory,
+                    includeResources: ProcessInfo.processInfo.environment["PICSHOT_EDITABLE_ANNOTATION_RESOURCES"] == "1")
+                payload["arguments"] = CommandLine.arguments
+                try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]).write(to: url, options: .atomic)
+                try? FileManager.default.removeItem(at: history.directory)
+                NSApp.terminate(nil); return
+            }
             if ProcessInfo.processInfo.environment["PICSHOT_MULTIWINDOW_RESOURCES_ONLY"] == "1" {
                 var payload = try await MultiWindowCaptureResourceFixture.verify(evidenceDirectory: directory)
                 payload["bundlePath"] = Bundle.main.bundlePath

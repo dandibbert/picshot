@@ -1,6 +1,6 @@
 # Capture and output workflow candidate
 
-This is a development candidate for 0.15. Native compilation, pixel review and installed ZIP/DMG acceptance must be recorded against the final source before these additions are called verified. The accepted ARM package remains 0.14 until then; the accepted Intel package remains 0.11. The complete feature ledger is [PARITY.md](PARITY.md).
+ARM 0.15/build 102 at `003cd44d0b8618e8cf4e43a84b1ac155cfcac3bc` passed the bounded native and installed acceptance described in [VERIFICATION.md](VERIFICATION.md). Its ZIP and guide were delivered on 2026-10-08 at 07:47:54 UTC; the DMG is saved separately. Intel remains the independently accepted 0.11 package. The complete feature ledger is [PARITY.md](PARITY.md).
 
 ## Selection ratios
 
@@ -26,7 +26,7 @@ The final flattened input plus renderer allocations/scratch must fit a 512 MiB a
 
 “多窗口合成…” uses one in-place selector with a compact count/capture/cancel strip. Selected windows are acquired sequentially and composited in desktop order onto one transparent canvas. No background screenshot is included. A move, closure, display change, incomplete raster or ambiguous identity aborts the whole result. It is not an atomic snapshot of animated windows.
 
-At most eight windows, 16 MP per input, 64 MP total input, 32 MP output and 16,384 pixels per side are admitted. Only one source frame is held beside the final canvas, at most 192,000,000 owned raster bytes. Decoder/framework buffers, the system capture subprocess and WindowServer are outside that accounting. One temporary PNG has an 80 MiB file-size limit. Cancellation terminates/reaps the owned system command and cleans its private temporary directory before capture admission is released.
+At most eight windows, 16 MP per input, 64 MP total input, 32 MP output and 16,384 pixels per side are admitted. Only one source frame and its caller-owned normalization buffer are held beside the final canvas. Their combined admission, including actual source row padding, is at most 192,000,000 bytes; some combinations below the individual pixel maxima therefore reject. Decoder/framework buffers, the system capture subprocess and WindowServer are outside that accounting. One temporary PNG has an 80 MiB file-size limit. Cancellation terminates/reaps the owned system command and cleans its private temporary directory before capture admission is released.
 
 The native injected fixture verifies selection events, overlap ordering, RGBA/alpha pixels and cleanup. The repeated resource fixture separately uses fresh 4K PNG decodes and the production compositor. Neither proves real TCC, occluded-window capture, physical Retina, multiple-monitor acquisition or Spaces behavior. See [MultiWindowCapture.md](MultiWindowCapture.md).
 

@@ -103,7 +103,7 @@ import XCTest
         }
     }
 
-    func testFailedCanvasRenderCannotCachePartialPixelsOrReusePriorRevision() throws {
+    func testFailedCanvasRenderCannotCachePartialPixelsOrReusePriorRevisionAfterCrop() throws {
         let source = try raster(), canvas = ImageEditorCanvas(image: source)
         let first = effects(.blur, linked: false)[0]
         canvas.effectPatchRenderer = { _, region in self.patch(region) }
@@ -112,7 +112,8 @@ import XCTest
         XCTAssertNotNil(canvas.retainedPresentationRaster)
         canvas.effectPatchRenderer = { _, _ in nil }
         XCTAssertNil(canvas.retainedPresentationRaster, "Changing the per-canvas renderer invalidates cached output")
-        canvas.setContent(image: source, annotations: [first, effects(.pixelate, linked: false)[1]])
+        canvas.setContent(image: source, annotations: [first, effects(.pixelate, linked: false)[1]],
+            cropViewportInBase: CGRect(x: 2, y: 3, width: 80, height: 60))
         let ids = canvas.annotations.map(\.id)
         for _ in 0..<2 {
             XCTAssertNil(canvas.rasterForBoundaryPreview())
@@ -124,7 +125,7 @@ import XCTest
         XCTAssertEqual(try pixels(safe), safeBytes, "A rejected render cannot overwrite an earlier safe raster")
         canvas.effectPatchRenderer = { _, region in self.patch(region) }
         let retried = try XCTUnwrap(canvas.flattened())
-        XCTAssertEqual(retried.width, source.width); XCTAssertEqual(retried.height, source.height)
+        XCTAssertEqual(retried.width, 80); XCTAssertEqual(retried.height, 60)
         XCTAssertEqual(canvas.annotations.map(\.id), ids)
     }
 
@@ -145,8 +146,11 @@ import XCTest
                 let canvas = editor.annotationCanvas
                 canvas.effectPatchRenderer = { _, _ in nil }
                 canvas.add(effects(tool, linked: true)[0])
+                canvas.cropRect = CGRect(x: 2, y: 3, width: 80, height: 60)
+                send("applyCrop", editor)
                 if decorated { _ = try editor.applyOutputDecoration(decoration) }
-                let draft = draftState(editor), frame = editor.window?.frame
+                let draft = try document(editor), frame = editor.window?.frame
+                let retained = editor.retainedUndoRasterCount
                 var errors = 0, callbacks = 0, closes = 0
                 editor.onOutputError = { error in
                     XCTAssertTrue(error is ImageEditorRenderingError)
@@ -163,7 +167,8 @@ import XCTest
                     XCTAssertFalse(editor.isClosed); XCTAssertEqual(closes, 0)
                     XCTAssertEqual(editor.window?.frame, frame)
                     XCTAssertTrue(editor.initialOriginalImage === source)
-                    XCTAssertEqual(draftState(editor), draft)
+                    XCTAssertEqual(try document(editor), draft)
+                    XCTAssertEqual(editor.retainedUndoRasterCount, retained)
                     XCTAssertNil(canvas.retainedPresentationRaster)
                     XCTAssertFalse(editor.outputProjectionIsPending)
                     XCTAssertFalse(EditorOutputProjection.shared.isBusy)
@@ -174,7 +179,7 @@ import XCTest
                 XCTAssertEqual(editor.outputDeliveryCount, 0); XCTAssertNil(editor.lastOutputRoute)
                 // Undo/redo stays usable after output failure and restores the exact saved draft.
                 send("undoEdit", editor); send("redoEdit", editor)
-                XCTAssertEqual(draftState(editor), draft)
+                XCTAssertEqual(try document(editor), draft)
                 canvas.effectPatchRenderer = { _, region in self.patch(region) }
                 var retry: CGImage?
                 // Retry the undressed raster synchronously; no output destination is changed.
@@ -186,22 +191,24 @@ import XCTest
         }
     }
 
-    func testNativeOutputSelectorsNeverCallLegacyOrOriginalAwareSinksOnRenderFailure() throws {
+    func testNativeOutputSelectorsNeverCallLegacyOrEditableSinksOnRenderFailure() throws {
         _ = NSApplication.shared
-        for originalAware in [false, true] {
+        for editable in [false, true] {
             for decorated in [false, true] {
                 var deliveries = 0, errors = 0
                 let workflow = SaveWorkflowPresenter(isSmoke: true)
-                let originalSink: ((CGImage, CGImage) -> Bool)? = originalAware ? { _, _ in deliveries += 1; return true } : nil
+                let editableSink: ((CGImage, EditableCapturePayload) throws -> Void)? = editable ? { _, _ in deliveries += 1 } : nil
                 let editor = ImageEditorController(image: try raster(),
                     onSave: { _ in deliveries += 1 }, onPin: { _ in deliveries += 1 }, onOCR: { _ in deliveries += 1 },
                     onTranslate: { _ in deliveries += 1 }, onApply: { _ in deliveries += 1; return true },
-                    saveWorkflow: workflow, copyAction: { _ in deliveries += 1 }, onPinWithOriginal: originalSink)
+                    saveWorkflow: workflow, copyAction: { _ in deliveries += 1 },
+                    onPinWithOriginal: { _, _ in deliveries += 1; return true },
+                    onSaveEditable: editableSink, onPinEditable: editableSink, onApplyEditable: editableSink)
                 defer { editor.close() }
                 editor.annotationCanvas.effectPatchRenderer = { _, _ in nil }
                 editor.annotationCanvas.add(effects(.pixelate, linked: true)[0])
                 if decorated { _ = try editor.applyOutputDecoration(decoration) }
-                let draft = draftState(editor)
+                let draft = try document(editor)
                 editor.onOutputError = { error in XCTAssertTrue(error is ImageEditorRenderingError); errors += 1 }
                 let selectors = ["copyResult", "saveResult", "pinResult", "quickSaveResult", "saveCopyResult",
                                  "recognizeResult", "translateResult", "applyResult", "exportResult"]
@@ -212,29 +219,10 @@ import XCTest
                     XCTAssertFalse(editor.isClosed, selector)
                     XCTAssertFalse(editor.outputProjectionIsPending, selector)
                     XCTAssertTrue(workflow.controllers.isEmpty, selector)
-                    XCTAssertEqual(draftState(editor), draft, selector)
+                    XCTAssertEqual(try document(editor), draft, selector)
                 }
                 XCTAssertEqual(errors, selectors.count)
             }
-        }
-    }
-
-    func testFailedLegacyCropCannotBakePartialEffectsOrReplaceSource() throws {
-        _ = NSApplication.shared
-        let source = try raster(), editor = makeEditor(source)
-        defer { editor.close() }
-        for tool in [ImageEditorTool.blur, .pixelate] {
-            editor.annotationCanvas.setContent(image: source, annotations: effects(tool, linked: true))
-            editor.annotationCanvas.effectPatchRenderer = { _, _ in nil }
-            let crop = CGRect(x: 2, y: 3, width: 80, height: 60)
-            editor.annotationCanvas.cropRect = crop
-            let draft = draftState(editor)
-            send("applyCrop", editor)
-            XCTAssertEqual(draftState(editor), draft)
-            XCTAssertTrue(editor.annotationCanvas.image === source)
-            XCTAssertEqual(editor.annotationCanvas.cropRect, crop)
-            XCTAssertNil(editor.annotationCanvas.flattened())
-            XCTAssertNil(editor.annotationCanvas.retainedPresentationRaster)
         }
     }
 
@@ -244,39 +232,8 @@ import XCTest
             onPin: { _ in XCTFail("Unexpected pin") }, onOCR: { _ in XCTFail("Unexpected recognition") },
             saveWorkflow: SaveWorkflowPresenter(isSmoke: true), copyAction: { _ in XCTFail("Unexpected copy") })
     }
-    private struct DraftState: Equatable {
-        let image: ObjectIdentifier
-        let annotations: [AnnotationState]
-        let decoration: ImageOutputDecoration
-    }
-    private struct AnnotationState: Equatable {
-        let id: UUID
-        let tool: String
-        let points: [CGPoint]
-        let color: [CGFloat]
-        let lineWidth: CGFloat
-        let opacity: CGFloat
-        let rotation: CGFloat
-        let group: UUID?
-        let addition: UUID?
-        let root: UUID?
-        let target: CGRect?
-        let included: [CGRect]
-        let excluded: [CGRect]
-        let synchronizes: Bool?
-        init(_ mark: ImageAnnotation) {
-            id = mark.id; tool = mark.tool.rawValue; points = mark.points
-            color = mark.color.components ?? []; lineWidth = mark.lineWidth
-            opacity = mark.opacity; rotation = mark.rotation
-            group = mark.mosaicLink?.groupID; addition = mark.mosaicLink?.additionID
-            root = mark.mosaicLink?.rootAdditionID; target = mark.mosaicLink?.target
-            included = mark.mosaicLink?.includedTargets ?? []; excluded = mark.mosaicLink?.excludedTargets ?? []
-            synchronizes = mark.mosaicLink?.synchronizes
-        }
-    }
-    private func draftState(_ editor: ImageEditorController) -> DraftState {
-        DraftState(image: ObjectIdentifier(editor.annotationCanvas.image),
-            annotations: editor.annotationCanvas.annotations.map(AnnotationState.init), decoration: editor.outputDecoration)
+    private func document(_ editor: ImageEditorController) throws -> Data {
+        try EditableAnnotationDocumentCodec.encode(editor.editablePayload().document)
     }
     private func send(_ name: String, _ editor: ImageEditorController) {
         XCTAssertTrue(NSApp.sendAction(NSSelectorFromString(name), to: editor, from: nil))

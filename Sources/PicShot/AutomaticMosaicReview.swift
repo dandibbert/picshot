@@ -277,14 +277,21 @@ extension ImageEditorController {
         cancelAutomaticMosaic()
         finishInlineText(commit: true)
         guard !isClosed, seed.supportsAutomaticMosaic else { return }
-        let canvas = annotationCanvas, image = canvas.image
-        let extent = CGRect(x: 0, y: 0, width: image.width, height: image.height)
+        let canvas = annotationCanvas, base = canvas.image
+        let viewport = canvas.visibleImageRect
         let rect = seed.localBounds.standardized.integral
-        guard extent.contains(rect), let pixelSeed = AutomaticMosaicCoordinates.pixelRect(rect, imageHeight: image.height) else { return }
+        guard viewport.contains(rect) else { return }
+        let image: CGImage
+        if canvas.cropViewportInBase != nil {
+            guard let cropped = ImageEditorRenderer.crop(image: base, to: viewport) else { return }
+            image = cropped
+        } else { image = base }
+        let localSeed = rect.offsetBy(dx: -viewport.minX, dy: -viewport.minY)
+        guard let pixelSeed = AutomaticMosaicCoordinates.pixelRect(localSeed, imageHeight: image.height) else { return }
         let token = UUID(); automaticMosaicGeneration = token
         let state = AutomaticMosaicReviewState(phase: .searching, generation: token,
-            sourceIdentity: ObjectIdentifier(image), sourceRevision: canvas.contentRevision,
-            sourceWidth: image.width, sourceHeight: image.height, seed: seed, replacingID: replacing,
+            sourceIdentity: ObjectIdentifier(base), sourceRevision: canvas.contentRevision,
+            sourceWidth: base.width, sourceHeight: base.height, seed: seed, replacingID: replacing,
             candidates: [AutomaticMosaicReviewCandidate(rect: rect, confidence: 1, included: true, isSeed: true)])
         publishAutomaticMosaicReview(state)
         let matcher = automaticMosaicMatcher, injectedFind = automaticMosaicFind
@@ -293,17 +300,21 @@ extension ImageEditorController {
                 let result: RepeatedRegionMatchResult
                 if let injectedFind { result = try await injectedFind(image, pixelSeed) }
                 else { result = try await matcher.findMatches(in: image, seed: pixelSeed) }
-                guard let self, !Task.isCancelled, self.automaticMosaicStillCurrent(state) else { return }
+                guard let self, !Task.isCancelled, self.automaticMosaicStillCurrent(state),
+                      self.annotationCanvas.visibleImageRect == viewport else { return }
                 self.automaticMosaicTask = nil
                 var ready = state; ready.phase = .ready; ready.truncated = result.truncated
                 ready.candidates += result.candidates.prefix(AutomaticMosaicReviewState.maximumCandidates - 1).compactMap { candidate in
-                    guard let box = AutomaticMosaicCoordinates.imageRect(candidate.rect, imageHeight: image.height), extent.contains(box) else { return nil }
+                    guard let local = AutomaticMosaicCoordinates.imageRect(candidate.rect, imageHeight: image.height) else { return nil }
+                    let box = local.offsetBy(dx: viewport.minX, dy: viewport.minY)
+                    guard viewport.contains(box) else { return nil }
                     return AutomaticMosaicReviewCandidate(rect: box, confidence: candidate.confidence, included: true)
                 }
                 ready.truncated = ready.truncated || result.candidates.count >= AutomaticMosaicReviewState.maximumCandidates
                 self.publishAutomaticMosaicReview(ready)
             } catch {
-                guard let self, !Task.isCancelled, self.automaticMosaicStillCurrent(state) else { return }
+                guard let self, !Task.isCancelled, self.automaticMosaicStillCurrent(state),
+                      self.annotationCanvas.visibleImageRect == viewport else { return }
                 self.automaticMosaicTask = nil
                 var failed = state; failed.phase = .failed
                 failed.message = (error as? LocalizedError)?.errorDescription ?? "未能完成查找，请缩小截图或重试"

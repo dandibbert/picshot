@@ -19,7 +19,7 @@ def validate(report_path, app, source):
     assert pathlib.Path(report['bundlePath']).resolve() == bundle.resolve()
     for key in ('realDesktopCaptured', 'permissionRequested', 'generalPasteboardChanged', 'standardDefaultsChanged'):
         assert report[key] is False, key
-    for key in ('effectOutputFailure', 'captureRatios', 'outputDecoration', 'multipleWindows', 'originalCurrentPin'):
+    for key in ('captureRatios', 'outputDecoration', 'multipleWindows', 'originalCurrentPin'):
         assert report[key]['status'] == 'passed', key
     decoration_cases = report['outputDecoration']['cases']
     assert {case['name'] for case in decoration_cases} == {'light', 'dark', 'edge-light', 'edge-dark'}

@@ -101,6 +101,73 @@ struct PinImageState {
     var onClose: (() -> Void)?
     /// Invoked before accepting an edit. A persistence failure leaves the live image unchanged.
     var onPixelChange: ((CGImage, Bool) throws -> Void)?
+    var onEditablePixelChange: ((CGImage, EditableCapturePayload) throws -> Void)?
+    var onAnnotationError: ((Error) -> Void)?
+    private var loadEditableCapture: ((PinEditableWork) throws -> EditableCapturePayload?)?
+    private var editableWorkAdmission: ((PinEditableWork, EditableCapturePayload?) throws -> Void)?
+    private var annotationEditorSharedOriginalBytes = 0
+    private var transientEditableCapture: EditableCapturePayload?
+    private(set) var hasEditableCapture = false
+    private(set) var annotationsHidden = false
+    private var hiddenAnnotationPreview: CGImage?
+    private var visibilityTicket: EditorOutputProjection.Ticket?
+    private var visibilityGeneration = UUID()
+    var annotationVisibilityIsPending: Bool { visibilityTicket != nil }
+    /// Display-only hiding never changes any copy/save/OCR source.
+    var displayedImage: CGImage { hiddenAnnotationPreview ?? state.current }
+    var retainedAnnotationPreviewCount: Int { hiddenAnnotationPreview == nil ? 0 : 1 }
+    var retainedEditableBaseCount: Int { transientEditableCapture == nil ? 0 : 1 }
+    var retainedRasterImagesForAdmission: [CGImage] {
+        [state.original, state.current] + [hiddenAnnotationPreview,
+            transientEditableCapture?.originalImage, transientEditableCapture?.baseImage].compactMap { $0 }
+    }
+    var estimatedOutputProjectionReservationBytes: Int {
+        EditorAdmissionPolicy.sum([visibilityTicket?.reservedBytes ?? 0,
+            annotationEditor?.estimatedOutputProjectionReservationBytes ?? 0])
+    }
+    var estimatedRetainedRasterBytes: Int {
+        // A pin editor reuses the immutable original. Its editor estimate already
+        // includes it, so do not charge those same owned bytes twice.
+        let editorBytes = max(0, (annotationEditor?.estimatedAdmissionRasterBytes ?? 0) - annotationEditorSharedOriginalBytes)
+        return EditorAdmissionPolicy.sum([EditorRasterEstimate.retainedBytes(retainedRasterImagesForAdmission),
+            editorBytes, visibilityTicket?.reservedBytes ?? 0])
+    }
+
+    func configureEditableCapture(available: Bool, load: @escaping () throws -> EditableCapturePayload?) {
+        configureEditableCapture(available: available, loadForWork: { _ in try load() })
+    }
+    func configureEditableCapture(available: Bool,
+        loadForWork: @escaping (PinEditableWork) throws -> EditableCapturePayload?,
+        admission: ((PinEditableWork, EditableCapturePayload?) throws -> Void)? = nil) {
+        hasEditableCapture = available; loadEditableCapture = loadForWork; editableWorkAdmission = admission
+        transientEditableCapture = nil; revealAnnotations()
+    }
+    private func editableCapture(for work: PinEditableWork = .readOnly) throws -> EditableCapturePayload? {
+        guard hasEditableCapture else { return nil }
+        guard let payload = try loadEditableCapture?(work) ?? transientEditableCapture else {
+            throw PicShotError.message("可编辑标注文件缺失。当前图片仍可复制或导出。")
+        }
+        try payload.validate(currentImage: state.current)
+        return payload
+    }
+    private func admitEditableOperation(_ work: PinEditableWork, payload: EditableCapturePayload?) throws {
+        if let editableWorkAdmission { try editableWorkAdmission(work, payload); return }
+        let document = payload?.document, base = payload?.baseImage ?? state.current
+        if PinEditableAdmission.requiresProjection(work, document: document), EditorOutputProjection.shared.isBusy {
+            throw EditorOutputProjectionError.busy
+        }
+        let additional = PinEditableAdmission.additionalImages(payload.map { [$0.originalImage, $0.baseImage] } ?? [],
+            alreadyOwned: retainedRasterImagesForAdmission)
+        let workBytes = try PinEditableAdmission.workBytes(work, document: document, baseWidth: base.width, baseHeight: base.height)
+        _ = try PinEditableAdmission.remaining(limit: EditorAdmissionPolicy().maximumRasterBytes,
+            retained: estimatedRetainedRasterBytes, reportedProjection: estimatedOutputProjectionReservationBytes,
+            globalProjection: EditorOutputProjection.shared.reservedBytes,
+            work: EditorAdmissionPolicy.sum([additional, workBytes]))
+    }
+    private func annotationError(_ error: Error) {
+        if let onAnnotationError { onAnnotationError(error) } else { showError(error) }
+    }
+
     var onToggleGroupSelection: (() -> Void)?
     var onShowGroupTransform: (() -> Void)?
     private(set) var isGroupSelected = false
@@ -277,10 +344,15 @@ struct PinImageState {
         processing.addItem(withTitle: "不透明度", action: nil, keyEquivalent: "").submenu = alpha
         addItem("重置所有处理", action: #selector(resetImage), to: processing)
         menu.addItem(withTitle: "图像处理", action: nil, keyEquivalent: "").submenu = processing
-        addItem("复制当前图像", action: #selector(copyPin), to: menu)
-        addItem("当前图像另存为…", action: #selector(savePin), to: menu)
+        let currentCopy = addItem("复制当前图像", action: #selector(copyPin), to: menu)
+        let currentSave = addItem("当前图像另存为…", action: #selector(savePin), to: menu)
+        currentCopy.toolTip = "复制已保存的标注结果；临时隐藏标注不影响复制"
+        currentSave.toolTip = "保存已保存的标注结果；临时隐藏标注不影响导出"
         menu.addItem(.separator())
         addItem("标注", action: #selector(showAnnotations), key: " ", to: menu)
+        let visibility = addItem("临时隐藏标注（仅显示）", action: #selector(toggleAnnotationsHidden), to: menu)
+        visibility.identifier = NSUserInterfaceItemIdentifier("pin.annotations.visibility")
+        visibility.toolTip = "仅切换屏幕预览；复制、保存和识别仍使用已保存的标注结果。原始图片操作位于独立子菜单。"
         addItem("裁剪当前图片…", action: #selector(toggleCrop), to: menu)
         let zoom = NSMenu(title: "缩放"); zoom.delegate = self
         for (index, title) in ["适合窗口", "25%", "50%", "100%", "200%", "400%"].enumerated() {
@@ -308,6 +380,19 @@ struct PinImageState {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         for item in menu.items {
+            if item.action == #selector(transformImage(_:)), PinTransform.allCases.indices.contains(item.tag) {
+                item.title = PinTransform.allCases[item.tag].title + (hasEditableCapture ? "（合并标注）" : "")
+                item.toolTip = hasEditableCapture ? "处理已保存的当前图像并合并已有标注；原始图片仍可单独复制或重置。" : nil
+            }
+            if item.action == #selector(toggleCrop) {
+                item.title = hasEditableCapture ? "裁剪（保留可编辑标注）…" : "裁剪当前图片…"
+            }
+            if item.action == #selector(toggleAnnotationsHidden) {
+                item.isHidden = !hasEditableCapture
+                item.isEnabled = !closed && annotationEditor == nil && !exportInProgress
+                item.state = annotationsHidden ? .on : .off
+                item.title = annotationVisibilityIsPending ? "取消隐藏标注预览" : (annotationsHidden ? "显示标注（仅显示）" : "临时隐藏标注（仅显示）")
+            }
             if item.action == #selector(toggleGroupSelection) {
                 item.isHidden = onToggleGroupSelection == nil
                 item.state = isGroupSelected ? .on : .off
@@ -349,38 +434,56 @@ struct PinImageState {
     @objc func showAnnotations() {
         guard !closed, !temporarilyHidden, !exportInProgress else { return }
         if let annotationEditor { annotationEditor.showWindow(nil); annotationEditor.window?.makeKeyAndOrderFront(nil); return }
-        guard let anchor = annotationPresentation else { return }
+        guard let projectedAnchor = annotationPresentation else { return }
+        let payload: EditableCapturePayload?
+        let anchor: PinEditorPresentation
+        do {
+            payload = try editableCapture(for: .editor)
+            try admitEditableOperation(.editor, payload: payload)
+            anchor = try payload.map { try EditableCapturePresentation.editorPlacement(for: $0.document, projected: projectedAnchor) } ?? projectedAnchor
+        } catch { annotationError(error); return }
+        let restoreHiddenOnCancel = annotationsHidden
+        let startingRevision = pixelRevision
+        revealAnnotations()
         ocrModeTransition = true
         defer { ocrModeTransition = false; refreshAutomaticOCR() }
-        suspendOCR()
-        setBarcodeSelectionEnabled(false)
-        setCropping(false)
+        suspendOCR(); setBarcodeSelectionEnabled(false); setCropping(false)
         let generation = UUID(); annotationGeneration = generation
         var editingRevision = pixelRevision
-        let apply: (CGImage) -> Bool = { [weak self] image in
+        let apply: (CGImage, EditableCapturePayload) throws -> Void = { [weak self] image, draft in
             guard let self, !self.closed, !self.temporarilyHidden, self.annotationGeneration == generation,
-                  self.annotationEditor != nil, !self.exportInProgress else { return false }
+                  self.annotationEditor != nil, !self.exportInProgress else { throw CancellationError() }
             guard self.pixelRevision == editingRevision else {
-                showError(PicShotError.message("贴图已在其他操作中更改。当前标注仍可复制或导出；请重新打开标注后再应用到贴图。")); return false
+                throw PicShotError.message("贴图已在其他操作中更改。当前标注仍可复制或导出；请重新打开标注后再应用到贴图。")
             }
-            do {
-                try self.applyAnnotatedImage(image); editingRevision = self.pixelRevision; return true
-            } catch { showError(error); return false }
+            try self.applyEditableImage(image, editable: draft); editingRevision = self.pixelRevision
         }
-        let editor = ImageEditorController(image: state.current, onSave: { [weak self] image in
-            if apply(image) { self?.annotationEditor?.close() }
-        }, onPin: { _ = apply($0) }, onOCR: { [weak self] image in
-            guard let self, self.annotationGeneration == generation, self.annotationEditor != nil else { return }
-            self.recognizeAnnotationImage(image)
-        }, onApply: apply)
+        let editor = ImageEditorController(image: payload?.baseImage ?? state.current,
+            onSave: { _ in }, onPin: { _ in }, onOCR: { [weak self] image in
+                guard let self, self.annotationGeneration == generation, self.annotationEditor != nil else { return }
+                self.recognizeAnnotationImage(image)
+            }, onSaveEditable: { [weak self] image, draft in
+                try apply(image, draft); self?.annotationEditor?.close()
+            }, onPinEditable: apply, onApplyEditable: apply)
+        do {
+            if let payload { try editor.restoreEditablePayload(payload) }
+            else { editor.useOriginalImage(state.original) }
+        } catch { editor.close(); annotationError(error); return }
+        editor.onOutputError = { [weak self] error in self?.annotationError(error) }
         restorePinAfterAnnotations = window?.isVisible == true
         editor.onClose = { [weak self, weak editor] in
             guard let self, self.annotationGeneration == generation, self.annotationEditor === editor else { return }
-            self.annotationEditor = nil
+            self.annotationEditor = nil; self.annotationEditorSharedOriginalBytes = 0
+            if restoreHiddenOnCancel && self.pixelRevision == startingRevision && !self.closed && !self.temporarilyHidden {
+                do { try self.setAnnotationsHidden(true) } catch { self.annotationError(error) }
+            }
             let shouldRestore = self.restorePinAfterAnnotations && !self.closed && !self.temporarilyHidden
             self.restorePinAfterAnnotations = false
             if shouldRestore { self.bringForward() }
         }
+        let editorOriginal = payload?.originalImage ?? state.original
+        annotationEditorSharedOriginalBytes = editorOriginal === state.original
+            ? EditorRasterEstimate.retainedBytes([state.original]) : 0
         annotationEditor = editor
         guard editor.showPinned(anchor, desktopVisibility: desktopVisibility) else {
             dismissAnnotations(restoringPin: false); return
@@ -415,7 +518,7 @@ struct PinImageState {
     func hideTemporarily() {
         guard !closed else { return }
         temporarilyHidden = true
-        suspendOCR()
+        revealAnnotations(); suspendOCR()
         imageExportController?.cancelExport(); imageExportController = nil
         setBarcodeSelectionEnabled(false)
         dismissAnnotations(restoringPin: false)
@@ -425,7 +528,7 @@ struct PinImageState {
     private func dismissAnnotations(restoringPin: Bool) {
         let shouldRestore = restoringPin && restorePinAfterAnnotations && !closed && !temporarilyHidden
         annotationGeneration = UUID(); restorePinAfterAnnotations = false
-        let editor = annotationEditor; annotationEditor = nil
+        let editor = annotationEditor; annotationEditor = nil; annotationEditorSharedOriginalBytes = 0
         editor?.onClose = nil; editor?.close()
         if shouldRestore { bringForward() }
     }
@@ -437,6 +540,65 @@ struct PinImageState {
         try acceptImageState(PinImageState(original: state.original, current: image, isModified: true))
     }
 
+    func applyEditableImage(_ image: CGImage, editable payload: EditableCapturePayload) throws {
+        guard !closed, !exportInProgress else { throw CancellationError() }
+        guard PinImageRenderer.allowsRasterSize(width: image.width, height: image.height) else { throw renderFailure }
+        try payload.validate(currentImage: image)
+        try acceptImageState(PinImageState(original: state.original, current: image, isModified: true), editable: payload)
+    }
+
+    @objc private func toggleAnnotationsHidden() {
+        do { try setAnnotationsHidden(!annotationsHidden && !annotationVisibilityIsPending) }
+        catch { annotationError(error) }
+    }
+
+    /// Temporary preview only. We intentionally do not persist visibility:
+    /// reopening a pin always starts with its saved annotated output visible.
+    func setAnnotationsHidden(_ hidden: Bool) throws {
+        guard !closed, annotationEditor == nil, !exportInProgress else { throw CancellationError() }
+        if !hidden { revealAnnotations(); return }
+        guard !annotationsHidden, visibilityTicket == nil else { return }
+        guard let payload = try editableCapture(for: .hiddenPreview) else { return }
+        try admitEditableOperation(.hiddenPreview, payload: payload)
+        let document = payload.document
+        let base = try EditableCapturePresentation.visibleBase(payload)
+        if document.outputDecoration.isIdentity {
+            try installHiddenPreview(base); return
+        }
+        let service = EditorOutputProjection.shared
+        let ticket = try service.reserve(width: base.width, height: base.height, decoration: document.outputDecoration)
+        do {
+            guard let input = ImageEditorRenderer.render(image: base, annotations: []) else { throw ImageOutputDecorationError.allocationFailed }
+            let generation = UUID(); visibilityGeneration = generation; visibilityTicket = ticket
+            try service.start(ticket, image: input) { [weak self, weak ticket] result in
+                guard let self, let ticket, self.visibilityTicket === ticket else { return }
+                self.visibilityTicket = nil
+                defer { if !self.closed { self.updateTitle(); self.refreshAutomaticOCR() } }
+                guard !self.closed, self.visibilityGeneration == generation, !ticket.cancellation.isCancelled else { return }
+                do { try self.installHiddenPreview(result.get()) }
+                catch { if !(error is CancellationError) { self.annotationError(error) } }
+            }
+        } catch {
+            visibilityTicket = nil; service.abandon(ticket); throw error
+        }
+    }
+    private func installHiddenPreview(_ preview: CGImage) throws {
+        guard preview.width == state.current.width, preview.height == state.current.height else {
+            throw EditorOutputProjectionError.invalidOwner
+        }
+        // Avoid selecting text at coordinates whose visible contents were hidden.
+        suspendOCR(); setBarcodeSelectionEnabled(false); setCropping(false)
+        hiddenAnnotationPreview = preview; annotationsHidden = true; canvas.image = preview
+        updateLayout(); updateTitle()
+    }
+    private func revealAnnotations() {
+        visibilityGeneration = UUID(); visibilityTicket?.cancel()
+        // Cancel retains the lease until its completion drains, blocking another
+        // hide request from queuing an unbounded sequence of full-size projections.
+        hiddenAnnotationPreview = nil; annotationsHidden = false; canvas.image = state.current
+        if !closed { updateLayout(); updateTitle(); refreshAutomaticOCR() }
+    }
+
     @objc private func toggleTextSelection() { setTextSelectionEnabled(!textSelectionEnabled) }
 
     /// Explicit actions may focus the overlay; automatic completion never does.
@@ -446,6 +608,7 @@ struct PinImageState {
             disableTextSelection()
             return
         }
+        if annotationsHidden || annotationVisibilityIsPending { revealAnnotations() }
         guard canRecognize, !textSelectionEnabled else { return }
         automaticSelectionDismissed = false
         setBarcodeSelectionEnabled(false); setCropping(false)
@@ -467,7 +630,7 @@ struct PinImageState {
     }
 
     private var canRecognize: Bool {
-        !closed && !temporarilyHidden && !ocrModeTransition && annotationEditor == nil && !exportInProgress && window?.ignoresMouseEvents != true
+        !closed && !temporarilyHidden && !annotationsHidden && !annotationVisibilityIsPending && !ocrModeTransition && annotationEditor == nil && !exportInProgress && window?.ignoresMouseEvents != true
     }
     private var automaticOCREligible: Bool {
         canRecognize && window?.isVisible == true && !canvas.isCropping && !barcodeSelectionEnabled
@@ -577,6 +740,7 @@ struct PinImageState {
     /// Opt-in, transient mode. It is intentionally absent from persisted pin presentation.
     func setBarcodeSelectionEnabled(_ enabled: Bool) {
         if enabled {
+            if annotationsHidden || annotationVisibilityIsPending { revealAnnotations() }
             guard !closed, !temporarilyHidden, annotationEditor == nil, !exportInProgress,
                   window?.ignoresMouseEvents != true, !barcodeSelectionEnabled else { return }
             suspendOCR()
@@ -663,6 +827,7 @@ struct PinImageState {
     func copyAllRecognizedText(to pasteboard: NSPasteboard = .general) { recognizeCurrentPin(copyDirectly: true, pasteboard: pasteboard) }
 
     private func recognizeCurrentPin(copyDirectly: Bool, pasteboard: NSPasteboard) {
+        if annotationsHidden || annotationVisibilityIsPending { revealAnnotations() }
         guard canRecognize, !canvas.isCropping, !barcodeSelectionEnabled else { return }
         recognitionTask?.cancel(); recognitionTask = nil
         let generation = UUID(); recognitionGeneration = generation
@@ -755,13 +920,24 @@ struct PinImageState {
         guard !closed, !exportInProgress else { return }
         var next = state
         guard next.apply(transform) else { throw renderFailure }
-        try acceptImageState(next)
+        if var editable = try editableCapture() {
+            editable.document.baseAssetID = UUID()
+            editable.document.basePixelWidth = next.current.width; editable.document.basePixelHeight = next.current.height
+            editable.document.baseCropInOriginal = nil; editable.document.cropViewportInBase = nil
+            editable.document.baseProvenance = .derivedRaster
+            editable.document.annotations = []; editable.document.outputDecoration = .none
+            editable.baseImage = next.current
+            try acceptImageState(next, editable: editable)
+        } else { try acceptImageState(next) }
     }
     private func applyCrop(_ rectangle: CGRect) {
         do { try cropImage(to: rectangle) } catch { showError(error) }
     }
     func cropImage(to rectangle: CGRect) throws {
         guard !closed, !exportInProgress else { return }
+        guard !hasEditableCapture else {
+            throw PicShotError.message("请在标注编辑器中裁剪，以保留图层和效果来源。")
+        }
         var next = state
         guard next.crop(to: rectangle) else { throw renderFailure }
         try acceptImageState(next)
@@ -774,8 +950,15 @@ struct PinImageState {
         var next = state; next.reset()
         try acceptImageState(next)
     }
-    private func acceptImageState(_ next: PinImageState) throws {
-        try onPixelChange?(next.current, !next.isModified)
+    private func acceptImageState(_ next: PinImageState, editable: EditableCapturePayload? = nil) throws {
+        if let editable {
+            if let onEditablePixelChange { try onEditablePixelChange(next.current, editable) }
+            else if onPixelChange != nil { throw PicShotError.message("此贴图尚未连接可编辑标注存储。当前编辑未丢失。") }
+        } else { try onPixelChange?(next.current, !next.isModified) }
+        // Commit completed: only now replace pixels, layer availability and preview.
+        hasEditableCapture = editable != nil
+        transientEditableCapture = loadEditableCapture == nil ? editable : nil
+        revealAnnotations()
         let previousSize = CGSize(width: state.current.width, height: state.current.height)
         ocrModeTransition = true
         defer { ocrModeTransition = false; refreshAutomaticOCR() }
@@ -801,12 +984,15 @@ struct PinImageState {
 
     @objc private func toggleCrop() {
         guard !exportInProgress else { return }
+        if hasEditableCapture {
+            showAnnotations(); annotationEditor?.chooseTool(.crop); return
+        }
         if canvas.isCropping, let rectangle = canvas.selection, rectangle.width >= 1, rectangle.height >= 1 { applyCrop(rectangle) }
         else { setCropping(!canvas.isCropping) }
     }
     private func setCropping(_ value: Bool) {
         canvas.isCropping = value
-        if value { suspendOCR(); setBarcodeSelectionEnabled(false) }
+        if value { revealAnnotations(); suspendOCR(); setBarcodeSelectionEnabled(false) }
         canvas.selection = nil
         canvas.toolTip = value ? "拖动选择，按 Return 裁剪，Esc 取消" : nil
         if value { window?.makeFirstResponder(canvas) }
@@ -911,6 +1097,8 @@ struct PinImageState {
     func windowDidResize(_ notification: Notification) { updateLayout(); updateTitle(); presentationDidChange() }
     func windowWillClose(_ notification: Notification) {
         guard !closed else { return }; closed = true
+        revealAnnotations(); transientEditableCapture = nil; loadEditableCapture = nil; editableWorkAdmission = nil; hasEditableCapture = false
+        onEditablePixelChange = nil; onAnnotationError = nil
         if let exportCloseObserver { NotificationCenter.default.removeObserver(exportCloseObserver) }; exportCloseObserver = nil
         imageExportController?.cancelExport(); imageExportController = nil
         disableTextSelection(); ocrSession.close(); textSelectionOverlay.releaseResources()
@@ -938,7 +1126,7 @@ struct PinImageState {
 
     private func updateTitle() {
         let suffix = canvas.isCropping ? " · 拖动选择，回车裁剪 / Esc 取消" : (locked ? " · 已锁定" : "")
-        let edited = state.isModified ? " · 已修改" : ""
+        let edited = (state.isModified ? " · 已修改" : "") + (annotationsHidden ? " · 标注仅预览隐藏，复制/保存仍含标注" : "")
         window?.title = "贴图 · \(state.current.width) × \(state.current.height) · \(Int((canvas.zoom * 100).rounded()))%\(edited)\(suffix)"
     }
     private func updateLayout() {

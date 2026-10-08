@@ -1,6 +1,5 @@
 import XCTest
 import AppKit
-import Darwin
 import PicShotCore
 @testable import PicShot
 
@@ -29,10 +28,15 @@ import PicShotCore
     func testNativeWorkflowUsesReviewControlsExportsAndStaleActualCallbacks() async throws {
         _ = NSApplication.shared
         guard NSScreen.main != nil else { throw XCTSkip("Requires native WindowServer; no capture or Accessibility permissions requested") }
-        let evidence = try makeEvidenceDirectory(test: "native-workflow")
-        let directory = evidence.url
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PicShot-Mosaic-Workflow-Test-" + UUID().uuidString)
         var reachedEnd = false
-        defer { finishEvidence(evidence, reachedEnd: reachedEnd) }
+        defer {
+            if reachedEnd && (testRun?.failureCount ?? 0) == 0 {
+                try? FileManager.default.removeItem(at: directory)
+            } else {
+                print("Automatic mosaic XCTest evidence retained at: \(directory.path)")
+            }
+        }
         let report = try await AutomaticMosaicWorkflowSmokeFixture.verify(evidenceDirectory: directory, includeResourceCycles: false)
         XCTAssertEqual(report["status"] as? String, "passed")
         XCTAssertEqual(report["sourceByteIdentityVerified"] as? Bool, true)
@@ -49,10 +53,8 @@ import PicShotCore
     }
 
     func testFailureDiagnosticsKeepCurrentModeCountersAndOnlyFirstExteriorMismatch() throws {
-        let evidence = try makeEvidenceDirectory(test: "failure-diagnostics")
-        let directory = evidence.url
-        var reachedEnd = false
-        defer { finishEvidence(evidence, reachedEnd: reachedEnd) }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PicShot-Mosaic-Diagnostics-Test-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
         let diagnostics = AutomaticMosaicWorkflowDiagnostics(directory: directory)
         diagnostics.beginMode("blur")
         diagnostics.record("export-pixel-validation")
@@ -86,14 +88,11 @@ import PicShotCore
         XCTAssertEqual(nextMode["currentMode"] as? String, "pixelate")
         XCTAssertNil(nextMode["exportCounters"])
         XCTAssertNil(nextMode["firstExteriorMismatch"])
-        reachedEnd = true
     }
 
     func testDiagnosticPhasesArePersistedBeforeFailureAndBounded() throws {
-        let evidence = try makeEvidenceDirectory(test: "bounded-phases")
-        let directory = evidence.url
-        var reachedEnd = false
-        defer { finishEvidence(evidence, reachedEnd: reachedEnd) }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PicShot-Mosaic-Diagnostics-Test-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
         let diagnostics = AutomaticMosaicWorkflowDiagnostics(directory: directory)
         let count = AutomaticMosaicWorkflowDiagnostics.maximumPhases + 3
         for index in 0..<count { diagnostics.record("phase-\(index)") }
@@ -111,62 +110,6 @@ import PicShotCore
         }
         let data = try Data(contentsOf: directory.appendingPathComponent(AutomaticMosaicWorkflowDiagnostics.filename))
         XCTAssertLessThan(data.count, 32 * 1024)
-        reachedEnd = true
-    }
-
-    private struct EvidenceDirectory {
-        let url: URL
-        let descriptor: Int32
-    }
-
-    private func makeEvidenceDirectory(test: String) throws -> EvidenceDirectory {
-        let root: URL
-        if let path = ProcessInfo.processInfo.environment["PICSHOT_TEST_EVIDENCE_ROOT"] {
-            guard path.hasPrefix("/"), !path.utf8.contains(0) else {
-                throw NSError(domain: "AutomaticMosaicXCTestEvidence", code: 1,
-                    userInfo: [NSLocalizedDescriptionKey: "PICSHOT_TEST_EVIDENCE_ROOT must be an absolute directory path"])
-            }
-            root = URL(fileURLWithPath: path, isDirectory: true)
-            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        } else {
-            root = FileManager.default.temporaryDirectory
-        }
-        // mkdtemp creates a new private child exclusively; never adopt a root or
-        // another test's directory. Write there directly so crashes retain evidence.
-        var template = Array(root.appendingPathComponent("PicShot-Mosaic-\(test)-XXXXXX").path.utf8CString)
-        guard template.withUnsafeMutableBufferPointer({ Darwin.mkdtemp($0.baseAddress!) != nil }) else {
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
-        }
-        let url = URL(fileURLWithPath: String(cString: template), isDirectory: true)
-        let descriptor = Darwin.open(url.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        guard descriptor >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
-        return EvidenceDirectory(url: url, descriptor: descriptor)
-    }
-
-    private func finishEvidence(_ evidence: EvidenceDirectory, reachedEnd: Bool) {
-        defer { Darwin.close(evidence.descriptor) }
-        guard reachedEnd && testRun?.failureCount == 0 else {
-            print("Automatic mosaic XCTest evidence retained at: \(evidence.url.path)")
-            return
-        }
-        var owned = stat(), current = stat()
-        guard fstat(evidence.descriptor, &owned) == 0,
-              lstat(evidence.url.path, &current) == 0,
-              owned.st_dev == current.st_dev, owned.st_ino == current.st_ino else {
-            print("Automatic mosaic XCTest cleanup refused a changed directory: \(evidence.url.path)")
-            return
-        }
-        // Only these ten fixture outputs are owned. Never enumerate, recursively
-        // delete, follow output symlinks, or remove the supplied evidence root.
-        let files = ["automatic-mosaic-input.png", "automatic-mosaic-review-light.png",
-                     "automatic-mosaic-review-dark.png", "automatic-mosaic-edge.png",
-                     "automatic-mosaic-redact.png", "automatic-mosaic-redact-excluded.png",
-                     "automatic-mosaic-blur.png", "automatic-mosaic-pixelate.png",
-                     "automatic-mosaic-workflow.json", AutomaticMosaicWorkflowDiagnostics.filename]
-        for name in files { _ = unlinkat(evidence.descriptor, name, 0) }
-        if Darwin.rmdir(evidence.url.path) != 0 {
-            print("Automatic mosaic XCTest cleanup left unremoved files at: \(evidence.url.path)")
-        }
     }
 
     private func diagnosticReport(in directory: URL) throws -> [String: Any] {

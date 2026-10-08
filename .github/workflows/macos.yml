@@ -7,8 +7,8 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[multiwindow-memory]') && 'multiwindow-memory' || contains(github.event.head_commit.message || '', '[recording-wait]') && 'recording-wait' || contains(github.event.head_commit.message || '', '[manual-hash]') && 'manual-hash' || contains(github.event.head_commit.message || '', '[scroll-memory]') && 'scroll-memory' || contains(github.event.head_commit.message || '', '[decode-exit-latch]') && 'decode-exit-latch' || contains(github.event.head_commit.message || '', '[decode-timing-v3]') && 'decode-timing-v3' || contains(github.event.head_commit.message || '', '[decode-large]') && 'decode-large' || contains(github.event.head_commit.message || '', '[pin-workflows]') && 'pins-010' || contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
-  cancel-in-progress: true
+  group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[editable-observation]') && 'editable-observation' || contains(github.event.head_commit.message || '', '[callout-retirement]') && 'callout-retirement' || contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-documents' || contains(github.event.head_commit.message || '', '[multiwindow-memory]') && 'multiwindow-memory' || contains(github.event.head_commit.message || '', '[recording-wait]') && 'recording-wait' || contains(github.event.head_commit.message || '', '[manual-hash]') && 'manual-hash' || contains(github.event.head_commit.message || '', '[scroll-memory]') && 'scroll-memory' || contains(github.event.head_commit.message || '', '[decode-exit-latch]') && 'decode-exit-latch' || contains(github.event.head_commit.message || '', '[decode-timing-v3]') && 'decode-timing-v3' || contains(github.event.head_commit.message || '', '[decode-large]') && 'decode-large' || contains(github.event.head_commit.message || '', '[pin-workflows]') && 'pins-010' || contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
+  cancel-in-progress: ${{ !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
 jobs:
   runner-check:
     if: ${{ contains(github.event.head_commit.message || '', '[runner-only]') }}
@@ -24,7 +24,7 @@ jobs:
         timeout-minutes: 2
         run: python3 -m unittest discover -s scripts/tests -p test_run_bounded_command.py -v
   build:
-    if: ${{ (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') && !contains(github.event.head_commit.message || '', '[codec-attribution]') && !contains(github.event.head_commit.message || '', '[runner-only]') && !contains(github.event.head_commit.message || '', '[scroll-memory]') && !contains(github.event.head_commit.message || '', '[manual-hash]') && !contains(github.event.head_commit.message || '', '[recording-wait]') && !contains(github.event.head_commit.message || '', '[multiwindow-memory]') }}
+    if: ${{ (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') && !contains(github.event.head_commit.message || '', '[codec-attribution]') && !contains(github.event.head_commit.message || '', '[runner-only]') && !contains(github.event.head_commit.message || '', '[scroll-memory]') && !contains(github.event.head_commit.message || '', '[manual-hash]') && !contains(github.event.head_commit.message || '', '[recording-wait]') && !contains(github.event.head_commit.message || '', '[multiwindow-memory]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-documents]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
     strategy:
       fail-fast: false
       matrix:
@@ -33,8 +33,6 @@ jobs:
     # Full Intel model/install validation exceeded the former aggregate budget.
     # Individual test, product, cancellation and smoke deadlines stay unchanged.
     timeout-minutes: 90
-    env:
-      NATIVE_TEST_PROCESS_COUNT: ${{ matrix.arch == 'x86_64' && '4' || '2' }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       - name: Test bounded CI command runner and annotation evidence checker
@@ -42,12 +40,11 @@ jobs:
         run: |
           python3 -m unittest discover -s scripts/tests -p test_run_bounded_command.py -v
           python3 -m unittest discover -s scripts/tests -p test_check_annotation_details_report.py -v
-          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_check_effect_output_failure_report.py -v
-          PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p test_check_effect_output_failure_report.py -v
           python3 -m unittest discover -s scripts/tests -p test_check_scroll_manual_resource_report.py -v
           python3 -m unittest discover -s scripts/tests -p test_check_manual_hash_comparison.py -v
           python3 -m unittest discover -s scripts/tests -p test_check_multiwindow_memory_comparison.py -v
           python3 -m unittest discover -s scripts/tests -p test_multiwindow_resource_smoke_selection.py -v
+          python3 -m unittest discover -s scripts/tests -p test_check_editable_annotation_report.py -v
       - name: Package signed native app for early pixel review
         run: |
           mkdir -p dist
@@ -114,8 +111,8 @@ jobs:
         run: |
           python3 -m unittest discover -s scripts/tests -p test_native_test_shards.py -v
           python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/native-test-discovery.log --report dist/native-test-discovery-report.json -- swift test list --skip-build
-          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$NATIVE_TEST_PROCESS_COUNT" --output dist/native-tests-plan.json
-          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$NATIVE_TEST_PROCESS_COUNT" --selection-regex 'AnnotationEditing|CaptureAspectRatio|CaptureRatio|MultiWindow|ImageOutputDecoration|EditorOutput|PinOriginalCurrent|ManualScroll|ScrollPreview|ScrollSequencePreview|AnnotationFreehand|AnnotationTextLine|NumberedCallout|AutomaticMosaic|RepeatedRegion|AutomaticPinOCR|PinOCR|TextResultSourceSelection|PinWorkflow|LaTeXPin|PinLaTeX|PinGroup|PinDesktop|EditorToolbarHierarchy|SaveWorkflow|OwnedVideoExportStage|ImageBacking|Codec|NativeExport|AnimatedWebP|WebPContainer|RecordingWebP|CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' --output dist/focused-tests-plan.json
+          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --output dist/native-tests-plan.json
+          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --selection-regex 'PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|AnnotationEditing|CaptureAspectRatio|CaptureRatio|MultiWindow|ImageOutputDecoration|EditorOutput|PinOriginalCurrent|ManualScroll|ScrollPreview|ScrollSequencePreview|AnnotationFreehand|AnnotationTextLine|NumberedCallout|AutomaticMosaic|RepeatedRegion|AutomaticPinOCR|PinOCR|TextResultSourceSelection|PinWorkflow|LaTeXPin|PinLaTeX|PinGroup|PinDesktop|EditorToolbarHierarchy|SaveWorkflow|OwnedVideoExportStage|ImageBacking|Codec|NativeExport|AnimatedWebP|WebPContainer|RecordingWebP|CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' --output dist/focused-tests-plan.json
       - name: Upload test compilation evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -128,18 +125,18 @@ jobs:
           retention-days: 14
       - name: Check annotation, GIF, recording durability and inference boundaries
         timeout-minutes: 16
-        env:
-          PICSHOT_TEST_EVIDENCE_ROOT: ${{ github.workspace }}/dist/evidence/native-failures
         run: |
           set -o pipefail
+          execution_status=0
           {
-            native_status=0
-            for ((shard = 0; shard < NATIVE_TEST_PROCESS_COUNT; shard++)); do
-              python3 scripts/native-test-shards.py run --plan dist/focused-tests-plan.json --expected-source "$GITHUB_SHA" --index "$shard" --directory dist/focused-test-shards || native_status=1
+            shard_failed=0
+            for shard in 0 1; do
+              python3 scripts/native-test-shards.py run --plan dist/focused-tests-plan.json --index "$shard" --directory dist/focused-test-shards || shard_failed=1
             done
-            python3 scripts/native-test-shards.py check --plan dist/focused-tests-plan.json --expected-source "$GITHUB_SHA" --directory dist/focused-test-shards --output dist/critical-tests-report.json || native_status=1
-            exit "$native_status"
-          } 2>&1 | tee dist/critical-tests.log
+            test "$shard_failed" -eq 0
+          } 2>&1 | tee dist/critical-tests.log || execution_status=$?
+          python3 scripts/native-test-shards.py check --plan dist/focused-tests-plan.json --directory dist/focused-test-shards --output dist/critical-tests-report.json
+          test "$execution_status" -eq 0
       - name: Upload focused native test evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -161,18 +158,18 @@ jobs:
           bash scripts/recording-recovery-smoke.sh 2>&1 | tee dist/recording-recovery.log
       - name: Test native modules
         timeout-minutes: 16
-        env:
-          PICSHOT_TEST_EVIDENCE_ROOT: ${{ github.workspace }}/dist/evidence/native-failures
         run: |
           set -o pipefail
+          execution_status=0
           {
-            native_status=0
-            for ((shard = 0; shard < NATIVE_TEST_PROCESS_COUNT; shard++)); do
-              python3 scripts/native-test-shards.py run --plan dist/native-tests-plan.json --expected-source "$GITHUB_SHA" --index "$shard" --directory dist/native-test-shards || native_status=1
+            shard_failed=0
+            for shard in 0 1; do
+              python3 scripts/native-test-shards.py run --plan dist/native-tests-plan.json --index "$shard" --directory dist/native-test-shards || shard_failed=1
             done
-            python3 scripts/native-test-shards.py check --plan dist/native-tests-plan.json --expected-source "$GITHUB_SHA" --directory dist/native-test-shards --output dist/test-report.json || native_status=1
-            exit "$native_status"
-          } 2>&1 | tee dist/test.log
+            test "$shard_failed" -eq 0
+          } 2>&1 | tee dist/test.log || execution_status=$?
+          python3 scripts/native-test-shards.py check --plan dist/native-tests-plan.json --directory dist/native-test-shards --output dist/test-report.json
+          test "$execution_status" -eq 0
       - name: Upload full native test evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -806,5 +803,268 @@ jobs:
             dist/multiwindow-*.json
             dist/evidence/multiwindow-memory/
           if-no-files-found: warn
+          retention-days: 14
+          compression-level: 6
+
+  callout-retirement:
+    if: ${{ contains(github.event.head_commit.message || '', '[callout-retirement]') }}
+    runs-on: macos-15-intel
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Verify strict diagnostic checks including optimized Python
+        timeout-minutes: 2
+        run: |
+          mkdir -p dist
+          python3 -m unittest discover -s scripts/tests -p test_check_callout_retirement_diagnostic.py -v
+          python3 -O -m unittest discover -s scripts/tests -p test_check_callout_retirement_diagnostic.py -v
+      - name: Compile and execute all eleven native diagnostic tests
+        id: callout_native
+        timeout-minutes: 10
+        run: |
+          python3 scripts/run-bounded-command.py --timeout-seconds 540 --log dist/callout-retirement-native.log --report dist/callout-retirement-native.json -- bash scripts/test-callout-retirement-source-scope.sh
+          python3 scripts/check-callout-retirement-diagnostic.py native dist/callout-retirement-native.json dist/callout-retirement-native.log Tests/PicShotTests/NumberedCalloutRetirementDiagnosticsTests.swift
+      - name: Build and sign the diagnostic app without installers
+        id: callout_package
+        timeout-minutes: 31
+        run: |
+          python3 scripts/run-bounded-command.py --timeout-seconds 1800 --log dist/callout-retirement-package.log --report dist/callout-retirement-package.json -- bash scripts/package-callout-retirement-diagnostic.sh
+          python3 scripts/check-callout-retirement-diagnostic.py process dist/callout-retirement-package.json
+          mkdir -p dist/callout-retirement-installed
+          ditto dist/PicShot.app dist/callout-retirement-installed/PicShot.app
+          codesign --verify --deep --strict dist/callout-retirement-installed/PicShot.app
+          test "$(lipo -archs dist/callout-retirement-installed/PicShot.app/Contents/MacOS/PicShot)" = x86_64
+      - name: Run the original full early UI ordering exactly once
+        id: callout_ui
+        timeout-minutes: 11
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 630
+          --log dist/callout-retirement-launch.log --report dist/callout-retirement-launch.json
+          -- bash scripts/run-callout-retirement-diagnostic.sh
+          "$PWD/dist/callout-retirement-installed/PicShot.app" "$PWD/dist/evidence/callout-retirement"
+      - name: Preserve original acceptance independently of diagnostic capture
+        if: always()
+        run: >-
+          python3 scripts/check-callout-retirement-diagnostic.py capture
+          "$PWD/dist/evidence/callout-retirement" "$GITHUB_SHA" dist/callout-retirement-summary.json
+          --process-report dist/callout-retirement-native.json
+          --process-report dist/callout-retirement-package.json
+          --process-report dist/callout-retirement-launch.json
+      - name: Archive raw diagnostic outcomes even when original acceptance fails
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Callout-Retirement-x86_64-${{ github.sha }}
+          path: |
+            dist/callout-retirement-*.log
+            dist/callout-retirement-*.json
+            dist/evidence/callout-retirement/
+            dist/PicShot.app/Contents/Resources/build-info.json
+            docs/CalloutRetirementDiagnostic.md
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
+
+
+  editable-documents:
+    if: ${{ contains(github.event.head_commit.message || '', '[editable-documents]') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Prepare pinned native codec dependencies
+        timeout-minutes: 15
+        run: |
+          mkdir -p dist
+          python3 scripts/run-bounded-command.py --timeout-seconds 840 --log dist/editable-dependencies.log --report dist/editable-dependencies.json -- python3 scripts/build-native-codecs.py --arch "$(uname -m)"
+      - name: Compile exact app and native test modules
+        timeout-minutes: 10
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 540
+          --log dist/editable-build.log --report dist/editable-build.json
+          -- swift build --build-tests
+      - name: Discover and bind editable workflow tests
+        timeout-minutes: 2
+        run: |
+          python3 -m unittest discover -s scripts/tests -p test_native_test_shards.py -v
+          python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/native-test-discovery.log --report dist/editable-discovery.json -- swift test list --skip-build
+          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --selection-regex 'PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|ImageEditorTests|EditorOutputProjection|AnnotationEditing|PinOriginalCurrent|PinSession|History|Retention|AutomaticMosaic' --output dist/editable-tests-plan.json
+      - name: Exercise editable state and existing crop/pin/history behavior
+        timeout-minutes: 16
+        run: |
+          set -o pipefail
+          execution_status=0
+          {
+            shard_failed=0
+            for shard in 0 1; do
+              python3 scripts/native-test-shards.py run --plan dist/editable-tests-plan.json --index "$shard" --directory dist/editable-test-shards || shard_failed=1
+            done
+            test "$shard_failed" -eq 0
+          } 2>&1 | tee dist/editable-tests.log || execution_status=$?
+          python3 scripts/native-test-shards.py check --plan dist/editable-tests-plan.json --directory dist/editable-test-shards --output dist/editable-tests-report.json
+          test "$execution_status" -eq 0
+      - name: Preserve focused evidence without installers
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Editable-Focused-${{ matrix.arch }}-${{ github.sha }}
+          path: |
+            dist/editable-*.log
+            dist/editable-*.json
+            dist/native-test-discovery.log
+            dist/editable-test-shards/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
+
+  # ARM-only observation experiment. No installer or 0.16 memory acceptance.
+  editable-observation:
+    if: ${{ contains(github.event.head_commit.message || '', '[editable-observation]') }}
+    runs-on: macos-15
+    # Sum of bounded stages fits with cleanup/upload headroom. This independent
+    # diagnostic group neither cancels nor gates the normal release workflow.
+    timeout-minutes: 110
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        timeout-minutes: 2
+      - name: Check diagnostic contracts and record deliberately limited scope
+        timeout-minutes: 2
+        run: |
+          mkdir -p dist
+          python3 - <<'PYTHON'
+          import json, os, platform
+          from pathlib import Path
+          if platform.machine() != 'arm64':
+              raise SystemExit('This first diagnostic lane is ARM-only')
+          Path('dist/editable-observation-scope.json').write_text(json.dumps({
+              'sourceCommit': os.environ['GITHUB_SHA'], 'architecture': 'arm64',
+              'diagnosticOnly': True, 'intelExecuted': False,
+              'installerAcceptance': False, 'memoryStabilityAssessed': False,
+              'productMemoryRemedyClaim': False, 'nativeDeadlineSeconds': 300,
+              'ownedLaunchDeadlineSeconds': 600, 'baselineResourceCellExecuted': False,
+              'scope': 'One exact signed installed app; separate certification, reference and candidate functional processes; conditional candidate 2+8 resources. Intel and baseline resources remain unrun.'
+          }, indent=2) + '\n')
+          PYTHON
+          set -o pipefail
+          python3 -m unittest discover -s scripts/tests -p 'test_check_editable*' -v 2>&1 | tee dist/editable-observation-contracts.log
+          python3 -m unittest discover -s scripts/tests -p test_run_bounded_command.py -v 2>&1 | tee dist/editable-observation-bounded-runner.log
+      - name: Package one signed app without creating user installers
+        id: editable_observation_package
+        timeout-minutes: 31
+        env:
+          PICSHOT_PACKAGE_APP_ONLY: '1'
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 1800
+          --log dist/editable-observation-package.log --report dist/editable-observation-package.json
+          -- bash scripts/package.sh
+      - name: Compile native normalization tests
+        timeout-minutes: 10
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 540
+          --log dist/editable-observation-test-build.log --report dist/editable-observation-test-build.json
+          -- swift build --build-tests
+      - name: Execute every discovered ManualScrollHashTests case exactly once
+        timeout-minutes: 9
+        run: |
+          python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/editable-observation-test-discovery.log --report dist/editable-observation-test-discovery.json -- swift test list --skip-build
+          python3 scripts/run-bounded-command.py --timeout-seconds 420 --log dist/editable-observation-native-tests.log --report dist/editable-observation-native-tests.json -- swift test --skip-build --filter ManualScrollHashTests
+          python3 - <<'PYTHON'
+          import hashlib, importlib.util, json, os
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('native_cases', 'scripts/native-test-shards.py')
+          native = importlib.util.module_from_spec(spec); spec.loader.exec_module(native)
+          inventory = Path('dist/editable-observation-test-discovery.log').read_text()
+          expected = [name for name in native.discover(inventory) if name.split('/')[0] == 'PicShotTests.ManualScrollHashTests']
+          native.need(bool(expected), 'No native normalization cases discovered')
+          log = Path('dist/editable-observation-native-tests.log').read_text()
+          process = json.loads(Path('dist/editable-observation-native-tests.json').read_text())
+          native.need(process['status'] == 'exited' and process['termination_reason'] == 'exited'
+                      and process['exit_code'] == process['child_returncode'] == 0
+                      and process['timeout_seconds'] == 420 and not process['log_truncated'], 'Native process incomplete')
+          passed, skipped = native.case_results(log, expected)
+          native.need(not skipped, 'Normalization test skipped')
+          Path('dist/editable-observation-native-check.json').write_text(json.dumps({
+              'status': 'passed', 'sourceCommit': os.environ['GITHUB_SHA'], 'passedTests': passed,
+              'nativeDiscoverySHA256': hashlib.sha256(inventory.encode()).hexdigest(),
+              'logSHA256': hashlib.sha256(log.encode()).hexdigest(), 'memoryStabilityAssessed': False
+          }, indent=2) + '\n')
+          PYTHON
+      - name: Relocate and verify the single exact signed ARM application
+        timeout-minutes: 2
+        run: |
+          test ! -e dist/editable-observation-installed
+          mkdir -p dist/editable-observation-installed
+          ditto dist/PicShot.app dist/editable-observation-installed/PicShot.app
+          codesign --verify --deep --strict dist/editable-observation-installed/PicShot.app
+          test "$(lipo -archs dist/editable-observation-installed/PicShot.app/Contents/MacOS/PicShot)" = arm64
+          python3 - <<'PYTHON'
+          import hashlib, json, os, plistlib
+          from pathlib import Path
+          original = Path('dist/PicShot.app/Contents/MacOS/PicShot')
+          installed = Path('dist/editable-observation-installed/PicShot.app')
+          executable = installed / 'Contents/MacOS/PicShot'
+          info = plistlib.loads((installed / 'Contents/Info.plist').read_bytes())
+          expected = hashlib.sha256(original.read_bytes()).hexdigest()
+          actual = hashlib.sha256(executable.read_bytes()).hexdigest()
+          if expected != actual or info['PicShotSourceCommit'] != os.environ['GITHUB_SHA']:
+              raise SystemExit('Installed binary/source mismatch')
+          Path('dist/editable-observation-installed-identity.json').write_text(json.dumps({
+              'sourceCommit': info['PicShotSourceCommit'], 'executableSHA256': actual,
+              'bundlePath': str(installed.resolve()), 'architecture': 'arm64',
+              'oneBinaryForEveryCell': True, 'installerAcceptance': False
+          }, indent=2) + '\n')
+          PYTHON
+      - name: Certify every RGBA byte then compare two fresh functional processes
+        id: editable_observation_functional
+        timeout-minutes: 33
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 1890
+          --log dist/editable-observation-functional.log --report dist/editable-observation-functional.json
+          -- bash scripts/editable-observation-diagnostic.sh
+          "$PWD/dist/editable-observation-installed/PicShot.app"
+          "$PWD/dist/evidence/editable-observation" "$GITHUB_SHA" functional-comparison
+      - name: Checkpoint functional evidence before the resource process
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Editable-Observation-Functional-arm64-${{ github.sha }}
+          path: |
+            dist/editable-observation-*.log
+            dist/editable-observation-*.json
+            dist/evidence/editable-observation/
+            dist/PicShot.app/Contents/Resources/build-info.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
+      - name: Observe candidate two warmups and eight measured cycles after strict comparison
+        if: ${{ success() && steps.editable_observation_functional.outcome == 'success' }}
+        timeout-minutes: 11
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 630
+          --log dist/editable-observation-resources.log --report dist/editable-observation-resources.json
+          -- bash scripts/editable-observation-diagnostic.sh
+          "$PWD/dist/editable-observation-installed/PicShot.app"
+          "$PWD/dist/evidence/editable-observation" "$GITHUB_SHA" candidate-resources
+      - name: Preserve diagnostic logs reports and native PNGs without installer publication
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Editable-Observation-arm64-${{ github.sha }}
+          path: |
+            dist/editable-observation-*.log
+            dist/editable-observation-*.json
+            dist/evidence/editable-observation/
+            dist/PicShot.app/Contents/Resources/build-info.json
+          if-no-files-found: error
           retention-days: 14
           compression-level: 6

@@ -6,12 +6,11 @@ import PicShotCore
 @MainActor enum CaptureOutputWorkflowFixture {
     static func verify(evidenceDirectory: URL) async throws -> [String: Any] {
         try FileManager.default.createDirectory(at: evidenceDirectory, withIntermediateDirectories: true)
-        let effectFailure = try await EffectOutputFailureNativeFixture.verify(evidenceDirectory: evidenceDirectory)
         let ratios = try await CaptureRatioNativeFixture.verify(evidenceDirectory: evidenceDirectory.appendingPathComponent("ratios"))
         let decoration = try await EditorOutputDecorationNativeFixture.verify(evidenceDirectory: evidenceDirectory.appendingPathComponent("decoration"))
         let windows = try await MultiWindowCaptureNativeFixture.verify(evidenceDirectory: evidenceDirectory.appendingPathComponent("windows"))
         let pins = try await verifyOriginalPin(evidenceDirectory: evidenceDirectory)
-        for value in [effectFailure, ratios, decoration, windows, pins] {
+        for value in [ratios, decoration, windows, pins] {
             guard value["status"] as? String == "passed" else { throw failure("A component did not pass") }
         }
         let report: [String: Any] = ["status": "passed", "schemaVersion": 1,
@@ -19,7 +18,7 @@ import PicShotCore
             "version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown",
             "bundlePath": Bundle.main.bundlePath,
             "buildVersion": Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown",
-            "effectOutputFailure": effectFailure, "captureRatios": ratios, "outputDecoration": decoration, "multipleWindows": windows,
+            "captureRatios": ratios, "outputDecoration": decoration, "multipleWindows": windows,
             "originalCurrentPin": pins, "realDesktopCaptured": false, "permissionRequested": false,
             "generalPasteboardChanged": false, "standardDefaultsChanged": false,
             "scope": "Owned native controls and synthetic source pixels; physical Retina, live window acquisition, TCC and multiple monitors remain unverified"]

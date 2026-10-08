@@ -28,7 +28,6 @@ ALLOWED_SKIPS = {
 MAX_INVENTORY_BYTES = 2 * 1024 * 1024
 MAX_LOG_BYTES = 8 * 1024 * 1024
 PROCESS_SECONDS = 420
-SUPPORTED_PROCESS_COUNTS = (2, 4)
 
 
 def need(condition, message):
@@ -76,20 +75,17 @@ def command_pattern(names):
     return pattern
 
 
-def make_plan(inventory, selection, source, discovery_digest=None, process_count=2):
+def make_plan(inventory, selection, source, discovery_digest=None):
     need(re.fullmatch(r'[0-9a-f]{40}', source) is not None, 'Invalid source SHA')
-    need(type(process_count) is int and process_count in SUPPORTED_PROCESS_COUNTS,
-         'Supported process counts are exactly 2 or 4')
     selector = re.compile(selection) if selection else None
     selected = [name for name in inventory if selector is None or selector.search(name)]
     need(selected, 'Selection matches no tests')
-    buckets = [[] for _ in range(process_count)]
+    buckets = [[], []]
     for name in selected:
         cls = name.split('/')[0]
-        # Modulo four subdivides each modulo-two bucket without splitting classes.
-        index = hashlib.sha256(cls.encode()).digest()[0] % process_count
+        index = hashlib.sha256(cls.encode()).digest()[0] % 2
         buckets[index].append(name)
-    need(all(buckets), 'Every bounded process must contain tests')
+    need(all(buckets), 'Both bounded processes must contain tests')
     shards = []
     for index, names in enumerate(buckets):
         pattern = command_pattern(names)
@@ -103,20 +99,18 @@ def make_plan(inventory, selection, source, discovery_digest=None, process_count
     return {'schemaVersion': 1, 'sourceCommit': source, 'selectionRegex': selection,
             'nativeDiscoverySHA256': discovery_digest,
             'discoveredTests': inventory, 'selectedTests': selected, 'shards': shards,
-            'processCount': process_count, 'timeoutSecondsPerProcess': PROCESS_SECONDS,
+            'processCount': 2, 'timeoutSecondsPerProcess': PROCESS_SECONDS,
             'sameProcessAsUnshardedSuite': False}
 
 
-def checked_plan(path, expected_source=None):
+def checked_plan(path):
     value = json.loads(bounded_text(path, 8 * 1024 * 1024))
-    if expected_source is not None:
-        need(value['sourceCommit'] == expected_source, 'Plan source differs from expected source SHA')
     inventory = value['discoveredTests']
     need(discover('\n'.join(inventory)) == inventory, 'Invalid canonical inventory')
     raw = bounded_text(path.parent / 'native-test-discovery.log', MAX_INVENTORY_BYTES)
     need(discover(raw) == inventory, 'Plan omitted or changed native discovery')
     expected = make_plan(inventory, value['selectionRegex'], value['sourceCommit'],
-                         hashlib.sha256(raw.encode()).hexdigest(), value['processCount'])
+                         hashlib.sha256(raw.encode()).hexdigest())
     need(value == expected, 'Plan does not match deterministic complete inventory')
     return value
 
@@ -174,10 +168,9 @@ def aggregate(plan, directory):
             'discoveredCount': len(plan['discoveredTests']), 'selectedCount': len(seen),
             'passedCount': len(passed), 'skippedCount': len(skipped), 'skippedTests': sorted(skipped),
             'selectionRegex': plan['selectionRegex'], 'shards': records,
-            'processCount': plan['processCount'], 'timeoutSecondsPerProcess': PROCESS_SECONDS,
+            'processCount': 2, 'timeoutSecondsPerProcess': PROCESS_SECONDS,
             'sameProcessAsUnshardedSuite': False,
-            'scope': 'Every selected discovered XCTest ran once across '
-                     + {2: 'two', 4: 'four'}[plan['processCount']] + ' disjoint native processes; '
+            'scope': 'Every selected discovered XCTest ran once across two disjoint native processes; '
                      'not one shared-process suite or a product performance-threshold change'}
 
 
@@ -186,30 +179,24 @@ def main():
     sub = parser.add_subparsers(dest='action', required=True)
     p = sub.add_parser('plan'); p.add_argument('--inventory', type=Path, required=True)
     p.add_argument('--source', required=True); p.add_argument('--selection-regex', default='')
-    p.add_argument('--process-count', type=int, choices=SUPPORTED_PROCESS_COUNTS, default=2)
     p.add_argument('--output', type=Path, required=True)
     r = sub.add_parser('run'); r.add_argument('--plan', type=Path, required=True)
-    r.add_argument('--index', type=int, choices=range(max(SUPPORTED_PROCESS_COUNTS)), required=True)
-    r.add_argument('--expected-source')
+    r.add_argument('--index', type=int, choices=[0, 1], required=True)
     r.add_argument('--directory', type=Path, required=True)
     c = sub.add_parser('check'); c.add_argument('--plan', type=Path, required=True)
-    c.add_argument('--expected-source')
     c.add_argument('--directory', type=Path, required=True); c.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     if args.action == 'plan':
         raw = bounded_text(args.inventory, MAX_INVENTORY_BYTES)
         need(args.inventory.resolve() == (args.output.parent / 'native-test-discovery.log').resolve(),
              'Keep original native discovery beside its plan')
-        plan = make_plan(discover(raw), args.selection_regex, args.source,
-                         hashlib.sha256(raw.encode()).hexdigest(), args.process_count)
+        plan = make_plan(discover(raw), args.selection_regex, args.source, hashlib.sha256(raw.encode()).hexdigest())
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(plan, indent=2) + '\n')
         print(json.dumps({'discovered': len(plan['discoveredTests']), 'selected': len(plan['selectedTests']),
                           'shardCounts': [len(s['tests']) for s in plan['shards']]}))
     elif args.action == 'run':
-        plan = checked_plan(args.plan, args.expected_source)
-        need(args.index < plan['processCount'], 'Process index is outside the verified plan')
-        shard = plan['shards'][args.index]
+        plan = checked_plan(args.plan); shard = plan['shards'][args.index]
         args.directory.mkdir(parents=True, exist_ok=True)
         log, report = paths(args.directory, args.index)
         wrapper = Path(__file__).with_name('run-bounded-command.py').resolve()
@@ -217,7 +204,7 @@ def main():
                 '--log', str(log), '--report', str(report), '--', *expected_command(shard)]
         os.execv(sys.executable, argv)
     else:
-        report = aggregate(checked_plan(args.plan, args.expected_source), args.directory)
+        report = aggregate(checked_plan(args.plan), args.directory)
         args.output.write_text(json.dumps(report, indent=2) + '\n')
         print(json.dumps(report, sort_keys=True))
 

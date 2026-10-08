@@ -7,6 +7,16 @@ import PicShotCore
 struct CapturedImage {
     let image: CGImage
     let presentation: FrozenCapturePresentation?
+    let capturedAt: Date
+    /// Compressed bytes known to be retained by a producing ImageIO decoder.
+    /// Never discover this by copying the CGDataProvider's full contents.
+    let encodedBackingBytes: Int
+
+    init(image: CGImage, presentation: FrozenCapturePresentation?, capturedAt: Date = Date(), encodedBackingBytes: Int = 0) {
+        self.image = image; self.presentation = presentation
+        self.capturedAt = presentation?.capturedAt ?? capturedAt
+        self.encodedBackingBytes = encodedBackingBytes
+    }
 
     static func frozenRegion(image: CGImage, displayID: CGDirectDisplayID,
                              displayFrame: CGRect, selection: CGRect, capturedAt: Date = Date()) throws -> CapturedImage {

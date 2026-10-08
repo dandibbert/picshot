@@ -35,6 +35,25 @@ enum NumberedCalloutAcceptanceFixture {
         var evidence = NumberedCalloutAcceptanceEvidence()
         var releaseMonitor: NumberedCalloutReleaseMonitor?
         let reportURL = evidenceDirectory.appendingPathComponent("annotation-callouts.json")
+#if PICSHOT_CALLOUT_RETIREMENT_DIAGNOSTICS
+        defer {
+            if let path = ProcessInfo.processInfo.environment["PICSHOT_CALLOUT_RETIREMENT_DIAGNOSTIC_PATH"],
+               let releaseMonitor {
+                do {
+                    // The combined fixture owns the whole annotation-details
+                    // tree; the launch report additionally protects all UI evidence.
+                    var roots = [evidenceDirectory.lastPathComponent == "callouts"
+                        ? evidenceDirectory.deletingLastPathComponent() : evidenceDirectory]
+                    if let report = ProcessInfo.processInfo.environment["PICSHOT_SMOKE_REPORT"], report.hasPrefix("/") {
+                        roots.append(URL(fileURLWithPath: report).deletingLastPathComponent())
+                    }
+                    try releaseMonitor.writeRetirementDiagnostics(to: path, excluding: roots, acceptanceStatus: evidence.status)
+                } catch {
+                    FileHandle.standardError.write(Data("Callout retirement diagnostic write failed: \(error)\n".utf8))
+                }
+            }
+        }
+#endif
         // Fail a read-only destination before showing any UI.
         try JSONEncoder().encode(evidence).write(to: reportURL, options: .atomic)
         do {
