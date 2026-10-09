@@ -20,12 +20,14 @@ class ObserverSelfTestContracts(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.output = self.root/'evidence'
         self.output.mkdir()
-        self.wrapper = self.identity(100, 90, 90, '/usr/bin/python3')
+        self.wrapper = self.identity(100, os.getpid(), 90, '/usr/bin/python3')
         self.leader = self.identity(200, 100, 200, '/usr/bin/swift-test')
         self.target = self.identity(300, 200, 300, '/Applications/Xcode.app/Contents/Developer/usr/bin/xctest')
         self.snapshot = dict(complete=True, anchorValidated=True, wrapper=self.wrapper,
             leader=self.leader, target=self.target, members=[self.leader, self.target], candidatePIDs=[300])
-        self.identify = mock.Mock(side_effect=lambda pid: {100:self.wrapper, 200:self.leader, 300:self.target}[pid])
+        self.interpreter = self.identity(os.getpid(), os.getppid(), os.getpgrp(), '/usr/bin/python3')
+        self.identify = mock.Mock(side_effect=lambda pid: {100:self.wrapper, 200:self.leader, 300:self.target, os.getpid():self.interpreter}[pid])
+        self.command = ['swift', 'test', '--skip-build', '--package-path', '/generated']
         self.harness = S.Harness(self.output, 'a'*40, self.identify)
 
     @staticmethod
@@ -91,25 +93,27 @@ class ObserverSelfTestContracts(unittest.TestCase):
 
     def test_startup_does_not_pin_a_pre_exec_swift_leader(self):
         prefix=self.output/'native'
-        prefix.with_suffix('.runner.json').write_text(json.dumps(dict(status='running',pid=200)))
+        prefix.with_suffix('.runner.json').write_text(json.dumps(dict(status='running',pid=200,command=self.command,timeout_seconds=20)))
         ready=self.output/'fixture.ready'; ready.write_text('ready')
         native=mock.Mock(pid=100); native.poll.return_value=None
+        binding=S.D.WrapperBinding(native,self.identify,self.interpreter['executable'])
         with mock.patch.object(S.D,'owned_target',return_value=self.snapshot) as owned:
-            found=self.harness.target(native,prefix,ready)
+            found=self.harness.target(native,prefix,ready,binding,self.command,20)
         self.assertEqual(found,self.snapshot)
         self.assertIsNone(owned.call_args.kwargs['expected_leader'])
         self.assertEqual(owned.call_args.kwargs['expected_wrapper'],self.wrapper)
 
     def test_complete_zero_candidate_startup_and_exec_transition_are_pending(self):
         prefix=self.output/'native'
-        prefix.with_suffix('.runner.json').write_text(json.dumps(dict(status='running',pid=200)))
+        prefix.with_suffix('.runner.json').write_text(json.dumps(dict(status='running',pid=200,command=self.command,timeout_seconds=20)))
         ready=self.output/'normal-gate.ready'; ready.write_text('ready')
         native=mock.Mock(pid=100); native.poll.return_value=None
+        binding=S.D.WrapperBinding(native,self.identify,self.interpreter['executable'])
         old_leader=dict(self.leader,executable='/usr/bin/swift')
         pending=dict(complete=True,anchorValidated=True,wrapper=self.wrapper,leader=old_leader,
                      members=[old_leader],candidatePIDs=[])
         with mock.patch.object(S.D,'owned_target',side_effect=[S.D.SelectionError('no target yet',pending),self.snapshot]) as owned:
-            result=self.harness.target(native,prefix,ready)
+            result=self.harness.target(native,prefix,ready,binding,self.command,20)
         self.assertEqual(result['leader']['executable'],'/usr/bin/swift-test')
         self.assertFalse(self.harness.census_uncertain)
         self.assertEqual(len(owned.call_args_list),2)
@@ -119,12 +123,13 @@ class ObserverSelfTestContracts(unittest.TestCase):
 
     def test_partial_census_history_remains_distinct_from_startup(self):
         prefix=self.output/'native'
-        prefix.with_suffix('.runner.json').write_text(json.dumps(dict(status='running',pid=200)))
+        prefix.with_suffix('.runner.json').write_text(json.dumps(dict(status='running',pid=200,command=self.command,timeout_seconds=20)))
         ready=self.output/'normal-gate.ready'; ready.write_text('ready')
         native=mock.Mock(pid=100); native.poll.return_value=None
+        binding=S.D.WrapperBinding(native,self.identify,self.interpreter['executable'])
         partial=dict(complete=False,anchorValidated=True,members=[self.leader],candidatePIDs=[])
         with mock.patch.object(S.D,'owned_target',side_effect=[S.D.SelectionError('child enumeration denied',partial),self.snapshot]):
-            self.harness.target(native,prefix,ready)
+            self.harness.target(native,prefix,ready,binding,self.command,20)
         self.assertTrue(self.harness.census_uncertain)
         attempts=json.loads(prefix.with_suffix('.discovery-attempts.json').read_text())
         self.assertEqual(attempts[0]['error'],'child enumeration denied')
@@ -158,6 +163,102 @@ class ObserverSelfTestContracts(unittest.TestCase):
             self.assertEqual(launch.call_args.args[3]['PICSHOT_OBSERVER_SELF_TEST_SURVIVE_TERM'],expected)
             self.assertEqual(harness.report['scenarios'][0]['fixtureSignalPolicy'],
                 'unchanged' if name=='normal' else 'ignore-own-SIGTERM')
+
+    def test_framework_python_exec_binds_only_after_original_running_envelope(self):
+        prefix=self.output/'framework-native'
+        prefix.with_suffix('.runner.json').write_text(json.dumps(dict(status='running',pid=200,
+            command=self.command,timeout_seconds=20)))
+        ready=self.output/'framework-gate.ready';ready.write_text('ready')
+        native=mock.Mock(pid=100);native.poll.return_value=None
+        initial=dict(self.wrapper,executable='/opt/homebrew/bin/python3.12')
+        final=dict(self.wrapper,executable='/opt/homebrew/Frameworks/Python.framework/Python.app/Contents/MacOS/Python')
+        current=[initial]
+        identify=lambda pid: current[0] if pid==100 else self.identify(pid)
+        binding=S.D.WrapperBinding(native,identify,final['executable'])
+        current[0]=final
+        snapshot=dict(self.snapshot,wrapper=final)
+        with mock.patch.object(S.D,'owned_target',return_value=snapshot) as owned:
+            result=self.harness.target(native,prefix,ready,binding,self.command,20)
+        self.assertEqual(result['wrapper'],final)
+        self.assertEqual(owned.call_args.kwargs['expected_wrapper'],final)
+        archived=json.loads(prefix.with_suffix('.wrapper-binding.json').read_text())
+        self.assertEqual(archived['initialIdentity'],initial)
+        self.assertEqual(archived['stableIdentity'],final)
+        self.assertEqual(set(archived['initialToStableDifferences']),{'executable'})
+
+    def test_absent_and_starting_envelopes_never_start_descendant_selection(self):
+        prefix=self.output/'pending-native'
+        ready=self.output/'pending-gate.ready';ready.write_text('ready')
+        native=mock.Mock(pid=100);native.poll.return_value=None
+        binding=S.D.WrapperBinding(native,self.identify,self.interpreter['executable'])
+        envelopes=[dict(status='starting',pid=None,command=self.command,timeout_seconds=20),
+                   dict(status='running',pid=200,command=self.command,timeout_seconds=20)]
+        def publish_next(_seconds):
+            prefix.with_suffix('.runner.json').write_text(json.dumps(envelopes.pop(0)))
+        with mock.patch.object(S.time,'sleep',side_effect=publish_next),              mock.patch.object(binding,'observe',wraps=binding.observe) as observe,              mock.patch.object(S.D,'owned_target',return_value=self.snapshot) as owned:
+            self.harness.target(native,prefix,ready,binding,self.command,20)
+        self.assertEqual(owned.call_count,1)
+        self.assertEqual(len(observe.call_args_list),3)
+        self.assertIsNone(observe.call_args_list[0].args[0])
+        self.assertEqual(observe.call_args_list[1].args[0]['status'],'starting')
+        self.assertFalse(self.harness.census_uncertain)
+
+    def test_wrong_wrapper_identity_is_archived_and_rejected_before_census(self):
+        mutations={'pid':101,'parentPID':os.getpid()+1,'groupID':91,'uid':os.getuid()+1,
+                   'birthSeconds':1001,'birthMicroseconds':16,'executable':'/tmp/other-python'}
+        for field,value in mutations.items():
+            with self.subTest(field=field):
+                prefix=self.output/('wrong-'+field)
+                prefix.with_suffix('.runner.json').write_text(json.dumps(dict(status='running',pid=200,
+                    command=self.command,timeout_seconds=20)))
+                ready=self.output/('wrong-'+field+'.ready');ready.write_text('ready')
+                native=mock.Mock(pid=100);native.poll.return_value=None
+                current=[self.wrapper]
+                identify=lambda pid: current[0] if pid==100 else self.identify(pid)
+                binding=S.D.WrapperBinding(native,identify,self.interpreter['executable'])
+                current[0]=dict(self.wrapper,**{field:value})
+                with mock.patch.object(S.D,'owned_target') as owned:
+                    with self.assertRaisesRegex(ValueError,'readiness binding rejected'):
+                        self.harness.target(native,prefix,ready,binding,self.command,20)
+                owned.assert_not_called()
+                archived=json.loads(prefix.with_suffix('.wrapper-binding.json').read_text())
+                self.assertEqual(archived['status'],'blocked')
+                self.assertEqual(archived['initialIdentity'],self.wrapper)
+                self.assertEqual(archived['lastObservedIdentity'][field],value)
+                self.assertIn(field,archived['initialToCurrentDifferences'])
+
+    def test_changed_stable_identity_is_never_rebound_by_consumer(self):
+        prefix=self.output/'rebound-native'
+        envelope=dict(status='running',pid=200,command=self.command,timeout_seconds=20)
+        prefix.with_suffix('.runner.json').write_text(json.dumps(envelope))
+        ready=self.output/'rebound.ready';ready.write_text('ready')
+        native=mock.Mock(pid=100);native.poll.return_value=None
+        current=[self.wrapper]
+        identify=lambda pid: current[0] if pid==100 else self.identify(pid)
+        binding=S.D.WrapperBinding(native,identify,self.interpreter['executable'])
+        binding.observe(envelope,self.command,20)
+        current[0]=dict(self.wrapper,executable='/tmp/replacement-python')
+        with mock.patch.object(S.D,'owned_target') as owned:
+            with self.assertRaisesRegex(ValueError,'readiness binding rejected'):
+                self.harness.target(native,prefix,ready,binding,self.command,20)
+        owned.assert_not_called()
+        archived=json.loads(prefix.with_suffix('.wrapper-binding.json').read_text())
+        self.assertEqual(archived['stableIdentity'],self.wrapper)
+        self.assertIn('executable',archived['stableDifferences'])
+        self.assertEqual(archived['status'],'blocked')
+
+    def test_initial_binding_failure_still_archives_expected_and_initial_identity(self):
+        prefix=self.output/'initial-failure'
+        native=mock.Mock(pid=100);native.poll.return_value=None
+        foreign=dict(self.wrapper,parentPID=os.getpid()+1)
+        binding=S.D.WrapperBinding(native,lambda _pid:foreign,self.interpreter['executable'])
+        with self.assertRaisesRegex(ValueError,'readiness binding rejected'):
+            self.harness.target(native,prefix,self.output/'not-ready',binding,self.command,20)
+        archived=json.loads(prefix.with_suffix('.wrapper-binding.json').read_text())
+        self.assertEqual(archived['initialIdentity'],foreign)
+        self.assertEqual(archived['expectedExecutable'],self.interpreter['executable'])
+        self.assertIn('parentPID',archived['initialOwnershipDifferences'])
+        self.assertEqual(archived['status'],'blocked')
 
     def test_wrapper_deadline_remains_self_test_specific(self):
         command=S.wrapper_command(['swift','test','--skip-build'],12,self.output/'command')

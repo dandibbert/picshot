@@ -2198,7 +2198,7 @@ jobs:
         with:
           fetch-depth: 2
           persist-credentials: false
-      - name: Prove exact source139 product and corrected diagnostic-only scope
+      - name: Prove exact source140 product and corrected diagnostic-only scope
         id: provenance
         timeout-minutes: 2
         run: |
@@ -2209,10 +2209,10 @@ jobs:
           from pathlib import Path
           def git(*args):
               return subprocess.check_output(['git', *args], timeout=20)
-          base = '01c5ca57f13a72d84ea615a0a929bdf9f6e5e2d9'
+          base = '2b4f75f6781defe684217245aedf34ea176c6259'
           source = os.environ['GITHUB_SHA']
           if git('rev-parse', 'HEAD').decode().strip() != source or git('rev-parse', 'HEAD^').decode().strip() != base:
-              raise SystemExit('Diagnostic must directly inherit pinned source139')
+              raise SystemExit('Diagnostic must directly inherit pinned source140')
           if platform.machine() != 'arm64' or platform.system() != 'Darwin':
               raise SystemExit('Expected the native ARM macOS runner')
           def entries(ref):
@@ -2225,11 +2225,9 @@ jobs:
                      b'scripts/tests/test_native_test_diagnostics.py']
           if changed != allowed:
               raise SystemExit('Changed source exceeds the exact diagnostic workflow/helper/self-test scope')
-          added = {b'scripts/native-observer-self-test.py', b'scripts/tests/test_native_observer_self_test.py'}
           if any(not after[path].startswith(b'100644 blob ')
-                 or (path in added and path in before)
-                 or (path not in added and not before.get(path, b'').startswith(b'100644 blob ')) for path in allowed):
-              raise SystemExit('Diagnostic corrections must preserve original modes and add only regular self-test files')
+                 or not before.get(path, b'').startswith(b'100644 blob ') for path in allowed):
+              raise SystemExit('Diagnostic readiness corrections must preserve existing regular file modes')
           workflow = '.github/workflows/macos.yml'
           original = git('show', base + ':' + workflow).decode()
           current = Path(workflow).read_text()
@@ -2480,13 +2478,13 @@ jobs:
               except (OSError, ValueError) as error:
                   observations[mode] = dict(status='unreadable-diagnostic-status', observationComplete=False, error=str(error))
           record = dict(diagnosticOnly=True, installerAcceptance=False, sourceCommit=os.environ['GITHUB_SHA'],
-              referenceCommit='01c5ca57f13a72d84ea615a0a929bdf9f6e5e2d9',
+              referenceCommit='2b4f75f6781defe684217245aedf34ea176c6259',
               steps=json.loads(os.environ['PICSHOT_NATIVE_DIAGNOSTIC_STEP_OUTCOMES']),
               observations=observations,
               observationScope='Native outcome and sample completeness are separate; missing/incomplete due captures are incomplete diagnostic evidence',
               baselineFailurePreserved=True, noInstallerArtifacts=True, noNativeRepartition=True,
               nativeSecondsPerProcess=420, processOrder=[0, 1, 2, 3],
-              priorJobStateReplayed=False, observerMayPerturbTiming=True, originalBuild137FailureUnchanged=True, originalDiagnostic139FailureUnchanged=True, observerSelfTestRequired=True,
+              priorJobStateReplayed=False, observerMayPerturbTiming=True, originalBuild137FailureUnchanged=True, originalDiagnostic139FailureUnchanged=True, originalDiagnostic140FailureUnchanged=True, observerSelfTestRequired=True,
               eventualAcceptanceRequiresFrozenProductionWorkflow=True,
               scope='Independent ARM native timeout observations; no installed, Intel, or release acceptance')
           Path('dist/native-timeout-diagnostic/outcomes.json').write_text(json.dumps(record, indent=2)+'\n')

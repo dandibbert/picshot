@@ -131,6 +131,116 @@ def identity_key(value):
     return tuple(value[key] for key in ('pid', 'uid', 'birthSeconds', 'birthMicroseconds', 'executable'))
 
 
+def identity_differences(expected, current):
+    return {key: {'expected': expected.get(key), 'current': current.get(key)}
+            for key in sorted(set(expected) | set(current)) if expected.get(key) != current.get(key)}
+
+
+class WrapperBinding:
+    """Bind the settled interpreter after the original bounded runner handshake.
+
+    macOS framework Python can exec its application interpreter after Popen
+    returns. The unreaped direct child and its lifetime identity remain pinned
+    during this startup; executable identity becomes strict at the handshake.
+    """
+    ANCHOR_FIELDS = ('pid', 'parentPID', 'groupID', 'uid', 'birthSeconds', 'birthMicroseconds')
+
+    def __init__(self, process, identify, expected_executable):
+        self.process, self.identify = process, identify
+        self.started = time.monotonic()
+        self.initial = self.stable = None
+        self.record = {'status': 'pending', 'wrapperPID': process.pid, 'ownerPID': os.getpid(),
+                       'ownerUID': os.getuid(), 'expectedExecutable': expected_executable,
+                       'initialIdentity': None, 'stableIdentity': None}
+        try:
+            need(isinstance(expected_executable, str) and expected_executable.startswith('/'),
+                 'Missing actual interpreter executable identity')
+            need(process.poll() is None, 'Owned wrapper exited before initial identity read')
+            self.initial = identify(process.pid)
+            self.record['initialIdentity'] = self.initial
+            expected = {'pid': process.pid, 'parentPID': os.getpid(), 'uid': os.getuid()}
+            self.record['initialOwnershipDifferences'] = identity_differences(
+                expected, {key: self.initial.get(key) for key in expected})
+            need(not self.record['initialOwnershipDifferences'], 'Initial wrapper is not the owned direct child')
+            need(all(key in self.initial for key in self.ANCHOR_FIELDS), 'Incomplete initial wrapper identity')
+        except Exception as error:
+            self.record.update(status='blocked', initialIdentityError=str(error), error=str(error))
+            self.record.setdefault('firstError', str(error))
+
+    def observe(self, report, expected_command, timeout_seconds):
+        try:
+            need(self.record['status'] != 'blocked', 'Wrapper binding is already blocked')
+            if report is not None:
+                need(report['command'] == expected_command and report['timeout_seconds'] == timeout_seconds,
+                     'Wrapper handshake command or deadline differs from the expected bounded command')
+                if report['status'] in ('exited', 'timeout', 'cancelled', 'spawn_error'):
+                    need(self.stable is not None, 'Wrapper finished before stable readiness binding')
+                    need(report.get('pid') == self.record['handshakeLeaderPID'],
+                         'Terminal wrapper leader differs from its verified handshake')
+                    code = self.process.poll()
+                    self.record.update(status='completed' if code is not None else 'finishing',
+                        wrapperReturnCode=code, terminalEnvelopeObserved=report['status'])
+                    return None
+            code = self.process.poll()
+            if code is not None:
+                need(self.stable is not None, 'Owned wrapper exited during readiness binding')
+                self.record.update(status='completed', wrapperReturnCode=code)
+                return None
+            try:
+                current = self.identify(self.process.pid)
+            except Exception as error:
+                # The child may exit after poll but before proc_pidinfo. Only
+                # owned Popen completion resolves that race; never inspect a
+                # reaped PID. Descendant retirement is proved separately later.
+                code = self.process.poll()
+                if code is not None and self.stable is not None:
+                    self.record.update(status='completed', wrapperReturnCode=code,
+                                       identityReadAtCompletionError=str(error),
+                                       identityReadAtCompletionErrorType=type(error).__name__)
+                    return None
+                raise
+            self.record['lastObservedIdentity'] = current
+            self.record['initialToCurrentDifferences'] = identity_differences(self.initial, current)
+            expected_anchor = {key: self.initial[key] for key in self.ANCHOR_FIELDS}
+            self.record['anchorDifferences'] = identity_differences(
+                expected_anchor, {key: current.get(key) for key in self.ANCHOR_FIELDS})
+            need(not self.record['anchorDifferences'], 'Wrapper lifetime identity changed before/after readiness')
+            if self.stable is not None:
+                self.record['stableDifferences'] = identity_differences(self.stable, current)
+                need(not self.record['stableDifferences'], 'Stable wrapper identity changed')
+            if report is None:
+                need(self.stable is None, 'Bounded runner envelope disappeared after binding')
+                return None
+            if report['status'] == 'starting':
+                need(self.stable is None and report.get('pid') is None, 'Invalid starting wrapper handshake')
+                return None
+            if report['status'] == 'terminating':
+                need(self.stable is not None and report.get('pid') == self.record['handshakeLeaderPID']
+                     and report.get('termination_reason') in ('exited', 'timeout', 'cancelled'),
+                     'Invalid terminating wrapper handshake')
+                self.record.update(status='finishing', terminalEnvelopeObserved='terminating',
+                                   terminationReason=report['termination_reason'])
+                return None
+            need(report['status'] == 'running' and type(report['pid']) is int and report['pid'] > 0,
+                 'Invalid running wrapper handshake')
+            self.record['handshakeLeaderPID'] = report['pid']
+            self.record['executableDifferences'] = identity_differences(
+                {'executable': self.record['expectedExecutable']}, {'executable': current.get('executable')})
+            need(not self.record['executableDifferences'], 'Ready wrapper is not the exact known interpreter executable')
+            if self.stable is None:
+                self.stable = current.copy()
+                self.record.update(status='bound', stableIdentity=self.stable,
+                    boundAtSeconds=round(time.monotonic() - self.started, 6),
+                    initialToStableDifferences=identity_differences(self.initial, self.stable))
+            return self.stable
+        except Exception as error:
+            self.record.update(status='blocked', error=str(error))
+            self.record.setdefault('firstError', str(error))
+            raise
+        finally:
+            self.record['lastObservedAtSeconds'] = round(time.monotonic() - self.started, 6)
+
+
 def is_xctest(value):
     return value['executable'].endswith('.app/Contents/Developer/usr/bin/xctest')
 
@@ -150,6 +260,12 @@ def owned_target(wrapper_pid, leader_pid, identify, children=None,
         wrapper = identify(wrapper_pid)
         leader = identify(leader_pid)
         census.update(wrapper=wrapper, leader=leader)
+        if expected_wrapper is not None:
+            census['expectedWrapper'] = expected_wrapper
+            census['wrapperDifferences'] = identity_differences(expected_wrapper, wrapper)
+        if expected_leader is not None:
+            census['expectedLeader'] = expected_leader
+            census['leaderDifferences'] = identity_differences(expected_leader, leader)
         need(expected_wrapper is None or wrapper == expected_wrapper, 'Wrapper identity changed')
         need(expected_leader is None or leader == expected_leader, 'Native leader identity changed')
         need(leader['parentPID'] == wrapper_pid and leader['groupID'] == leader_pid,
@@ -318,9 +434,10 @@ def native_command(args):
 
 
 class Ownership:
-    def __init__(self, wrapper):
+    def __init__(self, wrapper, binding=None):
         self.started = time.monotonic()
         self.wrapper = wrapper
+        self.binding = binding
         self.leader = None
         self.targets = []
         self.record = {'successfulCensuses': 0, 'failedCensuses': 0,
@@ -351,7 +468,16 @@ class Ownership:
     def observe(self, native, report_path, expected_command, identify):
         started = time.monotonic()
         try:
-            need(self.wrapper is not None, 'Launch wrapper identity was not established')
+            if self.binding is not None:
+                report = (json.loads(NATIVE.bounded_text(report_path, METADATA_CAP))
+                          if report_path.exists() else None)
+                ready = self.binding.observe(report, expected_command, 420)
+                if ready is None:
+                    self.accept({'pending': 'Awaiting wrapper readiness or observing its completed envelope',
+                                 'complete': False})
+                    return
+                self.wrapper = ready
+            need(self.wrapper is not None, 'Stable wrapper identity was not established')
             if not report_path.exists():
                 self.accept({'pending': 'Awaiting original bounded runner envelope', 'complete': False})
                 return
@@ -433,6 +559,7 @@ def finish_capture(active, sampler, identify):
 
 def run(args):
     identify = ProcessIdentity()
+    expected_interpreter = identify(os.getpid())['executable']
     plan = NATIVE.checked_plan(args.plan, args.expected_source)
     need(0 <= args.index < plan['processCount'], 'Index outside verified native plan')
     need(plan['timeoutSecondsPerProcess'] == 420, 'Native deadline changed')
@@ -467,11 +594,10 @@ def run(args):
         native = subprocess.Popen(native_command(args), stdin=subprocess.DEVNULL,
                                   env=environment(args.output_mode, os.environ))
         summary['nativeWrapperPID'] = native.pid
-        try:
-            summary['nativeWrapperIdentityAtLaunch'] = identify(native.pid)
-        except Exception as error:
-            summary['nativeWrapperIdentityAtLaunchError'] = str(error)
-        ownership = Ownership(summary.get('nativeWrapperIdentityAtLaunch'))
+        binding = WrapperBinding(native, identify, expected_interpreter)
+        summary['wrapperBinding'] = binding.record
+        summary['nativeWrapperIdentityAtLaunch'] = binding.record['initialIdentity']
+        ownership = Ownership(None, binding=binding)
         summary['ownership'] = ownership.record
         while native.poll() is None:
             now = time.monotonic()

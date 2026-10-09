@@ -166,16 +166,24 @@ class Harness:
             if not any(D.identity_key(target) == D.identity_key(old) for old in self.targets):
                 self.targets.append(target)
 
-    def target(self, process, prefix, ready):
+    def target(self, process, prefix, ready, binding, expected_command, timeout_seconds):
         until = time.monotonic() + DISCOVERY_SECONDS
-        wrapper = self.identify(process.pid)
         leader = None
         attempts = []
+        save(prefix.with_suffix('.wrapper-binding.json'), binding.record)
         while process.poll() is None and time.monotonic() < until:
             self.checkpoint()
             try:
-                raw = json.loads(D.NATIVE.bounded_text(prefix.with_suffix('.runner.json'), D.METADATA_CAP))
-                need(raw['status'] == 'running' and type(raw['pid']) is int, 'Native wrapper has not launched its leader')
+                report_path = prefix.with_suffix('.runner.json')
+                raw = (json.loads(D.NATIVE.bounded_text(report_path, D.METADATA_CAP))
+                       if report_path.exists() else None)
+                try:
+                    wrapper = binding.observe(raw, expected_command, timeout_seconds)
+                finally:
+                    save(prefix.with_suffix('.wrapper-binding.json'), binding.record)
+                if wrapper is None:
+                    time.sleep(0.05)
+                    continue
                 # SwiftPM may exec swift -> swift-test during startup. Pin only
                 # the fully revalidated leader returned with a real XCTest.
                 snapshot = D.owned_target(process.pid, raw['pid'], self.identify,
@@ -192,6 +200,8 @@ class Harness:
                 if len(attempts) < 16:
                     attempts.append({'error': str(error), 'census': census})
                     save(prefix.with_suffix('.discovery-attempts.json'), attempts)
+                if binding.record.get('status') == 'blocked':
+                    raise ValueError('Owned wrapper readiness binding rejected') from error
             time.sleep(0.05)
         raise ValueError('Real owned SwiftPM XCTest discovery/readiness was not proven')
 
@@ -238,10 +248,15 @@ class Harness:
             fixtureSignalPolicy='ignore-own-SIGTERM' if survives_term else 'unchanged',
             fixtureEnvironment={'PICSHOT_OBSERVER_SELF_TEST_SURVIVE_TERM': '1' if survives_term else '0'})
         self.report['scenarios'].append(record)
+        expected_executable = self.identify(os.getpid())['executable']
+        record['expectedWrapperExecutable'] = expected_executable
         process = self.launch(command, seconds, prefix, environment)
         record['wrapperPID'] = process.pid
+        binding = D.WrapperBinding(process, self.identify, expected_executable)
+        record['wrapperBinding'] = binding.record
+        save(prefix.with_suffix('.wrapper-binding.json'), binding.record)
         save(self.directory/'self-test-report.json', self.report)
-        request = self.target(process, prefix, gate.with_suffix('.ready'))
+        request = self.target(process, prefix, gate.with_suffix('.ready'), binding, command, seconds)
         record['identity'] = request
         target = request['target']
         if name == 'normal':

@@ -35,10 +35,232 @@ class NativeDiagnosticTests(unittest.TestCase):
         self.args = SimpleNamespace(plan=self.plan_path, expected_source=self.source, index=3,
             directory=self.root / 'native', diagnostics=self.root / 'diagnostics', output_mode='baseline')
         self.identities = {
+            os.getpid(): self.identity(os.getpid(), os.getppid(), os.getpgrp(), '/usr/bin/python3'),
             100: self.identity(100, 99, 99, '/usr/bin/python3'),
             200: self.identity(200, 100, 200, '/Applications/Xcode.app/Contents/Developer/usr/bin/swift-test'),
             201: self.identity(201, 200, 200, '/Applications/Xcode.app/Contents/Developer/usr/bin/xctest'),
         }
+
+    def binding_fixture(self):
+        initial = self.identity(100, os.getpid(), os.getpgrp(), '/opt/python/bin/python3')
+        current = dict(initial)
+        executable = '/opt/python/Resources/Python.app/Contents/MacOS/Python'
+        identify = mock.Mock(side_effect=lambda _: current.copy())
+        process = SimpleNamespace(pid=100, poll=mock.Mock(return_value=None))
+        binding = D.WrapperBinding(process, identify, executable)
+        command = ['swift', 'test', '--skip-build']
+        report = {'status': 'running', 'pid': 200, 'command': command, 'timeout_seconds': 420}
+        return binding, current, executable, process, command, report
+
+    def test_wrapper_startup_exec_is_allowed_until_verified_handshake_then_fully_pinned(self):
+        binding, current, executable, process, command, report = self.binding_fixture()
+        initial = current.copy()
+        self.assertIsNone(binding.observe(None, command, 420))
+        current['executable'] = executable
+        self.assertIsNone(binding.observe({**report, 'status': 'starting', 'pid': None}, command, 420))
+        self.assertIsNone(binding.stable)
+        stable = binding.observe(report, command, 420)
+        self.assertEqual(stable, current)
+        self.assertEqual(binding.record['initialIdentity'], initial)
+        self.assertEqual(binding.record['stableIdentity'], current)
+        self.assertEqual(binding.record['status'], 'bound')
+        self.assertEqual(binding.record['initialToStableDifferences'], {
+            'executable': {'expected': initial['executable'], 'current': executable}})
+
+    def test_wrong_ready_executable_retains_exact_difference_and_never_binds(self):
+        binding, current, executable, process, command, report = self.binding_fixture()
+        current['executable'] = '/tmp/unexpected-python'
+        with self.assertRaisesRegex(ValueError, 'exact known interpreter'):
+            binding.observe(report, command, 420)
+        self.assertIsNone(binding.stable)
+        self.assertEqual(binding.record['status'], 'blocked')
+        self.assertEqual(binding.record['executableDifferences']['executable'],
+                         {'expected': executable, 'current': current['executable']})
+
+    def test_wrapper_lifetime_continuity_rejects_pid_uid_parent_group_and_birth_changes(self):
+        for field in D.WrapperBinding.ANCHOR_FIELDS:
+            with self.subTest(field=field):
+                binding, current, executable, process, command, report = self.binding_fixture()
+                current['executable'] = executable
+                original = current[field]
+                current[field] += 1
+                with self.assertRaisesRegex(ValueError, 'lifetime identity changed'):
+                    binding.observe(report, command, 420)
+                self.assertEqual(binding.record['anchorDifferences'][field],
+                                 {'expected': original, 'current': original + 1})
+                self.assertIsNone(binding.stable)
+
+    def test_post_handshake_executable_change_is_sticky_and_retains_both_snapshots(self):
+        binding, current, executable, process, command, report = self.binding_fixture()
+        current['executable'] = executable
+        stable = binding.observe(report, command, 420).copy()
+        current['executable'] = '/tmp/replacement'
+        with self.assertRaisesRegex(ValueError, 'Stable wrapper identity changed'):
+            binding.observe(report, command, 420)
+        current['executable'] = executable
+        with self.assertRaisesRegex(ValueError, 'already blocked'):
+            binding.observe(report, command, 420)
+        self.assertEqual(binding.record['firstError'], 'Stable wrapper identity changed')
+        self.assertEqual(binding.record['stableIdentity'], stable)
+        self.assertEqual(binding.record['stableDifferences']['executable']['current'], '/tmp/replacement')
+
+    def test_unowned_initial_identity_is_archived_and_blocks_binding(self):
+        initial = self.identity(100, os.getpid() + 1, 99, '/opt/launcher')
+        process = SimpleNamespace(pid=100, poll=lambda: None)
+        binding = D.WrapperBinding(process, lambda _: initial.copy(), '/opt/interpreter')
+        self.assertEqual(binding.record['initialIdentity'], initial)
+        self.assertEqual(binding.record['initialOwnershipDifferences']['parentPID']['expected'], os.getpid())
+        self.assertEqual(binding.record['status'], 'blocked')
+
+    def test_initial_identity_read_failure_is_archived_without_losing_owned_process(self):
+        process = SimpleNamespace(pid=100, poll=lambda: None)
+        binding = D.WrapperBinding(process, mock.Mock(side_effect=OSError('injected identity failure')), '/opt/interpreter')
+        self.assertIs(binding.process, process)
+        self.assertIsNone(binding.record['initialIdentity'])
+        self.assertIn('injected identity failure', binding.record['initialIdentityError'])
+        self.assertEqual(binding.record['status'], 'blocked')
+
+    def test_wrong_handshake_missing_envelope_and_early_exit_cannot_bind(self):
+        changes = ({'command': ['other']}, {'timeout_seconds': 421}, {'status': 'exited'},
+                   {'pid': True}, {'status': 'unexpected'})
+        for change in changes:
+            with self.subTest(change=change):
+                binding, current, executable, process, command, report = self.binding_fixture()
+                current['executable'] = executable
+                with self.assertRaises(ValueError):
+                    binding.observe({**report, **change}, command, 420)
+                self.assertIsNone(binding.stable)
+        binding, current, executable, process, command, report = self.binding_fixture()
+        self.assertIsNone(binding.observe(None, command, 420))
+        process.poll.return_value = 0
+        with self.assertRaisesRegex(ValueError, 'exited during readiness'):
+            binding.observe(report, command, 420)
+        self.assertIsNone(binding.stable)
+
+    def test_ownership_uses_settled_wrapper_and_preserves_binding_failure(self):
+        binding, current, executable, process, command, report = self.binding_fixture()
+        ownership = D.Ownership(None, binding=binding)
+        report_path = self.root / 'runner.json'
+        ownership.observe(process, report_path, command, binding.identify)
+        self.assertIsNone(ownership.wrapper)
+        self.assertFalse(ownership.record['uncertainCensus'])
+        current['executable'] = executable
+        report_path.write_text(json.dumps(report))
+        snapshot = self.snapshot()
+        snapshot['wrapper'] = current.copy()
+        with mock.patch.object(D, 'owned_target', return_value=snapshot) as census:
+            ownership.observe(process, report_path, command, binding.identify)
+        self.assertEqual(census.call_args.kwargs['expected_wrapper'], current)
+        current['executable'] = '/tmp/changed-after-ready'
+        ownership.observe(process, report_path, command, binding.identify)
+        self.assertTrue(ownership.record['uncertainCensus'])
+        self.assertEqual(binding.record['status'], 'blocked')
+
+    def test_settled_binding_selects_descendant_that_the_startup_executable_pin_rejects(self):
+        binding, current, executable, process, command, report = self.binding_fixture()
+        launch = current.copy()
+        current['executable'] = executable
+        stable = binding.observe(report, command, 420)
+        self.identities[100] = current.copy()
+        self.identities[201]['groupID'] = 201
+        with self.assertRaises(D.SelectionError) as rejected:
+            D.owned_target(100, 200, self.identities.__getitem__, self.children, expected_wrapper=launch)
+        self.assertEqual(rejected.exception.census['expectedWrapper'], launch)
+        self.assertEqual(rejected.exception.census['wrapperDifferences'], {
+            'executable': {'expected': launch['executable'], 'current': executable}})
+        selected = D.owned_target(100, 200, self.identities.__getitem__, self.children, expected_wrapper=stable)
+        self.assertEqual(selected['target']['pid'], 201)
+        self.assertTrue(selected['complete'])
+
+    def test_completed_between_outer_loop_and_observe_does_not_query_reaped_pid_or_invent_cleanup(self):
+        binding, current, executable, process, command, report = self.binding_fixture()
+        current['executable'] = executable
+        binding.observe(report, command, 420)
+        ownership = D.Ownership(binding.stable, binding=binding)
+        ownership.accept(self.snapshot())
+        report_path = self.root / 'completed-runner.json'
+        report_path.write_text(json.dumps(report))
+        self.assertIsNone(process.poll())  # The observer's outer loop saw it live.
+        process.poll.return_value = 0
+        binding.identify.reset_mock()
+        ownership.observe(process, report_path, command, binding.identify)
+        binding.identify.assert_not_called()
+        self.assertEqual(binding.record['status'], 'completed')
+        self.assertFalse(ownership.record['uncertainCensus'])
+        self.assertEqual(ownership.targets, [self.identities[201]])
+        self.assertNotIn('cleanupConfirmed', binding.record)
+
+    def test_verified_terminal_envelope_avoids_live_binding_during_wrapper_finish(self):
+        binding, current, executable, process, command, report = self.binding_fixture()
+        current['executable'] = executable
+        binding.observe(report, command, 420)
+        binding.identify.reset_mock()
+        self.assertIsNone(binding.observe({**report, 'status': 'timeout'}, command, 420))
+        binding.identify.assert_not_called()
+        self.assertEqual(binding.record['status'], 'finishing')
+        self.assertIsNone(binding.record['wrapperReturnCode'])
+        self.assertNotIn('cleanupConfirmed', binding.record)
+
+    def test_pid_disappearing_during_live_read_requires_owned_popen_completion(self):
+        for completed in (True, False):
+            with self.subTest(completed=completed):
+                binding, current, executable, process, command, report = self.binding_fixture()
+                current['executable'] = executable
+                binding.observe(report, command, 420)
+                process.poll.side_effect = [None, 0 if completed else None]
+                binding.identify.side_effect = ProcessLookupError(errno.ESRCH, 'exited during read')
+                if completed:
+                    self.assertIsNone(binding.observe(report, command, 420))
+                    self.assertEqual(binding.record['status'], 'completed')
+                else:
+                    with self.assertRaises(ProcessLookupError):
+                        binding.observe(report, command, 420)
+                    self.assertEqual(binding.record['status'], 'blocked')
+
+    def test_verified_terminating_envelope_keeps_live_identity_checks_and_separate_cleanup(self):
+        for reason in ('exited', 'timeout', 'cancelled'):
+            with self.subTest(reason=reason):
+                binding, current, executable, process, command, report = self.binding_fixture()
+                current['executable'] = executable
+                binding.observe(report, command, 420)
+                binding.identify.reset_mock()
+                stopping = {**report, 'status': 'terminating', 'termination_reason': reason}
+                self.assertIsNone(binding.observe(stopping, command, 420))
+                binding.identify.assert_called_once_with(process.pid)
+                self.assertEqual(binding.record['status'], 'finishing')
+                self.assertNotIn('cleanupConfirmed', binding.record)
+                current['executable'] = '/tmp/replaced-while-terminating'
+                with self.assertRaisesRegex(ValueError, 'Stable wrapper identity changed'):
+                    binding.observe(stopping, command, 420)
+
+    def test_executable_read_failure_only_resolves_when_owned_popen_confirms_completion(self):
+        for completed in (True, False):
+            with self.subTest(completed=completed):
+                binding, current, executable, process, command, report = self.binding_fixture()
+                current['executable'] = executable
+                binding.observe(report, command, 420)
+                process.poll.side_effect = [None, 0 if completed else None]
+                binding.identify.side_effect = ValueError('Cannot read executable identity (errno 3); retirement unproven')
+                if completed:
+                    self.assertIsNone(binding.observe(report, command, 420))
+                    self.assertEqual(binding.record['status'], 'completed')
+                    self.assertEqual(binding.record['identityReadAtCompletionErrorType'], 'ValueError')
+                    self.assertNotIn('cleanupConfirmed', binding.record)
+                else:
+                    with self.assertRaisesRegex(ValueError, 'retirement unproven'):
+                        binding.observe(report, command, 420)
+                    self.assertEqual(binding.record['status'], 'blocked')
+
+    def test_terminating_before_binding_or_with_unverified_reason_cannot_be_accepted(self):
+        binding, current, executable, process, command, report = self.binding_fixture()
+        current['executable'] = executable
+        with self.assertRaisesRegex(ValueError, 'Invalid terminating'):
+            binding.observe({**report, 'status': 'terminating', 'termination_reason': 'timeout'}, command, 420)
+        binding, current, executable, process, command, report = self.binding_fixture()
+        current['executable'] = executable
+        binding.observe(report, command, 420)
+        with self.assertRaisesRegex(ValueError, 'Invalid terminating'):
+            binding.observe({**report, 'status': 'terminating', 'termination_reason': 'unknown'}, command, 420)
 
     @staticmethod
     def identity(pid, parent, group, executable):
@@ -328,7 +550,7 @@ class NativeDiagnosticTests(unittest.TestCase):
 
     def test_native_success_without_any_owned_xctest_evidence_is_diagnostic_failure(self):
         command = [sys.executable, '-c', 'pass']
-        with mock.patch.object(D, 'ProcessIdentity', return_value=lambda _: {}), \
+        with mock.patch.object(D, 'ProcessIdentity', return_value=lambda _: {'executable': sys.executable}), \
              mock.patch.object(D, 'native_command', return_value=command), \
              mock.patch.object(D, 'cleanup_evidence', return_value=(True, {'status': 'exited'})):
             self.assertEqual(D.run(self.args), 125)
@@ -519,7 +741,7 @@ class NativeDiagnosticTests(unittest.TestCase):
     def test_diagnostic_capture_failure_cannot_hide_native_failure_or_change_plan(self):
         before = self.plan_path.read_bytes()
         command = [sys.executable, '-c', 'import time; time.sleep(0.08); raise SystemExit(124)']
-        with mock.patch.object(D, 'ProcessIdentity', return_value=lambda _: {}), \
+        with mock.patch.object(D, 'ProcessIdentity', return_value=lambda _: {'executable': sys.executable}), \
              mock.patch.object(D, 'native_command', return_value=command), \
              mock.patch.object(D, 'CAPTURE_AT', (0,)), \
              mock.patch.object(D, 'start_capture', side_effect=ValueError('no unique owned XCTest')):
@@ -529,6 +751,9 @@ class NativeDiagnosticTests(unittest.TestCase):
         summary = json.loads((self.args.diagnostics / 'diagnostics.json').read_text())
         self.assertEqual(summary['nativeExitCode'], 124)
         self.assertEqual(summary['captures'][0]['error'], 'no unique owned XCTest')
+        self.assertIn('initialIdentity', summary['wrapperBinding'])
+        self.assertEqual(summary['wrapperBinding']['status'], 'blocked')
+        self.assertIn('initialIdentityError', summary['wrapperBinding'])
         self.assertEqual(summary['selectedTests'], self.plan['shards'][3]['tests'])
         self.assertEqual(self.plan_path.read_bytes(), before)
         self.assertLess(max(D.CAPTURE_AT) + D.SAMPLE_TIMEOUT + D.SAMPLE_GRACE + 2, 420)
@@ -558,7 +783,7 @@ class NativeDiagnosticTests(unittest.TestCase):
         prefix = self.root / 'cancel'
         command = self.bounded(prefix, 'import time; time.sleep(60)')
         timer = threading.Timer(0.2, lambda: os.kill(os.getpid(), signal.SIGTERM))
-        with mock.patch.object(D, 'ProcessIdentity', return_value=lambda _: {}), \
+        with mock.patch.object(D, 'ProcessIdentity', return_value=lambda _: {'executable': sys.executable}), \
              mock.patch.object(D, 'native_command', return_value=command):
             started = time.monotonic()
             timer.start()
