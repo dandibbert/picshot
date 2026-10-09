@@ -5,7 +5,8 @@ import Foundation
 
 struct EffectContextGuardControlMetadata: Codable, Equatable {
     let width: Int, height: Int, bitsPerComponent: Int, bitsPerPixel: Int, bytesPerRow: Int
-    let bitmapInfo: UInt32, alphaInfo: UInt32, renderingIntent: UInt32
+    let bitmapInfo: UInt32, alphaInfo: UInt32
+    let renderingIntent: Int32
     let colorSpaceName: String?, colorSpaceModel: Int?, colorSpaceICCSHA256: String?
     let shouldInterpolate: Bool, hasDecodeArray: Bool, isMask: Bool
 }

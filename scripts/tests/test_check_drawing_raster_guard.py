@@ -343,6 +343,11 @@ class DrawingGuardSourceContractTests(unittest.TestCase):
 
     def test_hook_observes_after_verified_fixture_and_before_normal_report_write(self):
         source = (ROOT / 'Sources/PicShot/SmokeVerification.swift').read_text()
+        effect_hook = '                try EffectContextOutputGuardEvidence.writeIfRequested(evidenceDirectory: directory)\n'
+        self.assertEqual(source.count(effect_hook), 1)
+        # Remove only the declared later diagnostic hook, then preserve the
+        # complete original fixture/drawing-evidence/report-write sequence.
+        source = source.replace(effect_hook, '', 1)
         route = source.split('if ProcessInfo.processInfo.environment["PICSHOT_EFFECT_OUTPUT_FAILURE_ONLY"] == "1" {', 1)[1]
         route = route.split('NSApp.terminate(nil); return', 1)[0]
         self.assertIn('var payload = try await EffectOutputFailureNativeFixture.verify(evidenceDirectory: directory)\n'
