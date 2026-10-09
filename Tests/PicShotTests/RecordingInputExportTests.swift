@@ -1,6 +1,7 @@
 import XCTest
 import Foundation
 import CoreMedia
+import CoreVideo
 @testable import PicShot
 
 @MainActor
@@ -211,6 +212,108 @@ final class RecordingInputExportTests: XCTestCase {
         XCTAssertThrowsError(try Oracle.verifyPacketTimeline(Array(visible.dropLast()), selected: true))
         XCTAssertNoThrow(try Oracle.verifyPacketTimeline(Array(([preroll] + visible).reversed()), selected: true),
                          "Compressed buffers may arrive in decode order")
+
+        // ARM164 returned a ready source image at PTS zero with invalid raw
+        // and output durations. Only compressed packets prove interval length.
+        func imageSample(rawPTS: CMTime = .zero, outputPTS: CMTime = .zero,
+                         duration: CMTime = .invalid, width: Int = Oracle.width) throws -> CMSampleBuffer {
+            var pixels: CVPixelBuffer?
+            XCTAssertEqual(CVPixelBufferCreate(kCFAllocatorDefault, width, Oracle.height,
+                kCVPixelFormatType_32BGRA, nil, &pixels), kCVReturnSuccess)
+            let image = try XCTUnwrap(pixels)
+            var format: CMVideoFormatDescription?
+            XCTAssertEqual(CMVideoFormatDescriptionCreateForImageBuffer(allocator: kCFAllocatorDefault,
+                imageBuffer: image, formatDescriptionOut: &format), noErr)
+            var timing = CMSampleTimingInfo(duration: duration, presentationTimeStamp: rawPTS, decodeTimeStamp: .invalid)
+            var sample: CMSampleBuffer?
+            XCTAssertEqual(CMSampleBufferCreateReadyWithImageBuffer(allocator: kCFAllocatorDefault,
+                imageBuffer: image, formatDescription: try XCTUnwrap(format),
+                sampleTiming: &timing, sampleBufferOut: &sample), noErr)
+            let result = try XCTUnwrap(sample)
+            XCTAssertEqual(CMSampleBufferSetOutputPresentationTimeStamp(result, newValue: outputPTS), noErr)
+            return result
+        }
+        func setDisplayFlag(_ sample: CMSampleBuffer, _ value: Any) throws {
+            let flags = try XCTUnwrap(CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: true) as? [NSMutableDictionary])
+            let dictionary = try XCTUnwrap(flags.first)
+            dictionary[kCMSampleAttachmentKey_DoNotDisplay] = value
+        }
+        let sourcePackets = try Oracle.verifyPacketTimeline((0..<22).map {
+            Oracle.PacketTiming(rawPTS: Double($0) / 10, rawDuration: 0.1,
+                outputPTS: Double($0) / 10, outputDuration: 0.1, trimStart: 0, trimEnd: 0, doNotDisplay: false)
+        }, selected: false)
+        let durationless = try imageSample()
+        let decoded = try Oracle.decodedFrameTiming(durationless, selected: false, packets: sourcePackets,
+                                                    detail: "ARM164-durationless-source-image")
+        XCTAssertNoThrow(try Oracle.verifyDecodedPresented(decoded, index: 0, selected: false))
+        XCTAssertFalse(decoded.nonPresented)
+        XCTAssertFalse(CMSampleBufferGetDuration(durationless).isValid)
+        XCTAssertFalse(CMSampleBufferGetOutputDuration(durationless).isValid,
+                       "The oracle must not fabricate or write a decoded duration")
+        XCTAssertThrowsError(try Oracle.packetTiming(durationless, detail: "compressed-duration-still-required"))
+        XCTAssertThrowsError(try Oracle.decodedFrameTiming(lastPacket, selected: false, packets: sourcePackets,
+                                                          detail: "data-is-not-a-decoded-image"))
+        XCTAssertThrowsError(try Oracle.decodedFrameTiming(imageSample(width: 319), selected: false,
+                                                          packets: sourcePackets, detail: "wrong-decoded-canvas"))
+        for bad in [
+            Oracle.DecodedFrameTiming(rawPTS: .nan, outputPTS: 0, prerollRawEnd: nil),
+            Oracle.DecodedFrameTiming(rawPTS: 2.2, outputPTS: 0, prerollRawEnd: nil),
+            Oracle.DecodedFrameTiming(rawPTS: 0, outputPTS: .nan, prerollRawEnd: nil),
+            Oracle.DecodedFrameTiming(rawPTS: 0, outputPTS: -0.1, prerollRawEnd: nil),
+            Oracle.DecodedFrameTiming(rawPTS: 0, outputPTS: 0.02, prerollRawEnd: nil)
+        ] {
+            XCTAssertThrowsError(try Oracle.verifyDecodedPresented(bad, index: 0, selected: false))
+        }
+        XCTAssertThrowsError(try Oracle.verifyDecodedPresented(decoded, index: 21, selected: true),
+                             "A selected decoder may not present a 22nd image")
+        let hiddenImage = try imageSample(outputPTS: CMTime(value: -1, timescale: 10))
+        let unflaggedImage = try Oracle.decodedFrameTiming(hiddenImage, selected: true, packets: packetSummary,
+                                                          detail: "negative-PTS-is-not-preroll-proof")
+        XCTAssertFalse(unflaggedImage.nonPresented)
+        XCTAssertThrowsError(try Oracle.verifyDecodedPresented(unflaggedImage, index: 0, selected: true))
+        try setDisplayFlag(hiddenImage, NSNumber(value: true))
+        let hiddenTiming = try Oracle.decodedFrameTiming(hiddenImage, selected: true, packets: packetSummary,
+                                                         detail: "durationless-explicit-preroll")
+        XCTAssertEqual(try XCTUnwrap(hiddenTiming.prerollRawEnd), 0.1, accuracy: 1.0 / 600)
+        XCTAssertFalse(CMSampleBufferGetDuration(hiddenImage).isValid)
+        XCTAssertThrowsError(try Oracle.decodedFrameTiming(hiddenImage, selected: false, packets: sourcePackets,
+                                                          detail: "unexpected-source-preroll"))
+        XCTAssertEqual(CMSampleBufferSetOutputPresentationTimeStamp(hiddenImage, newValue: CMTime(value: -1, timescale: 20)), noErr)
+        XCTAssertThrowsError(try Oracle.decodedFrameTiming(hiddenImage, selected: true, packets: packetSummary,
+                                                          detail: "unmatched-decoded-preroll"))
+        let trimmedImage = try imageSample()
+        CMSetAttachment(trimmedImage, key: kCMSampleBufferAttachmentKey_TrimDurationAtStart,
+            value: CMTimeCopyAsDictionary(CMTime(value: 1, timescale: 10), allocator: kCFAllocatorDefault)!,
+            attachmentMode: kCMAttachmentMode_ShouldPropagate)
+        let trimmedPackets = try Oracle.verifyPacketTimeline([trimmedPreroll] + visible, selected: true)
+        XCTAssertTrue(try Oracle.decodedFrameTiming(trimmedImage, selected: true, packets: trimmedPackets,
+                                                   detail: "durationless-fully-trimmed-preroll").nonPresented)
+        let contradictoryTrim = try imageSample(duration: CMTime(value: 2, timescale: 10))
+        CMSetAttachment(contradictoryTrim, key: kCMSampleBufferAttachmentKey_TrimDurationAtStart,
+            value: CMTimeCopyAsDictionary(CMTime(value: 1, timescale: 10), allocator: kCFAllocatorDefault)!,
+            attachmentMode: kCMAttachmentMode_ShouldPropagate)
+        XCTAssertThrowsError(try Oracle.decodedFrameTiming(contradictoryTrim, selected: true, packets: trimmedPackets,
+                                                          detail: "positive-output-contradicts-full-trim"))
+        XCTAssertThrowsError(try Oracle.decodedFrameTiming(imageSample(duration: .zero), selected: true,
+                                                          packets: trimmedPackets, detail: "zero-duration-without-proof"))
+        let finalImage = try imageSample(rawPTS: CMTime(value: 21, timescale: 10), outputPTS: CMTime(value: 2, timescale: 1))
+        CMSetAttachment(finalImage, key: kCMSampleBufferAttachmentKey_TrimDurationAtEnd,
+            value: CMTimeCopyAsDictionary(CMTime(value: 1, timescale: 20), allocator: kCFAllocatorDefault)!,
+            attachmentMode: kCMAttachmentMode_ShouldPropagate)
+        let finalTiming = try Oracle.decodedFrameTiming(finalImage, selected: true, packets: packetSummary,
+                                                        detail: "durationless-final-visible-image")
+        XCTAssertNoThrow(try Oracle.verifyDecodedPresented(finalTiming, index: 20, selected: true))
+        try setDisplayFlag(durationless, NSNumber(value: 2))
+        XCTAssertThrowsError(try Oracle.decodedFrameTiming(durationless, selected: false, packets: sourcePackets,
+                                                          detail: "malformed-decoded-display-flag"))
+        try setDisplayFlag(durationless, NSNumber(value: false))
+        CMSetAttachment(durationless, key: kCMSampleBufferAttachmentKey_TrimDurationAtStart,
+            value: kCFBooleanTrue, attachmentMode: kCMAttachmentMode_ShouldPropagate)
+        XCTAssertThrowsError(try Oracle.decodedFrameTiming(durationless, selected: false, packets: sourcePackets,
+                                                          detail: "malformed-decoded-trim"))
+        XCTAssertEqual(CMSampleBufferInvalidate(finalImage), noErr)
+        XCTAssertThrowsError(try Oracle.decodedFrameTiming(finalImage, selected: true, packets: packetSummary,
+                                                          detail: "invalidated-decoded-image"))
 
         var frames = (0..<41).map { index in
             Oracle.Comparison(index: index, requestedSeconds: Double(index) / 20,

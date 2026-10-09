@@ -65,6 +65,13 @@ enum RecordingInputExportOracle {
         let rawTimeline = "untrimmed sample PTS/duration"
         let presentationTimeline = "CoreMedia output PTS/duration after track edits and trims"
     }
+    struct DecodedFrameTiming {
+        let rawPTS: Double, outputPTS: Double
+        // This endpoint belongs to the corroborating compressed packet, never
+        // to a synthesized duration for a decoded image.
+        let prerollRawEnd: Double?
+        var nonPresented: Bool { prerollRawEnd != nil }
+    }
     struct Comparison: Codable {
         let index: Int, requestedSeconds: Double, actualSeconds: Double
         let sourceIndex: Int, delayMS: Int
@@ -264,6 +271,70 @@ enum RecordingInputExportOracle {
             && abs(packet.outputDuration - expectedLength) <= 1.0 / 600,
                     "Presented interval differs at frame \(index): pts=\(packet.outputPTS) duration=\(packet.outputDuration)")
     }
+
+    /// AVAssetReader can return a valid decoded image with invalid durations
+    /// (observed on ARM164). Compressed packets already prove every interval;
+    /// images prove the PTS grid, exact frame count and pixels independently.
+    /// Missing image durations are kept missing, never inferred or rewritten.
+    static func decodedFrameTiming(_ sample: CMSampleBuffer, selected: Bool,
+                                   packets: PacketSummary, detail: String) throws -> DecodedFrameTiming {
+        try require(CMSampleBufferIsValid(sample) && CMSampleBufferDataIsReady(sample)
+            && CMSampleBufferGetNumSamples(sample) == 1, "Invalid decoded image sample: \(detail)")
+        guard let pixels = CMSampleBufferGetImageBuffer(sample) else {
+            throw NSError(domain: "PicShot.RecordingInputExport", code: 4,
+                          userInfo: [NSLocalizedDescriptionKey: "Decoded MP4 has no image buffer: \(detail)"])
+        }
+        try require(CVPixelBufferGetWidth(pixels) == width && CVPixelBufferGetHeight(pixels) == height,
+                    "Decoded MP4 canvas differs: \(detail)")
+        let rawPTS = CMSampleBufferGetPresentationTimeStamp(sample)
+        let outputPTS = CMSampleBufferGetOutputPresentationTimeStamp(sample)
+        try require(rawPTS.isNumeric && outputPTS.isNumeric
+            && rawPTS.seconds.isFinite && outputPTS.seconds.isFinite
+            && rawPTS.seconds >= 0 && rawPTS.seconds <= Double(sourceFrames - 1) / 10 + 1.0 / 600
+            && outputPTS.seconds >= -0.1 - 1.0 / 600 && outputPTS.seconds <= 2.2,
+                    "Invalid decoded image PTS: \(detail)")
+        let hidden = try doNotDisplay(sample)
+        let trimStart = try trimDuration(sample, key: kCMSampleBufferAttachmentKey_TrimDurationAtStart)
+        let trimEnd = try trimDuration(sample, key: kCMSampleBufferAttachmentKey_TrimDurationAtEnd)
+        try require(trimStart + trimEnd <= 0.1 + 1.0 / 600,
+                    "Decoded image trim exceeds authored packet bound: \(detail)")
+        let storedPreroll = packets.packets.filter(\.nonPresented)
+        let matchingPreroll = storedPreroll.first {
+            abs($0.rawPTS - rawPTS.seconds) <= 1.0 / 600
+                && abs($0.outputPTS - outputPTS.seconds) <= 1.0 / 600
+        }
+        let fullyTrimmed = matchingPreroll.map {
+            trimStart + trimEnd > 0
+                && abs(trimStart + trimEnd - $0.rawDuration) <= 1.0 / 600
+                && abs(trimStart - $0.trimStart) <= 1.0 / 600
+                && abs(trimEnd - $0.trimEnd) <= 1.0 / 600
+        } ?? false
+        let outputDuration = CMSampleBufferGetOutputDuration(sample)
+        if !hidden && fullyTrimmed {
+            try require(!outputDuration.isValid || (outputDuration.isNumeric && outputDuration.seconds == 0),
+                        "Decoded full-trim proof contradicts output duration: \(detail)")
+        }
+        // A zero output duration alone cannot make a decoded image disappear.
+        // Preroll needs explicit metadata and the existing compressed proof.
+        if hidden || fullyTrimmed || (outputDuration.isNumeric && outputDuration.seconds == 0) {
+            try require(selected && storedPreroll.count == 1 && (hidden || fullyTrimmed),
+                        "Unproved non-presented decoded image: \(detail)")
+            guard let packet = matchingPreroll else {
+                throw NSError(domain: "PicShot.RecordingInputExport", code: 9,
+                              userInfo: [NSLocalizedDescriptionKey: "Decoded preroll differs from compressed proof: \(detail)"])
+            }
+            return DecodedFrameTiming(rawPTS: rawPTS.seconds, outputPTS: outputPTS.seconds,
+                                      prerollRawEnd: packet.rawPTS + packet.rawDuration)
+        }
+        return DecodedFrameTiming(rawPTS: rawPTS.seconds, outputPTS: outputPTS.seconds, prerollRawEnd: nil)
+    }
+    static func verifyDecodedPresented(_ frame: DecodedFrameTiming, index: Int, selected: Bool) throws {
+        let count = selected ? selectedFrames : sourceFrames
+        try require((0..<count).contains(index) && !frame.nonPresented
+            && frame.rawPTS.isFinite && frame.rawPTS >= 0 && frame.rawPTS <= Double(sourceFrames - 1) / 10 + 1.0 / 600
+            && frame.outputPTS.isFinite && abs(frame.outputPTS - Double(index) / 10) <= 1.0 / 600,
+                    "Decoded frame PTS/index differs: index=\(index) rawPTS=\(frame.rawPTS) outputPTS=\(frame.outputPTS)")
+    }
     static func check(_ deadline: Double) throws {
         try Task.checkCancellation()
         try require(ProcessInfo.processInfo.systemUptime < deadline, "Derived input verification deadline exceeded")
@@ -433,7 +504,7 @@ enum RecordingInputExportOracle {
         defer { sourceGenerator?.cancelAllCGImageGeneration() }
         var frames: [Observation] = []
         var buffers = 0, decodedSamples = 0
-        var decodedPreroll: PacketTiming?
+        var decodedPreroll: DecodedFrameTiming?
         while let sample = output.copyNextSampleBuffer() {
             try check(deadline)
             let detail = sampleTimingDescription(sample, route: route, phase: "decoded", buffer: buffers, media: frames.count, expected: count)
@@ -446,24 +517,17 @@ enum RecordingInputExportOracle {
             print("[recording-input-timing] media-sample \(detail)")
             try require(decodedSamples < sourceFrames, "Decoded sample cap exceeded: \(detail)")
             decodedSamples += 1
-            let timing = try packetTiming(sample, detail: detail)
-            guard let decodedPixels = CMSampleBufferGetImageBuffer(sample) else {
-                throw NSError(domain: "PicShot.RecordingInputExport", code: 4,
-                              userInfo: [NSLocalizedDescriptionKey: "Decoded MP4 has no image buffer: \(detail)"])
-            }
-            try require(CVPixelBufferGetWidth(decodedPixels) == width && CVPixelBufferGetHeight(decodedPixels) == height,
-                        "Decoded MP4 canvas differs: \(detail)")
+            let timing = try decodedFrameTiming(sample, selected: selected, packets: packetSummary, detail: detail)
             if timing.nonPresented {
-                try validateNonPresented(timing, selected: selected)
                 try require(decodedPreroll == nil && frames.isEmpty, "Decoded preroll is not a single leading sample: \(detail)")
                 decodedPreroll = timing
                 continue
             }
             try autoreleasepool {
                 try require(frames.count < count, "Derived decoder exceeded frame cap: \(detail)")
-                try verifyPresented(timing, index: frames.count, selected: selected)
-                if frames.isEmpty, let preroll = decodedPreroll {
-                    try require(preroll.rawPTS + preroll.rawDuration <= timing.rawPTS + 1.0 / 600,
+                try verifyDecodedPresented(timing, index: frames.count, selected: selected)
+                if frames.isEmpty, let prerollEnd = decodedPreroll?.prerollRawEnd {
+                    try require(prerollEnd <= timing.rawPTS + 1.0 / 600,
                                 "Decoded non-presented sample is not leading preroll: \(detail)")
                 }
                 let pts = timing.outputPTS
