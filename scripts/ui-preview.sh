@@ -85,6 +85,19 @@ for appearance in inputs['appearances']:
                 assert row['width']>0 and row['height']>0,row
         expected_files={f'{prefix}-{state}-{appearance["appearance"]}.png' for state in ['default-off','denied','help-denied','help-allowed','allowed','restored-off']}
         assert set(context['files'])==expected_files,context
+        expected_geometry={filename[:-4]+'-geometry.json' for filename in expected_files}
+        assert set(context['geometryFiles'])==expected_geometry,context
+        for filename in context['geometryFiles']:
+            assert pathlib.Path(filename).name==filename,filename
+            measurement=json.loads((pathlib.Path(sys.argv[1]).parent/filename).read_text())
+            assert measurement['status']=='measured-before-validation' and measurement['coordinateSystem']=='top-left',measurement
+            assert len(measurement['controls']) in [1,5],measurement
+            for row in measurement['controls']:
+                assert row['matchCount'] in [0,1] and len(row['views'])==row['matchCount'],row
+                for view in row['views']:
+                    assert all(inset==0 for inset in view['alignmentInsets'].values()),view
+                    assert all(abs(view['frame'][key]-view['alignmentFrame'][key])<=0.5 for key in ['x','y','width','height']),view
+            assert not any(overlap['intersection']['width']>0.5 and overlap['intersection']['height']>0.5 for overlap in measurement['intersections']),measurement
         for filename in context['files']:
             assert pathlib.Path(filename).name==filename,filename
             data=(pathlib.Path(sys.argv[1]).parent/filename).read_bytes()

@@ -366,7 +366,7 @@ struct RecordingInputCheckbox: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(isOn: $isOn) }
 
     func makeNSView(context: Context) -> NSButton {
-        let button = NSButton(checkboxWithTitle: title, target: context.coordinator,
+        let button = RecordingInputNativeButton(checkboxWithTitle: title, target: context.coordinator,
                               action: #selector(Coordinator.toggle(_:)))
         button.controlSize = .small
         button.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
@@ -408,7 +408,7 @@ struct RecordingInputActionButton: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(action: action) }
 
     func makeNSView(context: Context) -> NSButton {
-        let button = NSButton(title: title, target: context.coordinator,
+        let button = RecordingInputNativeButton(title: title, target: context.coordinator,
                               action: #selector(Coordinator.press(_:)))
         button.bezelStyle = .rounded
         button.controlSize = .small
@@ -446,7 +446,7 @@ private struct RecordingInputStatusLabel: NSViewRepresentable {
     let text: String
 
     func makeNSView(context: Context) -> NSTextField {
-        let label = NSTextField(wrappingLabelWithString: text)
+        let label = RecordingInputNativeStatusField(wrappingLabelWithString: text)
         label.font = .systemFont(ofSize: 10)
         label.textColor = .secondaryLabelColor
         label.identifier = NSUserInterfaceItemIdentifier("recording-input-status")
@@ -463,4 +463,23 @@ private struct RecordingInputStatusLabel: NSViewRepresentable {
         let size = nsView.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: width, height: .greatestFiniteMagnitude))
         return CGSize(width: width, height: ceil(size?.height ?? nsView.intrinsicContentSize.height))
     }
+}
+
+
+/// SwiftUI positions representables by their AppKit alignment rectangles. Native
+/// ornament insets must not expand the real control frame into the next row:
+/// these compact input controls reserve their complete drawing/hit-test bounds.
+/// This changes layout allocation, never the frame used by fixture validation.
+@MainActor
+private final class RecordingInputNativeButton: NSButton {
+    override var alignmentRectInsets: NSEdgeInsets { NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0) }
+    override func alignmentRect(forFrame frame: NSRect) -> NSRect { frame }
+    override func frame(forAlignmentRect alignmentRect: NSRect) -> NSRect { alignmentRect }
+}
+
+@MainActor
+private final class RecordingInputNativeStatusField: NSTextField {
+    override var alignmentRectInsets: NSEdgeInsets { NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0) }
+    override func alignmentRect(forFrame frame: NSRect) -> NSRect { frame }
+    override func frame(forAlignmentRect alignmentRect: NSRect) -> NSRect { alignmentRect }
 }

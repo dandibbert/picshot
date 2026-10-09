@@ -19,18 +19,28 @@ enum RecordingInputControlsPreviewFixture {
             var appearances: [[String: Any]] = []
             for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
                 let ownership = OwnershipProbe()
+                report["phase"] = "isolated-" + name
                 var result = try await isolatedPreview(name: name, appearance: appearance,
                     directory: evidenceDirectory, ownership: ownership)
+                let index = appearances.count
+                result["appearanceStatus"] = "in-progress"
+                appearances.append(result); report["appearances"] = appearances
+                report["phase"] = "full-panel-" + name
                 result["fullPanel"] = try await fullPanelPreview(name: name, appearance: appearance,
                     directory: evidenceDirectory, ownership: ownership)
+                appearances[index] = result; report["appearances"] = appearances
+                report["phase"] = "representable-lifecycle-" + name
                 result["representableLifecycle"] = try await verifyRepresentableUpdates(appearance: appearance, ownership: ownership)
+                appearances[index] = result; report["appearances"] = appearances
+                report["phase"] = "ownership-" + name
                 result["ownership"] = try await verifyReleased(ownership)
-                appearances.append(result)
-                report["appearances"] = appearances
+                result["appearanceStatus"] = "passed"
+                appearances[index] = result; report["appearances"] = appearances
             }
             // Missing native controls, interaction, geometry or cleanup throw.
             // There is deliberately no layout-only or model-injection pass.
             report["status"] = "passed"
+            report["phase"] = "complete"
             report["interactionStatus"] = "passed"
             try write(report, directory: evidenceDirectory)
             return report
@@ -104,24 +114,54 @@ enum RecordingInputControlsPreviewFixture {
         try require(monitor.options == initialOptions && probe.permissionChecks == 0,
                     "Opening default-off controls inspected permissions or changed options")
         var files: [String] = []
+        var geometryFiles: [String] = []
+        var roundTrips: [[String: Any]] = []
+        var phase = "default-off"
+        var completed = false
+        defer {
+            if !completed {
+                // Preserve the current owned window even if an intermediate
+                // target/action or option assertion fails before the next state.
+                try? snapshot(window, to: directory.appendingPathComponent("\(prefix)-failed-\(name).png"))
+                try? writeGeometryMeasurements(["clicks", "scrolls", "shortcuts", "help", "status"].map { "recording-input-" + $0 },
+                    in: window, phase: phase, to: directory.appendingPathComponent("\(prefix)-failed-\(name)-geometry.json"))
+                let partial: [String: Any] = ["status": "failed-partial", "phase": phase,
+                    "appearance": name, "context": prefix, "completedOptionActions": roundTrips,
+                    "options": ["clicks": monitor.options.clicks, "scrolls": monitor.options.scrolls,
+                                "shortcuts": monitor.options.shortcuts],
+                    "savedSnapshots": files, "savedGeometry": geometryFiles,
+                    "permissionChecks": probe.permissionChecks, "nativeMonitorRegistrations": probe.installCalls]
+                try? JSONSerialization.data(withJSONObject: partial, options: [.prettyPrinted, .sortedKeys])
+                    .write(to: directory.appendingPathComponent("\(prefix)-failed-\(name)-progress.json"), options: .atomic)
+            }
+        }
         var panelSectionGeometry: [String: Any] = [:]
         func save(_ state: String, window target: NSWindow? = nil) throws {
             let filename = "\(prefix)-\(state)-\(name).png"
-            if target == nil, let panelGeometry { panelSectionGeometry[state] = try panelGeometry() }
-            try snapshot(target ?? window, to: directory.appendingPathComponent(filename))
+            phase = state
+            let measuredWindow = target ?? window
+            // Capture real pixels and exact native rectangles before any
+            // strict geometry assertion can abort this state.
+            try snapshot(measuredWindow, to: directory.appendingPathComponent(filename))
             files.append(filename)
+            let geometryFilename = "\(prefix)-\(state)-\(name)-geometry.json"
+            let measuredIDs = target == nil ? ["clicks", "scrolls", "shortcuts", "help", "status"] : ["refresh"]
+            try writeGeometryMeasurements(measuredIDs.map { "recording-input-" + $0 }, in: measuredWindow,
+                phase: state, to: directory.appendingPathComponent(geometryFilename))
+            geometryFiles.append(geometryFilename)
+            if target == nil, let panelGeometry { panelSectionGeometry[state] = try panelGeometry() }
         }
         let identifiers = ["clicks", "scrolls", "shortcuts", "help"].map { "recording-input-" + $0 }
         var result: [String: Any] = ["appearance": name, "defaultOff": true, "initialPermissionChecks": 0,
                                    "interactionRoute": "NSButton.performClick", "hitTestRoute": "NSView.hitTest"]
+        try save("default-off")
         result["defaultOffGeometry"] = try geometry(identifiers, in: window, hitTest: true)
         try require(nativeViews("recording-input-status", in: window).isEmpty, "Default-off status should be absent")
         for identifier in identifiers { try observeButton(identifier, in: window, prefix: prefix, ownership: ownership) }
-        try save("default-off")
         let toggles: [(String, WritableKeyPath<RecordingInputEffectsOptions, Bool>)] = [
             ("clicks", \.clicks), ("scrolls", \.scrolls), ("shortcuts", \.shortcuts)]
-        var roundTrips: [[String: Any]] = []
         func toggle(_ suffix: String, keyPath: WritableKeyPath<RecordingInputEffectsOptions, Bool>, enabled: Bool) async throws {
+            phase = "toggle-\(suffix)-\(enabled)"
             var expected = monitor.options; expected[keyPath: keyPath] = enabled
             try press("recording-input-" + suffix, in: window)
             try await settle(window)
@@ -137,32 +177,34 @@ enum RecordingInputControlsPreviewFixture {
         for (suffix, keyPath) in toggles {
             for enabled in [true, false, true] { try await toggle(suffix, keyPath: keyPath, enabled: enabled) }
         }
+        try save("denied")
         result["deniedGeometry"] = try geometry(identifiers + ["recording-input-status"], in: window, hitTest: true)
         try require(monitor.permissions == .unknown, "Injected denied permission did not reach the controls")
         try require(try status(in: window).contains("输入监控"), "Denied controls omitted input-monitoring guidance")
-        try save("denied")
 
+        phase = "open-help"
         let help = try await openHelp(in: window)
         defer { dispose(help) }
         try observeButton("recording-input-refresh", in: help, prefix: prefix + ".help", ownership: ownership)
-        result["helpGeometry"] = try geometry(["recording-input-refresh"], in: help, hitTest: true)
         try save("help-denied", window: help)
+        result["helpGeometry"] = try geometry(["recording-input-refresh"], in: help, hitTest: true)
         let checksBeforeRefresh = probe.permissionChecks
         probe.permissions = .init(inputMonitoring: true, accessibility: true)
         try press("recording-input-refresh", in: help)
         try await settle(help); try await settle(window)
+        try save("help-allowed", window: help)
         try require(probe.permissionChecks == checksBeforeRefresh + 1 && monitor.permissions == probe.permissions,
                     "Native refresh did not read the injected granted permission exactly once")
-        try save("help-allowed", window: help)
         try press("recording-input-help", in: window)
         try await settle(window)
         try require(!help.isVisible, "Native help toggle did not dismiss its popover")
+        try save("allowed")
         result["allowedGeometry"] = try geometry(identifiers + ["recording-input-status"], in: window, hitTest: true)
         try require(try status(in: window).contains("开始 / 继续录制"), "Allowed idle controls omitted recording-lifecycle guidance")
-        try save("allowed")
 
         // Reopen the same production help path and verify refresh can revoke
         // permissions too. No model option assignment substitutes for a click.
+        phase = "reopen-help"
         let reopenedHelp = try await openHelp(in: window, previouslyOwned: help)
         defer { if reopenedHelp !== help { dispose(reopenedHelp) } }
         try observeButton("recording-input-refresh", in: reopenedHelp, prefix: prefix + ".reopenedHelp", ownership: ownership)
@@ -179,8 +221,8 @@ enum RecordingInputControlsPreviewFixture {
         for (suffix, keyPath) in toggles { try await toggle(suffix, keyPath: keyPath, enabled: false) }
         try require(monitor.options == initialOptions && nativeViews("recording-input-status", in: window).isEmpty,
                     "Native option round trip failed to restore the default-off controls")
-        result["restoredOffGeometry"] = try geometry(identifiers, in: window, hitTest: true)
         try save("restored-off")
+        result["restoredOffGeometry"] = try geometry(identifiers, in: window, hitTest: true)
         try require(!monitor.isMonitoring && probe.installCalls == 0 && probe.removeCalls == 0 &&
                     probe.healthChecks == 0 && probe.focusChecks == 0 && probe.secureInputChecks == 0,
                     "Idle input controls attempted live monitoring or focus inspection")
@@ -188,9 +230,11 @@ enum RecordingInputControlsPreviewFixture {
         result["nativeTogglePresses"] = roundTrips.count; result["optionRoundTrips"] = roundTrips
         result["finalOptionsMatchInitial"] = true
         result["helpAndRefreshVerified"] = true; result["nativeHelpPresses"] = 4; result["nativeRefreshPresses"] = 2
-        result["files"] = files; result["injectedPermissionChecks"] = probe.permissionChecks
+        result["files"] = files; result["geometryFiles"] = geometryFiles
+        result["injectedPermissionChecks"] = probe.permissionChecks
         result["nativeMonitorRegistrations"] = 0
         if !panelSectionGeometry.isEmpty { result["panelSectionGeometry"] = panelSectionGeometry }
+        completed = true
         return result
     }
 
@@ -256,6 +300,62 @@ enum RecordingInputControlsPreviewFixture {
         let control = try button(identifier, in: window)
         ownership.observe(control, name: prefix + "." + identifier)
         if let target = control.target { ownership.observe(target as AnyObject, name: prefix + "." + identifier + ".coordinator") }
+    }
+
+    /// Bounded observations of the named native controls only. These are raw
+    /// measurements, not a pass; complete view frames remain the strict gate.
+    private static func writeGeometryMeasurements(_ identifiers: [String], in window: NSWindow,
+                                                   phase: String, to url: URL) throws {
+        guard let root = window.contentView else { throw failure("Missing geometry snapshot content") }
+        var rows: [[String: Any]] = []
+        var measuredFrames: [(String, CGRect)] = []
+        for identifier in identifiers {
+            let matches = nativeViews(identifier, in: window)
+            var views: [[String: Any]] = []
+            for view in matches.prefix(2) {
+                let frame = topLeftFrame(view.convert(view.bounds, to: root), in: root)
+                let alignment = view.alignmentRect(forFrame: view.frame)
+                let alignmentInRoot = view.superview?.convert(alignment, to: root) ?? alignment
+                let insets = view.alignmentRectInsets
+                var row: [String: Any] = ["frame": measuredRect(frame),
+                    "alignmentFrame": measuredRect(topLeftFrame(alignmentInRoot, in: root)),
+                    "alignmentInsets": ["top": measuredScalar(insets.top), "left": measuredScalar(insets.left),
+                                        "bottom": measuredScalar(insets.bottom), "right": measuredScalar(insets.right)],
+                    "intrinsicSize": ["width": measuredScalar(view.intrinsicContentSize.width),
+                                      "height": measuredScalar(view.intrinsicContentSize.height)],
+                    "hidden": view.isHiddenOrHasHiddenAncestor]
+                if let control = view as? NSControl, let cell = control.cell {
+                    row["cellDrawingFrame"] = measuredRect(topLeftFrame(view.convert(cell.drawingRect(forBounds: view.bounds), to: root), in: root))
+                }
+                if let button = view as? NSButton { row["enabled"] = button.isEnabled; row["state"] = button.state.rawValue }
+                views.append(row); measuredFrames.append((identifier, frame))
+            }
+            rows.append(["identifier": identifier, "matchCount": matches.count, "views": views])
+        }
+        var intersections: [[String: Any]] = []
+        for index in measuredFrames.indices {
+            for other in measuredFrames.indices where other > index {
+                let overlap = measuredFrames[index].1.intersection(measuredFrames[other].1)
+                if !overlap.isNull && overlap.width > 0 && overlap.height > 0 {
+                    intersections.append(["first": measuredFrames[index].0, "second": measuredFrames[other].0,
+                                          "intersection": measuredRect(overlap)])
+                }
+            }
+        }
+        let measurement: [String: Any] = ["status": "measured-before-validation", "phase": phase,
+            "coordinateSystem": "top-left", "contentBounds": measuredRect(CGRect(origin: .zero, size: root.bounds.size)),
+            "controls": rows, "intersections": intersections]
+        try JSONSerialization.data(withJSONObject: measurement, options: [.prettyPrinted, .sortedKeys])
+            .write(to: url, options: .atomic)
+    }
+
+    private static func measuredScalar(_ value: CGFloat) -> Any {
+        value.isFinite ? Double(value) as Any : String(describing: value) as Any
+    }
+
+    private static func measuredRect(_ rect: CGRect) -> [String: Any] {
+        ["x": measuredScalar(rect.minX), "y": measuredScalar(rect.minY),
+         "width": measuredScalar(rect.width), "height": measuredScalar(rect.height)]
     }
 
     private static func geometry(_ identifiers: [String], in window: NSWindow, hitTest: Bool) throws -> [[String: Any]] {

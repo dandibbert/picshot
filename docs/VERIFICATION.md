@@ -1974,3 +1974,8 @@ All 133 original IDs, full requirements/checks/citations, nine context rows, fai
 ## Recording-input candidate 155 did not qualify
 
 The new recording-input candidate compiled but failed qualification. ARM stopped on a stale preflight inventory before native cases; Intel stopped at an unresolved late callout-retirement observation during early UI. The input controls supplied layout-only evidence. See [the exact failed and unrun stages](Candidate155RecordingInput.md); no 0.17 acceptance is inferred.
+
+
+## Recording-control candidate 156 did not qualify
+
+The strict early UI gate found overlapping native control frames in the first denied-permission input row. The failed-state pixels/rectangles were not retained, so no exact visual cause is asserted. See [the source-bound failure and prepared alignment correction](Candidate156ControlGeometry.md); native and installed acceptance remain required.

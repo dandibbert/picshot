@@ -4,6 +4,7 @@ Compile at optimize=0 to match that shell command even if this unittest runner
 uses -O. This does not claim that the production gate is safe under python -O.
 """
 import copy
+import json
 import pathlib
 import struct
 import tempfile
@@ -42,6 +43,7 @@ def context(theme, prefix):
         value[key] = [geometry(identifier) for identifier in identifiers]
     value['files'] = [f'{prefix}-{state}-{theme}.png' for state in
                       ['default-off', 'denied', 'help-denied', 'help-allowed', 'allowed', 'restored-off']]
+    value['geometryFiles'] = [filename[:-4] + '-geometry.json' for filename in value['files']]
     return value
 
 
@@ -80,9 +82,15 @@ class RecordingInputUIGateTests(unittest.TestCase):
             for node, size in [(appearance, (440, 100)), (appearance['fullPanel'], (480, 490))]:
                 for filename in node['files']:
                     (self.root / filename).write_bytes(b'\x89PNG\r\n\x1a\n' + b'unitstub' + struct.pack('>II', *size))
+                for filename in node['geometryFiles']:
+                    frame = dict(x=12, y=12, width=40, height=20)
+                    measurement = dict(status='measured-before-validation', coordinateSystem='top-left',
+                        controls=[dict(identifier='unit-stub', matchCount=1, views=[dict(frame=frame,
+                            alignmentFrame=frame, alignmentInsets=dict(top=0, left=0, bottom=0, right=0))])], intersections=[])
+                    (self.root / filename).write_text(json.dumps(measurement))
 
     def check(self, value):
-        exec(CHECK, dict(inputs=value, pathlib=pathlib,
+        exec(CHECK, dict(inputs=value, pathlib=pathlib, json=json,
                          sys=types.SimpleNamespace(argv=['checker', str(self.root / 'preview.json')])))
 
     def testCompleteUnitContractIsAccepted(self):
@@ -110,6 +118,19 @@ class RecordingInputUIGateTests(unittest.TestCase):
             else: appearance['fullPanel']['contentHeightPoints'] = 491
             with self.subTest(change=change), self.assertRaises(AssertionError):
                 self.check(value)
+
+    def testRawFrameExpansionAndOverlapDiagnosticsAreRejected(self):
+        path = self.root / self.valid['appearances'][0]['geometryFiles'][0]
+        original = json.loads(path.read_text())
+        for change in ['inset', 'expanded-frame', 'overlap']:
+            measurement = copy.deepcopy(original)
+            if change == 'inset': measurement['controls'][0]['views'][0]['alignmentInsets']['bottom'] = 4
+            elif change == 'expanded-frame': measurement['controls'][0]['views'][0]['alignmentFrame']['y'] += 2
+            else: measurement['intersections'] = [dict(intersection=dict(width=20, height=2))]
+            path.write_text(json.dumps(measurement))
+            with self.subTest(change=change), self.assertRaises(AssertionError):
+                self.check(self.valid)
+        path.write_text(json.dumps(original))
 
 
 if __name__ == '__main__':
