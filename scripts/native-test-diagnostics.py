@@ -8,6 +8,7 @@ native timeouts, product defaults, or the native aggregate success requirements.
 
 import argparse
 import ctypes
+import errno
 import hashlib
 import importlib.util
 import json
@@ -39,6 +40,8 @@ SAMPLE_GRACE = 0.5
 SAMPLE_FILE_CAP = 2 * 1024 * 1024
 METADATA_CAP = 1024 * 1024
 MAX_DIAGNOSTIC_MEMBERS = 64
+MAX_DIAGNOSTIC_DEPTH = 8
+TARGET_CLEANUP_SECONDS = 2
 
 
 def need(condition, message):
@@ -75,14 +78,25 @@ class ProcessIdentity:
         self.library.proc_pidinfo.restype = ctypes.c_int
         self.library.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
         self.library.proc_pidpath.restype = ctypes.c_int
+        self.library.proc_listpids.argtypes = [ctypes.c_uint32, ctypes.c_uint32,
+                                              ctypes.c_void_p, ctypes.c_int]
+        self.library.proc_listpids.restype = ctypes.c_int
 
     def __call__(self, pid):
         need(type(pid) is int and 0 < pid <= 2147483647, 'Invalid process ID')
         info = BSDInfo()
+        ctypes.set_errno(0)
         count = self.library.proc_pidinfo(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info))
+        if count == 0 and ctypes.get_errno():
+            raise OSError(ctypes.get_errno(), 'Cannot read process identity', pid)
         need(count == ctypes.sizeof(info) and info.pid == pid, 'Missing or changed process identity')
         path = ctypes.create_string_buffer(4096)
+        ctypes.set_errno(0)
         count = self.library.proc_pidpath(pid, path, len(path))
+        if count == 0 and ctypes.get_errno():
+            # Path lookup can return ESRCH for a missing/recycled executable
+            # vnode. It does not prove that this already-observed PID retired.
+            raise ValueError(f'Cannot read executable identity (errno {ctypes.get_errno()}); retirement unproven')
         need(0 < count < len(path) and path.value.startswith(b'/'), 'Missing executable identity')
         need(info.start_seconds > 0 and info.start_microseconds < 1000000, 'Invalid process birth time')
         return {'pid': pid, 'parentPID': info.ppid, 'groupID': info.pgid, 'uid': info.uid,
@@ -90,33 +104,139 @@ class ProcessIdentity:
                 'executable': path.value.decode('utf-8')}
 
 
-def owned_target(wrapper_pid, group_id, identify):
-    """Only inspect the live XCTest in this wrapper's anchored process group."""
-    states = BOUNDED.darwin_group_snapshot(group_id)
-    need(len(states) <= MAX_DIAGNOSTIC_MEMBERS, 'Owned group exceeds diagnostic observation bound')
-    wrapper = identify(wrapper_pid)
-    leader = identify(group_id)
-    need(leader['parentPID'] == wrapper_pid and leader['groupID'] == group_id,
-         'Native group leader does not belong to the launched wrapper')
-    need(wrapper['uid'] == leader['uid'] == os.getuid(), 'Unexpected native process owner')
-    need(not states[group_id].startswith('Z'), 'Native command has already exited')
-    members = []
-    for pid, state in states.items():
-        if state.startswith('Z'):
-            continue
-        identity = identify(pid)
-        need(identity['groupID'] == group_id and identity['uid'] == os.getuid(),
-             'Observed member left the owned group')
-        members.append(identity)
-    candidates = [member for member in members if
-                  member['executable'].endswith('.app/Contents/Developer/usr/bin/xctest')]
-    need(len(candidates) == 1, 'Expected exactly one owned Xcode XCTest process')
-    target = candidates[0]
-    # Recheck after enumerating to detect exit/reuse/exec before sampling.
-    need(identify(wrapper_pid) == wrapper and identify(group_id) == leader
-         and identify(target['pid']) == target, 'Process identity changed during observation')
-    return {'wrapper': wrapper, 'leader': leader, 'target': target, 'members': members,
-            'atomicSnapshot': False}
+    def children(self, pid):
+        """Bounded direct-child PID census; never collect arguments/environment."""
+        need(type(pid) is int and 0 < pid <= 2147483647, 'Invalid parent process ID')
+        buffer = (ctypes.c_int * (MAX_DIAGNOSTIC_MEMBERS + 1))()
+        ctypes.set_errno(0)
+        # PROC_PPID_ONLY=6. proc_listpids returns bytes (unlike proc_listchildpids).
+        count = self.library.proc_listpids(6, pid, buffer, ctypes.sizeof(buffer))
+        if count == 0 and ctypes.get_errno():
+            raise OSError(ctypes.get_errno(), 'Cannot enumerate owned children', pid)
+        need(0 <= count < ctypes.sizeof(buffer) and count % ctypes.sizeof(ctypes.c_int) == 0,
+             'Child census exceeded its bound or returned an invalid size')
+        values = list(buffer[:count // ctypes.sizeof(ctypes.c_int)])
+        need(all(0 < child <= 2147483647 for child in values) and len(set(values)) == len(values),
+             'Invalid child census')
+        return values
+
+
+class SelectionError(ValueError):
+    def __init__(self, message, census):
+        super().__init__(message)
+        self.census = census
+
+
+def identity_key(value):
+    return tuple(value[key] for key in ('pid', 'uid', 'birthSeconds', 'birthMicroseconds', 'executable'))
+
+
+def is_xctest(value):
+    return value['executable'].endswith('.app/Contents/Developer/usr/bin/xctest')
+
+
+def owned_target(wrapper_pid, leader_pid, identify, children=None,
+                 expected_wrapper=None, expected_leader=None):
+    """Follow rechecked parent edges, including descendants in different groups.
+
+    The census is deliberately non-atomic. Every identity and parent edge is
+    rechecked before selection; any ambiguity fails closed and retains scalars.
+    """
+    census = {'members': [], 'candidatePIDs': [], 'atomicSnapshot': False,
+              'anchorValidated': False, 'complete': False,
+              'memberCap': MAX_DIAGNOSTIC_MEMBERS, 'depthCap': MAX_DIAGNOSTIC_DEPTH}
+    try:
+        children = children or identify.children
+        wrapper = identify(wrapper_pid)
+        leader = identify(leader_pid)
+        census.update(wrapper=wrapper, leader=leader)
+        need(expected_wrapper is None or wrapper == expected_wrapper, 'Wrapper identity changed')
+        need(expected_leader is None or leader == expected_leader, 'Native leader identity changed')
+        need(leader['parentPID'] == wrapper_pid and leader['groupID'] == leader_pid,
+             'Native leader does not belong to the launched wrapper')
+        need(wrapper['uid'] == leader['uid'] == os.getuid(), 'Unexpected native process owner')
+        census['anchorValidated'] = True
+        queue = [(leader, 0)]
+        seen = {wrapper_pid, leader_pid}
+        while queue:
+            parent, depth = queue.pop(0)
+            census['members'].append(parent)
+            child_pids = children(parent['pid'])
+            need(len(child_pids) <= MAX_DIAGNOSTIC_MEMBERS, 'Child census exceeds observation bound')
+            need(not child_pids or depth < MAX_DIAGNOSTIC_DEPTH, 'Owned tree exceeds depth bound')
+            for pid in child_pids:
+                need(pid not in seen and len(seen) <= MAX_DIAGNOSTIC_MEMBERS,
+                     'Owned tree exceeds member bound or has duplicate edges')
+                member = identify(pid)
+                need(member['parentPID'] == parent['pid'] and member['uid'] == wrapper['uid'],
+                     'Child identity no longer matches its owned parent')
+                seen.add(pid)
+                queue.append((member, depth + 1))
+        census['candidatePIDs'] = [member['pid'] for member in census['members'] if is_xctest(member)]
+        for member in [wrapper] + census['members']:
+            need(identify(member['pid']) == member, 'Process identity changed during observation')
+        census['complete'] = True
+        need(len(census['candidatePIDs']) == 1, 'Expected exactly one owned Xcode XCTest process')
+        census['target'] = next(member for member in census['members'] if is_xctest(member))
+        return census
+    except Exception as error:
+        census['error'] = str(error)
+        raise SelectionError(str(error), census) from error
+
+
+def target_state(target, identify):
+    """Reparenting is allowed after launch; UID/birth/executable changes are not."""
+    try:
+        current = identify(target['pid'])
+    except OSError as error:
+        return {'state': 'retired' if error.errno == errno.ESRCH else 'unknown', 'error': str(error)}
+    except Exception as error:
+        return {'state': 'unknown', 'error': str(error)}
+    if (current['birthSeconds'], current['birthMicroseconds']) != (
+            target['birthSeconds'], target['birthMicroseconds']):
+        return {'state': 'retired', 'reason': 'PID now has a different birth identity', 'current': current}
+    if identity_key(current) != identity_key(target):
+        return {'state': 'unknown', 'reason': 'Owned UID or executable identity changed', 'current': current}
+    return {'state': 'live', 'current': current}
+
+
+def retire_targets(targets, identify, budget_seconds=TARGET_CLEANUP_SECONDS):
+    """Retire only proven owned XCTest PIDs after native wrapper completion.
+
+    No name lookup, arbitrary process signal, or process-group signal is used.
+    Every signal gets an immediate immutable-identity recheck; unknown is blocked.
+    """
+    need(0 < budget_seconds <= TARGET_CLEANUP_SECONDS, 'Invalid target cleanup budget')
+    need(len(targets) <= MAX_DIAGNOSTIC_MEMBERS, 'Too many owned target identities')
+    started = time.monotonic()
+    records = [{'identity': target, 'signals': []} for target in targets]
+    for signum in (signal.SIGTERM, signal.SIGKILL):
+        for record in records:
+            if time.monotonic() - started >= budget_seconds:
+                break
+            state = target_state(record['identity'], identify)
+            record.update(state)
+            if state['state'] == 'live':
+                try:
+                    os.kill(record['identity']['pid'], signum)
+                    record['signals'].append(int(signum))
+                except ProcessLookupError:
+                    record.update(state='retired', reason='Process exited before signal')
+                except OSError as error:
+                    record.update(state='unknown', error=str(error))
+        until = min(started + budget_seconds, time.monotonic() + (0.5 if signum == signal.SIGTERM else budget_seconds))
+        while time.monotonic() < until:
+            for record in records:
+                record.update(target_state(record['identity'], identify))
+            if all(record.get('state') != 'live' for record in records):
+                break
+            time.sleep(min(0.05, max(0, until - time.monotonic())))
+    for record in records:
+        record.update(target_state(record['identity'], identify))
+    return {'confirmed': bool(records) and all(record['state'] == 'retired' for record in records),
+            'targets': records, 'budgetSeconds': budget_seconds,
+            'durationSeconds': round(time.monotonic() - started, 6),
+            'scope': 'Previously parent-chain-validated XCTest identities only; not a global process census'}
 
 
 def environment(mode, inherited):
@@ -154,7 +274,8 @@ def sample_exec(request, destination):
     """Invoked only inside the existing short bounded-command wrapper."""
     record = json.loads(NATIVE.bounded_text(request, METADATA_CAP))
     identify = ProcessIdentity()
-    current = owned_target(record['wrapper']['pid'], record['leader']['pid'], identify)
+    current = owned_target(record['wrapper']['pid'], record['leader']['pid'], identify,
+                           expected_wrapper=record['wrapper'], expected_leader=record['leader'])
     need(all(current[key] == record[key] for key in ('wrapper', 'leader', 'target')),
          'Sampling target changed after the request was recorded')
     need(destination.parent == request.parent and not destination.exists(), 'Invalid sample output')
@@ -196,7 +317,63 @@ def native_command(args):
             '--index', str(args.index), '--directory', str(args.directory)]
 
 
-def start_capture(args, native, report_path, slot, identify):
+class Ownership:
+    def __init__(self, wrapper):
+        self.started = time.monotonic()
+        self.wrapper = wrapper
+        self.leader = None
+        self.targets = []
+        self.record = {'successfulCensuses': 0, 'failedCensuses': 0,
+                       'uncertainCensus': False, 'observationSeconds': 0,
+                       'identityScope': 'Anchored parent chain across process groups'}
+
+    def accept(self, census):
+        census['observedAtSeconds'] = round(time.monotonic() - self.started, 6)
+        self.record['lastCensus'] = census
+        if census.get('pending'):
+            return
+        if census.get('complete'):
+            for member in census['members']:
+                if is_xctest(member) and all(identity_key(member) != identity_key(known) for known in self.targets):
+                    need(len(self.targets) < MAX_DIAGNOSTIC_MEMBERS, 'Too many observed XCTest identities')
+                    self.targets.append(member)
+        if census.get('target'):
+            self.leader = census['leader']
+            self.record.setdefault('firstSelection', census)
+            self.record['successfulCensuses'] += 1
+        else:
+            self.record['failedCensuses'] += 1
+            self.record.setdefault('firstFailedCensus', census)
+            if not census.get('complete') or len(census.get('candidatePIDs', [])) > 1:
+                self.record['uncertainCensus'] = True
+                self.record.setdefault('firstUncertainCensus', census)
+
+    def observe(self, native, report_path, expected_command, identify):
+        started = time.monotonic()
+        try:
+            need(self.wrapper is not None, 'Launch wrapper identity was not established')
+            if not report_path.exists():
+                self.accept({'pending': 'Awaiting original bounded runner envelope', 'complete': False})
+                return
+            report = json.loads(NATIVE.bounded_text(report_path, METADATA_CAP))
+            need(report['timeout_seconds'] == 420
+                 and report['command'] == expected_command, 'Native running envelope does not match the original plan')
+            if report['status'] in ('exited', 'timeout', 'cancelled', 'spawn_error'):
+                self.accept({'pending': 'Original bounded runner is finishing', 'complete': False})
+                return
+            need(report['status'] == 'running', 'Unexpected native bounded runner status')
+            need(native.poll() is None, 'Native wrapper exited before census')
+            census = owned_target(native.pid, report['pid'], identify,
+                                  expected_wrapper=self.wrapper, expected_leader=self.leader)
+        except SelectionError as error:
+            census = error.census
+        except Exception as error:
+            census = {'error': str(error), 'complete': False, 'anchorValidated': False}
+        self.accept(census)
+        self.record['observationSeconds'] = round(self.record['observationSeconds'] + time.monotonic() - started, 6)
+
+
+def start_capture(args, native, report_path, slot, identify, ownership=None):
     started = time.monotonic()
     report = json.loads(NATIVE.bounded_text(report_path, METADATA_CAP))
     need(report['status'] == 'running' and report['timeout_seconds'] == 420,
@@ -205,7 +382,17 @@ def start_capture(args, native, report_path, slot, identify):
     need(report['command'] == NATIVE.expected_command(plan['shards'][args.index]),
          'Native command differs from the verified plan')
     need(native.poll() is None, 'Native wrapper already exited')
-    request = owned_target(native.pid, report['pid'], identify)
+    need(ownership is None or ownership.wrapper is not None, 'Launch wrapper identity was not established')
+    try:
+        request = owned_target(native.pid, report['pid'], identify,
+            expected_wrapper=ownership.wrapper if ownership is not None else None,
+            expected_leader=ownership.leader if ownership is not None else None)
+    except SelectionError as error:
+        if ownership is not None:
+            ownership.accept(error.census)
+        raise
+    if ownership is not None:
+        ownership.accept(request)
     prefix = args.diagnostics / f'sample-{slot}'
     request_path = prefix.with_suffix('.request.json')
     save(request_path, request)
@@ -253,7 +440,7 @@ def run(args):
     need(not log_path.exists() and not report_path.exists(), 'Refusing to reuse native results')
     args.diagnostics.mkdir(parents=True, exist_ok=False, mode=0o700)
     summary_path = args.diagnostics / 'diagnostics.json'
-    summary = {'schemaVersion': 1, 'sourceCommit': args.expected_source, 'index': args.index,
+    summary = {'schemaVersion': 2, 'sourceCommit': args.expected_source, 'index': args.index,
                'outputMode': args.output_mode, 'environmentScope': 'Inherited unchanged' if
                args.output_mode == 'baseline' else 'Inherited with NSUnbufferedIO=YES only',
                'NSUnbufferedIO': buffering_setting(args.output_mode, os.environ),
@@ -270,8 +457,10 @@ def run(args):
     native = None
     sampler = None
     active = None
+    ownership = None
     started = time.monotonic()
     next_progress = 0
+    next_census = 0
     slots = list(CAPTURE_AT)
     progress = Progress(log_path)
     try:
@@ -282,6 +471,8 @@ def run(args):
             summary['nativeWrapperIdentityAtLaunch'] = identify(native.pid)
         except Exception as error:
             summary['nativeWrapperIdentityAtLaunchError'] = str(error)
+        ownership = Ownership(summary.get('nativeWrapperIdentityAtLaunch'))
+        summary['ownership'] = ownership.record
         while native.poll() is None:
             now = time.monotonic()
             elapsed = now - started
@@ -294,6 +485,9 @@ def run(args):
             if sampler is not None and sampler.poll() is not None:
                 finish_capture(active, sampler, identify)
                 sampler = None
+            if elapsed >= next_census:
+                ownership.observe(native, report_path, NATIVE.expected_command(plan['shards'][args.index]), identify)
+                next_census = elapsed + (0.1 if ownership.leader is None and elapsed < 10 else 1)
             if elapsed >= next_progress and len(summary['progress']) < 440:
                 before = time.monotonic()
                 try:
@@ -309,11 +503,14 @@ def run(args):
                 slot = slots.pop(0)
                 try:
                     need(elapsed < 390 and sampler is None, 'Late or overlapping capture skipped')
-                    sampler, active = start_capture(args, native, report_path, slot, identify)
+                    sampler, active = start_capture(args, native, report_path, slot, identify, ownership)
                     active['actualStartSeconds'] = round(elapsed, 6)
                     summary['captures'].append(active)
                 except Exception as error:
-                    summary['captures'].append({'slotSeconds': slot, 'error': str(error)})
+                    record = {'slotSeconds': slot, 'error': str(error), 'samplerLaunched': False}
+                    if isinstance(error, SelectionError):
+                        record['selectionCensus'] = error.census
+                    summary['captures'].append(record)
                 save(summary_path, summary)
             time.sleep(0.05)
         summary['nativeExitCode'] = native.returncode
@@ -334,7 +531,15 @@ def run(args):
             except subprocess.TimeoutExpired:
                 summary['errors'].append('Sampler wrapper did not finish within cleanup observation')
         if sampler is not None and active is not None:
-            finish_capture(active, sampler, identify)
+            try:
+                finish_capture(active, sampler, identify)
+            except Exception as error:
+                active.update(status='incomplete', samplerCleanupConfirmed=False, error=str(error))
+        # The original wrapper retires only its original process group. SwiftPM
+        # can put XCTest in another group. Retire only identities proven earlier
+        # by the parent chain, after the original wrapper has finished/cancelled.
+        summary['nativeXCTestRetirement'] = retire_targets(ownership.targets if ownership else [], identify)
+        summary['nativeXCTestCleanupConfirmed'] = summary['nativeXCTestRetirement']['confirmed']
         summary['unconfirmedOwnedProcesses'] = []
         for role, process in (('native-wrapper', native), ('sampler-wrapper', sampler)):
             if process is not None and process.poll() is None:
@@ -346,7 +551,8 @@ def run(args):
                 summary['unconfirmedOwnedProcesses'].append(record)
         summary['nativeCleanupConfirmed'], summary['nativeEnvelope'] = cleanup_evidence(
             report_path, native.returncode if native is not None else None, 420)
-        summary['cleanupConfirmed'] = (summary['nativeCleanupConfirmed']
+        summary['cleanupConfirmed'] = (summary['nativeCleanupConfirmed'] and summary['nativeXCTestCleanupConfirmed']
+            and ownership is not None and not ownership.record['uncertainCensus']
             and not summary['unconfirmedOwnedProcesses']
             and all(capture.get('samplerCleanupConfirmed', True) for capture in summary['captures']))
         elapsed = summary.get('nativeExitObservedAtSeconds', time.monotonic() - started)
@@ -354,6 +560,7 @@ def run(args):
         summary['completedCaptureSlots'] = [capture['slotSeconds'] for capture in summary['captures']
                                            if capture.get('status') == 'captured']
         summary['observationStatus'] = (
+            'incomplete' if ownership is None or not ownership.record['successfulCensuses'] else
             'not-needed-before-first-sample' if not summary['expectedCaptureSlots'] else
             'complete' if summary['expectedCaptureSlots'] == summary['completedCaptureSlots']
             and not summary['errors'] else 'incomplete')

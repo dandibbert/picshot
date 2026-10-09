@@ -2185,9 +2185,9 @@ jobs:
     concurrency:
       group: picshot-native-timeout-diagnostic-job-${{ github.ref }}
       cancel-in-progress: false
-    # Explicit stage maxima total 90m baseline, or 120m with the opt-in control.
+    # Explicit stage maxima total 96m baseline, or 126m with the opt-in control.
     # Five extra minutes cover step handovers. Each native process still has 420s.
-    timeout-minutes: ${{ contains(github.event.head_commit.message || '', '[native-timeout-unbuffered]') && 125 || 95 }}
+    timeout-minutes: ${{ contains(github.event.head_commit.message || '', '[native-timeout-unbuffered]') && 131 || 101 }}
     env:
       # Preserve the original ARM build job's inherited native-test environment.
       NATIVE_TEST_PROCESS_COUNT: '4'
@@ -2198,7 +2198,7 @@ jobs:
         with:
           fetch-depth: 2
           persist-credentials: false
-      - name: Prove exact source138 product and additive diagnostic-only scope
+      - name: Prove exact source139 product and corrected diagnostic-only scope
         id: provenance
         timeout-minutes: 2
         run: |
@@ -2209,10 +2209,10 @@ jobs:
           from pathlib import Path
           def git(*args):
               return subprocess.check_output(['git', *args], timeout=20)
-          base = '6dca7272e4484fc3a2309bd566c65bbf049a606d'
+          base = '01c5ca57f13a72d84ea615a0a929bdf9f6e5e2d9'
           source = os.environ['GITHUB_SHA']
           if git('rev-parse', 'HEAD').decode().strip() != source or git('rev-parse', 'HEAD^').decode().strip() != base:
-              raise SystemExit('Diagnostic must directly inherit pinned source138')
+              raise SystemExit('Diagnostic must directly inherit pinned source139')
           if platform.machine() != 'arm64' or platform.system() != 'Darwin':
               raise SystemExit('Expected the native ARM macOS runner')
           def entries(ref):
@@ -2220,12 +2220,16 @@ jobs:
                       for row in git('ls-tree', '-r', '-z', ref).split(b'\0') if row}
           before, after = entries(base), entries(source)
           changed = sorted(path for path in before.keys() | after.keys() if before.get(path) != after.get(path))
-          allowed = [b'.github/workflows/macos.yml', b'scripts/native-test-diagnostics.py',
+          allowed = [b'.github/workflows/macos.yml', b'scripts/native-observer-self-test.py',
+                     b'scripts/native-test-diagnostics.py', b'scripts/tests/test_native_observer_self_test.py',
                      b'scripts/tests/test_native_test_diagnostics.py']
           if changed != allowed:
-              raise SystemExit('Changed source exceeds the exact workflow/new-helper/new-test scope')
-          if any(path in before or not after[path].startswith(b'100644 blob ') for path in allowed[1:]):
-              raise SystemExit('Diagnostic helper and portable tests must be new regular files')
+              raise SystemExit('Changed source exceeds the exact diagnostic workflow/helper/self-test scope')
+          added = {b'scripts/native-observer-self-test.py', b'scripts/tests/test_native_observer_self_test.py'}
+          if any(not after[path].startswith(b'100644 blob ')
+                 or (path in added and path in before)
+                 or (path not in added and not before.get(path, b'').startswith(b'100644 blob ')) for path in allowed):
+              raise SystemExit('Diagnostic corrections must preserve original modes and add only regular self-test files')
           workflow = '.github/workflows/macos.yml'
           original = git('show', base + ':' + workflow).decode()
           current = Path(workflow).read_text()
@@ -2250,8 +2254,8 @@ jobs:
                   recognizedSetting=os.environ.get('NSUnbufferedIO') if os.environ.get('NSUnbufferedIO') in
                       {'YES', 'NO', '1', '0', 'true', 'false'} else None),
               inheritedCodecHelperOverridePresent='PICSHOT_CODEC_HELPER_PATH' in os.environ,
-              stageMinutesBaseline=90, stageMinutesWithControl=120,
-              jobMinutesBaseline=95, jobMinutesWithControl=125, nativeSecondsPerProcess=420)
+              stageMinutesBaseline=96, stageMinutesWithControl=126,
+              jobMinutesBaseline=101, jobMinutesWithControl=131, nativeSecondsPerProcess=420)
           Path('dist/native-timeout-diagnostic/source-identity.json').write_text(json.dumps(record, indent=2)+'\n')
           PYTHON
       - name: Verify original runner and native plan plus optional observer contracts
@@ -2259,7 +2263,7 @@ jobs:
         timeout-minutes: 2
         run: |
           set -o pipefail
-          for pattern in test_run_bounded_command.py test_native_test_shards.py test_native_test_diagnostics.py; do
+          for pattern in test_run_bounded_command.py test_native_test_shards.py test_native_test_diagnostics.py test_native_observer_self_test.py; do
             PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p "$pattern" -v 2>&1 | tee -a dist/native-timeout-diagnostic/contracts.log
           done
       - name: Verify the same contracts with Python assertions disabled
@@ -2267,9 +2271,49 @@ jobs:
         timeout-minutes: 2
         run: |
           set -o pipefail
-          for pattern in test_run_bounded_command.py test_native_test_shards.py test_native_test_diagnostics.py; do
+          for pattern in test_run_bounded_command.py test_native_test_shards.py test_native_test_diagnostics.py test_native_observer_self_test.py; do
             PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p "$pattern" -v 2>&1 | tee -a dist/native-timeout-diagnostic/contracts-optimized.log
           done
+      - name: Prove real SwiftPM descendant sampling and retirement before product work
+        id: observer_self_test
+        timeout-minutes: 6
+        run: |
+          set -euo pipefail
+          python3 scripts/run-bounded-command.py --timeout-seconds 330 --grace-seconds 25 \
+            --log dist/native-timeout-diagnostic/observer-self-test-launch.log \
+            --report dist/native-timeout-diagnostic/observer-self-test-launch-report.json \
+            -- python3 scripts/native-observer-self-test.py \
+            --directory dist/native-timeout-diagnostic/observer-self-test --expected-source "$GITHUB_SHA"
+          python3 - <<'PYTHON'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path('dist/native-timeout-diagnostic/observer-self-test')
+          report = json.loads((root/'self-test-report.json').read_text())
+          required = ('diagnosticOnly', 'realSwiftPM', 'ancestryVerified',
+              'separateXCTestProcessGroupObserved', 'stackIdentityVerified', 'wrongBirthRejected',
+              'wrongIdentitySignalRejected', 'normalExitVerified', 'cancellationVerified',
+              'timeoutRetirementVerified', 'cleanupConfirmed', 'allOwnedTargetsRetired', 'temporaryPackageRemoved')
+          if not (report.get('status') == 'passed' and report.get('sourceCommit') == os.environ['GITHUB_SHA']
+                  and report.get('installerAcceptance') is False and report.get('censusUncertain') is False
+                  and report.get('originalNativeProcessSeconds') == 420
+                  and all(report.get(key) is True for key in required)
+                  and [case['name'] for case in report['scenarios']] == ['normal', 'cancellation', 'timeout']
+                  and all(case['cleanupConfirmed'] for case in report['scenarios'])
+                  and [case['fixtureSignalPolicy'] for case in report['scenarios']] == ['unchanged', 'ignore-own-SIGTERM', 'ignore-own-SIGTERM']
+                  and all(9 in case['retirement']['targets'][0]['signals'] for case in report['scenarios'][1:])):
+              raise SystemExit('Real SwiftPM observer self-test is incomplete; product work is forbidden')
+          package = Path(report['temporaryPackagePath'])
+          if package.exists() or Path.cwd().resolve() in package.parents:
+              raise SystemExit('Temporary self-test package was not isolated and retired')
+          expected = {'Package.swift', 'Tests/ObserverSelfTestTests/ObserverOwnershipTests.swift'}
+          if set(report['fixtureSources']) != expected:
+              raise SystemExit('Self-test source inventory differs')
+          for name, identity in report['fixtureSources'].items():
+              path = root/'fixture-source'/name
+              if (not path.is_file() or path.is_symlink() or path.stat().st_size != identity['bytes']
+                      or hashlib.sha256(path.read_bytes()).hexdigest() != identity['sha256']):
+                  raise SystemExit('Archived real XCTest fixture identity differs')
+          PYTHON
       - name: Build production pinned native codec dependencies without packaging
         id: dependencies
         timeout-minutes: 15
@@ -2436,13 +2480,13 @@ jobs:
               except (OSError, ValueError) as error:
                   observations[mode] = dict(status='unreadable-diagnostic-status', observationComplete=False, error=str(error))
           record = dict(diagnosticOnly=True, installerAcceptance=False, sourceCommit=os.environ['GITHUB_SHA'],
-              referenceCommit='6dca7272e4484fc3a2309bd566c65bbf049a606d',
+              referenceCommit='01c5ca57f13a72d84ea615a0a929bdf9f6e5e2d9',
               steps=json.loads(os.environ['PICSHOT_NATIVE_DIAGNOSTIC_STEP_OUTCOMES']),
               observations=observations,
               observationScope='Native outcome and sample completeness are separate; missing/incomplete due captures are incomplete diagnostic evidence',
               baselineFailurePreserved=True, noInstallerArtifacts=True, noNativeRepartition=True,
               nativeSecondsPerProcess=420, processOrder=[0, 1, 2, 3],
-              priorJobStateReplayed=False, observerMayPerturbTiming=True, originalBuild137FailureUnchanged=True,
+              priorJobStateReplayed=False, observerMayPerturbTiming=True, originalBuild137FailureUnchanged=True, originalDiagnostic139FailureUnchanged=True, observerSelfTestRequired=True,
               eventualAcceptanceRequiresFrozenProductionWorkflow=True,
               scope='Independent ARM native timeout observations; no installed, Intel, or release acceptance')
           Path('dist/native-timeout-diagnostic/outcomes.json').write_text(json.dumps(record, indent=2)+'\n')
