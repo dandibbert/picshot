@@ -35,7 +35,35 @@ class OwnedXCTestTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.path = Path(self.temp.name)
+        self.path = Path(self.temp.name).resolve()
+
+    def test_symlinked_temporary_parent_uses_physical_positive_fixture_roots(self):
+        physical = self.path / 'physical-temp-parent'; physical.mkdir()
+        alias = self.path / 'temporary-parent-alias'; alias.symlink_to(physical, target_is_directory=True)
+        fixture = OwnedXCTestTests('test_documented_bundle_without_plist_and_optional_principal_only_plist_are_valid')
+        with mock.patch.object(tempfile, 'tempdir', str(alias)):
+            fixture.setUp()
+        try:
+            unresolved = Path(fixture.temp.name)
+            self.assertIn(alias, unresolved.parents, 'Regression must actually create an aliased temporary root')
+            self.assertNotEqual(unresolved, unresolved.resolve())
+            self.assertEqual(fixture.path, unresolved.resolve())
+            args, _ = fixture.native_fixture()
+            self.assertEqual(args.source_root, args.source_root.resolve())
+            self.assertEqual(args.bundle, args.bundle.resolve())
+            (args.bundle / 'Contents/Info.plist').unlink()
+            source = M.source_inputs(args.source_root, None, fixture.source_query(status=''))
+            bundle = M.bundle_inputs(args.source_root, args.bundle, args.bundle.parent, None, time.monotonic() + 60)
+            self.assertEqual(source['status'], 'verified')
+            self.assertEqual(bundle['status'], 'verified')
+            # A deliberately uncanonical direct-call fixture remains rejected;
+            # this correction must not relax the production identity guard.
+            alias_source = unresolved / 'product'
+            alias_bundle = alias_source / '.build/arm64-apple-macosx/debug/PicShotPackageTests.xctest'
+            with self.assertRaisesRegex(ValueError, 'Unexpected compiled XCTest bundle'):
+                M.bundle_inputs(alias_source, alias_bundle, alias_bundle.parent, None, time.monotonic() + 60)
+        finally:
+            fixture.doCleanups()
 
     def native_fixture(self):
         source = self.path / 'product'
