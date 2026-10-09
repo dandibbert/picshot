@@ -110,7 +110,8 @@ final class RecordingPanelController: NSWindowController, NSWindowDelegate {
     private let previews: RecordingPreviewWindowStore
     private var operationInFlight = false
 
-    init(service: RecordingService, capture: CaptureService, previews: RecordingPreviewWindowStore? = nil) {
+    init(service: RecordingService, capture: CaptureService, previews: RecordingPreviewWindowStore? = nil,
+         previewLayoutObserver: (([String: CGRect]) -> Void)? = nil) {
         self.service = service
         self.previews = previews ?? RecordingPreviewWindowStore()
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 490),
@@ -124,7 +125,8 @@ final class RecordingPanelController: NSWindowController, NSWindowDelegate {
         window.contentView = NSHostingView(rootView: RecordingPanel(
             service: service, capture: capture,
             onPreview: { [weak self] url in self?.showPreview(for: url) },
-            onWorkingChanged: { [weak self] working in self?.operationInFlight = working }))
+            onWorkingChanged: { [weak self] working in self?.operationInFlight = working },
+            previewLayoutObserver: previewLayoutObserver))
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) unavailable") }
@@ -221,6 +223,9 @@ struct RecordingPanel: View {
     let capture: CaptureService
     let onPreview: (URL) -> Void
     let onWorkingChanged: (Bool) -> Void
+    // Optional read-only geometry for the owned synthetic panel fixture. Normal
+    // panels do not install geometry readers or change interaction behavior.
+    var previewLayoutObserver: (([String: CGRect]) -> Void)? = nil
     @State private var displays: [SCDisplay] = []
     @State private var selected: CGDirectDisplayID = CGMainDisplayID()
     @State private var audio = false
@@ -246,9 +251,10 @@ struct RecordingPanel: View {
             if controls.hasSessionActivity {
                 sessionControls
             } else {
-                recordingOptions
+                recordingOptions.background(previewSectionGeometry("options"))
                 Button(working ? "正在准备…" : "开始录制", action: startRecording)
                     .buttonStyle(.borderedProminent).disabled(!controls.canStart || displays.isEmpty)
+                    .background(previewSectionGeometry("start"))
                 if let output = routing.output {
                     HStack {
                         Button("预览 / 裁剪 / GIF…") { onPreview(output) }
@@ -266,19 +272,25 @@ struct RecordingPanel: View {
                 }
                 .help(previous.lastPathComponent)
             }
-            Divider()
+            Divider().background(previewSectionGeometry("divider"))
             RecordingEffectsControls(camera: service.camera, overlay: service.overlay,
                 inputMonitor: service.inputMonitor, isRecording: service.isRecording)
                 .disabled(service.isStarting || service.isRestarting || service.isStopping || service.hasPendingTake || working)
+                .background(previewSectionGeometry("effects"))
             Text(service.error ?? message).font(.system(size: 11)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+                .background(previewSectionGeometry("status"))
             Text("停止后打开预览：逐帧、变速、音量、选段导出 MP4 / GIF，原片保留")
                 .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                .background(previewSectionGeometry("previewHint"))
             Text("摄像头需主动开启；标注 / 画中画写入视频。PicShot 窗口不录入。")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
+                .background(previewSectionGeometry("privacyHint"))
             Spacer(minLength: 0)
         }
         .padding(18).frame(width: 480, height: 490)
+        .coordinateSpace(name: RecordingPanelSectionFrames.coordinateSpace)
+        .onPreferenceChange(RecordingPanelSectionFrames.self) { frames in previewLayoutObserver?(frames) }
         // onChange can coalesce the old take's URL and the new start's nil.
         // Receive every publication so a failed restart still preserves its URL.
         .onReceive(service.$outputURL) { url in
@@ -292,6 +304,16 @@ struct RecordingPanel: View {
                 }
             } catch is CancellationError { }
             catch { message = error.localizedDescription }
+        }
+    }
+
+    @ViewBuilder
+    private func previewSectionGeometry(_ section: String) -> some View {
+        if previewLayoutObserver != nil {
+            GeometryReader { proxy in
+                Color.clear.preference(key: RecordingPanelSectionFrames.self,
+                    value: [section: proxy.frame(in: .named(RecordingPanelSectionFrames.coordinateSpace))])
+            }
         }
     }
 
@@ -487,5 +509,16 @@ struct RecordingPanel: View {
             message = "MP4 已保存在电影/PicShot，已打开预览。导出不会修改原片。"
             onPreview(preview)
         }
+    }
+}
+
+
+/// Named sections of the recording panel only; this is not an accessibility
+/// substitute. The fixture separately hits and presses its actual NSButtons.
+private struct RecordingPanelSectionFrames: PreferenceKey {
+    static let coordinateSpace = "recording-panel-content"
+    static var defaultValue: [String: CGRect] = [:]
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, latest in latest })
     }
 }

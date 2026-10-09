@@ -92,13 +92,14 @@ final class RecordingService: ObservableObject {
     private var cancelRequested = false
     private let screenPermissionCheck: @MainActor () throws -> Void
 
-    init(screenPermissionCheck: (@MainActor () throws -> Void)? = nil) {
+    init(screenPermissionCheck: (@MainActor () throws -> Void)? = nil,
+         inputMonitorDependencies: RecordingInputMonitorDependencies? = nil) {
         self.screenPermissionCheck = screenPermissionCheck ?? { try CaptureService.requireScreenPermission() }
         let composition = RecordingCompositionState()
         self.composition = composition
         camera = RecordingCameraController(composition: composition)
         overlay = RecordingOverlayController(state: composition)
-        inputMonitor = RecordingInputMonitor(state: composition.inputEffects)
+        inputMonitor = RecordingInputMonitor(state: composition.inputEffects, dependencies: inputMonitorDependencies)
     }
 
     static var supportsMicrophone: Bool {

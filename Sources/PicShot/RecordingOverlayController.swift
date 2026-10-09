@@ -300,19 +300,18 @@ struct RecordingInputEffectsControls: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 10) {
                 Text("输入提示").font(.system(size: 11)).foregroundStyle(.secondary)
-                Toggle("点击", isOn: $monitor.options.clicks).accessibilityIdentifier("recording-input-clicks")
-                Toggle("滚动", isOn: $monitor.options.scrolls).accessibilityIdentifier("recording-input-scrolls")
-                Toggle("快捷键", isOn: $monitor.options.shortcuts).accessibilityIdentifier("recording-input-shortcuts")
-                Button { monitor.refreshPermissions(); showsHelp.toggle() } label: {
-                    Image(systemName: "info.circle")
+                RecordingInputCheckbox(title: "点击", identifier: "recording-input-clicks", isOn: $monitor.options.clicks)
+                RecordingInputCheckbox(title: "滚动", identifier: "recording-input-scrolls", isOn: $monitor.options.scrolls)
+                RecordingInputCheckbox(title: "快捷键", identifier: "recording-input-shortcuts", isOn: $monitor.options.shortcuts)
+                RecordingInputActionButton(title: "输入提示的隐私和权限说明", identifier: "recording-input-help",
+                                           systemImage: "info.circle") {
+                    monitor.refreshPermissions(); showsHelp.toggle()
                 }
-                .accessibilityIdentifier("recording-input-help")
                 .help("输入提示的隐私和权限说明")
                 .popover(isPresented: $showsHelp) { privacyHelp }
             }.controlSize(.small)
             if monitor.options.isEnabled {
-                Text(status).font(.system(size: 10)).foregroundStyle(.secondary)
-                    .accessibilityIdentifier("recording-input-status")
+                RecordingInputStatusLabel(text: status)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -342,11 +341,126 @@ struct RecordingInputEffectsControls: View {
                         NSWorkspace.shared.open(url)
                     }
                 }
-                Button("重新检查") { monitor.refreshPermissions() }
-                    .accessibilityIdentifier("recording-input-refresh")
+                RecordingInputActionButton(title: "重新检查", identifier: "recording-input-refresh") {
+                    monitor.refreshPermissions()
+                }
             }
         }
         .font(.system(size: 11)).fixedSize(horizontal: false, vertical: true)
         .padding(14).frame(width: 345)
+    }
+}
+
+
+/// The input row uses real AppKit controls so mouse/keyboard, accessibility and
+/// the owned preview fixture all exercise the same native target/action path.
+/// SwiftUI can reuse a representable across model changes: refresh both the
+/// binding/action and native state in updateNSView, including inherited disable.
+@MainActor
+struct RecordingInputCheckbox: NSViewRepresentable {
+    let title: String
+    let identifier: String
+    @Binding var isOn: Bool
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeCoordinator() -> Coordinator { Coordinator(isOn: $isOn) }
+
+    func makeNSView(context: Context) -> NSButton {
+        let button = NSButton(checkboxWithTitle: title, target: context.coordinator,
+                              action: #selector(Coordinator.toggle(_:)))
+        button.controlSize = .small
+        button.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        button.setContentHuggingPriority(.required, for: .horizontal)
+        button.setContentCompressionResistancePriority(.required, for: .horizontal)
+        updateNSView(button, context: context)
+        return button
+    }
+
+    func updateNSView(_ button: NSButton, context: Context) {
+        context.coordinator.isOn = $isOn
+        button.title = title
+        button.identifier = NSUserInterfaceItemIdentifier(identifier)
+        button.setAccessibilityIdentifier(identifier)
+        button.setAccessibilityLabel(title)
+        button.state = isOn ? .on : .off
+        button.isEnabled = isEnabled
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSButton, context: Context) -> CGSize? {
+        nsView.intrinsicContentSize
+    }
+
+    @MainActor final class Coordinator: NSObject {
+        var isOn: Binding<Bool>
+        init(isOn: Binding<Bool>) { self.isOn = isOn }
+        @objc func toggle(_ sender: NSButton) { isOn.wrappedValue = sender.state == .on }
+    }
+}
+
+@MainActor
+struct RecordingInputActionButton: NSViewRepresentable {
+    let title: String
+    let identifier: String
+    var systemImage: String? = nil
+    let action: () -> Void
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeCoordinator() -> Coordinator { Coordinator(action: action) }
+
+    func makeNSView(context: Context) -> NSButton {
+        let button = NSButton(title: title, target: context.coordinator,
+                              action: #selector(Coordinator.press(_:)))
+        button.bezelStyle = .rounded
+        button.controlSize = .small
+        button.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        button.setContentHuggingPriority(.required, for: .horizontal)
+        button.setContentCompressionResistancePriority(.required, for: .horizontal)
+        updateNSView(button, context: context)
+        return button
+    }
+
+    func updateNSView(_ button: NSButton, context: Context) {
+        context.coordinator.action = action
+        button.title = title
+        button.image = systemImage.flatMap { NSImage(systemSymbolName: $0, accessibilityDescription: title) }
+        button.imagePosition = systemImage == nil ? .noImage : .imageOnly
+        button.identifier = NSUserInterfaceItemIdentifier(identifier)
+        button.setAccessibilityIdentifier(identifier)
+        button.setAccessibilityLabel(title)
+        button.isEnabled = isEnabled
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSButton, context: Context) -> CGSize? {
+        nsView.intrinsicContentSize
+    }
+
+    @MainActor final class Coordinator: NSObject {
+        var action: () -> Void
+        init(action: @escaping () -> Void) { self.action = action }
+        @objc func press(_ sender: NSButton) { action() }
+    }
+}
+
+@MainActor
+private struct RecordingInputStatusLabel: NSViewRepresentable {
+    let text: String
+
+    func makeNSView(context: Context) -> NSTextField {
+        let label = NSTextField(wrappingLabelWithString: text)
+        label.font = .systemFont(ofSize: 10)
+        label.textColor = .secondaryLabelColor
+        label.identifier = NSUserInterfaceItemIdentifier("recording-input-status")
+        label.setAccessibilityIdentifier("recording-input-status")
+        return label
+    }
+
+    func updateNSView(_ label: NSTextField, context: Context) { label.stringValue = text }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSTextField, context: Context) -> CGSize? {
+        let width = max(1, proposal.width ?? nsView.intrinsicContentSize.width)
+        // Ask the actual native cell for its wrapping height, preserving the
+        // compact row while allowing permission guidance to occupy two lines.
+        let size = nsView.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: width, height: .greatestFiniteMagnitude))
+        return CGSize(width: width, height: ceil(size?.height ?? nsView.intrinsicContentSize.height))
     }
 }

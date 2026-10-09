@@ -35,21 +35,66 @@ assert len(layout)==3 and {item['identifier'] for item in layout}=={'capture.ele
 assert all(item['hitTargetVerified'] is True for item in layout),layout
 assert r['codecUIPreview']['status']=='passed',r['codecUIPreview']
 inputs=r['recordingInputControls']
-assert inputs['status'] in ['passed','layout-only'] and inputs['contentWidthPoints']==440,inputs
+assert inputs['status']=='passed' and inputs['interactionStatus']=='passed' and inputs['contentWidthPoints']==440,inputs
+assert inputs['interactionRoute']=='NSButton.performClick' and inputs['hitTestRoute']=='NSView.hitTest',inputs
 assert inputs['nativeMonitorRegistrations']==0 and inputs['injectedPermissions'] is True,inputs
 for key in ['recordingStarted','screenCaptureStarted','permissionRequested','globalInputPosted']:
     assert inputs[key] is False,inputs
 assert len(inputs['appearances'])==2 and {x['appearance'] for x in inputs['appearances']}=={'light','dark'},inputs
+button_ids={'recording-input-'+x for x in ['clicks','scrolls','shortcuts','help']}
 for appearance in inputs['appearances']:
-    assert appearance['defaultOff'] is True and appearance['initialPermissionChecks']==0,appearance
-    assert appearance['nativeMonitorRegistrations']==0,appearance
-    assert appearance['interactionStatus'] in ['passed','pending'],appearance
-    if appearance['interactionStatus']=='passed':
-        assert appearance['nativeTogglePresses']==9 and appearance['helpAndRefreshVerified'] is True,appearance
-    else:
-        assert appearance.get('reason'),appearance
-    for filename in appearance['files']:
-        assert pathlib.Path(filename).name==filename and (pathlib.Path(sys.argv[1]).parent/filename).is_file(),filename
+    ownership=appearance['ownership']
+    assert ownership['status']=='passed' and ownership['retainedObjects']==0 and ownership['weakProbeCount']>=30,ownership
+    assert 0<=ownership['releaseMilliseconds']<=ownership['deadlineMilliseconds']==3000,ownership
+    lifecycle=appearance['representableLifecycle']
+    assert lifecycle['status']=='passed',lifecycle
+    for key in ['replacementBindingVerified','externalStateVerified','replacementActionVerified','inheritedDisableVerified','nativeControlAndCoordinatorReuseVerified']:
+        assert lifecycle[key] is True,lifecycle
+    full=appearance['fullPanel']
+    assert (full['contentWidthPoints'],full['contentHeightPoints'])==(480,490),full
+    assert full['syntheticTarget'] is True and full['syntheticTargetChecks']==1,full
+    assert full['cameraRequested'] is False and full['recordingStarted'] is False,full
+    sections=full['panelSectionGeometry']
+    assert set(sections)=={'default-off','denied','allowed','restored-off'},sections
+    for rows in sections.values():
+        assert len(rows)==7 and {x['section'] for x in rows}=={'options','start','divider','effects','status','previewHint','privacyHint'},rows
+        for row in rows:
+            assert row['insideContent'] is True and row['nonoverlapping'] is True and row['coordinateSystem']=='top-left',row
+            assert row['width']>0 and row['height']>0 and row['x']>=-0.5 and row['y']>=-0.5,row
+            assert row['x']+row['width']<=480.5 and row['y']+row['height']<=490.5,row
+    for context,prefix,size in [(appearance,'recording-input',(440,100)),(full,'recording-panel',(480,490))]:
+        assert context['status']=='passed' and context['interactionStatus']=='passed' and context['layoutStatus']=='passed',context
+        assert context['defaultOff'] is True and context['initialPermissionChecks']==0,context
+        assert context['nativeMonitorRegistrations']==0,context
+        assert context['nativeTogglePresses']==12 and context['finalOptionsMatchInitial'] is True,context
+        assert context['helpAndRefreshVerified'] is True and context['nativeHelpPresses']==4 and context['nativeRefreshPresses']==2,context
+        expected={'clicks':False,'scrolls':False,'shortcuts':False}
+        actions=[(control,enabled) for control in ['clicks','scrolls','shortcuts'] for enabled in [True,False,True]]
+        actions += [(control,False) for control in ['clicks','scrolls','shortcuts']]
+        assert len(context['optionRoundTrips'])==len(actions),context
+        for step,(control,enabled) in zip(context['optionRoundTrips'],actions):
+            expected[control]=enabled
+            assert step==dict(control=control,enabled=enabled,**expected),step
+        for key in ['defaultOffGeometry','deniedGeometry','allowedGeometry','restoredOffGeometry','helpGeometry']:
+            rows=context[key]
+            expected_ids={'recording-input-refresh'} if key=='helpGeometry' else button_ids | ({'recording-input-status'} if key in ['deniedGeometry','allowedGeometry'] else set())
+            assert len(rows)==len(expected_ids) and {x['identifier'] for x in rows}==expected_ids,rows
+            for row in rows:
+                assert row['insideContent'] is True and row['nonoverlapping'] is True and row['accessibilityIdentifierVerified'] is True,row
+                assert row['nativeHitTargetVerified'] is (row['identifier']!='recording-input-status'),row
+                assert row['width']>0 and row['height']>0,row
+        expected_files={f'{prefix}-{state}-{appearance["appearance"]}.png' for state in ['default-off','denied','help-denied','help-allowed','allowed','restored-off']}
+        assert set(context['files'])==expected_files,context
+        for filename in context['files']:
+            assert pathlib.Path(filename).name==filename,filename
+            data=(pathlib.Path(sys.argv[1]).parent/filename).read_bytes()
+            assert data.startswith(b'\x89PNG\r\n\x1a\n'),filename
+            import struct
+            dimensions=struct.unpack('>II',data[16:24])
+            if '-help-' not in filename:
+                assert dimensions==size,(filename,dimensions)
+            else:
+                assert 0<dimensions[0]<=600 and 0<dimensions[1]<=800,(filename,dimensions)
 save=r['saveWorkflowUI']
 assert save['status']=='passed' and save['quietAutomaticFinalizedAction'],save
 assert not save['userPreferencesRead'] and not save['generalPasteboardReadOrWritten'],save

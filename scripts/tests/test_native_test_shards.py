@@ -358,6 +358,82 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
                 self.assertIn('--selection-regex', plans[1])
                 self.assertTrue(all(args[args.index('--source') + 1] == 'a' * 40 for args in plans))
 
+    def current_source_inventory(self):
+        # Portable drift sentinel for this repository's one-XCTestCase-per-file
+        # layout. Actual swift test list and checked_plan remain mandatory in CI.
+        root = Path(__file__).parents[2] / 'Tests'
+        inventory = []
+        for path in sorted(root.rglob('*.swift')):
+            source = path.read_text()
+            if source.startswith('#if PICSHOT_CALLOUT_RETIREMENT_DIAGNOSTICS\n'):
+                self.assertTrue(source.rstrip().endswith('#endif'))
+                continue  # Existing opt-in diagnostic is not a production test.
+            methods = re.findall(r'\bfunc\s+(test\w+)\s*\(', source)
+            if not methods:
+                continue
+            classes = re.findall(r'\bclass\s+(\w+)\s*:\s*\w*TestCase\b', source)
+            self.assertEqual(len(classes), 1, str(path))
+            module = path.relative_to(root).parts[0]
+            inventory.extend(f'{module}.{classes[0]}/{method}' for method in methods)
+        return shards.discover('\n'.join(inventory))
+
+    def execute_pin_inventory_guard(self, plan):
+        step = self.step('Reproduce the exact pin Apply regression before broader native gates')
+        python = step.split("          python3 - <<'PYTHON'\n", 1)[1].split('          PYTHON\n', 1)[0]
+        tree = ast.parse('\n'.join(line[10:] for line in python.splitlines()))
+        identities = [node for node in tree.body if isinstance(node, ast.Assign)
+                      and any(isinstance(target, ast.Name) and target.id in ('method', 'class_ids')
+                              for target in node.targets)]
+        body = next(node.body for node in tree.body if isinstance(node, ast.Try))
+        start = next(index for index, node in enumerate(body) if isinstance(node, ast.Assign)
+                     and any(isinstance(target, ast.Name) and target.id == 'inventory'
+                             for target in node.targets))
+        stop = next(index for index, node in enumerate(body) if isinstance(node, ast.For))
+        guard = ast.Module(body=identities + body[start:stop], type_ignores=[])
+        context = dict(native=shards, hashlib=hashlib, plan=plan, Path=Path,
+                       plan_path=Path('unused-plan.json'), record={},
+                       digest=lambda path: 'portable-test-placeholder')
+        exec(compile(guard, '<production pin inventory guard>', 'exec'), context)
+        return context['record']
+
+    def test_pin_preflight_accepts_current_inventory_and_reports_current_counts(self):
+        inventory = self.current_source_inventory()
+        plan = shards.make_plan(inventory, '', 'a' * 40, process_count=4)
+        record = self.execute_pin_inventory_guard(plan)
+        self.assertEqual((record['discoveredCount'], record['discoveredClassCount']), (1836, 208))
+        added = [name for name in inventory if name.startswith('PicShotTests.RecordingInput')]
+        self.assertEqual(len(added), 37)
+        original = [name for name in inventory if name not in added]
+        self.assertEqual(len(original), 1799)
+        self.assertEqual(hashlib.sha256(('\n'.join(original) + '\n').encode()).hexdigest(),
+                         '77ab5c9cc0c4abc4524f2b7002b42a52133984d8f639cd7e27c27ce53b7a962a')
+        selection = re.search(r"--selection-regex '([^']+)'", self.step(
+            'Plan exhaustive and focused native test processes'))[1]
+        focused = shards.make_plan(inventory, selection, 'a' * 40, process_count=2)
+        self.assertEqual(len(focused['selectedTests']), 1296)
+        self.assertTrue(set(added).issubset(focused['selectedTests']))
+
+    def test_pin_preflight_rejects_stale_missing_extra_and_renamed_inventory(self):
+        inventory = self.current_source_inventory()
+        alternatives = [
+            [name for name in inventory if not name.startswith('PicShotTests.RecordingInput')],
+            inventory[:-1],
+            sorted(inventory + ['PicShotTests.RecordingInputEffectsTests/testUnexpected']),
+            sorted(inventory[:-1] + [inventory[-1] + 'Renamed']),
+        ]
+        for changed in alternatives:
+            with self.subTest(count=len(changed)), self.assertRaisesRegex(ValueError, 'Complete native inventory'):
+                self.execute_pin_inventory_guard(shards.make_plan(changed, '', 'a' * 40, process_count=4))
+
+    def test_pin_preflight_rejects_selection_process_deadline_and_grouping_changes(self):
+        plan = shards.make_plan(self.current_source_inventory(), '', 'a' * 40, process_count=4)
+        mutations = [dict(selectedTests=plan['selectedTests'][:-1]), dict(selectionRegex='RecordingInput'),
+                     dict(processCount=2), dict(timeoutSecondsPerProcess=421),
+                     dict(shards=list(reversed(plan['shards'])))]
+        for mutation in mutations:
+            with self.subTest(field=next(iter(mutation))), self.assertRaisesRegex(ValueError, 'Complete native inventory'):
+                self.execute_pin_inventory_guard({**plan, **mutation})
+
     def test_every_process_runs_and_failure_remains_failure_after_aggregation(self):
         for arch, focused in [('arm64', 2), ('x86_64', 4)]:
             for name, count in [('Test native modules', 4),

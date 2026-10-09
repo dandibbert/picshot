@@ -1,9 +1,9 @@
 import AppKit
 import SwiftUI
 
-/// Renders the production SwiftUI controls in a real 440-point native window.
-/// Permissions are injected; no recording session, live monitor, OS permission
-/// request, global event posting, or desktop capture is involved.
+/// Exercises production controls in owned native windows, with injected
+/// permissions and an explicitly synthetic, unavailable capture target. This
+/// fixture never starts recording, installs a monitor or asks the OS for access.
 @MainActor
 enum RecordingInputControlsPreviewFixture {
     static func verify(evidenceDirectory: URL) async throws -> [String: Any] {
@@ -12,17 +12,26 @@ enum RecordingInputControlsPreviewFixture {
         var report: [String: Any] = ["status": "running", "contentWidthPoints": 440,
             "injectedPermissions": true, "recordingStarted": false, "screenCaptureStarted": false,
             "permissionRequested": false, "globalInputPosted": false, "nativeMonitorRegistrations": 0,
-            "scope": "Native cached SwiftUI layout; interaction passes only when supported AppKit accessibility actions change the real monitor options",
+            "scope": "Owned native NSButton target/actions and NSView hit testing in isolated controls and the complete idle recording panel; synthetic target and injected permissions only",
+            "interactionRoute": "NSButton.performClick", "hitTestRoute": "NSView.hitTest",
             "snapshotPixelsPerPoint": 1]
         do {
             var appearances: [[String: Any]] = []
             for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
-                appearances.append(try await preview(name: name, appearance: appearance, directory: evidenceDirectory))
+                let ownership = OwnershipProbe()
+                var result = try await isolatedPreview(name: name, appearance: appearance,
+                    directory: evidenceDirectory, ownership: ownership)
+                result["fullPanel"] = try await fullPanelPreview(name: name, appearance: appearance,
+                    directory: evidenceDirectory, ownership: ownership)
+                result["representableLifecycle"] = try await verifyRepresentableUpdates(appearance: appearance, ownership: ownership)
+                result["ownership"] = try await verifyReleased(ownership)
+                appearances.append(result)
                 report["appearances"] = appearances
             }
-            let verified = appearances.allSatisfy { $0["interactionStatus"] as? String == "passed" }
-            report["status"] = verified ? "passed" : "layout-only"
-            report["interactionStatus"] = verified ? "passed" : "pending"
+            // Missing native controls, interaction, geometry or cleanup throw.
+            // There is deliberately no layout-only or model-injection pass.
+            report["status"] = "passed"
+            report["interactionStatus"] = "passed"
             try write(report, directory: evidenceDirectory)
             return report
         } catch {
@@ -32,7 +41,8 @@ enum RecordingInputControlsPreviewFixture {
         }
     }
 
-    private static func preview(name: String, appearance: NSAppearance.Name, directory: URL) async throws -> [String: Any] {
+    private static func isolatedPreview(name: String, appearance: NSAppearance.Name, directory: URL,
+                                        ownership: OwnershipProbe) async throws -> [String: Any] {
         let probe = PermissionProbe()
         let monitor = RecordingInputMonitor(state: RecordingInputEffectsState(), dependencies: probe.dependencies)
         let host = NSHostingView(rootView: RecordingInputEffectsControls(monitor: monitor)
@@ -43,147 +53,373 @@ enum RecordingInputControlsPreviewFixture {
         window.title = "PicShot · Synthetic input permissions"
         window.appearance = NSAppearance(named: appearance)
         window.contentView = host
+        ownership.observe(monitor, name: "isolated.monitor")
+        ownership.observe(host, name: "isolated.host")
+        defer { dispose(window); monitor.endSession() }
         window.center(); window.makeKeyAndOrderFront(nil)
-        defer { window.close(); monitor.endSession() }
-        try await settle(window)
-        try require(!monitor.options.isEnabled && probe.permissionChecks == 0,
-                    "Opening default-off controls inspected permissions or changed options")
-        var files: [String] = []
-        func save(_ state: String, window target: NSWindow? = nil) throws {
-            let filename = "recording-input-\(state)-\(name).png"
-            try snapshot(target ?? window, to: directory.appendingPathComponent(filename))
-            files.append(filename)
-        }
-        try save("default-off")
-        let identifiers = ["clicks", "scrolls", "shortcuts", "help"].map { "recording-input-" + $0 }
-        var result: [String: Any] = ["appearance": name, "defaultOff": true, "initialPermissionChecks": 0,
-                                   "interactionStatus": "pending", "layoutStatus": "pending"]
-        do {
-            result["defaultOffGeometry"] = try geometry(identifiers, in: window, hitTest: true)
-            try require(element("recording-input-status", in: window) == nil, "Default-off status should be absent")
-            let toggles: [(String, WritableKeyPath<RecordingInputEffectsOptions, Bool>)] = [
-                ("clicks", \.clicks), ("scrolls", \.scrolls), ("shortcuts", \.shortcuts)]
-            var presses = 0
-            for (suffix, keyPath) in toggles {
-                // Repeated native presses must change only this option, and must
-                // return to off before enabling it for the denied-state preview.
-                for enabled in [true, false, true] {
-                    var expected = monitor.options; expected[keyPath: keyPath] = enabled
-                    try press("recording-input-" + suffix, in: window)
-                    try await settle(window)
-                    try require(monitor.options == expected, "Native \(suffix) press did not update only its bound option")
-                    presses += 1
-                }
-            }
-            result["nativeTogglePresses"] = presses
-            result["deniedGeometry"] = try geometry(identifiers + ["recording-input-status"], in: window, hitTest: false)
-            try require(monitor.permissions == .unknown, "Injected denied permission did not reach the controls")
-            try require(status(in: window).contains("输入监控"), "Denied controls omitted input-monitoring guidance")
-            try save("denied")
+        return try await exercise(window: window, monitor: monitor, probe: probe, name: name,
+                                  prefix: "recording-input", directory: directory, ownership: ownership)
+    }
 
-            let previousWindows = Set(NSApp.windows.map { ObjectIdentifier($0) })
-            try press("recording-input-help", in: window)
-            try await settle(window)
-            let candidates = NSApp.windows.filter { !previousWindows.contains(ObjectIdentifier($0)) } + (window.childWindows ?? [])
-            guard let help = candidates.first(where: { element("recording-input-refresh", in: $0) != nil }) else {
-                throw RouteUnavailable(reason: "Help opened, but its refresh control was not exposed by the supported native accessibility route")
-            }
-            defer { help.close() }
-            try await settle(help)
-            result["helpGeometry"] = try geometry(["recording-input-refresh"], in: help, hitTest: true)
-            try save("help-denied", window: help)
-            let checksBeforeRefresh = probe.permissionChecks
-            probe.permissions = .init(inputMonitoring: true, accessibility: true)
-            try press("recording-input-refresh", in: help)
-            try await settle(help)
-            try require(probe.permissionChecks > checksBeforeRefresh && monitor.permissions == probe.permissions,
-                        "Native refresh did not read the injected granted permission")
-            try save("help-allowed", window: help)
-            try press("recording-input-help", in: window)
-            try await settle(window)
-            try require(!help.isVisible, "Native help toggle did not dismiss its popover")
-            result["allowedGeometry"] = try geometry(identifiers + ["recording-input-status"], in: window, hitTest: false)
-            try require(status(in: window).contains("开始 / 继续录制"), "Allowed idle controls omitted recording-lifecycle guidance")
-            try save("allowed")
-            result["interactionStatus"] = "passed"; result["layoutStatus"] = "passed"
-            result["helpAndRefreshVerified"] = true
-        } catch let unavailable as RouteUnavailable {
-            // Model injection here produces layout evidence only. It must never
-            // be counted as successful interaction with a native control.
-            result["interactionStatus"] = "pending"; result["reason"] = unavailable.reason
-            monitor.options = .init(clicks: true, scrolls: true, shortcuts: true)
-            probe.permissions = .unknown; monitor.refreshPermissions()
-            try await settle(window); try save("denied")
-            probe.permissions = .init(inputMonitoring: true, accessibility: true); monitor.refreshPermissions()
-            try await settle(window); try save("allowed")
-        }
-        try require(!monitor.isMonitoring && probe.installCalls == 0 && probe.removeCalls == 0 && probe.healthChecks == 0,
-                    "Idle input controls attempted to install a monitor or timer")
-        result["files"] = Array(Set(files)).sorted()
-        result["injectedPermissionChecks"] = probe.permissionChecks
-        result["nativeMonitorRegistrations"] = 0
+    private static func fullPanelPreview(name: String, appearance: NSAppearance.Name, directory: URL,
+                                         ownership: OwnershipProbe) async throws -> [String: Any] {
+        let probe = PermissionProbe()
+        var syntheticTargetChecks = 0
+        let service = RecordingService(screenPermissionCheck: {
+            syntheticTargetChecks += 1
+            throw PicShotError.message("合成预览目标：未连接显示器，不会开始屏幕采集。")
+        }, inputMonitorDependencies: probe.dependencies)
+        var panelFrames: [String: CGRect] = [:]
+        let controller = RecordingPanelController(service: service, capture: CaptureService(),
+            previewLayoutObserver: { panelFrames = $0 })
+        guard let window = controller.window else { throw failure("Missing complete recording panel") }
+        window.title = "PicShot · Synthetic idle recording panel"
+        window.appearance = NSAppearance(named: appearance)
+        ownership.observe(service.inputMonitor, name: "fullPanel.monitor")
+        if let host = window.contentView { ownership.observe(host, name: "fullPanel.host") }
+        defer { dispose(window); service.inputMonitor.endSession() }
+        controller.showWindow(nil); window.makeKeyAndOrderFront(nil)
+        try await settle(window)
+        try require(window.contentView?.bounds.size == CGSize(width: 480, height: 490),
+                    "Complete idle recording panel changed its compact 480×490 content size")
+        try require(syntheticTargetChecks == 1, "Complete panel did not stop at its injected synthetic display check")
+        var result = try await exercise(window: window, monitor: service.inputMonitor, probe: probe,
+                                       name: name, prefix: "recording-panel", directory: directory, ownership: ownership,
+                                       panelGeometry: { try panelGeometry(panelFrames, in: window) })
+        try require(!service.isRecording && !service.isStarting && !service.camera.requested &&
+                    !service.overlay.drawing && !service.overlay.cameraEditing && syntheticTargetChecks == 1,
+                    "Idle panel interaction changed camera/annotation state or attempted recording")
+        result["contentWidthPoints"] = 480; result["contentHeightPoints"] = 490
+        result["syntheticTarget"] = true; result["syntheticTargetChecks"] = syntheticTargetChecks
+        result["cameraRequested"] = false; result["recordingStarted"] = false
         return result
     }
 
-    /// Only public method-based AppKit accessibility APIs, scoped to the owned
-    /// fixture window. SwiftUI implementation classes are neither named nor cast.
-    private static func element(_ identifier: String, in window: NSWindow) -> (any NSAccessibilityProtocol)? {
-        var pending: [Any] = [window]
-        if let view = window.contentView { pending.append(view) }
-        var visited = Set<ObjectIdentifier>()
-        while let value = pending.popLast() {
-            guard let node = value as? any NSAccessibilityProtocol,
-                  visited.insert(ObjectIdentifier(node)).inserted else { continue }
-            if node.accessibilityIdentifier() == identifier { return node }
-            pending.append(contentsOf: node.accessibilityChildren() ?? [])
+    private static func exercise(window: NSWindow, monitor: RecordingInputMonitor, probe: PermissionProbe,
+                                 name: String, prefix: String, directory: URL,
+                                 ownership: OwnershipProbe,
+                                 panelGeometry: (() throws -> [[String: Any]])? = nil) async throws -> [String: Any] {
+        try await settle(window)
+        let initialOptions = RecordingInputEffectsOptions()
+        try require(monitor.options == initialOptions && probe.permissionChecks == 0,
+                    "Opening default-off controls inspected permissions or changed options")
+        var files: [String] = []
+        var panelSectionGeometry: [String: Any] = [:]
+        func save(_ state: String, window target: NSWindow? = nil) throws {
+            let filename = "\(prefix)-\(state)-\(name).png"
+            if target == nil, let panelGeometry { panelSectionGeometry[state] = try panelGeometry() }
+            try snapshot(target ?? window, to: directory.appendingPathComponent(filename))
+            files.append(filename)
         }
-        return nil
+        let identifiers = ["clicks", "scrolls", "shortcuts", "help"].map { "recording-input-" + $0 }
+        var result: [String: Any] = ["appearance": name, "defaultOff": true, "initialPermissionChecks": 0,
+                                   "interactionRoute": "NSButton.performClick", "hitTestRoute": "NSView.hitTest"]
+        result["defaultOffGeometry"] = try geometry(identifiers, in: window, hitTest: true)
+        try require(nativeViews("recording-input-status", in: window).isEmpty, "Default-off status should be absent")
+        for identifier in identifiers { try observeButton(identifier, in: window, prefix: prefix, ownership: ownership) }
+        try save("default-off")
+        let toggles: [(String, WritableKeyPath<RecordingInputEffectsOptions, Bool>)] = [
+            ("clicks", \.clicks), ("scrolls", \.scrolls), ("shortcuts", \.shortcuts)]
+        var roundTrips: [[String: Any]] = []
+        func toggle(_ suffix: String, keyPath: WritableKeyPath<RecordingInputEffectsOptions, Bool>, enabled: Bool) async throws {
+            var expected = monitor.options; expected[keyPath: keyPath] = enabled
+            try press("recording-input-" + suffix, in: window)
+            try await settle(window)
+            try require(monitor.options == expected, "Native \(suffix) press did not update only its bound option")
+            for (other, otherKeyPath) in toggles {
+                let button = try button("recording-input-" + other, in: window)
+                try require(button.state == (expected[keyPath: otherKeyPath] ? .on : .off),
+                            "Native checkbox state did not follow its updated binding: " + other)
+            }
+            roundTrips.append(["control": suffix, "enabled": enabled,
+                               "clicks": expected.clicks, "scrolls": expected.scrolls, "shortcuts": expected.shortcuts])
+        }
+        for (suffix, keyPath) in toggles {
+            for enabled in [true, false, true] { try await toggle(suffix, keyPath: keyPath, enabled: enabled) }
+        }
+        result["deniedGeometry"] = try geometry(identifiers + ["recording-input-status"], in: window, hitTest: true)
+        try require(monitor.permissions == .unknown, "Injected denied permission did not reach the controls")
+        try require(try status(in: window).contains("输入监控"), "Denied controls omitted input-monitoring guidance")
+        try save("denied")
+
+        let help = try await openHelp(in: window)
+        defer { dispose(help) }
+        try observeButton("recording-input-refresh", in: help, prefix: prefix + ".help", ownership: ownership)
+        result["helpGeometry"] = try geometry(["recording-input-refresh"], in: help, hitTest: true)
+        try save("help-denied", window: help)
+        let checksBeforeRefresh = probe.permissionChecks
+        probe.permissions = .init(inputMonitoring: true, accessibility: true)
+        try press("recording-input-refresh", in: help)
+        try await settle(help); try await settle(window)
+        try require(probe.permissionChecks == checksBeforeRefresh + 1 && monitor.permissions == probe.permissions,
+                    "Native refresh did not read the injected granted permission exactly once")
+        try save("help-allowed", window: help)
+        try press("recording-input-help", in: window)
+        try await settle(window)
+        try require(!help.isVisible, "Native help toggle did not dismiss its popover")
+        result["allowedGeometry"] = try geometry(identifiers + ["recording-input-status"], in: window, hitTest: true)
+        try require(try status(in: window).contains("开始 / 继续录制"), "Allowed idle controls omitted recording-lifecycle guidance")
+        try save("allowed")
+
+        // Reopen the same production help path and verify refresh can revoke
+        // permissions too. No model option assignment substitutes for a click.
+        let reopenedHelp = try await openHelp(in: window, previouslyOwned: help)
+        defer { if reopenedHelp !== help { dispose(reopenedHelp) } }
+        try observeButton("recording-input-refresh", in: reopenedHelp, prefix: prefix + ".reopenedHelp", ownership: ownership)
+        let checksBeforeDeniedRefresh = probe.permissionChecks
+        probe.permissions = .unknown
+        try press("recording-input-refresh", in: reopenedHelp)
+        try await settle(reopenedHelp); try await settle(window)
+        try require(probe.permissionChecks == checksBeforeDeniedRefresh + 1 && monitor.permissions == .unknown,
+                    "Reopened native refresh did not read the injected denial exactly once")
+        try require(try status(in: window).contains("输入监控"), "Revoked permission did not update the native status")
+        try press("recording-input-help", in: window)
+        try await settle(window)
+        try require(!reopenedHelp.isVisible, "Reopened help did not dismiss")
+        for (suffix, keyPath) in toggles { try await toggle(suffix, keyPath: keyPath, enabled: false) }
+        try require(monitor.options == initialOptions && nativeViews("recording-input-status", in: window).isEmpty,
+                    "Native option round trip failed to restore the default-off controls")
+        result["restoredOffGeometry"] = try geometry(identifiers, in: window, hitTest: true)
+        try save("restored-off")
+        try require(!monitor.isMonitoring && probe.installCalls == 0 && probe.removeCalls == 0 &&
+                    probe.healthChecks == 0 && probe.focusChecks == 0 && probe.secureInputChecks == 0,
+                    "Idle input controls attempted live monitoring or focus inspection")
+        result["status"] = "passed"; result["interactionStatus"] = "passed"; result["layoutStatus"] = "passed"
+        result["nativeTogglePresses"] = roundTrips.count; result["optionRoundTrips"] = roundTrips
+        result["finalOptionsMatchInitial"] = true
+        result["helpAndRefreshVerified"] = true; result["nativeHelpPresses"] = 4; result["nativeRefreshPresses"] = 2
+        result["files"] = files; result["injectedPermissionChecks"] = probe.permissionChecks
+        result["nativeMonitorRegistrations"] = 0
+        if !panelSectionGeometry.isEmpty { result["panelSectionGeometry"] = panelSectionGeometry }
+        return result
+    }
+
+    private static func openHelp(in window: NSWindow, previouslyOwned: NSWindow? = nil) async throws -> NSWindow {
+        let previousWindows = Set(NSApp.windows.map { ObjectIdentifier($0) })
+        try press("recording-input-help", in: window)
+        try await settle(window)
+        // Only windows created by this exact owned action, attached to our
+        // owned window, or previously verified as this fixture's help qualify.
+        // A reused popover need not reappear as a new NSApp window.
+        let candidates = NSApp.windows.filter { !previousWindows.contains(ObjectIdentifier($0)) } +
+            (window.childWindows ?? []) + [previouslyOwned].compactMap { $0 }
+        guard let help = candidates.first(where: { $0.isVisible && !nativeViews("recording-input-refresh", in: $0).isEmpty }) else {
+            throw failure("Native help action did not expose its owned refresh button")
+        }
+        try await settle(help)
+        return help
+    }
+
+    /// Traverse actual NSViews only, scoped to our own content. These stable
+    /// identifiers belong to the production input controls, not SwiftUI classes.
+    private static func nativeViews(_ identifier: String, in window: NSWindow) -> [NSView] {
+        guard let root = window.contentView else { return [] }
+        var pending = [root], result: [NSView] = []
+        while let view = pending.popLast() {
+            if view.identifier?.rawValue == identifier { result.append(view) }
+            pending.append(contentsOf: view.subviews)
+        }
+        return result
+    }
+
+    private static func nativeView(_ identifier: String, in window: NSWindow) throws -> NSView {
+        let matches = nativeViews(identifier, in: window)
+        guard matches.count == 1, let view = matches.first,
+              view.accessibilityIdentifier() == identifier else {
+            throw failure("Expected exactly one identified native control: " + identifier)
+        }
+        return view
+    }
+
+    private static func button(_ identifier: String, in window: NSWindow) throws -> NSButton {
+        guard let button = try nativeView(identifier, in: window) as? NSButton,
+              button.isEnabled, !button.isHiddenOrHasHiddenAncestor, button.target != nil, button.action != nil else {
+            throw failure("Missing enabled native target/action button: " + identifier)
+        }
+        return button
     }
 
     private static func press(_ identifier: String, in window: NSWindow) throws {
-        guard let node = element(identifier, in: window), node.isAccessibilityEnabled(),
-              node.isAccessibilitySelectorAllowed(#selector(NSAccessibilityProtocol.accessibilityPerformPress)),
-              node.accessibilityPerformPress() else {
-            throw RouteUnavailable(reason: "Supported native accessibility press unavailable for " + identifier)
-        }
+        _ = try geometry([identifier], in: window, hitTest: true)
+        try button(identifier, in: window).performClick(nil)
     }
 
-    private static func status(in window: NSWindow) -> String {
-        guard let node = element("recording-input-status", in: window) else { return "" }
-        return [node.accessibilityLabel(), node.accessibilityTitle(), node.accessibilityValue() as? String]
-            .compactMap { $0 }.joined(separator: " ")
+    private static func status(in window: NSWindow) throws -> String {
+        guard let label = try nativeView("recording-input-status", in: window) as? NSTextField else {
+            throw failure("Missing native input status label")
+        }
+        return label.stringValue
+    }
+
+    private static func observeButton(_ identifier: String, in window: NSWindow, prefix: String,
+                                      ownership: OwnershipProbe) throws {
+        let control = try button(identifier, in: window)
+        ownership.observe(control, name: prefix + "." + identifier)
+        if let target = control.target { ownership.observe(target as AnyObject, name: prefix + "." + identifier + ".coordinator") }
     }
 
     private static func geometry(_ identifiers: [String], in window: NSWindow, hitTest: Bool) throws -> [[String: Any]] {
-        guard let view = window.contentView else { throw failure("Missing native content view") }
-        let bounds = window.convertToScreen(view.convert(view.bounds, to: nil))
+        guard let root = window.contentView else { throw failure("Missing native content view") }
         var frames: [CGRect] = [], output: [[String: Any]] = []
         for identifier in identifiers {
-            guard let node = element(identifier, in: window) else {
-                throw RouteUnavailable(reason: "Supported accessibility geometry unavailable for " + identifier)
-            }
-            let frame = node.accessibilityFrame()
+            let view = try nativeView(identifier, in: window)
+            let frame = view.convert(view.bounds, to: root)
             try require(!frame.isNull && !frame.isInfinite && frame.width > 0 && frame.height > 0 &&
-                        bounds.insetBy(dx: -0.5, dy: -0.5).contains(frame), "Control is clipped or outside native content: " + identifier)
+                        root.bounds.insetBy(dx: -0.5, dy: -0.5).contains(frame) && !view.isHiddenOrHasHiddenAncestor,
+                        "Control is clipped or outside native content: " + identifier)
             try require(!frames.contains { other in
                 let overlap = other.intersection(frame)
                 return !overlap.isNull && overlap.width > 0.5 && overlap.height > 0.5
             }, "Native control frames overlap: " + identifier)
-            if hitTest {
-                var hit = view.accessibilityHitTest(CGPoint(x: frame.midX, y: frame.midY)) as? any NSAccessibilityProtocol
-                var visited = Set<ObjectIdentifier>(), matches = false
-                while let candidate = hit, visited.insert(ObjectIdentifier(candidate)).inserted {
-                    if candidate.accessibilityIdentifier() == identifier { matches = true; break }
-                    hit = candidate.accessibilityParent() as? any NSAccessibilityProtocol
-                }
-                guard matches else { throw RouteUnavailable(reason: "Native accessibility hit target could not be verified for " + identifier) }
+            let verifiesHitTarget = hitTest && view is NSButton
+            if verifiesHitTarget {
+                let center = CGPoint(x: frame.midX, y: frame.midY)
+                let hit = root.hitTest(root.convert(center, to: root.superview))
+                try require(hit === view || hit?.isDescendant(of: view) == true,
+                            "Native hit target did not reach the visible control: " + identifier)
             }
             frames.append(frame)
-            output.append(["identifier": identifier, "x": frame.minX - bounds.minX, "y": frame.minY - bounds.minY,
+            let contentFrame = topLeftFrame(frame, in: root)
+            output.append(["identifier": identifier, "x": contentFrame.minX, "y": contentFrame.minY,
                            "width": frame.width, "height": frame.height, "insideContent": true,
-                           "nonoverlapping": true, "nativeHitTargetVerified": hitTest])
+                           "nonoverlapping": true, "nativeHitTargetVerified": verifiesHitTarget,
+                           "accessibilityIdentifierVerified": true])
         }
         return output
+    }
+
+    private static func topLeftFrame(_ frame: CGRect, in root: NSView) -> CGRect {
+        CGRect(x: frame.minX - root.bounds.minX,
+               y: root.isFlipped ? frame.minY - root.bounds.minY : root.bounds.maxY - frame.maxY,
+               width: frame.width, height: frame.height)
+    }
+
+    private static func panelGeometry(_ frames: [String: CGRect], in window: NSWindow) throws -> [[String: Any]] {
+        guard let root = window.contentView else { throw failure("Missing full panel content") }
+        let names = ["options", "start", "divider", "effects", "status", "previewHint", "privacyHint"]
+        try require(Set(frames.keys) == Set(names), "Complete panel did not report all seven idle sections")
+        let bounds = CGRect(origin: .zero, size: CGSize(width: 480, height: 490))
+        var previous: [CGRect] = [], output: [[String: Any]] = []
+        for name in names {
+            guard let frame = frames[name] else { throw failure("Missing panel section: " + name) }
+            try require(!frame.isNull && !frame.isInfinite && frame.width > 0 && frame.height > 0 &&
+                        bounds.insetBy(dx: -0.5, dy: -0.5).contains(frame), "Panel section is clipped: " + name)
+            try require(!previous.contains { other in
+                let overlap = frame.intersection(other)
+                return !overlap.isNull && overlap.width > 0.5 && overlap.height > 0.5
+            }, "Panel sections overlap: " + name)
+            if let last = previous.last { try require(frame.minY >= last.maxY - 0.5, "Panel section order changed: " + name) }
+            previous.append(frame)
+            output.append(["section": name, "x": frame.minX, "y": frame.minY, "width": frame.width, "height": frame.height,
+                           "insideContent": true, "nonoverlapping": true, "coordinateSystem": "top-left"])
+        }
+        guard let effects = frames["effects"] else { throw failure("Missing effects section") }
+        for identifier in ["clicks", "scrolls", "shortcuts", "help", "status"].map({ "recording-input-" + $0 }) {
+            for view in nativeViews(identifier, in: window) {
+                let frame = topLeftFrame(view.convert(view.bounds, to: root), in: root)
+                try require(effects.insetBy(dx: -0.5, dy: -0.5).contains(frame),
+                            "Input control escaped the panel's effects section: " + identifier)
+            }
+        }
+        return output
+    }
+
+    private static func verifyRepresentableUpdates(appearance: NSAppearance.Name,
+                                                   ownership: OwnershipProbe) async throws -> [String: Any] {
+        final class Value { var enabled = false }
+        let first = Value(), second = Value()
+        func checkbox(_ value: Value) -> RecordingInputCheckbox {
+            RecordingInputCheckbox(title: "点击", identifier: "recording-input-lifecycle-checkbox",
+                                   isOn: Binding(get: { value.enabled }, set: { value.enabled = $0 }))
+        }
+        let checkboxHost = NSHostingView(rootView: checkbox(first))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 180, height: 60),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.title = "PicShot · Synthetic control lifecycle"
+        window.appearance = NSAppearance(named: appearance)
+        window.contentView = checkboxHost
+        window.center(); window.orderFront(nil)
+        defer { dispose(window) }
+        ownership.observe(checkboxHost, name: "lifecycle.checkboxHost")
+        try await settle(window)
+        try observeButton("recording-input-lifecycle-checkbox", in: window, prefix: "lifecycle", ownership: ownership)
+        let checkboxIdentity = try controlIdentity(button("recording-input-lifecycle-checkbox", in: window))
+        try press("recording-input-lifecycle-checkbox", in: window)
+        try require(first.enabled, "Native lifecycle checkbox did not update its initial binding")
+        checkboxHost.rootView = checkbox(second)
+        try await settle(window)
+        try require(try controlIdentity(button("recording-input-lifecycle-checkbox", in: window)) == checkboxIdentity,
+                    "Checkbox or coordinator was recreated instead of updating its binding")
+        try require(try button("recording-input-lifecycle-checkbox", in: window).state == .off,
+                    "Reused checkbox did not reflect its replacement binding")
+        try press("recording-input-lifecycle-checkbox", in: window)
+        try require(first.enabled && second.enabled, "Reused checkbox retained a stale binding")
+        second.enabled = false
+        checkboxHost.rootView = checkbox(second)
+        try await settle(window)
+        try require(try controlIdentity(button("recording-input-lifecycle-checkbox", in: window)) == checkboxIdentity,
+                    "Checkbox or coordinator was recreated instead of updating external state")
+        try require(try button("recording-input-lifecycle-checkbox", in: window).state == .off && first.enabled,
+                    "External binding update did not reach the native checkbox")
+
+        var firstCalls = 0, secondCalls = 0
+        let actionHost = NSHostingView(rootView: RecordingInputActionButton(title: "重新检查", identifier: "recording-input-lifecycle-action") {
+            firstCalls += 1
+        }.disabled(false))
+        window.contentView = actionHost
+        ownership.observe(actionHost, name: "lifecycle.actionHost")
+        try await settle(window)
+        try observeButton("recording-input-lifecycle-action", in: window, prefix: "lifecycle", ownership: ownership)
+        let actionIdentity = try controlIdentity(button("recording-input-lifecycle-action", in: window))
+        try press("recording-input-lifecycle-action", in: window)
+        try require(firstCalls == 1, "Initial native lifecycle action did not run")
+        actionHost.rootView = RecordingInputActionButton(title: "更新检查", identifier: "recording-input-lifecycle-action") {
+            secondCalls += 1
+        }.disabled(true)
+        try await settle(window)
+        guard let disabled = try nativeView("recording-input-lifecycle-action", in: window) as? NSButton else {
+            throw failure("Missing disabled native lifecycle button")
+        }
+        try require(try controlIdentity(disabled) == actionIdentity,
+                    "Action button or coordinator was recreated instead of updating disable state")
+        try require(!disabled.isEnabled && disabled.title == "更新检查", "Native action ignored its updated title or inherited disable")
+        disabled.performClick(nil)
+        try require(firstCalls == 1 && secondCalls == 0, "Disabled native action ran a callback")
+        actionHost.rootView = RecordingInputActionButton(title: "更新检查", identifier: "recording-input-lifecycle-action") {
+            secondCalls += 1
+        }.disabled(false)
+        try await settle(window)
+        try require(try controlIdentity(button("recording-input-lifecycle-action", in: window)) == actionIdentity,
+                    "Action button or coordinator was recreated instead of updating its closure")
+        try press("recording-input-lifecycle-action", in: window)
+        try require(firstCalls == 1 && secondCalls == 1, "Reused native action retained a stale closure")
+        return ["status": "passed", "replacementBindingVerified": true, "externalStateVerified": true,
+                "replacementActionVerified": true, "inheritedDisableVerified": true,
+                "nativeControlAndCoordinatorReuseVerified": true]
+    }
+
+    private static func controlIdentity(_ button: NSButton) throws -> [ObjectIdentifier] {
+        guard let target = button.target else { throw failure("Native lifecycle button has no coordinator") }
+        return [ObjectIdentifier(button), ObjectIdentifier(target as AnyObject)]
+    }
+
+    private static func dispose(_ window: NSWindow) {
+        window.orderOut(nil)
+        window.contentView = nil
+        window.close()
+    }
+
+    private static func verifyReleased(_ ownership: OwnershipProbe) async throws -> [String: Any] {
+        let start = ProcessInfo.processInfo.systemUptime
+        let deadline = start + 3
+        while !ownership.retained.isEmpty && ProcessInfo.processInfo.systemUptime < deadline {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        try require(ownership.retained.isEmpty, "Fixture retained native ownership after detach/close: " + ownership.retained.joined(separator: ", "))
+        return ["status": "passed", "weakProbeCount": ownership.objects.count, "retainedObjects": 0,
+                "releaseMilliseconds": (ProcessInfo.processInfo.systemUptime - start) * 1_000,
+                "deadlineMilliseconds": 3_000]
     }
 
     private static func settle(_ window: NSWindow) async throws {
@@ -221,14 +457,26 @@ enum RecordingInputControlsPreviewFixture {
     }
     private static func require(_ condition: Bool, _ message: String) throws { if !condition { throw failure(message) } }
     private static func failure(_ message: String) -> Error { PicShotError.message("Recording input controls: " + message) }
-    private struct RouteUnavailable: Error { let reason: String }
+
+    @MainActor private final class OwnershipProbe {
+        var objects: [WeakObject] = []
+        func observe(_ value: AnyObject, name: String) { objects.append(WeakObject(value, name: name)) }
+        var retained: [String] { objects.filter { $0.value != nil }.map(\.name) }
+    }
+    private final class WeakObject {
+        weak var value: AnyObject?
+        let name: String
+        init(_ value: AnyObject, name: String) { self.value = value; self.name = name }
+    }
 
     @MainActor private final class PermissionProbe {
         var permissions = RecordingInputPermissions.unknown
         var permissionChecks = 0, installCalls = 0, removeCalls = 0, healthChecks = 0
+        var secureInputChecks = 0, focusChecks = 0
         var dependencies: RecordingInputMonitorDependencies {
             .init(permissions: { self.permissionChecks += 1; return self.permissions },
-                  secureInputEnabled: { false }, focusedContext: { .ordinary },
+                  secureInputEnabled: { self.secureInputChecks += 1; return false },
+                  focusedContext: { self.focusChecks += 1; return .ordinary },
                   install: { _, _ in self.installCalls += 1; return nil }, remove: { _ in self.removeCalls += 1 },
                   scheduleHealthCheck: { _ in self.healthChecks += 1; return {} }, clock: { 100 })
         }

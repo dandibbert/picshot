@@ -1969,3 +1969,8 @@ Executable, Info.plist, build-info and installed relocations: **ARM 154 / 0.16.0
 After complete exact-source ARM acceptance, ANN-18 and HIS-03 now move Partial → Code for saved editable state/reopening, with session-local undo, legacy flattening, bounded storage and real-device limits explicit. Both rows qualify within their installed scope; ARM arithmetic is **62 Code / 53 Partial / 9 Missing**. ANN-19 remains Partial because element/text snapping is absent; ANN-21 and PIN-19 are already Code and receive no count promotion. PIN-16 remains Partial because editable crop is not the complete thumbnail/viewport mode. Intel remains 50/61/13 until its own full release and row audit; no speculative Intel total is supplied. Final applied rows/count reconciliation: **本次仅将 ARM 的 ANN-18、HIS-03 从 Partial 晋为 Code；ARM 为 62 Code／53 Partial／9 Missing。Intel 0.11 保持 50／61／13。ANN-19、PIN-16 及其他未完成项维持原状态，全部 133 个原始 ID 保留**.
 
 All 133 original IDs, full requirements/checks/citations, nine context rows, failed experiments and historical installer/delivery evidence remain. Physical TCC/Retina/mixed-density displays/Spaces/foreign applications, minimum macOS, sustained use, broad image/model quality, general decoder/preview backing and the other Partial/Missing capabilities remain open.
+
+
+## Recording-input candidate 155 did not qualify
+
+The new recording-input candidate compiled but failed qualification. ARM stopped on a stale preflight inventory before native cases; Intel stopped at an unresolved late callout-retirement observation during early UI. The input controls supplied layout-only evidence. See [the exact failed and unrun stages](Candidate155RecordingInput.md); no 0.17 acceptance is inferred.

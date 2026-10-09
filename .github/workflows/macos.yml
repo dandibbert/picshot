@@ -100,6 +100,7 @@ jobs:
         timeout-minutes: 2
         run: |
           python3 -m unittest discover -s scripts/tests -p test_run_bounded_command.py -v
+          python3 -m unittest discover -s scripts/tests -p test_recording_input_ui_contract.py -v
           python3 -m unittest discover -s scripts/tests -p test_check_annotation_details_report.py -v
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_check_effect_output_failure_report.py -v
           PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p test_check_effect_output_failure_report.py -v
@@ -239,16 +240,16 @@ jobs:
               plan_path = Path('dist/native-tests-plan.json')
               plan = native.checked_plan(plan_path, source)
               inventory = plan['discoveredTests']
-              native.need(len(inventory) == 1799 and len({case.split('/')[0] for case in inventory}) == 205
+              native.need(len(inventory) == 1836 and len({case.split('/')[0] for case in inventory}) == 208
                   and hashlib.sha256(('\n'.join(inventory)+'\n').encode()).hexdigest() ==
-                      '77ab5c9cc0c4abc4524f2b7002b42a52133984d8f639cd7e27c27ce53b7a962a'
+                      '1b5d454926a5ad3d3408ad8827e5fcec619755d284d208d9c13b0e144627cf9b'
                   and plan['selectedTests'] == inventory and plan['selectionRegex'] == ''
                   and plan['processCount'] == 4 and plan['timeoutSecondsPerProcess'] == 420
-                  and [len(shard['tests']) for shard in plan['shards']] == [463, 403, 469, 464],
+                  and [len(shard['tests']) for shard in plan['shards']] == [481, 422, 469, 464],
                   'Complete native inventory or original process grouping changed')
               native.need([case for case in inventory if case.startswith('PicShotTests.PinAnchoredEditingTests/')] == class_ids,
                   'Pin class inventory differs from the four original methods')
-              record.update(planSHA256=digest(plan_path), discoveredCount=1799, discoveredClassCount=205,
+              record.update(planSHA256=digest(plan_path), discoveredCount=1836, discoveredClassCount=208,
                   discoverySHA256=digest(Path('dist/native-test-discovery.log')),
                   fixtureSHA256=digest(Path('Tests/PicShotTests/PinAnchoredEditingTests.swift')))
               for label, expected in (('method', [method]), ('class', class_ids)):

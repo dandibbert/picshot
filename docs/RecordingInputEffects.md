@@ -2,7 +2,7 @@
 
 This is the 0.17 implementation candidate. Native validation and installer acceptance are pending; the latest accepted ARM package is 0.16.0/build154.
 
-The recording controls offer three independent, default-off options: click rings, scroll direction, and shortcut labels. Effects are drawn into the same bounded recording compositor as the camera and live annotations. They are part of the saved video and therefore remain visible in exports derived from that video. Turning an option off changes future frames; it cannot remove an effect already encoded.
+The recording controls offer three independent, default-off options: click rings, scroll direction, and shortcut labels. Choices are retained only while PicShot remains open and reset to off after an app restart; an idle or paused recording never installs an input monitor. Effects are drawn into the same bounded recording compositor as the camera and live annotations. They are part of the saved video and therefore remain visible in exports derived from that video. Turning an option off changes future frames; it cannot remove an effect already encoded.
 
 The input state keeps at most 48 scalar events. Clicks last 0.7 seconds, scroll indicators 0.85 seconds, and shortcut labels at most 1.2 seconds. It holds no screen images, native event objects, application text, or persistent keystroke history. The encoder's existing frame-rate, duration, file-size and surface-pool limits remain in force. These bounds do not establish a whole-app memory ceiling.
 
