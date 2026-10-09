@@ -68,8 +68,10 @@ import PicShotCore
         }
         for action in HotKeyAction.settingsOrder {
             let button = ShortcutButton(binding: shortcuts[action]); button.widthAnchor.constraint(equalToConstant: 210).isActive = true
+            button.identifier = NSUserInterfaceItemIdentifier("settings.shortcut.\(action.rawValue)")
             button.onChange = { [weak self] binding in self?.shortcuts[action] = binding }
             button.setAccessibilityLabel(action.title + "快捷键")
+            if action.requiresActiveRecording { button.toolTip = "默认未设置；仅在录屏开始后生效，暂停时仍可使用。倒计时期间不占用此组合键。" }
             shortcutButtons[action] = button
         }
     }
@@ -150,14 +152,16 @@ import PicShotCore
             for action in HotKeyAction.settingsOrder {
                 guard let button = shortcutButtons[action] else { continue }
                 let clear = NSButton(image: NSImage(systemSymbolName: "xmark.circle", accessibilityDescription: "清除快捷键") ?? NSImage(), target: self, action: #selector(clearShortcut(_:)))
+                clear.identifier = NSUserInterfaceItemIdentifier("settings.shortcut.clear.\(action.rawValue)")
                 clear.tag = action.rawValue; clear.isBordered = false; clear.contentTintColor = .secondaryLabelColor
                 clear.toolTip = "清除“\(action.title)”的快捷键"; clear.widthAnchor.constraint(equalToConstant: 24).isActive = true
                 let pair = NSStackView(views: [button, clear]); pair.spacing = 8
                 rows.append(row(action.title, control: pair))
             }
-            addGroup("全局快捷键", rows: rows)
-            if !unavailableShortcuts.isEmpty { addNote("以下快捷键当前不可用，请更换组合键：" + unavailableShortcuts.map(\.title).joined(separator: "、")) }
-            addNote("点击后按组合键；至少包含 ⌘、⌃ 或 ⌥。Esc 取消录入。已有自定义键保持原来的操作含义。设置窗口打开期间暂停全局快捷键，关闭后恢复。")
+            addGroup("全局快捷键", rows: rows, spacing: 6)
+            var help = "点击后按组合键；至少包含 ⌘、⌃ 或 ⌥。Esc 取消录入。录屏快捷键默认未设置，仅在录制或暂停时生效。设置窗口打开期间暂停全局快捷键，关闭后恢复。"
+            if !unavailableShortcuts.isEmpty { help += "\n当前不可用，请更换：" + unavailableShortcuts.map(\.title).joined(separator: "、") }
+            addNote(help)
         }
     }
 
@@ -177,9 +181,9 @@ import PicShotCore
     private func addNote(_ text: String) {
         let label = note(text); content.addArrangedSubview(label); label.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
     }
-    private func addGroup(_ title: String, rows: [NSView]) {
+    private func addGroup(_ title: String, rows: [NSView], spacing: CGFloat = 12) {
         let group = SettingsCardView(frame: .zero); group.translatesAutoresizingMaskIntoConstraints = false
-        let stack = NSStackView(); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 12; stack.translatesAutoresizingMaskIntoConstraints = false
+        let stack = NSStackView(); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = spacing; stack.translatesAutoresizingMaskIntoConstraints = false
         let titleLabel = NSTextField(labelWithString: title); titleLabel.font = .systemFont(ofSize: 13, weight: .semibold); stack.addArrangedSubview(titleLabel)
         for (index, row) in rows.enumerated() {
             if index > 0 { let line = NSBox(); line.boxType = .separator; stack.addArrangedSubview(line); line.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }

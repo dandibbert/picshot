@@ -8,7 +8,7 @@ mkdir -p dist
 test "$(cd dist && pwd -P)" = "$PWD/dist"
 work=$(mktemp -d "$PWD/dist/ui-preview.XXXXXXXX")
 trap 'rm -rf "$work"' EXIT
-ditto -x -k "dist/PicShot-0.17.0-macos-$(uname -m).zip" "$work"
+ditto -x -k "dist/PicShot-0.18.0-macos-$(uname -m).zip" "$work"
 app="$work/PicShot.app"
 codesign --verify --deep --strict "$app"
 mkdir -p dist/evidence/ui
@@ -19,6 +19,7 @@ import json,pathlib,sys
 r=json.load(open(sys.argv[1]));assert r['status']=='passed',r
 assert r['uiPreviewOnly'] and not r['captureStarted'],r
 assert r['sourceCommit']==sys.argv[2],r
+assert r['recordingTransport']==json.loads((pathlib.Path(sys.argv[1]).parent/'recording-transport.json').read_text()),r['recordingTransport']
 assert r['annotationEffects']['status']=='passed',r
 assert not r['annotationEffects']['screenCaptureAttempted'],r
 parity=r['interactionParity']
@@ -132,7 +133,7 @@ assert not ocr['includeResourceCycles'] and ocr['resourceEvidence']['status']=='
 print(json.dumps(r,indent=2))
 PY
 
-python3 scripts/check-pin-ocr-report.py "$PWD/dist/evidence/ui/pin-ocr/pin-ocr-workflow.json" "$app" "$(git rev-parse HEAD)" 0.17.0 "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")"
+python3 scripts/check-pin-ocr-report.py "$PWD/dist/evidence/ui/pin-ocr/pin-ocr-workflow.json" "$app" "$(git rev-parse HEAD)" 0.18.0 "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")"
 python3 scripts/check-automatic-mosaic-report.py "$PWD/dist/evidence/ui/automatic-mosaic/automatic-mosaic-workflow.json" "$app" "$(git rev-parse HEAD)" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")"
 
 python3 scripts/check-annotation-details-report.py "$PWD/dist/evidence/ui/annotation-details/annotation-details.json" "$app" "$(git rev-parse HEAD)" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")"
@@ -161,3 +162,5 @@ python3 scripts/check-effect-output-failure-report.py "$PWD/dist/evidence/ui/cap
 
 # Reopen actual saved annotation documents in a fresh owned installed process.
 bash scripts/editable-annotation-smoke.sh "$app" "$PWD/dist/evidence/ui/editable-annotations" "$(git rev-parse HEAD)" functional
+
+python3 scripts/check-recording-transport-report.py "$PWD/dist/evidence/ui/recording-transport.json"

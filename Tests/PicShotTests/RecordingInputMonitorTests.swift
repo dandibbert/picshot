@@ -1,5 +1,6 @@
 import XCTest
 import AppKit
+import Carbon
 @testable import PicShot
 
 @MainActor
@@ -280,6 +281,80 @@ final class RecordingInputMonitorTests: XCTestCase {
         monitor.endSession()
     }
 
+    func testTransportChordsAreSuppressedBeforeCommandDispatchAndRebindingClearsBadges() {
+        let fixture = InputMonitorFixture()
+        let state = RecordingInputEffectsState()
+        let monitor = RecordingInputMonitor(state: state, dependencies: fixture.dependencies)
+        let commandC = HotKeyBinding(keyCode: 8, modifiers: UInt32(cmdKey))
+        let controlP = HotKeyBinding(keyCode: 35, modifiers: UInt32(controlKey))
+        let commandV = HotKeyBinding(keyCode: 9, modifiers: UInt32(cmdKey))
+        monitor.setTransportShortcutExclusions([commandC, controlP])
+        XCTAssertEqual(fixture.permissionChecks, 0)
+        XCTAssertTrue(fixture.masks.isEmpty)
+        monitor.options = .init(clicks: true, shortcuts: true)
+        monitor.beginSession(frame: frame, at: fixture.now)
+        let initialFocusChecks = fixture.focusChecks
+        fixture.now = 100.1
+        fixture.emit(shortcut(at: fixture.now))
+        fixture.emit(.init(kind: .shortcut(keyCode: 35, modifiers: .control), point: nil, timestamp: fixture.now))
+        XCTAssertTrue(state.snapshot(at: fixture.now).events.isEmpty,
+                      "The input callback can precede Carbon command delivery")
+        XCTAssertEqual(fixture.focusChecks, initialFocusChecks, "Transport commands never query the focused AX element")
+        fixture.now = 100.2
+        fixture.emit(.init(kind: .shortcut(keyCode: 9, modifiers: .command), point: nil, timestamp: fixture.now))
+        fixture.emit(.init(kind: .shortcut(keyCode: 8, modifiers: [.command, .shift]), point: nil, timestamp: fixture.now))
+        fixture.emit(click(at: fixture.now))
+        XCTAssertEqual(state.snapshot(at: fixture.now).events.count, 3,
+                       "Unrelated exact chords and permitted pointers remain visible")
+        XCTAssertEqual(fixture.focusChecks, initialFocusChecks + 2)
+        fixture.now = 100.3
+        monitor.setTransportShortcutExclusions([commandV])
+        XCTAssertTrue(state.snapshot(at: fixture.now).events.isEmpty)
+        fixture.now = 100.4
+        fixture.emit(.init(kind: .shortcut(keyCode: 9, modifiers: .command), point: nil, timestamp: 100.2))
+        fixture.emit(.init(kind: .shortcut(keyCode: 9, modifiers: .command), point: nil, timestamp: fixture.now))
+        XCTAssertTrue(state.snapshot(at: fixture.now).events.isEmpty)
+        fixture.emit(shortcut(at: fixture.now))
+        XCTAssertEqual(state.snapshot(at: fixture.now).events.count, 1)
+        monitor.setPaused(true, at: 100.5)
+        fixture.now = 101; monitor.setPaused(false, at: fixture.now)
+        fixture.now = 101.1
+        fixture.emit(.init(kind: .shortcut(keyCode: 9, modifiers: .command), point: nil, timestamp: fixture.now))
+        XCTAssertTrue(state.snapshot(at: fixture.now).events.isEmpty,
+                      "Resume preserves the configured exclusions")
+        monitor.endSession()
+    }
+
+    func testMalformedTransportExclusionsFailClosedWithoutAdditionalPermissionProbes() {
+        let fixture = InputMonitorFixture()
+        let state = RecordingInputEffectsState()
+        let monitor = RecordingInputMonitor(state: state, dependencies: fixture.dependencies)
+        monitor.options = .init(clicks: true, shortcuts: true)
+        monitor.beginSession(frame: frame, at: fixture.now)
+        fixture.now = 100.1; fixture.emit(shortcut(at: fixture.now))
+        XCTAssertEqual(state.snapshot(at: fixture.now).events.count, 1)
+        let checks = fixture.permissionChecks
+        fixture.now = 100.2
+        monitor.setTransportShortcutExclusions(Set([8, 9, 11].map {
+            HotKeyBinding(keyCode: UInt32($0), modifiers: UInt32(cmdKey))
+        }))
+        XCTAssertEqual(fixture.permissionChecks, checks)
+        XCTAssertTrue(state.snapshot(at: fixture.now).events.isEmpty)
+        fixture.now = 100.3; fixture.emit(shortcut(at: fixture.now))
+        XCTAssertTrue(state.snapshot(at: fixture.now).events.isEmpty)
+        fixture.emit(click(at: fixture.now))
+        XCTAssertEqual(state.snapshot(at: fixture.now).events.count, 1)
+        fixture.now = 100.4; monitor.setTransportShortcutExclusions([])
+        fixture.now = 100.5; fixture.emit(shortcut(at: fixture.now))
+        XCTAssertEqual(state.snapshot(at: fixture.now).events.count, 1)
+        fixture.now = 100.6
+        monitor.setTransportShortcutExclusions([HotKeyBinding(keyCode: 999, modifiers: 0)])
+        fixture.now = 100.7; fixture.emit(shortcut(at: fixture.now))
+        XCTAssertTrue(state.snapshot(at: fixture.now).events.isEmpty)
+        XCTAssertEqual(fixture.masks.count, 1, "Exclusion updates add no native observer")
+        monitor.endSession()
+    }
+
     func testNativeCallbacksDoNotRetainOwnerAndFallbackDeinitClearsState() async throws {
         let fixture = InputMonitorFixture()
         let state = RecordingInputEffectsState()
@@ -317,6 +392,7 @@ private final class InputMonitorFixture {
     var permissionChecks = 0
     var secureInput = false
     var focus = RecordingInputFocusContext.ordinary
+    var focusChecks = 0
     var installSucceeds = true
     var now: TimeInterval = 100
     var masks: [NSEvent.EventTypeMask] = []
@@ -327,7 +403,7 @@ private final class InputMonitorFixture {
 
     var dependencies: RecordingInputMonitorDependencies {
         .init(permissions: { self.permissionChecks += 1; return self.permissions },
-            secureInputEnabled: { self.secureInput }, focusedContext: { self.focus },
+            secureInputEnabled: { self.secureInput }, focusedContext: { self.focusChecks += 1; return self.focus },
             install: { mask, callback in
                 self.masks.append(mask); self.callbacks.append(callback)
                 return self.installSucceeds ? self.callbacks.count as Any : nil

@@ -400,18 +400,20 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
         inventory = self.current_source_inventory()
         plan = shards.make_plan(inventory, '', 'a' * 40, process_count=4)
         record = self.execute_pin_inventory_guard(plan)
-        self.assertEqual((record['discoveredCount'], record['discoveredClassCount']), (1836, 208))
-        added = [name for name in inventory if name.startswith('PicShotTests.RecordingInput')]
-        self.assertEqual(len(added), 37)
-        original = [name for name in inventory if name not in added]
-        self.assertEqual(len(original), 1799)
+        self.assertEqual((record['discoveredCount'], record['discoveredClassCount']), (1897, 213))
+        additions = json.loads((Path(__file__).parents[1] / 'recording-controls-native-additions.json').read_text())
+        self.assertEqual(len(additions), 61)
+        self.assertEqual(additions, sorted(set(additions)))
+        self.assertTrue(set(additions).issubset(inventory))
+        original = [name for name in inventory if name not in additions]
+        self.assertEqual(len(original), 1836)
         self.assertEqual(hashlib.sha256(('\n'.join(original) + '\n').encode()).hexdigest(),
-                         '77ab5c9cc0c4abc4524f2b7002b42a52133984d8f639cd7e27c27ce53b7a962a')
+                         '1b5d454926a5ad3d3408ad8827e5fcec619755d284d208d9c13b0e144627cf9b')
         selection = re.search(r"--selection-regex '([^']+)'", self.step(
             'Plan exhaustive and focused native test processes'))[1]
         focused = shards.make_plan(inventory, selection, 'a' * 40, process_count=2)
-        self.assertEqual(len(focused['selectedTests']), 1296)
-        self.assertTrue(set(added).issubset(focused['selectedTests']))
+        self.assertEqual(len(focused['selectedTests']), 1365)
+        self.assertTrue(set(additions).issubset(focused['selectedTests']))
 
     def test_pin_preflight_rejects_stale_missing_extra_and_renamed_inventory(self):
         inventory = self.current_source_inventory()

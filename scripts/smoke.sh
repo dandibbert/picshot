@@ -9,7 +9,7 @@ export PICSHOT_SMOKE_FORMULA_MODEL_DIR="$PWD/.build/model-fixtures/formula"
 export PICSHOT_SMOKE_FORMULA_INPUT="$PWD/Tests/PicShotMLHelperTests/Fixtures/energy.png"
 export PICSHOT_SMOKE_TABLE_MODEL_DIR="$PWD/.build/model-fixtures/table"
 export PICSHOT_SMOKE_TABLE_INPUT="$PWD/Tests/PicShotTableEngineTests/Fixtures/merged-table.png"
-base="PicShot-0.17.0-macos-$(uname -m)"
+base="PicShot-0.18.0-macos-$(uname -m)"
 # Keep the actual installed bundle and all evidence on physical workspace paths.
 # /var-style temporary aliases are rejected by the strict product protocol.
 mkdir -p dist
@@ -121,6 +121,10 @@ for cycle in composition['cycles']:
     assert cycle['postStopMutationExcluded'] and cycle['temporaryFilesRemaining']==0,cycle
 for key in ['screenCaptureStarted','cameraCaptureStarted','microphoneStarted','permissionRequested']:
     assert composition[key] is False,composition
+assert r['recordingTransport']==json.loads((pathlib.Path(sys.argv[1]).parent/'recording-transport.json').read_text()),r['recordingTransport']
+derived=r['recordingInputExportEvidence']
+assert derived['status']=='exported-awaiting-independent-validation' and derived['sourceCommit']==sys.argv[3],derived
+assert derived==json.loads((pathlib.Path(sys.argv[1]).parent/'recording-input-export.json').read_text()),derived
 inputs=r['recordingInputEvidence']
 assert inputs['status']=='passed' and inputs['sourceCommit']==sys.argv[3],inputs
 assert inputs['temporaryDirectoryRemoved'] and inputs['decodedFrames']==22,inputs
@@ -187,12 +191,14 @@ for c in save['resourceCycles']:
     assert c['activeJobs']==0 and c['retainedInputBytes']==0 and c['controllerReleased'] and c['temporaryJobRemoved'],c
 print(json.dumps(r,indent=2))
 PY
+  python3 scripts/verify-recording-input-exports.py "$PWD/dist/evidence/$format" "$(git rev-parse HEAD)"
+  python3 scripts/check-recording-transport-report.py "$PWD/dist/evidence/$format/recording-transport.json"
   python3 scripts/check-capture-output-report.py "$PWD/dist/evidence/$format/capture-output/capture-output-workflow.json" "$app" "$(git rev-parse HEAD)"
   python3 scripts/check-effect-output-failure-report.py "$PWD/dist/evidence/$format/capture-output/effect-output-failure.json" "$app" "$(git rev-parse HEAD)" "$PWD/dist/evidence/$format/launch.json.launcher.json"
   if [[ "$format" == zip ]];then
     bash scripts/multiwindow-resource-smoke.sh "$app" "$PWD/dist/evidence/$format/multiwindow-resources" "$(git rev-parse HEAD)"
   fi
-  python3 scripts/check-pin-ocr-report.py "$PWD/dist/evidence/$format/pin-ocr/pin-ocr-workflow.json" "$app" "$(git rev-parse HEAD)" 0.17.0 "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")" --full
+  python3 scripts/check-pin-ocr-report.py "$PWD/dist/evidence/$format/pin-ocr/pin-ocr-workflow.json" "$app" "$(git rev-parse HEAD)" 0.18.0 "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")" --full
   python3 scripts/check-automatic-mosaic-report.py "$PWD/dist/evidence/$format/automatic-mosaic/automatic-mosaic-workflow.json" "$app" "$(git rev-parse HEAD)" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")" --full
   python3 scripts/check-annotation-details-report.py "$PWD/dist/evidence/$format/annotation-details/annotation-details.json" "$app" "$(git rev-parse HEAD)" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")" --full
   bash scripts/pin-workflows-smoke.sh "$app" "$PWD/dist/evidence/$format/pin-workflows" "$(git rev-parse HEAD)"

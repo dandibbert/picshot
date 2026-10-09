@@ -4,7 +4,7 @@ cd "$(dirname "$0")/.."
 python3 scripts/build-native-codecs.py --arch "$(uname -m)"
 swift build -c release
 bin=$(swift build -c release --show-bin-path)
-version=0.17.0
+version=0.18.0
 arch=$(uname -m)
 sha=$(git rev-parse HEAD)
 app=dist/PicShot.app

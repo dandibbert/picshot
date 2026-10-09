@@ -2111,3 +2111,8 @@ The new recording-input candidate compiled but failed qualification. ARM stopped
 ## Recording-control candidate 156 did not qualify
 
 The strict early UI gate found overlapping native control frames in the first denied-permission input row. The failed-state pixels/rectangles were not retained, so no exact visual cause is asserted. See [the source-bound failure and prepared alignment correction](Candidate156ControlGeometry.md); native and installed acceptance remain required.
+
+
+## Intel159 terminal installed result
+
+Intel159 completed full/focused native and actual-model gates, then exhausted the unchanged 240-second repeated manual-scroll resource deadline after 8 warmups and 9/16 measured cycles. The earlier functional report passed. The failed-cycle predicate state is unrecorded; subsequent DMG/default gates and installer uploads were unrun. See [the exact incomplete scope](Intel159InstalledFailure.md). ARM159 acceptance and delivery remain unchanged.

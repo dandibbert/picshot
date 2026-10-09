@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Combine
 import PicShotCore
 import PicShotFormulaRenderCore
 import ScreenCaptureKit
@@ -37,6 +38,7 @@ import ImageIO
     weak var pinGroupsController:PinGroupsController?
     weak var settingsController:SettingsController?
     var hotKeys:HotKeyService?
+    private var recordingHotKeyObservation: AnyCancellable?
     var busy=false
     private var captureTask:Task<Void,Never>?
     private var activePresetOperation: UUID?
@@ -87,7 +89,15 @@ import ImageIO
                 case .clipboardPin:self?.pastePin()
                 case .history:self?.showMain()
                 case .restoreLastPin:self?.restoreLastClosedPin()
+                case .recordingPauseResume:self?.recordingController?.pauseResumeFromShortcut()
+                case .recordingStopSave:self?.recordingController?.stopAndSaveFromShortcut()
                 }
+            }
+            // Consume the actual published values on the service's MainActor.
+            // A restart must deliver false before true, even in one run-loop turn,
+            // so queued events from the previous take cannot target the new take.
+            recordingHotKeyObservation = recorder.$isRecording.removeDuplicates().sink { [weak self] active in
+                MainActor.assumeIsolated { self?.hotKeys?.setRecordingActive(active) }
             }
             refreshHotkeys()
         }
@@ -109,6 +119,7 @@ import ImageIO
         if recorder.controlState.hasSessionActivity {
             NSLog("PicShot exited before recording cleanup completed.")
         }
+        recordingHotKeyObservation?.cancel(); recordingHotKeyObservation = nil
         hotKeys?.invalidate();captureTask?.cancel();barcodeTask?.cancel()
         do{try pinSession?.prepareForTermination()}catch{NSLog("Could not save pin presentation before exit: %@",error.localizedDescription)}
     }
@@ -116,12 +127,12 @@ import ImageIO
         // A failed disk write has no durable copy. Quit must not silently release
         // the only owner; Save or explicit Discard in the panel resolves it first.
         if pendingCaptureRecovery.blocksCapture { showPendingCapture(); return .terminateCancel }
-        let state=recorder.controlState
+        let state=recordingController?.controlState ?? recorder.controlState
         guard state.terminationAction != .none else{isTerminating=true;return .terminateNow}
         let alert=NSAlert()
-        alert.messageText=state.hasPendingTake ? "保护未保存的录屏并退出？" : (state.canCancelCountdown ? "取消录屏倒计时并退出？" : "保存录屏并退出？")
-        alert.informativeText=state.hasPendingTake ? "这段录屏尚未安全保留。只有成功保护原始文件后才能退出；下次打开 PicShot 时可尝试恢复。保护失败时请保持 PicShot 打开。" : "尚未开始的倒计时会取消；正在录制或暂停的内容会先保存到电影/PicShot。已保存的原片不会删除。"
-        alert.addButton(withTitle:state.hasPendingTake ? "重试保护并退出" : (state.canCancelCountdown ? "取消倒计时并退出" : "保存并退出"))
+        alert.messageText=state.hasPendingTake ? "保护未保存的录屏并退出？" : (state.isSelectingRegion ? "取消录屏选区并退出？" : (state.canCancelCountdown ? "取消录屏倒计时并退出？" : "保存录屏并退出？"))
+        alert.informativeText=state.hasPendingTake ? "这段录屏尚未安全保留。只有成功保护原始文件后才能退出；下次打开 PicShot 时可尝试恢复。保护失败时请保持 PicShot 打开。" : "尚未开始的选区或倒计时会取消；正在录制或暂停的内容会先保存到电影/PicShot。已保存的原片不会删除。"
+        alert.addButton(withTitle:state.hasPendingTake ? "重试保护并退出" : (state.isSelectingRegion ? "取消选区并退出" : (state.canCancelCountdown ? "取消倒计时并退出" : "保存并退出")))
         alert.addButton(withTitle:"留在 PicShot")
         guard alert.runModal() == .alertFirstButtonReturn else{return .terminateCancel}
         Task {
@@ -129,10 +140,20 @@ import ImageIO
                 // Re-read after the modal: a countdown can finish, or an
                 // automatic stop can save the movie while the alert is open.
                 try await RecordingTerminationCoordinator.finish(
-                    snapshot:{self.recorder.controlState},
-                    cancelCountdown:{await self.recorder.cancel()},
-                    save:{_ = try await self.recorder.stop()},
-                    preserve:{try await self.recorder.retryPendingTakePreservation(presentRecovery:false)})
+                    snapshot:{self.recordingController?.controlState ?? self.recorder.controlState},
+                    cancelCountdown:{
+                        if let controller = self.recordingController { await controller.cancelCountdownForTermination() }
+                        else { await self.recorder.cancel() }
+                    },
+                    save:{
+                        if let controller = self.recordingController { try await controller.saveForTermination() }
+                        else { _ = try await self.recorder.stop() }
+                    },
+                    preserve:{try await self.recorder.retryPendingTakePreservation(presentRecovery:false)},
+                    cancelPreparation:{
+                        guard let controller = self.recordingController else { throw RecordingError.busy }
+                        try await controller.cancelStartForTermination()
+                    })
                 if self.pendingCaptureRecovery.blocksCapture {
                     self.showPendingCapture(); sender.reply(toApplicationShouldTerminate:false); return
                 }
@@ -695,7 +716,13 @@ import ImageIO
         setupRecordingRecovery();recordingRecovery?.presentPending(showIfEmpty:true)
         NSApp.activate(ignoringOtherApps:true)
     }
-    @objc func record(){if recordingController == nil{recordingController=RecordingPanelController(service:recorder,capture:capture,previews:recordingPreviews)};recordingController?.showWindow(nil);NSApp.activate(ignoringOtherApps:true)}
+    @objc func record(){
+        if recordingController == nil {
+            recordingController=RecordingPanelController(service:recorder,capture:capture,previews:recordingPreviews)
+            updateRecordingShortcutLabels(HotKeyConfiguration.read())
+        }
+        recordingController?.showWindow(nil);NSApp.activate(ignoringOtherApps:true)
+    }
     @objc func settings(){
         if let settingsController{settingsController.showWindow(nil);NSApp.activate(ignoringOtherApps:true);return}
         // Editing an existing global combination must not trigger capture behind Settings.
@@ -706,9 +733,19 @@ import ImageIO
     }
     func refreshHotkeys(){
         guard smoke == nil,settingsController == nil else{return}
-        hotKeys?.register(HotKeyConfiguration.read())
+        let configuration = HotKeyConfiguration.read()
+        // The global input monitor may run before Carbon dispatches the command.
+        // Suppress configured transport chords at admission, not after Pause/Stop.
+        recorder.inputMonitor.setTransportShortcutExclusions(configuration.transportBindings)
+        hotKeys?.register(configuration)
+        updateRecordingShortcutLabels(configuration)
         if let menu=status?.menu{rebuildStatusMenu(menu)}
         if let failures=hotKeys?.failures,!failures.isEmpty{NSLog("Some shortcuts are unavailable: %@",failures.map(\.title).joined(separator:", "))}
+    }
+    private func updateRecordingShortcutLabels(_ configuration: HotKeyConfiguration) {
+        recordingController?.setTransportShortcutLabels(
+            pause: configuration[.recordingPauseResume]?.displayName,
+            stop: configuration[.recordingStopSave]?.displayName)
     }
     @objc func about(){let a=NSAlert();a.messageText="PicShot " + (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "开发版");a.informativeText="原生截图、标注与贴图工具\n图片与文字识别在本机处理\n\n当前为开发预览版。完整 PixPin 功能对照见仓库 docs/PARITY.md。\nmacOS 14+ · 未经 Apple 公证";a.runModal()}
 }

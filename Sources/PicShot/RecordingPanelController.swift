@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import ScreenCaptureKit
+import Combine
 
 /// UI and exit decisions are independent of ScreenCaptureKit so they can be
 /// exercised without creating streams or requesting OS permissions.
@@ -13,24 +14,26 @@ struct RecordingControlState: Equatable {
     var hasPendingTake = false
     var countdown: Int?
     var isWorking = false
+    var isSelectingRegion = false
 
-    var hasSessionActivity: Bool { isRecording || isStarting || isRestarting || isStopping || hasPendingTake }
+    var hasSessionActivity: Bool { isRecording || isStarting || isRestarting || isStopping || hasPendingTake || isSelectingRegion }
     var blocksClosing: Bool { hasSessionActivity || isWorking }
     var optionsDisabled: Bool { blocksClosing }
     var canStart: Bool { !blocksClosing }
-    var canPauseOrStop: Bool { isRecording && !isStarting && !isRestarting && !isStopping && !hasPendingTake && !isWorking }
+    var canPauseOrStop: Bool { isRecording && !isStarting && !isRestarting && !isStopping && !hasPendingTake && !isWorking && !isSelectingRegion }
     // Cancellation is deliberately available while start/restart is awaiting
     // the countdown; the ordinary busy guard must not disable this escape hatch.
     var canCancelCountdown: Bool { isStarting && countdown != nil && !isRecording && !isStopping && !hasPendingTake }
     var terminationAction: RecordingTerminationAction {
         if hasPendingTake { return .preserve }
+        if isSelectingRegion { return .cancelPreparation }
         if !hasSessionActivity { return .none }
         return canCancelCountdown ? .cancelCountdown : .save
     }
 }
 
 enum RecordingTerminationAction: Equatable {
-    case none, cancelCountdown, save, preserve
+    case none, cancelCountdown, save, preserve, cancelPreparation
 }
 
 /// A pending Quit must drain the cancelled restart/start generation before
@@ -40,19 +43,21 @@ enum RecordingTerminationCoordinator {
     static func finish(snapshot: () -> RecordingControlState,
                        cancelCountdown: () async -> Void,
                        save: () async throws -> Void,
-                       preserve: () async throws -> Void = { throw RecordingError.pendingTake }) async throws {
+                       preserve: () async throws -> Void = { throw RecordingError.pendingTake },
+                       cancelPreparation: () async throws -> Void = { throw RecordingError.busy }) async throws {
         do {
             switch snapshot().terminationAction {
             case .none: return
             case .cancelCountdown: await cancelCountdown()
             case .save: try await save()
             case .preserve: try await preserve()
+            case .cancelPreparation: try await cancelPreparation()
             }
         } catch is CancellationError {
             // Stop racing countdown cancellation has no movie to finalize.
             // Do not approve Quit until the operation actually settles below.
         }
-        while snapshot().isStarting || snapshot().isRestarting || snapshot().isStopping {
+        while snapshot().isSelectingRegion || snapshot().isStarting || snapshot().isRestarting || snapshot().isStopping {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
         guard !snapshot().hasPendingTake else { throw RecordingError.pendingTake }
@@ -105,15 +110,39 @@ struct RecordingPreviewRoutingPolicy {
 }
 
 @MainActor
+protocol RecordingTransportPresenting: AnyObject {
+    func show(snapshot: RecordingTransportSnapshot, anchor: CGRect, visibleFrame: CGRect)
+    func update(snapshot: RecordingTransportSnapshot, actions: RecordingTransportActions?)
+    func updatePlacement(anchor: CGRect, visibleFrame: CGRect, preservePosition: Bool)
+    func hide()
+    func teardown()
+}
+
+extension RecordingTransportController: RecordingTransportPresenting { }
+
+@MainActor
 final class RecordingPanelController: NSWindowController, NSWindowDelegate {
+    enum Presentation { case expanded, compact, hidden }
     private let service: RecordingService
     private let previews: RecordingPreviewWindowStore
-    private var operationInFlight = false
+    let commands: RecordingCommandCoordinator
+    private var transport: (any RecordingTransportPresenting)?
+    private var displayObserver: AnyCancellable?
+    private var pauseShortcut: String?
+    private var stopShortcut: String?
+    private let presentWindows: Bool
+    private(set) var presentation: Presentation = .hidden
+    private var retired = false
 
     init(service: RecordingService, capture: CaptureService, previews: RecordingPreviewWindowStore? = nil,
-         previewLayoutObserver: (([String: CGRect]) -> Void)? = nil) {
+         previewLayoutObserver: (([String: CGRect]) -> Void)? = nil,
+         commands: RecordingCommandCoordinator? = nil,
+         transportFactory: ((RecordingTransportActions) -> any RecordingTransportPresenting)? = nil,
+         presentWindows: Bool = true) {
         self.service = service
         self.previews = previews ?? RecordingPreviewWindowStore()
+        self.commands = commands ?? RecordingCommandCoordinator(service: service)
+        self.presentWindows = presentWindows
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 490),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         super.init(window: window)
@@ -123,31 +152,142 @@ final class RecordingPanelController: NSWindowController, NSWindowDelegate {
         window.level = .floating
         window.center()
         window.contentView = NSHostingView(rootView: RecordingPanel(
-            service: service, capture: capture,
-            onPreview: { [weak self] url in self?.showPreview(for: url) },
-            onWorkingChanged: { [weak self] working in self?.operationInFlight = working },
+            service: service, capture: capture, commands: self.commands,
+            onCollapse: { [weak self] in self?.collapseToTransport() },
             previewLayoutObserver: previewLayoutObserver))
+        let actions = RecordingTransportActions(
+            pauseResume: { [weak self] in self?.pauseResumeFromShortcut() },
+            stopSave: { [weak self] in self?.stopAndSaveFromShortcut() },
+            expand: { [weak self] in self?.expandControls() })
+        transport = transportFactory?(actions) ?? RecordingTransportController(actions: actions)
+        self.commands.onPreview = { [weak self] url in self?.showPreview(for: url) }
+        self.commands.onChange = { [weak self] in self?.synchronizePresentation() }
+        self.commands.onRecordingBegan = { [weak self] in self?.showTransportForNewTake() }
+        displayObserver = NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
+            .sink { [weak self] _ in self?.updateTransportPlacement() }
+        self.commands.startObserving()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) unavailable") }
 
+    deinit {
+        MainActor.assumeIsolated {
+            displayObserver?.cancel()
+            commands.teardown()
+            transport?.teardown()
+            window?.delegate = nil
+            window?.orderOut(nil)
+            window?.contentView = nil
+        }
+    }
+
+    var controlState: RecordingControlState { commands.controlState }
+    func pauseResumeFromShortcut() { commands.pauseResume() }
+    func stopAndSaveFromShortcut() { commands.stopAndSave() }
+    func saveForTermination() async throws { try await commands.saveForTermination() }
+    func cancelCountdownForTermination() async { await commands.cancelCountdownForTermination() }
+    func cancelStartForTermination() async throws { try await commands.cancelStartForTermination() }
+
+    func setTransportShortcutLabels(pause: String?, stop: String?) {
+        pauseShortcut = pause
+        stopShortcut = stop
+        synchronizePresentation()
+    }
+
+    override func showWindow(_ sender: Any?) { expandControls() }
+
+    func expandControls() {
+        guard !retired else { return }
+        presentation = .expanded
+        transport?.hide()
+        if presentWindows {
+            super.showWindow(nil)
+            window?.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    private func showTransportForNewTake() {
+        guard !retired, let placement = transportPlacement else { expandControls(); return }
+        // A new capture target gets a new anchor; explicit expand/collapse within
+        // that take continues to preserve the user's dragged position.
+        transport?.updatePlacement(anchor: placement.anchor, visibleFrame: placement.visible, preservePosition: false)
+        collapseToTransport()
+    }
+
+    func collapseToTransport() {
+        guard !retired, commands.controlState.isRecording || commands.controlState.isStopping || commands.stopRequested else { return }
+        guard let placement = transportPlacement else { expandControls(); return }
+        presentation = .compact
+        // Never call close(): windowWillClose ends the input-monitor session.
+        window?.orderOut(nil)
+        transport?.show(snapshot: transportSnapshot, anchor: placement.anchor, visibleFrame: placement.visible)
+    }
+
+    private var transportSnapshot: RecordingTransportSnapshot {
+        let state = commands.controlState
+        let saving = commands.stopRequested || state.isStopping
+        let kind: RecordingTransportSnapshot.StatusKind = commands.failure != nil || state.hasPendingTake
+            ? .error : (saving ? .saving : (state.isPaused ? .paused : .recording))
+        return RecordingTransportSnapshot(paused: state.isPaused, busy: commands.working || state.isStarting || state.isRestarting || state.isStopping,
+            canPause: commands.canPause, canStop: commands.canStop, elapsed: commands.elapsed,
+            status: commands.failure ?? (state.hasPendingTake ? "等待安全保护" : (saving ? "正在保存…" : (state.isPaused ? "已暂停" : "录制中"))),
+            statusKind: kind, pauseShortcut: pauseShortcut, stopShortcut: stopShortcut)
+    }
+
+    private var transportPlacement: (anchor: CGRect, visible: CGRect)? {
+        let selected = commands.target.flatMap { target in
+            NSScreen.screens.first {
+                ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == target.displayID
+            }
+        }
+        // If a display disappeared, relocate only the controls so Stop remains
+        // reachable. This never changes the recording's source rectangle.
+        guard let screen = selected ?? window?.screen ?? NSScreen.main ?? NSScreen.screens.first else { return nil }
+        let anchor: CGRect
+        if selected != nil, let target = commands.target {
+            anchor = target.appKitFrame(in: screen.frame)
+        } else { anchor = screen.frame }
+        return (anchor, screen.visibleFrame)
+    }
+
+    private func updateTransportPlacement() {
+        guard !retired, let placement = transportPlacement else { return }
+        transport?.updatePlacement(anchor: placement.anchor, visibleFrame: placement.visible, preservePosition: true)
+    }
+
+    private func synchronizePresentation() {
+        guard !retired else { return }
+        transport?.update(snapshot: transportSnapshot, actions: nil)
+        if commands.controlState.hasPendingTake {
+            // A protection failure always exposes the existing recovery action.
+            expandControls()
+        } else if !commands.controlState.hasSessionActivity && !commands.working && presentation == .compact {
+            transport?.hide()
+            presentation = .hidden
+            if commands.failure != nil { expandControls() }
+        }
+    }
+
     private func showPreview(for url: URL) {
-        // Also guard the actual window presentation: a queued callback must not
-        // cover a newly started or paused recording with an older movie.
+        // A queued publication must never cover a newly started/paused take.
+        let state = commands.controlState
+        guard !state.isRecording, !state.isStarting, !state.isRestarting else { return }
+        // The real service is also checked when a synthetic command owner is injected.
         guard !service.isRecording, !service.isStarting, !service.isRestarting else { return }
         previews.open(url: url)
+        presentation = .hidden
+        transport?.hide()
         window?.orderOut(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        if presentWindows { NSApp.activate(ignoringOtherApps: true) }
     }
 
     func windowWillClose(_ notification: Notification) {
-        // Also cover programmatic close, which can bypass windowShouldClose.
         service.inputMonitor.endSession()
+        presentation = .hidden
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        var state = service.controlState
-        state.isWorking = operationInFlight
+        let state = commands.controlState
         guard state.blocksClosing else {
             service.inputMonitor.endSession()
             service.overlay.hide()
@@ -170,6 +310,21 @@ final class RecordingPanelController: NSWindowController, NSWindowDelegate {
         }
         alert.runModal()
         return false
+    }
+
+    /// Permanent presentation disposal, distinct from collapse and ordinary Close.
+    /// It detaches callbacks/observers without cancelling an accepted save.
+    func teardown() {
+        guard !retired else { return }
+        retired = true
+        displayObserver?.cancel(); displayObserver = nil
+        commands.teardown()
+        transport?.teardown(); transport = nil
+        window?.delegate = nil
+        window?.orderOut(nil)
+        window?.contentView = nil
+        window = nil
+        presentation = .hidden
     }
 }
 
@@ -221,8 +376,8 @@ final class RecordingPreviewWindowStore {
 struct RecordingPanel: View {
     @ObservedObject var service: RecordingService
     let capture: CaptureService
-    let onPreview: (URL) -> Void
-    let onWorkingChanged: (Bool) -> Void
+    @ObservedObject var commands: RecordingCommandCoordinator
+    let onCollapse: () -> Void
     // Optional read-only geometry for the owned synthetic panel fixture. Normal
     // panels do not install geometry readers or change interaction behavior.
     var previewLayoutObserver: (([String: CGRect]) -> Void)? = nil
@@ -233,18 +388,10 @@ struct RecordingPanel: View {
     @State private var region = false
     @State private var frameRate = 30
     @State private var delay = 0
-    @State private var routing = RecordingPreviewRoutingPolicy()
-    @State private var operationCount = 0
-    @State private var restartInFlight = false
-    @State private var cancellingCountdown = false
-    @State private var message = "录屏直接写入磁盘，最长 10 分钟 / 1 GB"
+    @State private var displayError: String?
 
-    private var working: Bool { operationCount > 0 }
-    private var controls: RecordingControlState {
-        var state = service.controlState
-        state.isWorking = working
-        return state
-    }
+    private var working: Bool { commands.working }
+    private var controls: RecordingControlState { commands.controlState }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -255,17 +402,17 @@ struct RecordingPanel: View {
                 Button(working ? "正在准备…" : "开始录制", action: startRecording)
                     .buttonStyle(.borderedProminent).disabled(!controls.canStart || displays.isEmpty)
                     .background(previewSectionGeometry("start"))
-                if let output = routing.output {
+                if let output = commands.routing.output {
                     HStack {
-                        Button("预览 / 裁剪 / GIF…") { onPreview(output) }
+                        Button("预览 / 裁剪 / GIF…") { commands.showPreview(output) }
                         Button("显示文件") { NSWorkspace.shared.activateFileViewerSelecting([output]) }
                     }.disabled(working)
                 }
             }
-            if let previous = routing.previousTake {
+            if let previous = commands.routing.previousTake {
                 HStack {
                     Text("上一段已保留").font(.system(size: 11)).foregroundStyle(.secondary)
-                    Button("预览上一段") { onPreview(previous) }
+                    Button("预览上一段") { commands.showPreview(previous) }
                         .disabled(controls.blocksClosing)
                     Button("显示上一段文件") { NSWorkspace.shared.activateFileViewerSelecting([previous]) }
                         .disabled(working || service.isStarting || service.isRestarting || service.isStopping)
@@ -277,7 +424,7 @@ struct RecordingPanel: View {
                 inputMonitor: service.inputMonitor, isRecording: service.isRecording)
                 .disabled(service.isStarting || service.isRestarting || service.isStopping || service.hasPendingTake || working)
                 .background(previewSectionGeometry("effects"))
-            Text(service.error ?? message).font(.system(size: 11)).foregroundStyle(.secondary)
+            Text(commands.failure ?? displayError ?? commands.message).font(.system(size: 11)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .background(previewSectionGeometry("status"))
             Text("停止后打开预览：逐帧、变速、音量、选段导出 MP4 / GIF，原片保留")
@@ -291,19 +438,15 @@ struct RecordingPanel: View {
         .padding(18).frame(width: 480, height: 490)
         .coordinateSpace(name: RecordingPanelSectionFrames.coordinateSpace)
         .onPreferenceChange(RecordingPanelSectionFrames.self) { frames in previewLayoutObserver?(frames) }
-        // onChange can coalesce the old take's URL and the new start's nil.
-        // Receive every publication so a failed restart still preserves its URL.
-        .onReceive(service.$outputURL) { url in
-            if let url { acceptOutput(url) }
-        }
         .task {
             do {
                 displays = try await service.availableDisplays()
+                displayError = nil
                 if !displays.contains(where: { $0.displayID == selected }) {
                     selected = displays.first?.displayID ?? CGMainDisplayID()
                 }
             } catch is CancellationError { }
-            catch { message = error.localizedDescription }
+            catch { displayError = error.localizedDescription }
         }
     }
 
@@ -344,27 +487,31 @@ struct RecordingPanel: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Circle().fill(service.isPaused ? Color.orange : Color.red).frame(width: 10, height: 10)
-                Text(sessionStatus).monospacedDigit()
+                Text(commands.sessionStatus).monospacedDigit()
             }
             if service.hasPendingTake {
                 Text("录制已停止。请腾出磁盘空间或恢复文件夹访问后重试；成功保护前无法开始另一段录屏。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
-                Button(working ? "正在保护…" : "重试保护并恢复录屏", action: retryPreservation)
+                Button(working ? "正在保护…" : "重试保护并恢复录屏", action: { commands.retryPreservation() })
                     .buttonStyle(.borderedProminent).disabled(working || service.isStopping)
             } else if controls.canCancelCountdown {
                 Text("倒计时结束后开始录制；重录沿用上一段的区域和声音设置。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
-                Button(cancellingCountdown ? "正在取消…" : "取消倒计时", action: cancelCountdown)
-                    .disabled(cancellingCountdown)
+                Button(commands.cancellingCountdown ? "正在取消…" : "取消倒计时") { commands.cancelCountdown() }
+                    .disabled(commands.cancellingCountdown)
             } else if service.isRecording {
-                Text(service.isPaused ? "暂停期间的画面和声音不写入文件。" : "回到此窗口暂停或停止。录屏内容不会上传。")
+                Text(service.isPaused ? "暂停期间的画面和声音不写入文件。" : "可用悬浮控制条暂停或停止。录屏内容不会上传。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                 HStack {
-                    Button(service.isPaused ? "继续录制" : "暂停录制", action: togglePause)
-                    Button("停止并保存 MP4", action: stopRecording).buttonStyle(.borderedProminent)
-                }.disabled(!controls.canPauseOrStop)
+                    Button(service.isPaused ? "继续录制" : "暂停录制") { commands.pauseResume() }
+                        .disabled(!commands.canPause)
+                    Button("停止并保存 MP4") { commands.stopAndSave() }
+                        .buttonStyle(.borderedProminent).disabled(!commands.canStop)
+                    Button("收起控制", action: onCollapse)
+                        .accessibilityIdentifier("recording-panel-collapse")
+                }
                 HStack {
-                    Button("保存本段并重录") { restartRecording(discard: false) }
+                    Button("保存本段并重录") { commands.restart(discard: false, delay: TimeInterval(delay)) }
                     Button("丢弃本段并重录…", role: .destructive, action: confirmDiscardAndRestart)
                 }.disabled(!controls.canPauseOrStop)
                 Text(delay == 0 ? "重录沿用当前区域和声音设置，立即开始。" : "重录沿用当前设置，等待 \(delay) 秒后开始。")
@@ -377,83 +524,12 @@ struct RecordingPanel: View {
         }
     }
 
-    private var sessionStatus: String {
-        if service.hasPendingTake { return "录屏等待安全保护" }
-        if cancellingCountdown { return "正在取消倒计时…" }
-        if let remaining = service.countdown { return "\(remaining) 秒后开始录制" }
-        if service.isStopping { return "正在保存 MP4…" }
-        if service.isRestarting { return "正在准备重新录制…" }
-        if service.isStarting { return "正在准备录制…" }
-        return "\(service.isPaused ? "已暂停" : "正在录制") · \(Int(service.elapsed)) 秒"
-    }
-
     private func startRecording() {
-        guard controls.canStart else { return }
         let displayID = selected
         let selectRegion = region
         let options = RecordingOptions(frameRate: frameRate, capturesSystemAudio: audio, capturesMicrophone: microphone)
-        let startDelay = TimeInterval(delay)
-        beginOperation()
-        Task {
-            defer { endOperation() }
-            do {
-                let rectangle = selectRegion ? try await capture.selectRegion(displayID: displayID) : nil
-                try await service.start(displayID: displayID, region: rectangle, options: options, delay: startDelay)
-                message = "录制中；暂停不计入视频时长，停止后保存原片。"
-            } catch is CancellationError { message = "已取消开始录制。已保存的原片会保留。" }
-            catch CaptureError.cancelled { message = "已取消选择录屏区域。" }
-            catch { message = error.localizedDescription }
-        }
-    }
-
-    private func stopRecording() {
-        guard controls.canPauseOrStop else { return }
-        beginOperation()
-        Task {
-            defer { endOperation() }
-            do { acceptOutput(try await service.stop()) }
-            catch is CancellationError { message = "录屏操作已取消。已保存的原片会保留。" }
-            catch { message = error.localizedDescription }
-        }
-    }
-
-    private func retryPreservation() {
-        guard service.hasPendingTake, !working else { return }
-        beginOperation()
-        Task {
-            defer { endOperation() }
-            do {
-                try await service.retryPendingTakePreservation()
-                message = "原始录屏已安全保留，可在恢复窗口中尝试另存可播放片段。"
-            } catch { message = error.localizedDescription }
-        }
-    }
-
-    private func togglePause() {
-        guard controls.canPauseOrStop else { return }
-        let shouldResume = service.isPaused
-        beginOperation()
-        Task {
-            defer { endOperation() }
-            do {
-                if shouldResume { try await service.resume() }
-                else { try await service.pause() }
-            } catch { message = error.localizedDescription }
-        }
-    }
-
-    private func cancelCountdown() {
-        guard controls.canCancelCountdown, !cancellingCountdown else { return }
-        cancellingCountdown = true
-        beginOperation()
-        Task {
-            defer { cancellingCountdown = false; endOperation() }
-            guard service.controlState.canCancelCountdown else {
-                message = "倒计时已结束；请点击「停止并保存 MP4」保存当前录屏。"
-                return
-            }
-            await service.cancel()
-            message = "已取消倒计时。已保存的原片会保留。"
+        commands.start(displayID: displayID, options: options, delay: TimeInterval(delay)) {
+            selectRegion ? try await capture.selectRegion(displayID: displayID) : nil
         }
     }
 
@@ -468,48 +544,10 @@ struct RecordingPanel: View {
         guard alert.runModal() == .alertSecondButtonReturn else { return }
         // Modal alerts run the event loop: an automatic stop may have completed.
         guard controls.canPauseOrStop else { return }
-        restartRecording(discard: true)
+        commands.restart(discard: true, delay: TimeInterval(delay))
     }
 
-    private func restartRecording(discard: Bool) {
-        guard controls.canPauseOrStop else { return }
-        restartInFlight = true
-        beginOperation()
-        Task {
-            var previous: URL?
-            defer {
-                restartInFlight = false
-                endOperation()
-                if let preview = routing.finishRestart(previous: previous,
-                    captureRemainsActive: service.controlState.hasSessionActivity) {
-                    onPreview(preview)
-                }
-            }
-            do {
-                previous = try await service.restart(discardUnfinished: discard, delay: TimeInterval(delay))
-                message = previous == nil ? "已开始重新录制。" : "上一段已保存；新一段正在录制。"
-            } catch is CancellationError { message = "已取消重录。已保存的原片会保留。" }
-            catch { message = error.localizedDescription }
-        }
-    }
 
-    private func beginOperation() {
-        operationCount += 1
-        onWorkingChanged(true)
-    }
-
-    private func endOperation() {
-        operationCount = max(0, operationCount - 1)
-        onWorkingChanged(working)
-    }
-
-    private func acceptOutput(_ source: URL) {
-        let suppress = restartInFlight || service.isRestarting || service.isStarting || service.isRecording
-        if let preview = routing.receive(source, suppressPreview: suppress) {
-            message = "MP4 已保存在电影/PicShot，已打开预览。导出不会修改原片。"
-            onPreview(preview)
-        }
-    }
 }
 
 

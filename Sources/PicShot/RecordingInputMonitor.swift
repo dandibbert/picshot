@@ -165,6 +165,8 @@ final class RecordingInputMonitor: ObservableObject {
     private var frame: CGRect = .zero
     private var isPaused = false
     private var acceptingEventsSince: TimeInterval = 0
+    private var transportShortcutExclusions: Set<HotKeyBinding> = []
+    private var suppressAllShortcutEffects = false
 
     init(state: RecordingInputEffectsState, dependencies: RecordingInputMonitorDependencies? = nil) {
         self.state = state
@@ -205,6 +207,31 @@ final class RecordingInputMonitor: ObservableObject {
         if changed { state.clearEvents(at: dependencies.clock()) }
         permissions = latest
         if sessionToken != nil, !isPaused, options.isEnabled, changed || installationFailed || !isMonitoring { rebuildMonitoring() }
+    }
+
+    /// Apply before registering transport chords. Their event-monitor callback
+    /// may arrive before Carbon dispatches the command, so suppression cannot
+    /// depend on which callback happens first. No event tap or permission probe
+    /// is added; only the two configured transport combinations are retained.
+    func setTransportShortcutExclusions(_ bindings: Set<HotKeyBinding>) {
+        let invalid = bindings.count > 2 || !bindings.allSatisfy(\.isValid)
+        let next = invalid ? Set<HotKeyBinding>() : bindings
+        guard next != transportShortcutExclusions || invalid != suppressAllShortcutEffects else { return }
+        transportShortcutExclusions = next
+        suppressAllShortcutEffects = invalid
+        // Rebinding must also remove a badge accepted under the old mapping.
+        // Already encoded movie frames cannot be modified by this boundary.
+        state.clearEvents(at: dependencies.clock())
+    }
+
+    private func isTransportShortcut(keyCode: UInt16, modifiers: RecordingShortcutModifiers) -> Bool {
+        if suppressAllShortcutEffects { return true }
+        var carbon: UInt32 = 0
+        if modifiers.contains(.command) { carbon |= UInt32(cmdKey) }
+        if modifiers.contains(.control) { carbon |= UInt32(controlKey) }
+        if modifiers.contains(.option) { carbon |= UInt32(optionKey) }
+        if modifiers.contains(.shift) { carbon |= UInt32(shiftKey) }
+        return transportShortcutExclusions.contains(HotKeyBinding(keyCode: UInt32(keyCode), modifiers: carbon))
     }
 
     private func rebuildMonitoring() {
@@ -283,6 +310,7 @@ final class RecordingInputMonitor: ObservableObject {
             state.recordScroll(deltaX: deltaX, deltaY: deltaY, normalizedPoint: point, at: observation.timestamp, token: token)
         case .shortcut(let keyCode, let modifiers):
             guard options.shortcuts, permissions.accessibility,
+                  !isTransportShortcut(keyCode: keyCode, modifiers: modifiers),
                   modifiers.contains(.command) || modifiers.contains(.control) else { return }
             privacySuppressed = dependencies.focusedContext() != .ordinary
             guard !privacySuppressed else { state.clearEvents(at: dependencies.clock()); return }

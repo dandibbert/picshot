@@ -1,0 +1,21 @@
+# REC-18 recording shortcuts
+
+This module adds configurable **Pause / Resume** and **Stop and Save** actions. Both start unassigned. Persisted action IDs remain capture `0`, clipboard pin `1`, history `2`, restore last pin `3`; the new IDs are `4` and `5`. The existing `hotkeyActions.v1` and legacy `hotkeys` preference keys are unchanged. Current-format omissions remain explicit clears; legacy migration adds only the existing collision-safe restore default. No recording default is synthesized.
+
+## Owner integration
+
+- Continue calling `HotKeyService.register(configuration)` and handling `onAction`. The two new switch cases route to the shared recording command owner.
+- Call `setRecordingActive(true)` only after a take becomes active, keeping it true while paused. Call `false` for idle, countdown, finishing or termination, and cross a false boundary before a new session. Repeating the same Boolean does not reset held-key admission.
+- Settings can continue suspending all shortcuts with `register(HotKeyConfiguration(shortcuts: []))`. Lifecycle changes never reload preferences or override that empty configuration. Restore the saved configuration explicitly after Settings closes.
+- Read `configuration[.recordingPauseResume]` / `[.recordingStopSave]` for current help labels. Use `configuration.transportBindings` for exact input-effect chord suppression, independent of active state or Carbon registration success. This value comes from configured bindings, not registered bindings; suppress before event labels are admitted.
+- `failures` reports current eligible actions that are invalid, duplicate or rejected by Carbon. Inactive recording actions are not registered/probed, so OS availability can only be established when active. Settings shows the existing unavailable-action notice and rejects all duplicate configurations before saving.
+
+Carbon observes both pressed and released events. A held registration admits one command until release, and each replacement registration samples only its bound key's current state to avoid firing a chord already held across Settings restore or a session boundary. The state snapshot uses `CGEventSource.keyState`; it adds no tap, monitor, polling loop or permission prompt. Deliberate repeated presses still reach the shared command owner, which owns command serialization and Stop precedence.
+
+Runtime IDs are separate from persisted action IDs. One process-wide UInt32 allocator never reuses or wraps an ID; allocation fails closed on exhaustion. The live service and native backend dictionaries contain at most six entries. Queued dispatch captures a generation identity and a weak service, and checks both generation and current registration before calling the owner. Unregister clears admission before invoking the backend. Invalidate is terminal/idempotent and clears the handler, registrations, held keys and action callback. A service released without explicit invalidation schedules backend cleanup on the main actor; backend destruction also removes its Carbon resources.
+
+## Validation boundary
+
+`RecordingHotKeyTests` uses an injected backend and controlled dispatch queue, never real global registrations. Coverage includes defaults and stable IDs, every partial current-format configuration, legacy migration, round-trip remap/clear, exact suppression bindings, collisions/unavailable/invalid chords, active versus idle/countdown, held/released presses, state snapshots, Settings suspension, queued/native stale events after remap/session changes/invalidation, weak-owner cleanup and bounded live registrations. Existing `SettingsAndMenuTests` IDs are retained and extended with real button capture/cancel/remap/clear/save and light/dark six-row layout checks.
+
+The implementation environment is Linux and has no Swift toolchain. Native compilation and test execution are **not established here**. Run `swift test --filter 'RecordingHotKeyTests|SettingsAndMenuTests'` on the source-bound macOS build, plus the integration owner's recording command tests. Real Carbon delivery, OS-reserved conflicts and key-release behavior across Spaces require physical macOS acceptance; injected tests do not establish those facts. This module makes no recording-region relocation change.
