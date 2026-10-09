@@ -40,22 +40,53 @@ final class PinAnchoredEditingTests: XCTestCase {
         _ = NSApplication.shared
         let source = try raster(), controller = PinController(image: source); defer { controller.close() }
         controller.bringForward()
-        var commits = 0
-        controller.onPixelChange = { _, isOriginal in XCTAssertFalse(isOriginal); commits += 1 }
+        var commits = 0, legacyCommits = 0
+        controller.onPixelChange = { _, isOriginal in XCTAssertFalse(isOriginal); legacyCommits += 1 }
+        var expectedError: String?, errors: [String] = []
+        controller.onAnnotationError = { error in
+            errors.append(error.localizedDescription)
+            if let expectedError { XCTAssertEqual(error.localizedDescription, expectedError) }
+            else { XCTFail("Unexpected annotation error: \(error.localizedDescription)") }
+        }
         controller.showAnnotations()
         var editor = try XCTUnwrap(controller.annotationEditor)
         editor.annotationCanvas.add(ImageAnnotation(tool: .rectangle, points: [CGPoint(x: 20, y: 20), CGPoint(x: 100, y: 80)]))
         editor.close()
         XCTAssertEqual(commits, 0); XCTAssertTrue(controller.currentImage === source)
+        XCTAssertEqual(legacyCommits, 0); XCTAssertTrue(errors.isEmpty)
         controller.showAnnotations(); editor = try XCTUnwrap(controller.annotationEditor)
         editor.annotationCanvas.add(ImageAnnotation(tool: .rectangle, points: [CGPoint(x: 30, y: 30), CGPoint(x: 120, y: 90)]))
         let apply = try XCTUnwrap(descendants(try XCTUnwrap(editor.window?.contentView)).compactMap { $0 as? NSButton }
             .first { $0.identifier?.rawValue == "editor.applyToPin" })
+        let draft = try EditableAnnotationDocumentCodec.encode(editor.editablePayload().document)
+        // Editable Apply must not flatten its layers into the legacy raster-only callback.
+        let refusal = "此贴图尚未连接可编辑标注存储。当前编辑未丢失。"
+        expectedError = refusal
         apply.performClick(nil)
+        XCTAssertEqual(errors, [refusal])
+        expectedError = nil; errors.removeAll()
+        XCTAssertEqual(commits, 0); XCTAssertEqual(legacyCommits, 0)
+        XCTAssertTrue(controller.currentImage === source); XCTAssertTrue(controller.image === source)
+        XCTAssertTrue(controller.annotationEditor === editor); XCTAssertFalse(editor.isClosed)
+        XCTAssertEqual(try EditableAnnotationDocumentCodec.encode(editor.editablePayload().document), draft)
+
+        // Connect editable persistence and retry the same live draft.
+        var committedDraft: Data?
+        controller.onEditablePixelChange = { image, payload in
+            try payload.validate(currentImage: image)
+            XCTAssertTrue(payload.originalImage === source)
+            XCTAssertTrue(controller.currentImage === source, "Pixels change only after persistence succeeds")
+            committedDraft = try EditableAnnotationDocumentCodec.encode(payload.document)
+            commits += 1
+        }
+        apply.performClick(nil)
+        XCTAssertTrue(errors.isEmpty); XCTAssertEqual(legacyCommits, 0)
+        XCTAssertEqual(committedDraft, draft)
         XCTAssertEqual(commits, 1); XCTAssertFalse(controller.currentImage === source)
         XCTAssertTrue(controller.image === source); XCTAssertNil(controller.annotationEditor)
         XCTAssertTrue(controller.window?.isVisible == true)
         editor.close(); XCTAssertEqual(commits, 1)
+        XCTAssertEqual(legacyCommits, 0); XCTAssertTrue(errors.isEmpty)
     }
 
     @MainActor func testExplicitHideInvalidatesLateCloseAndNeverResurrectsPin() throws {

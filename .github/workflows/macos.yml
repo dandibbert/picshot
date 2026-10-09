@@ -85,9 +85,11 @@ jobs:
     # 55-minute installed-default gate, two 4-minute portable contract steps,
     # and seven minutes for cleanup and evidence publication overhead.
     # Intel adds 14 minutes to each four-process native stage: 160 + 14 + 14 = 188.
-    # ARM keeps its existing 160-minute job and 16/30-minute native stages.
+    # ARM retains its prior 160-minute allowance and 16/30-minute native stages.
     # Individual test, product, cancellation and smoke deadlines stay unchanged.
-    timeout-minutes: ${{ matrix.arch == 'x86_64' && 188 || 160 }}
+    # Two exact pin regressions add 16 minutes without reducing any prior gate allowance.
+    # ARM: 160 + 16 = 176; Intel: 188 + 16 = 204.
+    timeout-minutes: ${{ matrix.arch == 'x86_64' && 204 || 176 }}
     env:
       # Subdivide exhaustive ARM processes; preserve focused isolation.
       NATIVE_TEST_PROCESS_COUNT: '4'
@@ -189,6 +191,121 @@ jobs:
           python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/native-test-discovery.log --report dist/native-test-discovery-report.json -- swift test list --skip-build
           python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$NATIVE_TEST_PROCESS_COUNT" --output dist/native-tests-plan.json
           python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$FOCUSED_TEST_PROCESS_COUNT" --selection-regex 'DrawingRaster|EditableProductResource|EditableProductRetirement|EditableComponent|PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|AnnotationEditing|CaptureAspectRatio|CaptureRatio|MultiWindow|ImageOutputDecoration|EditorOutput|PinOriginalCurrent|ManualScroll|ScrollPreview|ScrollSequencePreview|AnnotationFreehand|AnnotationTextLine|NumberedCallout|AutomaticMosaic|RepeatedRegion|AutomaticPinOCR|PinOCR|TextResultSourceSelection|PinWorkflow|LaTeXPin|PinLaTeX|PinGroup|PinDesktop|EditorToolbarHierarchy|SaveWorkflow|OwnedVideoExportStage|ImageBacking|Codec|NativeExport|AnimatedWebP|WebPContainer|RecordingWebP|CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' --output dist/focused-tests-plan.json
+      - name: Reproduce the exact pin Apply regression before broader native gates
+        # Method first, then its four-method class. Each keeps 420s native,
+        # 5s TERM grace and 8MiB log cap: 2 * (420s + 10s cleanup) + 60s = 920s.
+        timeout-minutes: 16
+        run: |
+          python3 - <<'PYTHON'
+          import hashlib, importlib.util, json, math, os, subprocess, sys, time
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('native', 'scripts/native-test-shards.py')
+          native = importlib.util.module_from_spec(spec); spec.loader.exec_module(native)
+          root = Path('dist/evidence/pin-apply-regression')
+          root.mkdir(parents=True, exist_ok=True)
+          source = os.environ['GITHUB_SHA']
+          overhead_start, native_wait_seconds = time.monotonic(), 0.0
+          method = 'PicShotTests.PinAnchoredEditingTests/testApplyCommitsOnlyOnceAndCancelLeavesPinPixelsUntouched'
+          class_ids = [
+              'PicShotTests.PinAnchoredEditingTests/testAnchoredEditorKeepsZoomPanAndImageAtExactScreenCoordinates',
+              method,
+              'PicShotTests.PinAnchoredEditingTests/testExplicitHideInvalidatesLateCloseAndNeverResurrectsPin',
+              'PicShotTests.PinAnchoredEditingTests/testGroupSwitchClosesAnchoredSurfacesWithoutReopeningHiddenSession']
+          record = dict(schemaVersion=1, status='running', sourceCommit=source, cells=[],
+              expectedOrder=['method', 'class'], sameProcessAsFullSuite=False,
+              scope='Exact corrected pin method, then its unchanged four-method class; overlapping coverage is not additive',
+              runnerCleanupScope='Original bounded runner owned process group; detached/global process absence is not proven')
+          def remaining_overhead():
+              remaining = 60 - (time.monotonic() - overhead_start - native_wait_seconds)
+              native.need(remaining > 0, 'Regression setup and replay exceeded their 60-second allowance')
+              return remaining
+          def digest(path):
+              remaining_overhead()
+              native.need(path.is_file() and not path.is_symlink(), 'Identity input is not a regular file')
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+          def source_identity():
+              native.need(subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True, timeout=min(10, remaining_overhead())).strip() == source,
+                  'Regression source differs from candidate commit')
+              native.need(not subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=no'], timeout=min(10, remaining_overhead())).strip(),
+                  'Regression tracked checkout changed')
+              native.need(digest(Path('Tests/PicShotTests/PinAnchoredEditingTests.swift')) ==
+                  'bd60e0bfe5f6231a87f8934de3841101d014d80cbd57c5e28613083696164c42', 'Pin regression fixture differs from reviewed bytes')
+              for name, expected in (
+                  ('scripts/native-test-shards.py', '797e5ddaf62b140dc60775fd5ddc267b2da1ffb0d21f6537fbf4fb9124387380'),
+                  ('scripts/run-bounded-command.py', 'ef85307a6227a0d99641b17c75e2aa625ae7344376fbcb3ec1af1c5be7e2d5d2')):
+                  native.need(digest(Path(name)) == expected, 'Original native planner/runner changed')
+          try:
+              source_identity()
+              plan_path = Path('dist/native-tests-plan.json')
+              plan = native.checked_plan(plan_path, source)
+              inventory = plan['discoveredTests']
+              native.need(len(inventory) == 1799 and len({case.split('/')[0] for case in inventory}) == 205
+                  and hashlib.sha256(('\n'.join(inventory)+'\n').encode()).hexdigest() ==
+                      '77ab5c9cc0c4abc4524f2b7002b42a52133984d8f639cd7e27c27ce53b7a962a'
+                  and plan['selectedTests'] == inventory and plan['selectionRegex'] == ''
+                  and plan['processCount'] == 4 and plan['timeoutSecondsPerProcess'] == 420
+                  and [len(shard['tests']) for shard in plan['shards']] == [463, 403, 469, 464],
+                  'Complete native inventory or original process grouping changed')
+              native.need([case for case in inventory if case.startswith('PicShotTests.PinAnchoredEditingTests/')] == class_ids,
+                  'Pin class inventory differs from the four original methods')
+              record.update(planSHA256=digest(plan_path), discoveredCount=1799, discoveredClassCount=205,
+                  discoverySHA256=digest(Path('dist/native-test-discovery.log')),
+                  fixtureSHA256=digest(Path('Tests/PicShotTests/PinAnchoredEditingTests.swift')))
+              for label, expected in (('method', [method]), ('class', class_ids)):
+                  source_identity()
+                  pattern = native.command_pattern(expected)
+                  native.need([case for case in inventory if native.re.fullmatch(pattern, case)] == expected,
+                      'Regression filter differs from exact discovery selection')
+                  command = native.expected_command(dict(filter=pattern))
+                  log_path, runner_path = root/(label+'.log'), root/(label+'-runner.json')
+                  cell = dict(label=label, status='running', sourceCommit=source, expectedIDs=expected,
+                      command=command, timeoutSeconds=420, graceSeconds=5, maxLogBytes=8388608)
+                  record['cells'].append(cell)
+                  (root/(label+'-selection.json')).write_text(json.dumps(cell, indent=2)+'\n')
+                  waiting_from = time.monotonic()
+                  try:
+                      result = subprocess.run([sys.executable, 'scripts/run-bounded-command.py',
+                          '--timeout-seconds', '420', '--grace-seconds', '5', '--max-log-bytes', '8388608',
+                          '--log', str(log_path), '--report', str(runner_path), '--', *command], check=False)
+                  finally:
+                      native_wait_seconds += time.monotonic() - waiting_from
+                  cell['wrapperExitCode'] = result.returncode
+                  runner = json.loads(native.bounded_text(runner_path, 1024*1024))
+                  native.need(result.returncode == 0 and type(runner['schema_version']) is int and runner['schema_version'] == 1
+                      and runner['status'] == runner['termination_reason'] == 'exited'
+                      and type(runner['child_returncode']) is int and type(runner['exit_code']) is int
+                      and runner['child_returncode'] == runner['exit_code'] == 0, 'Native regression did not exit successfully')
+                  native.need(runner['command'] == command and runner['timeout_seconds'] == 420
+                      and runner['grace_seconds'] == 5 and runner['max_log_bytes'] == 8388608
+                      and runner['log_truncated'] is False and runner['descendant_cleanup'] is False
+                      and runner['sigterm_sent'] is False and runner['sigkill_sent'] is False
+                      and runner['cancel_signal'] is None and not runner.get('cleanup_errors') and not runner.get('error'),
+                      'Regression command, native cap, output or cleanup evidence differs')
+                  observation = runner['group_observation']
+                  native.need(observation['backend'] == 'darwin-ps-pgrp' and observation['timeout_seconds'] == 0.5
+                      and type(observation['count']) is int and observation['count'] > 0
+                      and type(observation['failures']) is int and observation['failures'] == 0
+                      and observation['atomic_snapshot'] is False, 'Original bounded group observation is uncertain')
+                  native.need(type(runner['pid']) is int and runner['pid'] > 0
+                      and type(runner['duration_seconds']) in (int, float) and math.isfinite(runner['duration_seconds'])
+                      and 0 <= runner['duration_seconds'] < 430, 'Invalid native identity or cleanup duration')
+                  log = native.bounded_text(log_path, native.MAX_LOG_BYTES)
+                  native.need(runner['log_bytes'] == runner['output_bytes'] == len(log.encode()), 'Raw native output length differs')
+                  passed, skipped = native.case_results(log, expected)
+                  native.need(passed == expected and skipped == [], 'Regression cases did not all pass without skips')
+                  source_identity()
+                  cell.update(status='passed', passedCount=len(passed), skippedCount=0, passedIDs=passed,
+                      logSHA256=digest(log_path), runnerSHA256=digest(runner_path), durationSeconds=runner['duration_seconds'])
+                  (root/(label+'-report.json')).write_text(json.dumps(cell, indent=2)+'\n')
+              record.update(status='passed', overheadSeconds=60-remaining_overhead())
+          except Exception as error:
+              record.update(status='failed', error=f'{type(error).__name__}: {error}')
+              if record['cells'] and record['cells'][-1]['status'] == 'running':
+                  record['cells'][-1].update(status='failed', error=record['error'])
+              raise
+          finally:
+              (root/'regression-report.json').write_text(json.dumps(record, indent=2)+'\n')
+          PYTHON
       - name: Upload test compilation evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
