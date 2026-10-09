@@ -78,6 +78,7 @@ import PicShotCore
             "entryMemory": entry, "memoryStabilityAssessed": false, "zeroRSSClaim": false,
             "privateBackingReleaseProved": false, "fullCorrectnessFixtureReplaced": false,
             "scope": "Owned actual product lifecycle, self task only. Eight counters overlap; task-info flavors are not atomic. 50ms samples can miss transients and exclude WindowServer/GPU. Weak AppKit retirement is not proof of private graphics backing release.",
+            "latencyScope": "Action dispatch to semantic completion, not physical-input or first-painted-frame latency. Save/pin/apply await durable callback and projection drain; open/Space/group-show include a 150ms native settle; edit/undo/crop end after native event handlers and metadata assertions.",
             "deadlineScope": "300-second cooperative native deadline. AppDelegate.openRecord retains normal modal error presentation; a blocking native modal cannot be preempted by cooperative checks. The owned-process launcher must enforce the unchanged 600-second terminal cap.",
             "entryPoints": ["seedMetadata": "programmatic certified seven-layer payload, uncropped",
                 "initialOpen": "AppDelegate.openEditor with production CGImage.read and encoded backing admission",
@@ -174,6 +175,7 @@ import PicShotCore
         var observation = Ownership()
         var identities: Set<O.OwnedFileIdentity> = []
         var checkpoints: [[String: Any]] = [], stages: [[String: Any]] = [], actions: [[String: Any]] = []
+        var phaseTimings: [[String: Any]] = []
         var cycle = 0, errors: [String] = []
         init(directory: URL) throws {
             let ownedRoot = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("picshot-product-" + UUID().uuidString)
@@ -290,6 +292,7 @@ import PicShotCore
             report["ownedOpenDescriptorsAfterCleanup"] = 0
             report["stages"] = run!.stages; report["checkpoints"] = run!.checkpoints
             report["actions"] = run!.actions; report["evidenceCopies"] = run!.artifacts.report
+            report["phaseTimings"] = run!.phaseTimings
             report["afterCloseOwnership"] = run!.observation.report
             report["sessionDateBounds"] = ["start": (report["sessionDateBounds"] as? [String: Double])?["start"] ?? 0,
                 "end": Date().timeIntervalSinceReferenceDate]
@@ -303,6 +306,7 @@ import PicShotCore
             if let current = run {
                 report["stages"] = current.stages; report["checkpoints"] = current.checkpoints
                 report["actions"] = current.actions; report["evidenceCopies"] = current.artifacts.report
+                report["phaseTimings"] = current.phaseTimings
             }
             throw error
         }
@@ -319,33 +323,45 @@ import PicShotCore
             let started = ProcessInfo.processInfo.systemUptime, memoryBefore = try O.memory()
             let actionStart = run.actions.count, stageStart = run.stages.count
             let prefix = "cycle-\(ordinal)-"
+            var phase = "seed", phaseBegan = ProcessInfo.processInfo.systemUptime
+            func finishPhase() throws {
+                try O.require(run.phaseTimings.count < 7 * (warmups + measured), "Product phase timing bound exceeded")
+                let ended = ProcessInfo.processInfo.systemUptime
+                run.phaseTimings.append(["cycle": ordinal, "phase": phase, "startUptimeSeconds": phaseBegan,
+                    "endUptimeSeconds": ended, "elapsedSeconds": ended - phaseBegan])
+            }
+            func nextPhase(_ name: String) throws {
+                try finishPhase(); phase = name; phaseBegan = ProcessInfo.processInfo.systemUptime
+                sampler.setPhase(prefix + name)
+            }
             sampler.setPhase(prefix + "seed")
             let historyID = try await seedEditCropSaveClose(run, input: input, deadline: deadline)
             // The seed helper has returned. Neither its controller nor its
             // original/base/payload locals are retained across this boundary.
             try await wait(deadline) { run.observation.editorCount == 0 && run.observation.alive == 0 && run.observation.attachedWindowCount == 0 && drained() }
             try run.record("seed-closed")
-            sampler.setPhase(prefix + "reopen")
+            try nextPhase("reopen")
             let pinID = try await reopenEditUndoPinClose(run, historyID: historyID, input: input, deadline: deadline)
             try await wait(deadline) { run.observation.editorCount == 0 && run.session.livePinCount == 1 && drained() }
             try run.record("history-editor-closed")
-            sampler.setPhase(prefix + "annotations")
+            try nextPhase("annotations")
             try await annotationVisibility(run, pinID: pinID, deadline: deadline)
-            sampler.setPhase(prefix + "group-hide")
+            try nextPhase("group-hide")
             try await run.action("group-hide", deadline: deadline) { try run.session.hideCurrentGroup() }
             try await wait(deadline) { run.observation.alive == 0 && run.observation.attachedWindowCount == 0 && run.session.livePinCount == 0 && drained() }
             try run.record("group-hidden-released")
-            sampler.setPhase(prefix + "group-show")
+            try nextPhase("group-show")
             try await showGroup(run, pinID: pinID, deadline: deadline)
-            sampler.setPhase(prefix + "space-apply")
+            try nextPhase("space-apply")
             try await spaceApplyClose(run, pinID: pinID, input: input, deadline: deadline)
-            sampler.setPhase(prefix + "release")
+            try nextPhase("release")
             try await wait(deadline) { run.observation.alive == 0 && run.observation.attachedWindowCount == 0 && run.session.livePinCount == 0 && drained() }
             run.identities.formUnion(try O.ownedFileIdentities(run.root))
             let handles = try O.ownedFileDescriptors(run.root, identities: run.identities)
             try O.require(handles.isEmpty, "Cycle-owned descriptor remained open")
             try run.record("cycle-released")
             let after = try O.memory(); endpoints.append(after)
+            try finishPhase()
             results.append(["ordinal": ordinal, "warmup": ordinal <= warmups, "cold": ordinal == 1,
                 "beforeMemory": memoryBefore, "afterMemory": after, "deltaBytes": delta(memoryBefore, after),
                 "elapsedSeconds": ProcessInfo.processInfo.systemUptime - started,
@@ -360,6 +376,7 @@ import PicShotCore
             report["completedMeasuredCycles"] = max(0, ordinal - warmups)
             report["stages"] = run.stages; report["checkpoints"] = run.checkpoints
             report["actions"] = run.actions; report["evidenceCopies"] = run.artifacts.report
+            report["phaseTimings"] = run.phaseTimings
             if ordinal == warmups { report["afterWarmupBaseline"] = after }
             try write(report, directory.appendingPathComponent("editable-product-resource.json"))
         }
@@ -914,10 +931,32 @@ import PicShotCore
     static func safeDirectory(_ directory: URL, create: Bool) throws {
         try O.require(directory.isFileURL && directory.standardizedFileURL.path == directory.resolvingSymlinksInPath().standardizedFileURL.path,
             "Unsafe product directory")
+        // Foundation can leave an unresolved URL unchanged when its final
+        // component does not exist. Inspect every ancestor before any mkdir,
+        // including symlinks above a missing leaf, instead of trusting equality.
+        try checkedDirectoryAncestors(directory, includingLeaf: true, allowingMissing: create)
         if create { try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true) }
         var info = stat()
         try O.require(directory.path.withCString { lstat($0, &info) } == 0 && (info.st_mode & S_IFMT) == S_IFDIR,
             "Product directory missing or unsafe")
+    }
+    private static func checkedDirectoryAncestors(_ url: URL, includingLeaf: Bool, allowingMissing: Bool) throws {
+        var cursor = includingLeaf ? url.standardizedFileURL : url.standardizedFileURL.deletingLastPathComponent()
+        var count = 0
+        while true {
+            count += 1; try O.require(count <= 128, "Product path depth exceeds bound")
+            var info = stat()
+            let result = cursor.path.withCString { lstat($0, &info) }
+            if result == 0 {
+                try O.require((info.st_mode & S_IFMT) == S_IFDIR, "Product path contains a symlink or non-directory ancestor")
+            } else {
+                try O.require(allowingMissing && errno == ENOENT, "Product directory ancestor cannot be inspected")
+            }
+            if cursor.path == "/" { break }
+            let parent = cursor.deletingLastPathComponent()
+            try O.require(parent.path != cursor.path, "Product path has no safe root")
+            cursor = parent
+        }
     }
     static func safeSize(_ url: URL, maximum: Int) throws -> Int {
         try O.require(url.isFileURL && url.standardizedFileURL.path == url.resolvingSymlinksInPath().standardizedFileURL.path,
@@ -940,6 +979,7 @@ import PicShotCore
         if let destination {
             try O.require(destination.isFileURL && destination.standardizedFileURL.path == destination.resolvingSymlinksInPath().standardizedFileURL.path,
                 "Unsafe encoded evidence destination")
+            try checkedDirectoryAncestors(destination, includingLeaf: false, allowingMissing: false)
             let target = destination.path.withCString { open($0, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, mode_t(0o600)) }
             try O.require(target >= 0, "Cannot create bounded encoded evidence")
             output = FileHandle(fileDescriptor: target, closeOnDealloc: true)

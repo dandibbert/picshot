@@ -5,7 +5,7 @@ import Foundation
 // unknown arguments (especially an absolute report path) into an open-file
 // request, suppressing the application's normal initial window.
 guard CommandLine.arguments.count == 3 else {
-    fputs("Usage: launch-smoke-app.swift APP REPORT\n", stderr)
+    fputs("Usage: launch-editable-product.swift APP REPORT\n", stderr)
     exit(64)
 }
 let appURL = URL(fileURLWithPath: CommandLine.arguments[1])
@@ -18,21 +18,15 @@ configuration.environment = [
     "PICSHOT_SMOKE_TEST": "1",
     "PICSHOT_SMOKE_REPORT": CommandLine.arguments[2],
 ]
-for key in ["PICSHOT_EDITABLE_PRODUCT_MODE", "PICSHOT_EDITABLE_PRODUCT_INPUT", "PICSHOT_EDITABLE_PRODUCT_CERTIFICATE", "PICSHOT_RENDERER_STORAGE_STRATEGY", "PICSHOT_DRAWING_RASTER_STRATEGY", "PICSHOT_EFFECT_OUTPUT_FAILURE_ONLY", "PICSHOT_EDITABLE_HASH_DIAGNOSTIC", "PICSHOT_EDITABLE_ANNOTATIONS_ONLY", "PICSHOT_EDITABLE_ANNOTATION_RESOURCES", "PICSHOT_MULTIWINDOW_COMPOSITION", "PICSHOT_MULTIWINDOW_RESOURCES_ONLY", "PICSHOT_MULTIWINDOW_DIAGNOSTIC_TAIL_FIRST", "PICSHOT_MULTIWINDOW_DIAGNOSTIC_BOUNDARIES", "PICSHOT_RECORDING_COMPOSITION_ONLY", "PICSHOT_RECORDING_COMPOSITION_TRACE", "PICSHOT_MANUAL_HASH_STRATEGY", "PICSHOT_SCROLL_ATTRIBUTION_MODE", "PICSHOT_SCROLL_ATTRIBUTION_INPUT_DIRECTORY", "PICSHOT_SCROLL_ATTRIBUTION_PRODUCTION_COMMIT", "PICSHOT_SCROLL_ATTRIBUTION_OVERLAY_COMMIT", "PICSHOT_MANUAL_SCROLL_ONLY", "PICSHOT_MANUAL_SCROLL_RESOURCES", "PICSHOT_ANNOTATION_DETAILS_ONLY", "PICSHOT_AUTOMATIC_MOSAIC_ONLY", "PICSHOT_PIN_GROUP_TRANSFORMS_ONLY", "PICSHOT_LATEX_PIN_VERIFY", "PICSHOT_PIN_DESKTOP_VISIBILITY_ONLY", "PICSHOT_SMOKE_FORMULA_MODEL_DIR", "PICSHOT_SMOKE_FORMULA_INPUT", "PICSHOT_SMOKE_TABLE_MODEL_DIR", "PICSHOT_SMOKE_TABLE_INPUT", "PICSHOT_SMOKE_ERASE_MODEL_DIR", "PICSHOT_UI_PREVIEW_ONLY", "PICSHOT_SMOKE_GIF_RESOURCES", "PICSHOT_GIF_DIAGNOSTIC_MODE", "PICSHOT_GIF_EXTRACTION", "PICSHOT_GIF_EXECUTION", "PICSHOT_CODEC_ATTRIBUTION_MODE", "PICSHOT_CODEC_ATTRIBUTION_FORMAT", "PICSHOT_CODEC_ATTRIBUTION_PROFILE", "PICSHOT_CODEC_ATTRIBUTION_INPUT_DIRECTORY", "PICSHOT_IMAGE_BACKING_MODE", "PICSHOT_IMAGE_BACKING_FORMAT", "PICSHOT_IMAGE_BACKING_PROFILE", "PICSHOT_IMAGE_BACKING_INPUT_DIRECTORY"] {
+for key in ["PICSHOT_DRAWING_RASTER_STRATEGY", "PICSHOT_EDITABLE_PRODUCT_MODE", "PICSHOT_EDITABLE_PRODUCT_INPUT", "PICSHOT_EDITABLE_PRODUCT_CERTIFICATE"] {
     if let value = ProcessInfo.processInfo.environment[key] { configuration.environment[key] = value }
 }
-#if PICSHOT_CALLOUT_RETIREMENT_DIAGNOSTICS
-if let path = ProcessInfo.processInfo.environment["PICSHOT_CALLOUT_RETIREMENT_DIAGNOSTIC_PATH"] {
-    configuration.environment["PICSHOT_CALLOUT_RETIREMENT_DIAGNOSTIC_PATH"] = path
-}
-#endif
 let launchBegan = Date()
 let launchBeganUptime = ProcessInfo.processInfo.systemUptime
 var launched: NSRunningApplication?
 var launchError: Error?
 var launchedProcessIdentifier: Int?
 var launchedBundlePath: String?
-var launchedExecutablePath: String?
 var callbackReceived = false
 NSWorkspace.shared.openApplication(at: appURL, configuration: configuration) { app, error in
     DispatchQueue.main.async {
@@ -40,38 +34,25 @@ NSWorkspace.shared.openApplication(at: appURL, configuration: configuration) { a
         launchError = error
         launchedProcessIdentifier = app.map { Int($0.processIdentifier) }
         launchedBundlePath = app?.bundleURL?.resolvingSymlinksInPath().path
-        launchedExecutablePath = app?.executableURL?.resolvingSymlinksInPath().path
         callbackReceived = true
     }
 }
-let diagnosticMode = ProcessInfo.processInfo.environment["PICSHOT_GIF_DIAGNOSTIC_MODE"] ?? ""
-let timeout: TimeInterval = ["export-only", "decode-only"].contains(diagnosticMode) ? 900 : 600
+let timeout: TimeInterval = 600
 let deadline = Date().addingTimeInterval(timeout)
 func finish(_ code: Int32, _ status: String) -> Never {
-    if ProcessInfo.processInfo.environment["PICSHOT_EDITABLE_PRODUCT_MODE"] != nil ||
-       ProcessInfo.processInfo.environment["PICSHOT_EFFECT_OUTPUT_FAILURE_ONLY"] == "1" ||
-       ProcessInfo.processInfo.environment["PICSHOT_UI_PREVIEW_ONLY"] == "1" ||
-       ProcessInfo.processInfo.environment["PICSHOT_EDITABLE_ANNOTATIONS_ONLY"] == "1" ||
-       ProcessInfo.processInfo.environment["PICSHOT_MULTIWINDOW_RESOURCES_ONLY"] == "1" ||
-       ProcessInfo.processInfo.environment["PICSHOT_MANUAL_HASH_STRATEGY"] != nil ||
-       ProcessInfo.processInfo.environment["PICSHOT_RECORDING_COMPOSITION_ONLY"] == "1" ||
-       ProcessInfo.processInfo.environment["PICSHOT_RECORDING_COMPOSITION_TRACE"] == "1" {
+    do {
         let reportURL = URL(fileURLWithPath: CommandLine.arguments[2] + ".launcher.json")
         var report: [String: Any] = ["schemaVersion": 1, "status": status,
             "launcherExitCode": Int(code), "selectedAppPath": appURL.resolvingSymlinksInPath().path,
             "createsNewApplicationInstance": configuration.createsNewApplicationInstance,
             "timeoutSeconds": timeout, "elapsedSeconds": Date().timeIntervalSince(launchBegan),
+            "launchBeganUptimeSeconds": launchBeganUptime, "finishUptimeSeconds": ProcessInfo.processInfo.systemUptime,
             "callbackReceived": callbackReceived, "ownedExitConfirmed": launched?.isTerminated == true,
             "processStartMemoryCaptured": false,
             "scope": "LaunchServices-owned application lifecycle only; no child memory read and no application exit-code inference"]
-        if ProcessInfo.processInfo.environment["PICSHOT_EDITABLE_PRODUCT_MODE"] != nil {
-            report["launchBeganUptimeSeconds"] = launchBeganUptime
-            report["finishUptimeSeconds"] = ProcessInfo.processInfo.systemUptime
-        }
         if launched != nil {
             report["processIdentifier"] = launchedProcessIdentifier
             report["launchedAppPath"] = launchedBundlePath
-            report["launchedExecutablePath"] = launchedExecutablePath
         }
         if let launchError { report["error"] = launchError.localizedDescription }
         do {

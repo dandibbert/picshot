@@ -1,5 +1,7 @@
 # Seed render/crop substage attribution
 
+Build 130 completed this protocol; see [verified intervals and full lifetime costs](EditableObservation130.md). This evidence does not itself qualify a memory remedy.
+
 This opt-in diagnostic adds exactly two scalar memory checkpoints per existing workflow. It changes no production defaults, renderer implementation, crop operation, fixture image generation, hash conversion, document, screenshot, pool, settling pause, or cleanup. This is interval attribution, not an efficacy comparison or memory remedy.
 
 Run on macOS against one signed, source-bound app:

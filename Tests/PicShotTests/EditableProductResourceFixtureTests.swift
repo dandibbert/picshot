@@ -85,6 +85,11 @@ import XCTest
         let link = root.appendingPathComponent("link.png")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: source)
         XCTAssertThrowsError(try EditableProductResourceFixture.stream(link, maximum: 4))
+        let directoryLink = root.appendingPathComponent("directory-link")
+        try FileManager.default.createSymbolicLink(at: directoryLink, withDestinationURL: root)
+        XCTAssertThrowsError(try EditableProductResourceFixture.stream(source,
+            to: directoryLink.appendingPathComponent("missing-output.png"), maximum: 4))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("missing-output.png").path))
         XCTAssertThrowsError(try EditableProductResourceFixture.stream(root, maximum: 4))
         let empty = root.appendingPathComponent("empty.png"); try Data().write(to: empty)
         XCTAssertThrowsError(try EditableProductResourceFixture.stream(empty, maximum: 4))
@@ -98,6 +103,14 @@ import XCTest
         XCTAssertThrowsError(try EditableProductResourceFixture.safeDirectory(link, create: false))
         XCTAssertThrowsError(try EditableProductResourceFixture.safeDirectory(link.appendingPathComponent("child"), create: true))
         XCTAssertFalse(FileManager.default.fileExists(atPath: actual.appendingPathComponent("child").path))
+        XCTAssertThrowsError(try EditableProductResourceFixture.safeDirectory(link.appendingPathComponent("missing/child"), create: true))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: actual.appendingPathComponent("missing").path))
+        let absent = root.appendingPathComponent("absent/child")
+        XCTAssertThrowsError(try EditableProductResourceFixture.safeDirectory(absent, create: false))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("absent").path))
+        let safe = root.appendingPathComponent("safe-parent/safe-child")
+        XCTAssertNoThrow(try EditableProductResourceFixture.safeDirectory(safe, create: true))
+        XCTAssertNoThrow(try EditableProductResourceFixture.safeDirectory(safe, create: false))
     }
     private func temporaryDirectory() throws -> URL {
         let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()

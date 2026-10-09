@@ -3,6 +3,7 @@ import hashlib
 from pathlib import Path
 import re
 import unittest
+from product_launcher_source_contract import without_product_launcher_hooks
 
 from seed_render_crop_source_contract import without_substage_hooks
 
@@ -55,6 +56,8 @@ class EffectContextSourceBindingTests(unittest.TestCase):
         for path, expected in expected_hashes.items():
             with self.subTest(path=path):
                 source = without_substage_hooks(path, read(path))
+                if path == "scripts/launch-smoke-app.swift":
+                    source = without_product_launcher_hooks(self, source)
                 self.assertEqual(hashlib.sha256(source.encode()).hexdigest(), expected)
 
     def test_pair_launcher_fixes_drawing_renderer_and_observation_and_has_closed_policy(self):

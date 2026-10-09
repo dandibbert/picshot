@@ -1,0 +1,1607 @@
+{
+  "eight": {
+    "annotations": [
+      {
+        "arcStartAngle": 0,
+        "arcSweepAngle": 4.71238898038469,
+        "bold": false,
+        "color": {
+          "components": [
+            0,
+            1
+          ],
+          "space": "kCGColorSpaceGenericGray"
+        },
+        "cornerRadius": 0,
+        "endArrowhead": "open",
+        "eraserMode": "brush",
+        "fillColor": {
+          "components": [
+            1,
+            0.91,
+            0.52,
+            1
+          ],
+          "space": "kCGColorSpaceSRGB"
+        },
+        "fillEnabled": false,
+        "fontName": "Helvetica",
+        "freehandConstraint": 0,
+        "freehandCorners": [],
+        "freehandSmoothing": false,
+        "freehandWasSimplified": false,
+        "frozenTimeZoneIdentifier": "UTC",
+        "frozenTimestamp": -978307200,
+        "highlighterBlend": "translucent",
+        "highlighterMode": "rectangle",
+        "id": "fixture-uuid-3",
+        "italic": false,
+        "lineCap": "round",
+        "lineJoin": "round",
+        "lineWidth": 4,
+        "magnifierConnector": "line",
+        "magnifierScale": 2,
+        "magnifierShadow": true,
+        "magnifierShape": "ellipse",
+        "magnifierShowsAnnotations": true,
+        "magnifierSmooth": false,
+        "number": 1,
+        "numberComment": "",
+        "numberCommentSize": [
+          240,
+          80
+        ],
+        "numberStyle": "decimal",
+        "opacity": 1,
+        "points": [
+          [
+            750,
+            450
+          ],
+          [
+            1260,
+            690
+          ]
+        ],
+        "rotation": 0.08,
+        "spotlightBorder": true,
+        "spotlightDim": 0.55,
+        "spotlightShape": "ellipse",
+        "startArrowEnabled": false,
+        "startArrowhead": "open",
+        "strokeStyle": "solid",
+        "text": "",
+        "textOutlineColor": {
+          "components": [
+            1,
+            1
+          ],
+          "space": "kCGColorSpaceGenericGray"
+        },
+        "textOutlineEnabled": false,
+        "textOutlineWidth": 2,
+        "timestampIsCaptureDate": false,
+        "tool": "redact",
+        "underline": false,
+        "watermarkPlacement": "tiled",
+        "watermarkSpacing": 48,
+        "watermarkTemplate": "PicShot · $yyyy-MM-dd HH:mm:ss$"
+      },
+      {
+        "arcStartAngle": 0,
+        "arcSweepAngle": 4.71238898038469,
+        "bold": false,
+        "color": {
+          "components": [
+            1,
+            0.23,
+            0.24,
+            1
+          ],
+          "space": "kCGColorSpaceSRGB"
+        },
+        "cornerRadius": 0,
+        "endArrowhead": "open",
+        "eraserMode": "brush",
+        "fillColor": {
+          "components": [
+            1,
+            0.91,
+            0.52,
+            1
+          ],
+          "space": "kCGColorSpaceSRGB"
+        },
+        "fillEnabled": false,
+        "fontName": "Helvetica",
+        "freehandConstraint": 0,
+        "freehandCorners": [],
+        "freehandSmoothing": false,
+        "freehandWasSimplified": false,
+        "frozenTimeZoneIdentifier": "UTC",
+        "frozenTimestamp": -978307200,
+        "highlighterBlend": "translucent",
+        "highlighterMode": "rectangle",
+        "id": "fixture-uuid-4",
+        "italic": false,
+        "lineCap": "round",
+        "lineJoin": "round",
+        "lineWidth": 24,
+        "magnifierConnector": "line",
+        "magnifierScale": 2,
+        "magnifierShadow": true,
+        "magnifierShape": "ellipse",
+        "magnifierShowsAnnotations": true,
+        "magnifierSmooth": false,
+        "number": 1,
+        "numberComment": "",
+        "numberCommentSize": [
+          240,
+          80
+        ],
+        "numberStyle": "decimal",
+        "opacity": 1,
+        "points": [
+          [
+            348,
+            132
+          ],
+          [
+            768,
+            552
+          ]
+        ],
+        "rotation": 0.11,
+        "spotlightBorder": true,
+        "spotlightDim": 0.55,
+        "spotlightShape": "ellipse",
+        "startArrowEnabled": false,
+        "startArrowhead": "open",
+        "strokeStyle": "solid",
+        "text": "",
+        "textOutlineColor": {
+          "components": [
+            1,
+            1
+          ],
+          "space": "kCGColorSpaceGenericGray"
+        },
+        "textOutlineEnabled": false,
+        "textOutlineWidth": 2,
+        "timestampIsCaptureDate": false,
+        "tool": "blur",
+        "underline": false,
+        "watermarkPlacement": "tiled",
+        "watermarkSpacing": 48,
+        "watermarkTemplate": "PicShot · $yyyy-MM-dd HH:mm:ss$"
+      },
+      {
+        "arcStartAngle": 0,
+        "arcSweepAngle": 4.71238898038469,
+        "bold": false,
+        "color": {
+          "components": [
+            1,
+            0.23,
+            0.24,
+            1
+          ],
+          "space": "kCGColorSpaceSRGB"
+        },
+        "cornerRadius": 0,
+        "endArrowhead": "open",
+        "eraserMode": "brush",
+        "fillColor": {
+          "components": [
+            1,
+            0.91,
+            0.52,
+            1
+          ],
+          "space": "kCGColorSpaceSRGB"
+        },
+        "fillEnabled": false,
+        "fontName": "Helvetica",
+        "freehandConstraint": 0,
+        "freehandCorners": [],
+        "freehandSmoothing": false,
+        "freehandWasSimplified": false,
+        "frozenTimeZoneIdentifier": "UTC",
+        "frozenTimestamp": -978307200,
+        "highlighterBlend": "translucent",
+        "highlighterMode": "rectangle",
+        "id": "fixture-uuid-5",
+        "italic": false,
+        "lineCap": "round",
+        "lineJoin": "round",
+        "lineWidth": 3,
+        "magnifierConnector": "line",
+        "magnifierScale": 2,
+        "magnifierShadow": true,
+        "magnifierShape": "ellipse",
+        "magnifierShowsAnnotations": true,
+        "magnifierSmooth": false,
+        "magnifierSource": [
+          [
+            3330,
+            1680
+          ],
+          [
+            270,
+            240
+          ]
+        ],
+        "number": 1,
+        "numberComment": "",
+        "numberCommentSize": [
+          240,
+          80
+        ],
+        "numberStyle": "decimal",
+        "opacity": 1,
+        "points": [
+          [
+            2130,
+            480
+          ],
+          [
+            2730,
+            1080
+          ]
+        ],
+        "rotation": 0,
+        "spotlightBorder": true,
+        "spotlightDim": 0.55,
+        "spotlightShape": "ellipse",
+        "startArrowEnabled": false,
+        "startArrowhead": "open",
+        "strokeStyle": "solid",
+        "text": "",
+        "textOutlineColor": {
+          "components": [
+            1,
+            1
+          ],
+          "space": "kCGColorSpaceGenericGray"
+        },
+        "textOutlineEnabled": false,
+        "textOutlineWidth": 2,
+        "timestampIsCaptureDate": false,
+        "tool": "magnifier",
+        "underline": false,
+        "watermarkPlacement": "tiled",
+        "watermarkSpacing": 48,
+        "watermarkTemplate": "PicShot · $yyyy-MM-dd HH:mm:ss$"
+      },
+      {
+        "arcStartAngle": 0,
+        "arcSweepAngle": 4.71238898038469,
+        "bold": false,
+        "color": {
+          "components": [
+            1,
+            0.23,
+            0.24,
+            1
+          ],
+          "space": "kCGColorSpaceSRGB"
+        },
+        "cornerRadius": 0,
+        "endArrowhead": "open",
+        "eraserMode": "brush",
+        "fillColor": {
+          "components": [
+            1,
+            0.91,
+            0.52,
+            1
+          ],
+          "space": "kCGColorSpaceSRGB"
+        },
+        "fillEnabled": false,
+        "fontName": "Helvetica",
+        "freehandConstraint": 0,
+        "freehandCorners": [],
+        "freehandSmoothing": false,
+        "freehandWasSimplified": false,
+        "frozenTimeZoneIdentifier": "UTC",
+        "frozenTimestamp": -978307200,
+        "highlighterBlend": "translucent",
+        "highlighterMode": "rectangle",
+        "id": "fixture-uuid-6",
+        "italic": false,
+        "lineCap": "round",
+        "lineJoin": "round",
+        "lineWidth": 4,
+        "magnifierConnector": "line",
+        "magnifierScale": 2,
+        "magnifierShadow": true,
+        "magnifierShape": "ellipse",
+        "magnifierShowsAnnotations": true,
+        "magnifierSmooth": false,
+        "number": 1,
+        "numberComment": "",
+        "numberCommentSize": [
+          240,
+          80
+        ],
+        "numberStyle": "decimal",
+        "opacity": 1,
+        "points": [
+          [
+            360,
+            168
+          ],
+          [
+            3000,
+            1908
+          ]
+        ],
+        "rotation": 0,
+        "spotlightBorder": true,
+        "spotlightDim": 0.23,
+        "spotlightShape": "ellipse",
+        "startArrowEnabled": false,
+        "startArrowhead": "open",
+        "strokeStyle": "solid",
+        "text": "",
+        "textOutlineColor": {
+          "components": [
+            1,
+            1
+          ],
+          "space": "kCGColorSpaceGenericGray"
+        },
+        "textOutlineEnabled": false,
+        "textOutlineWidth": 2,
+        "timestampIsCaptureDate": false,
+        "tool": "spotlight",
+        "underline": false,
+        "watermarkPlacement": "tiled",
+        "watermarkSpacing": 48,
+        "watermarkTemplate": "PicShot · $yyyy-MM-dd HH:mm:ss$"
+      },
+      {
+        "arcStartAngle": 0,
+        "arcSweepAngle": 4.71238898038469,
+        "bold": false,
+        "color": {
+          "components": [
+            1,
+            0.23,
+            0.24,
+            1
+          ],
+          "space": "kCGColorSpaceSRGB"
+        },
+        "cornerRadius": 0,
+        "endArrowhead": "open",
+        "eraserMode": "brush",
+        "fillColor": {
+          "components": [
+            1,
+            0.91,
+            0.52,
+            1
+          ],
+          "space": "kCGColorSpaceSRGB"
+        },
+        "fillEnabled": false,
+        "fontName": "Helvetica",
+        "freehandConstraint": 0,
+        "freehandCorners": [],
+        "freehandSmoothing": false,
+        "freehandWasSimplified": false,
+        "frozenTimeZoneIdentifier": "UTC",
+        "frozenTimestamp": -978307200,
+        "highlighterBlend": "translucent",
+        "highlighterMode": "rectangle",
+        "id": "fixture-uuid-7",
+        "italic": false,
+        "lineCap": "round",
+        "lineJoin": "round",
+        "lineWidth": 30,
+        "magnifierConnector": "line",
+        "magnifierScale": 2,
+        "magnifierShadow": true,
+        "magnifierShape": "ellipse",
+        "magnifierShowsAnnotations": true,
+        "magnifierSmooth": false,
+        "number": 1,
+        "numberComment": "",
+        "numberCommentSize": [
+          240,
+          80
+        ],
+        "numberStyle": "decimal",
+        "opacity": 1,
+        "points": [
+          [
+            630,
+            600
+          ],
+          [
+            1380,
+            600
+          ]
+        ],
+        "rotation": 0,
+        "spotlightBorder": true,
+        "spotlightDim": 0.55,
+        "spotlightShape": "ellipse",
+        "startArrowEnabled": false,
+        "startArrowhead": "open",
+        "strokeStyle": "solid",
+        "text": "",
+        "textOutlineColor": {
+          "components": [
+            1,
+            1
+          ],
+          "space": "kCGColorSpaceGenericGray"
+        },
+        "textOutlineEnabled": false,
+        "textOutlineWidth": 2,
+        "timestampIsCaptureDate": false,
+        "tool": "eraser",
+        "underline": false,
+        "watermarkPlacement": "tiled",
+        "watermarkSpacing": 48,
+        "watermarkTemplate": "PicShot · $yyyy-MM-dd HH:mm:ss$"
+      },
+      {
+        "arcStartAngle": 0,
+        "arcSweepAngle": 4.71238898038469,
+        "bold": false,
+        "color": {
+          "components": [
+            1,
+            0.23,
+            0.24,
+            1
+          ],
+          "space": "kCGColorSpaceSRGB"
+        },
+        "cornerRadius": 0,
+        "endArrowhead": "open",
+        "eraserMode": "brush",
+        "fillColor": {
+          "components": [
+            1,
+            0.91,
+            0.52,
+            1
+          ],
+          "space": "kCGColorSpaceSRGB"
+        },
+        "fillEnabled": false,
+        "fontName": "Helvetica",
+        "freehandConstraint": 0,
+        "freehandCorners": [],
+        "freehandSmoothing": false,
+        "freehandWasSimplified": false,
+        "frozenTimeZoneIdentifier": "UTC",
+        "frozenTimestamp": -978307200,
+        "highlighterBlend": "translucent",
+        "highlighterMode": "rectangle",
+        "id": "fixture-uuid-8",
+        "italic": false,
+        "lineCap": "round",
+        "lineJoin": "round",
+        "lineWidth": 18,
+        "magnifierConnector": "line",
+        "magnifierScale": 2,
+        "magnifierShadow": true,
+        "magnifierShape": "ellipse",
+        "magnifierShowsAnnotations": true,
+        "magnifierSmooth": false,
+        "mosaicLink": {
+          "additionID": "fixture-uuid-10",
+          "excludedTargets": [],
+          "groupID": "fixture-uuid-9",
+          "includedTargets": [
+            [
+              [
+                1140,
+                1170
+              ],
+              [
+                210,
+                150
+              ]
+            ],
+            [
+              [
+                1710,
+                1290
+              ],
+              [
+                210,
+                150
+              ]
+            ]
+          ],
+          "rootAdditionID": "fixture-uuid-10",
+          "synchronizes": true,
+          "target": [
+            [
+              1140,
+              1170
+            ],
+            [
+              210,
+              150
+            ]
+          ]
+        },
+        "number": 1,
+        "numberComment": "",
+        "numberCommentSize": [
+          240,
+          80
+        ],
+        "numberStyle": "decimal",
+        "opacity": 1,
+        "points": [
+          [
+            1140,
+            1170
+          ],
+          [
+            1350,
+            1320
+          ]
+        ],
+        "rotation": 0,
+        "spotlightBorder": true,
+        "spotlightDim": 0.55,
+        "spotlightShape": "ellipse",
+        "startArrowEnabled": false,
+        "startArrowhead": "open",
+        "strokeStyle": "solid",
+        "text": "",
+        "textOutlineColor": {
+          "components": [
+            1,
+            1
+          ],
+          "space": "kCGColorSpaceGenericGray"
+        },
+        "textOutlineEnabled": false,
+        "textOutlineWidth": 2,
+        "timestampIsCaptureDate": false,
+        "tool": "pixelate",
+        "underline": false,
+        "watermarkPlacement": "tiled",
+        "watermarkSpacing": 48,
+        "watermarkTemplate": "PicShot · $yyyy-MM-dd HH:mm:ss$"
+      },
+      {
+        "arcStartAngle": 0,
+        "arcSweepAngle": 4.71238898038469,
+        "bold": false,
+        "color": {
+          "components": [
+            1,
+            0.23,
+            0.24,
+            1
+          ],
+          "space": "kCGColorSpaceSRGB"
+        },
+        "cornerRadius": 0,
+        "endArrowhead": "open",
+        "eraserMode": "brush",
+        "fillColor": {
+          "components": [
+            1,
+            0.91,
+            0.52,
+            1
+          ],
+          "space": "kCGColorSpaceSRGB"
+        },
+        "fillEnabled": false,
+        "fontName": "Helvetica",
+        "freehandConstraint": 0,
+        "freehandCorners": [],
+        "freehandSmoothing": false,
+        "freehandWasSimplified": false,
+        "frozenTimeZoneIdentifier": "UTC",
+        "frozenTimestamp": -978307200,
+        "highlighterBlend": "translucent",
+        "highlighterMode": "rectangle",
+        "id": "fixture-uuid-11",
+        "italic": false,
+        "lineCap": "round",
+        "lineJoin": "round",
+        "lineWidth": 18,
+        "magnifierConnector": "line",
+        "magnifierScale": 2,
+        "magnifierShadow": true,
+        "magnifierShape": "ellipse",
+        "magnifierShowsAnnotations": true,
+        "magnifierSmooth": false,
+        "mosaicLink": {
+          "additionID": "fixture-uuid-10",
+          "excludedTargets": [],
+          "groupID": "fixture-uuid-9",
+          "includedTargets": [
+            [
+              [
+                1140,
+                1170
+              ],
+              [
+                210,
+                150
+              ]
+            ],
+            [
+              [
+                1710,
+                1290
+              ],
+              [
+                210,
+                150
+              ]
+            ]
+          ],
+          "rootAdditionID": "fixture-uuid-10",
+          "synchronizes": true,
+          "target": [
+            [
+              1710,
+              1290
+            ],
+            [
+              210,
+              150
+            ]
+          ]
+        },
+        "number": 1,
+        "numberComment": "",
+        "numberCommentSize": [
+          240,
+          80
+        ],
+        "numberStyle": "decimal",
+        "opacity": 1,
+        "points": [
+          [
+            1710,
+            1290
+          ],
+          [
+            1920,
+            1440
+          ]
+        ],
+        "rotation": 0,
+        "spotlightBorder": true,
+        "spotlightDim": 0.55,
+        "spotlightShape": "ellipse",
+        "startArrowEnabled": false,
+        "startArrowhead": "open",
+        "strokeStyle": "solid",
+        "text": "",
+        "textOutlineColor": {
+          "components": [
+            1,
+            1
+          ],
+          "space": "kCGColorSpaceGenericGray"
+        },
+        "textOutlineEnabled": false,
+        "textOutlineWidth": 2,
+        "timestampIsCaptureDate": false,
+        "tool": "pixelate",
+        "underline": false,
+        "watermarkPlacement": "tiled",
+        "watermarkSpacing": 48,
+        "watermarkTemplate": "PicShot · $yyyy-MM-dd HH:mm:ss$"
+      },
+      {
+        "arcStartAngle": 0,
+        "arcSweepAngle": 4.71238898038469,
+        "bold": false,
+        "color": {
+          "components": [
+            1,
+            0.23137254901960785,
+            0.18823529411764706,
+            1
+          ],
+          "space": "kCGColorSpaceSRGB"
+        },
+        "cornerRadius": 0,
+        "endArrowhead": "open",
+        "eraserMode": "brush",
+        "fillColor": {
+          "components": [
+            1,
+            0.91,
+            0.52,
+            1
+          ],
+          "space": "kCGColorSpaceSRGB"
+        },
+        "fillEnabled": false,
+        "fontName": "Helvetica",
+        "fontSize": 20,
+        "freehandConstraint": 0,
+        "freehandCorners": [],
+        "freehandSmoothing": true,
+        "freehandWasSimplified": false,
+        "frozenTimeZoneIdentifier": "UTC",
+        "frozenTimestamp": "bounded-session-date",
+        "highlighterBlend": "multiply",
+        "highlighterMode": "freehand",
+        "id": "fixture-uuid-12",
+        "italic": false,
+        "lineCap": "round",
+        "lineJoin": "round",
+        "lineWidth": 4,
+        "magnifierConnector": "line",
+        "magnifierScale": 2,
+        "magnifierShadow": true,
+        "magnifierShape": "ellipse",
+        "magnifierShowsAnnotations": true,
+        "magnifierSmooth": false,
+        "number": 1,
+        "numberComment": "",
+        "numberCommentSize": [
+          240,
+          80
+        ],
+        "numberStyle": "decimal",
+        "opacity": 1,
+        "points": [
+          [
+            768,
+            1332
+          ],
+          [
+            1152,
+            1550.3999999999999
+          ]
+        ],
+        "rotation": 0,
+        "spotlightBorder": true,
+        "spotlightDim": 0.55,
+        "spotlightShape": "ellipse",
+        "startArrowEnabled": false,
+        "startArrowhead": "open",
+        "strokeStyle": "solid",
+        "text": "",
+        "textOutlineColor": {
+          "components": [
+            1,
+            1
+          ],
+          "space": "kCGColorSpaceGenericGray"
+        },
+        "textOutlineEnabled": false,
+        "textOutlineWidth": 2,
+        "timestampIsCaptureDate": false,
+        "tool": "rectangle",
+        "underline": false,
+        "watermarkPlacement": "tiled",
+        "watermarkSpacing": 48,
+        "watermarkTemplate": "PicShot · 编辑于 $yyyy-MM-dd HH:mm:ss$"
+      }
+    ],
+    "baseAssetID": "fixture-uuid-2",
+    "basePixelHeight": 2160,
+    "basePixelWidth": 3840,
+    "baseProvenance": "derivedRaster",
+    "captureTimeZoneIdentifier": "UTC",
+    "captureTimestampKnown": false,
+    "capturedAt": -978307200,
+    "coordinates": "image-pixels-bottom-left",
+    "cropViewportInBase": [
+      [
+        480,
+        240
+      ],
+      [
+        2400,
+        1560
+      ]
+    ],
+    "documentID": "fixture-uuid-0",
+    "format": "picshot.editable-annotations",
+    "numberSequence": {
+      "closesGapsOnDelete": false,
+      "isExhausted": false,
+      "nextValue": 1
+    },
+    "originalAssetID": "fixture-uuid-1",
+    "originalPixelHeight": 2160,
+    "originalPixelWidth": 3840,
+    "outputDecoration": {
+      "borderColor": {
+        "alpha": 1,
+        "blue": 1,
+        "green": 1,
+        "red": 1
+      },
+      "borderEnabled": true,
+      "borderWidth": 2,
+      "cornerRadius": 8,
+      "enabled": true,
+      "shadowBlur": 2,
+      "shadowEnabled": true,
+      "shadowOffsetX": 3,
+      "shadowOffsetY": 4,
+      "shadowOpacity": 0.3
+    },
+    "version": 1
+  },
+  "provenance": {
+    "drawingReportSHA256": "074c5d288c20e4c95ff8be98d802cce3c9aea354d1b5352bf839c6ba02e44be5",
+    "explicitFixtureMetadata": [
+      "capturedAt=1970-01-01T00:00:00Z",
+      "captureTimeZoneIdentifier=UTC",
+      "newAnnotation.frozenTimeZoneIdentifier=UTC"
+    ],
+    "nativeReportSHA256": "6bbcc6f57dba0002d925356c94ad72f435068749da259bcfea07386ad78c3",
+    "normalization": "allowlisted UUID topology; new eighth mark session date only",
+    "sourceCommit": "faa6b258f1418474709113c8acb8f6231049818b",
+    "workload": "functional-4k"
+  },
+  "seven": {
+    "annotations": [
+      {
+        "arcStartAngle": 0,
+        "arcSweepAngle": 4.71238898038469,
+        "bold": false,
+        "color": {
+          "components": [
+            0,
+            1
+          ],
+          "space": "kCGColorSpaceGenericGray"
+        },
+        "cornerRadius": 0,
+        "endArrowhead": "open",
+        "eraserMode": "brush",
+        "fillColor": {
+          "components": [
+            1,
+            0.91,
+            0.52,
+            1
+          ],
+          "space": "kCGColorSpaceSRGB"
+        },
+        "fillEnabled": false,
+        "fontName": "Helvetica",
+        "freehandConstraint": 0,
+        "freehandCorners": [],
+        "freehandSmoothing": false,
+        "freehandWasSimplified": false,
+        "frozenTimeZoneIdentifier": "UTC",
+        "frozenTimestamp": -978307200,
+        "highlighterBlend": "translucent",
+        "highlighterMode": "rectangle",
+        "id": "fixture-uuid-3",
+        "italic": false,
+        "lineCap": "round",
+        "lineJoin": "round",
+        "lineWidth": 4,
+        "magnifierConnector": "line",
+        "magnifierScale": 2,
+        "magnifierShadow": true,
+        "magnifierShape": "ellipse",
+        "magnifierShowsAnnotations": true,
+        "magnifierSmooth": false,
+        "number": 1,
+        "numberComment": "",
+        "numberCommentSize": [
+          240,
+          80
+        ],
+        "numberStyle": "decimal",
+        "opacity": 1,
+        "points": [
+          [
+            750,
+            450
+          ],
+          [
+            1260,
+            690
+          ]
+        ],
+        "rotation": 0.08,
+        "spotlightBorder": true,
+        "spotlightDim": 0.55,
+        "spotlightShape": "ellipse",
+        "startArrowEnabled": false,
+        "startArrowhead": "open",
+        "strokeStyle": "solid",
+        "text": "",
+        "textOutlineColor": {
+          "components": [
+            1,
+            1
+          ],
+          "space": "kCGColorSpaceGenericGray"
+        },
+        "textOutlineEnabled": false,
+        "textOutlineWidth": 2,
+        "timestampIsCaptureDate": false,
+        "tool": "redact",
+        "underline": false,
+        "watermarkPlacement": "tiled",
+        "watermarkSpacing": 48,
+        "watermarkTemplate": "PicShot · $yyyy-MM-dd HH:mm:ss$"
+      },
+      {
+        "arcStartAngle": 0,
+        "arcSweepAngle": 4.71238898038469,
+        "bold": false,
+        "color": {
+          "components": [
+            1,
+            0.23,
+            0.24,
+            1
+          ],
+          "space": "kCGColorSpaceSRGB"
+        },
+        "cornerRadius": 0,
+        "endArrowhead": "open",
+        "eraserMode": "brush",
+        "fillColor": {
+          "components": [
+            1,
+            0.91,
+            0.52,
+            1
+          ],
+          "space": "kCGColorSpaceSRGB"
+        },
+        "fillEnabled": false,
+        "fontName": "Helvetica",
+        "freehandConstraint": 0,
+        "freehandCorners": [],
+        "freehandSmoothing": false,
+        "freehandWasSimplified": false,
+        "frozenTimeZoneIdentifier": "UTC",
+        "frozenTimestamp": -978307200,
+        "highlighterBlend": "translucent",
+        "highlighterMode": "rectangle",
+        "id": "fixture-uuid-4",
+        "italic": false,
+        "lineCap": "round",
+        "lineJoin": "round",
+        "lineWidth": 24,
+        "magnifierConnector": "line",
+        "magnifierScale": 2,
+        "magnifierShadow": true,
+        "magnifierShape": "ellipse",
+        "magnifierShowsAnnotations": true,
+        "magnifierSmooth": false,
+        "number": 1,
+        "numberComment": "",
+        "numberCommentSize": [
+          240,
+          80
+        ],
+        "numberStyle": "decimal",
+        "opacity": 1,
+        "points": [
+          [
+            348,
+            132
+          ],
+          [
+            768,
+            552
+          ]
+        ],
+        "rotation": 0.11,
+        "spotlightBorder": true,
+        "spotlightDim": 0.55,
+        "spotlightShape": "ellipse",
+        "startArrowEnabled": false,
+        "startArrowhead": "open",
+        "strokeStyle": "solid",
+        "text": "",
+        "textOutlineColor": {
+          "components": [
+            1,
+            1
+          ],
+          "space": "kCGColorSpaceGenericGray"
+        },
+        "textOutlineEnabled": false,
+        "textOutlineWidth": 2,
+        "timestampIsCaptureDate": false,
+        "tool": "blur",
+        "underline": false,
+        "watermarkPlacement": "tiled",
+        "watermarkSpacing": 48,
+        "watermarkTemplate": "PicShot · $yyyy-MM-dd HH:mm:ss$"
+      },
+      {
+        "arcStartAngle": 0,
+        "arcSweepAngle": 4.71238898038469,
+        "bold": false,
+        "color": {
+          "components": [
+            1,
+            0.23,
+            0.24,
+            1
+          ],
+          "space": "kCGColorSpaceSRGB"
+        },
+        "cornerRadius": 0,
+        "endArrowhead": "open",
+        "eraserMode": "brush",
+        "fillColor": {
+          "components": [
+            1,
+            0.91,
+            0.52,
+            1
+          ],
+          "space": "kCGColorSpaceSRGB"
+        },
+        "fillEnabled": false,
+        "fontName": "Helvetica",
+        "freehandConstraint": 0,
+        "freehandCorners": [],
+        "freehandSmoothing": false,
+        "freehandWasSimplified": false,
+        "frozenTimeZoneIdentifier": "UTC",
+        "frozenTimestamp": -978307200,
+        "highlighterBlend": "translucent",
+        "highlighterMode": "rectangle",
+        "id": "fixture-uuid-5",
+        "italic": false,
+        "lineCap": "round",
+        "lineJoin": "round",
+        "lineWidth": 3,
+        "magnifierConnector": "line",
+        "magnifierScale": 2,
+        "magnifierShadow": true,
+        "magnifierShape": "ellipse",
+        "magnifierShowsAnnotations": true,
+        "magnifierSmooth": false,
+        "magnifierSource": [
+          [
+            3330,
+            1680
+          ],
+          [
+            270,
+            240
+          ]
+        ],
+        "number": 1,
+        "numberComment": "",
+        "numberCommentSize": [
+          240,
+          80
+        ],
+        "numberStyle": "decimal",
+        "opacity": 1,
+        "points": [
+          [
+            2130,
+            480
+          ],
+          [
+            2730,
+            1080
+          ]
+        ],
+        "rotation": 0,
+        "spotlightBorder": true,
+        "spotlightDim": 0.55,
+        "spotlightShape": "ellipse",
+        "startArrowEnabled": false,
+        "startArrowhead": "open",
+        "strokeStyle": "solid",
+        "text": "",
+        "textOutlineColor": {
+          "components": [
+            1,
+            1
+          ],
+          "space": "kCGColorSpaceGenericGray"
+        },
+        "textOutlineEnabled": false,
+        "textOutlineWidth": 2,
+        "timestampIsCaptureDate": false,
+        "tool": "magnifier",
+        "underline": false,
+        "watermarkPlacement": "tiled",
+        "watermarkSpacing": 48,
+        "watermarkTemplate": "PicShot · $yyyy-MM-dd HH:mm:ss$"
+      },
+      {
+        "arcStartAngle": 0,
+        "arcSweepAngle": 4.71238898038469,
+        "bold": false,
+        "color": {
+          "components": [
+            1,
+            0.23,
+            0.24,
+            1
+          ],
+          "space": "kCGColorSpaceSRGB"
+        },
+        "cornerRadius": 0,
+        "endArrowhead": "open",
+        "eraserMode": "brush",
+        "fillColor": {
+          "components": [
+            1,
+            0.91,
+            0.52,
+            1
+          ],
+          "space": "kCGColorSpaceSRGB"
+        },
+        "fillEnabled": false,
+        "fontName": "Helvetica",
+        "freehandConstraint": 0,
+        "freehandCorners": [],
+        "freehandSmoothing": false,
+        "freehandWasSimplified": false,
+        "frozenTimeZoneIdentifier": "UTC",
+        "frozenTimestamp": -978307200,
+        "highlighterBlend": "translucent",
+        "highlighterMode": "rectangle",
+        "id": "fixture-uuid-6",
+        "italic": false,
+        "lineCap": "round",
+        "lineJoin": "round",
+        "lineWidth": 4,
+        "magnifierConnector": "line",
+        "magnifierScale": 2,
+        "magnifierShadow": true,
+        "magnifierShape": "ellipse",
+        "magnifierShowsAnnotations": true,
+        "magnifierSmooth": false,
+        "number": 1,
+        "numberComment": "",
+        "numberCommentSize": [
+          240,
+          80
+        ],
+        "numberStyle": "decimal",
+        "opacity": 1,
+        "points": [
+          [
+            360,
+            168
+          ],
+          [
+            3000,
+            1908
+          ]
+        ],
+        "rotation": 0,
+        "spotlightBorder": true,
+        "spotlightDim": 0.23,
+        "spotlightShape": "ellipse",
+        "startArrowEnabled": false,
+        "startArrowhead": "open",
+        "strokeStyle": "solid",
+        "text": "",
+        "textOutlineColor": {
+          "components": [
+            1,
+            1
+          ],
+          "space": "kCGColorSpaceGenericGray"
+        },
+        "textOutlineEnabled": false,
+        "textOutlineWidth": 2,
+        "timestampIsCaptureDate": false,
+        "tool": "spotlight",
+        "underline": false,
+        "watermarkPlacement": "tiled",
+        "watermarkSpacing": 48,
+        "watermarkTemplate": "PicShot · $yyyy-MM-dd HH:mm:ss$"
+      },
+      {
+        "arcStartAngle": 0,
+        "arcSweepAngle": 4.71238898038469,
+        "bold": false,
+        "color": {
+          "components": [
+            1,
+            0.23,
+            0.24,
+            1
+          ],
+          "space": "kCGColorSpaceSRGB"
+        },
+        "cornerRadius": 0,
+        "endArrowhead": "open",
+        "eraserMode": "brush",
+        "fillColor": {
+          "components": [
+            1,
+            0.91,
+            0.52,
+            1
+          ],
+          "space": "kCGColorSpaceSRGB"
+        },
+        "fillEnabled": false,
+        "fontName": "Helvetica",
+        "freehandConstraint": 0,
+        "freehandCorners": [],
+        "freehandSmoothing": false,
+        "freehandWasSimplified": false,
+        "frozenTimeZoneIdentifier": "UTC",
+        "frozenTimestamp": -978307200,
+        "highlighterBlend": "translucent",
+        "highlighterMode": "rectangle",
+        "id": "fixture-uuid-7",
+        "italic": false,
+        "lineCap": "round",
+        "lineJoin": "round",
+        "lineWidth": 30,
+        "magnifierConnector": "line",
+        "magnifierScale": 2,
+        "magnifierShadow": true,
+        "magnifierShape": "ellipse",
+        "magnifierShowsAnnotations": true,
+        "magnifierSmooth": false,
+        "number": 1,
+        "numberComment": "",
+        "numberCommentSize": [
+          240,
+          80
+        ],
+        "numberStyle": "decimal",
+        "opacity": 1,
+        "points": [
+          [
+            630,
+            600
+          ],
+          [
+            1380,
+            600
+          ]
+        ],
+        "rotation": 0,
+        "spotlightBorder": true,
+        "spotlightDim": 0.55,
+        "spotlightShape": "ellipse",
+        "startArrowEnabled": false,
+        "startArrowhead": "open",
+        "strokeStyle": "solid",
+        "text": "",
+        "textOutlineColor": {
+          "components": [
+            1,
+            1
+          ],
+          "space": "kCGColorSpaceGenericGray"
+        },
+        "textOutlineEnabled": false,
+        "textOutlineWidth": 2,
+        "timestampIsCaptureDate": false,
+        "tool": "eraser",
+        "underline": false,
+        "watermarkPlacement": "tiled",
+        "watermarkSpacing": 48,
+        "watermarkTemplate": "PicShot · $yyyy-MM-dd HH:mm:ss$"
+      },
+      {
+        "arcStartAngle": 0,
+        "arcSweepAngle": 4.71238898038469,
+        "bold": false,
+        "color": {
+          "components": [
+            1,
+            0.23,
+            0.24,
+            1
+          ],
+          "space": "kCGColorSpaceSRGB"
+        },
+        "cornerRadius": 0,
+        "endArrowhead": "open",
+        "eraserMode": "brush",
+        "fillColor": {
+          "components": [
+            1,
+            0.91,
+            0.52,
+            1
+          ],
+          "space": "kCGColorSpaceSRGB"
+        },
+        "fillEnabled": false,
+        "fontName": "Helvetica",
+        "freehandConstraint": 0,
+        "freehandCorners": [],
+        "freehandSmoothing": false,
+        "freehandWasSimplified": false,
+        "frozenTimeZoneIdentifier": "UTC",
+        "frozenTimestamp": -978307200,
+        "highlighterBlend": "translucent",
+        "highlighterMode": "rectangle",
+        "id": "fixture-uuid-8",
+        "italic": false,
+        "lineCap": "round",
+        "lineJoin": "round",
+        "lineWidth": 18,
+        "magnifierConnector": "line",
+        "magnifierScale": 2,
+        "magnifierShadow": true,
+        "magnifierShape": "ellipse",
+        "magnifierShowsAnnotations": true,
+        "magnifierSmooth": false,
+        "mosaicLink": {
+          "additionID": "fixture-uuid-10",
+          "excludedTargets": [],
+          "groupID": "fixture-uuid-9",
+          "includedTargets": [
+            [
+              [
+                1140,
+                1170
+              ],
+              [
+                210,
+                150
+              ]
+            ],
+            [
+              [
+                1710,
+                1290
+              ],
+              [
+                210,
+                150
+              ]
+            ]
+          ],
+          "rootAdditionID": "fixture-uuid-10",
+          "synchronizes": true,
+          "target": [
+            [
+              1140,
+              1170
+            ],
+            [
+              210,
+              150
+            ]
+          ]
+        },
+        "number": 1,
+        "numberComment": "",
+        "numberCommentSize": [
+          240,
+          80
+        ],
+        "numberStyle": "decimal",
+        "opacity": 1,
+        "points": [
+          [
+            1140,
+            1170
+          ],
+          [
+            1350,
+            1320
+          ]
+        ],
+        "rotation": 0,
+        "spotlightBorder": true,
+        "spotlightDim": 0.55,
+        "spotlightShape": "ellipse",
+        "startArrowEnabled": false,
+        "startArrowhead": "open",
+        "strokeStyle": "solid",
+        "text": "",
+        "textOutlineColor": {
+          "components": [
+            1,
+            1
+          ],
+          "space": "kCGColorSpaceGenericGray"
+        },
+        "textOutlineEnabled": false,
+        "textOutlineWidth": 2,
+        "timestampIsCaptureDate": false,
+        "tool": "pixelate",
+        "underline": false,
+        "watermarkPlacement": "tiled",
+        "watermarkSpacing": 48,
+        "watermarkTemplate": "PicShot · $yyyy-MM-dd HH:mm:ss$"
+      },
+      {
+        "arcStartAngle": 0,
+        "arcSweepAngle": 4.71238898038469,
+        "bold": false,
+        "color": {
+          "components": [
+            1,
+            0.23,
+            0.24,
+            1
+          ],
+          "space": "kCGColorSpaceSRGB"
+        },
+        "cornerRadius": 0,
+        "endArrowhead": "open",
+        "eraserMode": "brush",
+        "fillColor": {
+          "components": [
+            1,
+            0.91,
+            0.52,
+            1
+          ],
+          "space": "kCGColorSpaceSRGB"
+        },
+        "fillEnabled": false,
+        "fontName": "Helvetica",
+        "freehandConstraint": 0,
+        "freehandCorners": [],
+        "freehandSmoothing": false,
+        "freehandWasSimplified": false,
+        "frozenTimeZoneIdentifier": "UTC",
+        "frozenTimestamp": -978307200,
+        "highlighterBlend": "translucent",
+        "highlighterMode": "rectangle",
+        "id": "fixture-uuid-11",
+        "italic": false,
+        "lineCap": "round",
+        "lineJoin": "round",
+        "lineWidth": 18,
+        "magnifierConnector": "line",
+        "magnifierScale": 2,
+        "magnifierShadow": true,
+        "magnifierShape": "ellipse",
+        "magnifierShowsAnnotations": true,
+        "magnifierSmooth": false,
+        "mosaicLink": {
+          "additionID": "fixture-uuid-10",
+          "excludedTargets": [],
+          "groupID": "fixture-uuid-9",
+          "includedTargets": [
+            [
+              [
+                1140,
+                1170
+              ],
+              [
+                210,
+                150
+              ]
+            ],
+            [
+              [
+                1710,
+                1290
+              ],
+              [
+                210,
+                150
+              ]
+            ]
+          ],
+          "rootAdditionID": "fixture-uuid-10",
+          "synchronizes": true,
+          "target": [
+            [
+              1710,
+              1290
+            ],
+            [
+              210,
+              150
+            ]
+          ]
+        },
+        "number": 1,
+        "numberComment": "",
+        "numberCommentSize": [
+          240,
+          80
+        ],
+        "numberStyle": "decimal",
+        "opacity": 1,
+        "points": [
+          [
+            1710,
+            1290
+          ],
+          [
+            1920,
+            1440
+          ]
+        ],
+        "rotation": 0,
+        "spotlightBorder": true,
+        "spotlightDim": 0.55,
+        "spotlightShape": "ellipse",
+        "startArrowEnabled": false,
+        "startArrowhead": "open",
+        "strokeStyle": "solid",
+        "text": "",
+        "textOutlineColor": {
+          "components": [
+            1,
+            1
+          ],
+          "space": "kCGColorSpaceGenericGray"
+        },
+        "textOutlineEnabled": false,
+        "textOutlineWidth": 2,
+        "timestampIsCaptureDate": false,
+        "tool": "pixelate",
+        "underline": false,
+        "watermarkPlacement": "tiled",
+        "watermarkSpacing": 48,
+        "watermarkTemplate": "PicShot · $yyyy-MM-dd HH:mm:ss$"
+      }
+    ],
+    "baseAssetID": "fixture-uuid-2",
+    "basePixelHeight": 2160,
+    "basePixelWidth": 3840,
+    "baseProvenance": "derivedRaster",
+    "captureTimeZoneIdentifier": "UTC",
+    "captureTimestampKnown": false,
+    "capturedAt": -978307200,
+    "coordinates": "image-pixels-bottom-left",
+    "cropViewportInBase": [
+      [
+        480,
+        240
+      ],
+      [
+        2400,
+        1560
+      ]
+    ],
+    "documentID": "fixture-uuid-0",
+    "format": "picshot.editable-annotations",
+    "numberSequence": {
+      "closesGapsOnDelete": false,
+      "isExhausted": false,
+      "nextValue": 1
+    },
+    "originalAssetID": "fixture-uuid-1",
+    "originalPixelHeight": 2160,
+    "originalPixelWidth": 3840,
+    "outputDecoration": {
+      "borderColor": {
+        "alpha": 1,
+        "blue": 1,
+        "green": 1,
+        "red": 1
+      },
+      "borderEnabled": true,
+      "borderWidth": 2,
+      "cornerRadius": 8,
+      "enabled": true,
+      "shadowBlur": 2,
+      "shadowEnabled": true,
+      "shadowOffsetX": 3,
+      "shadowOffsetY": 4,
+      "shadowOpacity": 0.3
+    },
+    "version": 1
+  }
+}

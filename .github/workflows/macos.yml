@@ -7,8 +7,8 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[seed-render-crop]') && 'seed-render-crop' || contains(github.event.head_commit.message || '', '[effect-context]') && 'effect-context' || contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && 'renderer-scope-controls' || contains(github.event.head_commit.message || '', '[renderer-storage]') && 'renderer-storage' || contains(github.event.head_commit.message || '', '[drawing-pair]') && 'drawing-pair' || contains(github.event.head_commit.message || '', '[editable-observation]') && 'editable-observation' || contains(github.event.head_commit.message || '', '[callout-retirement]') && 'callout-retirement' || contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-documents' || contains(github.event.head_commit.message || '', '[multiwindow-memory]') && 'multiwindow-memory' || contains(github.event.head_commit.message || '', '[recording-wait]') && 'recording-wait' || contains(github.event.head_commit.message || '', '[manual-hash]') && 'manual-hash' || contains(github.event.head_commit.message || '', '[scroll-memory]') && 'scroll-memory' || contains(github.event.head_commit.message || '', '[decode-exit-latch]') && 'decode-exit-latch' || contains(github.event.head_commit.message || '', '[decode-timing-v3]') && 'decode-timing-v3' || contains(github.event.head_commit.message || '', '[decode-large]') && 'decode-large' || contains(github.event.head_commit.message || '', '[pin-workflows]') && 'pins-010' || contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
-  cancel-in-progress: ${{ !contains(github.event.head_commit.message || '', '[seed-render-crop]') && !contains(github.event.head_commit.message || '', '[effect-context]') && !contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && !contains(github.event.head_commit.message || '', '[renderer-storage]') && !contains(github.event.head_commit.message || '', '[drawing-pair]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
+  group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-product-resource' || contains(github.event.head_commit.message || '', '[seed-render-crop]') && 'seed-render-crop' || contains(github.event.head_commit.message || '', '[effect-context]') && 'effect-context' || contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && 'renderer-scope-controls' || contains(github.event.head_commit.message || '', '[renderer-storage]') && 'renderer-storage' || contains(github.event.head_commit.message || '', '[drawing-pair]') && 'drawing-pair' || contains(github.event.head_commit.message || '', '[editable-observation]') && 'editable-observation' || contains(github.event.head_commit.message || '', '[callout-retirement]') && 'callout-retirement' || contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-documents' || contains(github.event.head_commit.message || '', '[multiwindow-memory]') && 'multiwindow-memory' || contains(github.event.head_commit.message || '', '[recording-wait]') && 'recording-wait' || contains(github.event.head_commit.message || '', '[manual-hash]') && 'manual-hash' || contains(github.event.head_commit.message || '', '[scroll-memory]') && 'scroll-memory' || contains(github.event.head_commit.message || '', '[decode-exit-latch]') && 'decode-exit-latch' || contains(github.event.head_commit.message || '', '[decode-timing-v3]') && 'decode-timing-v3' || contains(github.event.head_commit.message || '', '[decode-large]') && 'decode-large' || contains(github.event.head_commit.message || '', '[pin-workflows]') && 'pins-010' || contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
+  cancel-in-progress: ${{ !(contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]')) && !contains(github.event.head_commit.message || '', '[seed-render-crop]') && !contains(github.event.head_commit.message || '', '[effect-context]') && !contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && !contains(github.event.head_commit.message || '', '[renderer-storage]') && !contains(github.event.head_commit.message || '', '[drawing-pair]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
 jobs:
   runner-check:
     if: ${{ contains(github.event.head_commit.message || '', '[runner-only]') }}
@@ -1911,6 +1911,247 @@ jobs:
           dist/seed-render-crop-installed/PicShot.app/Contents/Info.plist
           dist/seed-render-crop-installed/PicShot.app/Contents/MacOS/PicShot
           dist/seed-render-crop-installed/PicShot.app/Contents/Resources/build-info.json
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 6
+
+  # Opt-in actual product comparison. No installers, defaults or acceptance change.
+  editable-product-resource:
+    if: ${{ contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]') }}
+    runs-on: macos-15
+    # Step maxima total 200 minutes; 10 minutes remain for scheduling/cleanup.
+    # This bounded ARM comparison does not by itself establish release acceptance.
+    timeout-minutes: 210
+    steps:
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      timeout-minutes: 2
+    - name: Check preserved drawing contracts
+      timeout-minutes: 3
+      run: |
+        set -o pipefail
+        mkdir -p dist
+        python3 -m unittest discover -s scripts/tests -p '*drawing*.py' -v 2>&1 | tee dist/editable-product-resource-drawing-contracts.log
+    - name: Check optimized drawing contracts
+      timeout-minutes: 3
+      run: |
+        set -o pipefail
+        python3 -O -m unittest discover -s scripts/tests -p '*drawing*.py' -v 2>&1 | tee dist/editable-product-resource-drawing-contracts-optimized.log
+    - name: Check all explicit renderer comparison contracts
+      timeout-minutes: 6
+      run: |
+        set -o pipefail
+        for picshot_contract_pattern in '*renderer_storage*.py' '*renderer_scope*.py'; do
+          python3 -m unittest discover -s scripts/tests -p "$picshot_contract_pattern" -v 2>&1 | tee -a dist/editable-product-resource-renderer-contracts.log
+        done
+    - name: Check optimized renderer comparison contracts
+      timeout-minutes: 6
+      run: |
+        set -o pipefail
+        for picshot_contract_pattern in '*renderer_storage*.py' '*renderer_scope*.py'; do
+          python3 -O -m unittest discover -s scripts/tests -p "$picshot_contract_pattern" -v 2>&1 | tee -a dist/editable-product-resource-renderer-contracts-optimized.log
+        done
+    - name: Check finite effect-context comparison contracts
+      timeout-minutes: 6
+      run: |
+        set -o pipefail
+        python3 -m unittest discover -s scripts/tests -p '*effect_context*.py' -v 2>&1 | tee dist/editable-product-resource-effect-contracts.log
+    - name: Check optimized effect-context comparison contracts
+      timeout-minutes: 6
+      run: |
+        set -o pipefail
+        python3 -O -m unittest discover -s scripts/tests -p '*effect_context*.py' -v 2>&1 | tee dist/editable-product-resource-effect-contracts-optimized.log
+    - name: Check bounded seed render crop contracts
+      timeout-minutes: 6
+      run: |
+        set -o pipefail
+        python3 -m unittest discover -s scripts/tests -p '*seed_render_crop*' -v 2>&1 | tee dist/editable-product-resource-substage-contracts.log
+    - name: Check optimized seed render crop contracts
+      timeout-minutes: 6
+      run: |
+        set -o pipefail
+        python3 -O -m unittest discover -s scripts/tests -p '*seed_render_crop*' -v 2>&1 | tee dist/editable-product-resource-substage-contracts-optimized.log
+    - name: Check actual product evidence contracts
+      timeout-minutes: 6
+      run: |
+        set -euo pipefail
+        python3 -m unittest discover -s scripts/tests -p test_check_editable_product_resource.py -v 2>&1 | tee dist/editable-product-resource-contracts.log
+    - name: Check optimized actual product evidence contracts
+      timeout-minutes: 6
+      run: |
+        set -euo pipefail
+        python3 -O -m unittest discover -s scripts/tests -p test_check_editable_product_resource.py -v 2>&1 | tee dist/editable-product-resource-contracts-optimized.log
+    - name: Check every integrated source binding
+      timeout-minutes: 3
+      run: |
+        set -euo pipefail
+        python3 -m unittest discover -s scripts/tests -p '*source_binding.py' -v 2>&1 | tee dist/editable-product-resource-source-contracts.log
+    - name: Check optimized integrated source bindings
+      timeout-minutes: 3
+      run: |
+        set -euo pipefail
+        python3 -O -m unittest discover -s scripts/tests -p '*source_binding.py' -v 2>&1 | tee dist/editable-product-resource-source-contracts-optimized.log
+    - name: Check preserved certification failure guards and bounded runner contracts
+      timeout-minutes: 4
+      run: |
+        set -euo pipefail
+        for picshot_contract_pattern in test_check_editable_components.py test_check_effect_output_failure_report.py test_run_bounded_command.py test_native_test_shards.py; do
+          python3 -m unittest discover -s scripts/tests -p "$picshot_contract_pattern" -v 2>&1 | tee -a dist/editable-product-resource-prerequisite-contracts.log
+        done
+    - name: Check optimized certification failure guards and bounded runner contracts
+      timeout-minutes: 4
+      run: |
+        set -euo pipefail
+        for picshot_contract_pattern in test_check_editable_components.py test_check_effect_output_failure_report.py test_run_bounded_command.py test_native_test_shards.py; do
+          python3 -O -m unittest discover -s scripts/tests -p "$picshot_contract_pattern" -v 2>&1 | tee -a dist/editable-product-resource-prerequisite-contracts-optimized.log
+        done
+    - name: Package one signed application without user installers
+      timeout-minutes: 31
+      env:
+        PICSHOT_PACKAGE_APP_ONLY: '1'
+      run: python3 scripts/run-bounded-command.py --timeout-seconds 1800 --log dist/editable-product-resource-package.log --report dist/editable-product-resource-package.json -- bash scripts/package.sh
+    - name: Compile the complete native test target
+      timeout-minutes: 10
+      run: python3 scripts/run-bounded-command.py --timeout-seconds 540 --log dist/editable-product-resource-test-build.log --report dist/editable-product-resource-test-build.json -- swift build --build-tests
+    - name: Execute exact discovered drawing renderer effect substage and product native inventory
+      timeout-minutes: 9
+      run: |
+        set -euo pipefail
+        python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/editable-product-resource-test-discovery.log --report dist/editable-product-resource-test-discovery.json -- swift test list --skip-build
+        python3 scripts/run-bounded-command.py --timeout-seconds 420 --log dist/editable-product-resource-native-tests.log --report dist/editable-product-resource-native-tests.json -- swift test --skip-build --filter 'DrawingRasterTests|RendererStorageTests|EffectContextConfigurationTests|EffectContextGuardControlTests|SeedRenderCropSubstageProbeTests|EditableProductResourceFixtureTests'
+        python3 - <<'PYTHON'
+        import hashlib, importlib.util, json, os
+        from pathlib import Path
+        spec = importlib.util.spec_from_file_location('native_cases', 'scripts/native-test-shards.py')
+        native = importlib.util.module_from_spec(spec); spec.loader.exec_module(native)
+        inventory = Path('dist/editable-product-resource-test-discovery.log').read_text()
+        discovered = native.discover(inventory)
+        classes = {'PicShotTests.DrawingRasterTests', 'PicShotTests.RendererStorageTests',
+                   'PicShotTests.EffectContextConfigurationTests', 'PicShotTests.EffectContextGuardControlTests',
+                   'PicShotTests.SeedRenderCropSubstageProbeTests', 'PicShotTests.EditableProductResourceFixtureTests'}
+        expected = [name for name in discovered if name.split('/')[0] in classes]
+        native.need({name.split('/')[0] for name in expected} == classes,
+                    'Native drawing/renderer/effect/substage/product class inventory differs')
+        probe_methods = {
+            'testAbsentFlagIsNoOpAndFiniteSelectionFixesEveryAxis',
+            'testInvalidSelectorsRoutesAndPolicyChangesFailClosed',
+            'testSchemaRawByteBindingsAndCompleteMemoryArePreserved',
+            'testActualFullMemoryDictionaryRoundTripsWithoutLosingBackingFields',
+            'testExactBoundsOrderAndMissingWorkflowRejection',
+            'testExistingDrawingMetadataDoesNotSampleOrRetainObjects',
+            'testMemorySchemaRejectsObjectsMissingBackingAndOversizeMetadata',
+            'testRunningWriteDoesNothingAndFinalSidecarIsBounded',
+        }
+        native.need({name.split('/')[1] for name in expected if name.split('/')[0] == 'PicShotTests.SeedRenderCropSubstageProbeTests'}
+                    == probe_methods, 'The eight dedicated substage cases differ')
+        product_methods = {
+            'testOrdinarySmokeDoesNotSelectProductMeasurement',
+            'testOnlySeparateExplicitCertificationAndMeasurementAreAccepted',
+            'testUnknownWorkloadOverridesAndCompetingRoutesFailClosed',
+            'testOnlyFiniteExplicitDrawingOverrideIsAllowedForMeasurement',
+            'testPathsRequireAbsoluteNulFreeValues',
+            'testEncodedStreamingCopiesCompleteMultipleChunksAndClosesDescriptors',
+            'testStreamingRejectsUnsafeOversizedAndPreexistingDestinations',
+            'testDirectoryValidationDoesNotFollowSymlinkAncestors',
+        }
+        native.need({name.split('/')[1] for name in expected if name.split('/')[0] == 'PicShotTests.EditableProductResourceFixtureTests'}
+                    == product_methods, 'The eight dedicated product resource cases differ')
+        discovery = json.loads(Path('dist/editable-product-resource-test-discovery.json').read_text())
+        runner = json.loads(Path('dist/editable-product-resource-native-tests.json').read_text())
+        log = Path('dist/editable-product-resource-native-tests.log').read_text()
+        for report, seconds, command, raw in [
+            (discovery, 60, ['swift', 'test', 'list', '--skip-build'], inventory),
+            (runner, 420, ['swift', 'test', '--skip-build', '--filter', 'DrawingRasterTests|RendererStorageTests|EffectContextConfigurationTests|EffectContextGuardControlTests|SeedRenderCropSubstageProbeTests|EditableProductResourceFixtureTests'], log),
+        ]:
+            native.need(report['status'] == report['termination_reason'] == 'exited'
+                        and report['exit_code'] == report['child_returncode'] == 0
+                        and report['timeout_seconds'] == seconds and report['command'] == command
+                        and report['log_bytes'] == len(raw.encode()) and not report['log_truncated']
+                        and not report['sigterm_sent'] and not report['sigkill_sent'],
+                        'Native inventory or test process incomplete')
+        passed, skipped = native.case_results(log, expected)
+        native.need(not skipped, 'Native diagnostic cases skipped')
+        Path('dist/editable-product-resource-native-check.json').write_text(json.dumps({
+            'status': 'passed', 'sourceCommit': os.environ['GITHUB_SHA'], 'discoveredCount': len(discovered),
+            'selectedClasses': sorted(classes), 'expectedTests': expected, 'passedTests': passed,
+            'dedicatedSubstageMethods': sorted(probe_methods), 'dedicatedProductMethods': sorted(product_methods),
+            'classCounts': {cls: sum(name.split('/')[0] == cls for name in expected) for cls in sorted(classes)},
+            'skippedTests': skipped,
+            'inventorySHA256': hashlib.sha256(inventory.encode()).hexdigest(),
+            'logSHA256': hashlib.sha256(log.encode()).hexdigest(), 'productAcceptance': False, 'memoryStabilityAssessed': False
+        }, indent=2) + '\n')
+        PYTHON
+    - name: Relocate and bind the single exact signed ARM application
+      timeout-minutes: 2
+      run: |
+        set -euo pipefail
+        test ! -e dist/editable-product-resource-installed
+        mkdir -p dist/editable-product-resource-installed
+        ditto dist/PicShot.app dist/editable-product-resource-installed/PicShot.app
+        codesign --verify --deep --strict dist/editable-product-resource-installed/PicShot.app
+        test "$(lipo -archs dist/editable-product-resource-installed/PicShot.app/Contents/MacOS/PicShot)" = arm64
+        cmp dist/PicShot.app/Contents/MacOS/PicShot dist/editable-product-resource-installed/PicShot.app/Contents/MacOS/PicShot
+        cmp dist/PicShot.app/Contents/Info.plist dist/editable-product-resource-installed/PicShot.app/Contents/Info.plist
+        cmp dist/PicShot.app/Contents/Resources/build-info.json dist/editable-product-resource-installed/PicShot.app/Contents/Resources/build-info.json
+        python3 - <<'PYTHON'
+        import hashlib, json, os, plistlib
+        from pathlib import Path
+        app = Path('dist/editable-product-resource-installed/PicShot.app').resolve()
+        executable = (app / 'Contents/MacOS/PicShot').read_bytes()
+        plist_bytes = (app / 'Contents/Info.plist').read_bytes()
+        build_bytes = (app / 'Contents/Resources/build-info.json').read_bytes()
+        info, build = plistlib.loads(plist_bytes), json.loads(build_bytes)
+        if not (info['PicShotSourceCommit'] == build['sourceCommit'] == os.environ['GITHUB_SHA']
+                and build['architecture'] == 'arm64' and build['signing'] == 'ad-hoc' and build['notarized'] is False
+                and info['CFBundleExecutable'] == 'PicShot'
+                and info['CFBundleShortVersionString'] == build['version']
+                and info['CFBundleVersion'] == os.environ['GITHUB_RUN_NUMBER']):
+            raise SystemExit('Installed product source, build or architecture mismatch')
+        Path('dist/editable-product-resource-installed-identity.json').write_text(json.dumps({
+            'sourceCommit': info['PicShotSourceCommit'], 'bundlePath': str(app), 'architecture': 'arm64',
+            'version': info['CFBundleShortVersionString'], 'buildVersion': info['CFBundleVersion'],
+            'executableSHA256': hashlib.sha256(executable).hexdigest(), 'executableBytes': len(executable),
+            'plistSHA256': hashlib.sha256(plist_bytes).hexdigest(), 'buildInfoSHA256': hashlib.sha256(build_bytes).hexdigest(),
+            'oneBinaryForEveryCell': True, 'productionDefaultChanged': False, 'installerAcceptance': False,
+            'productAcceptance': False, 'memoryStabilityAssessed': False
+        }, indent=2) + '\n')
+        PYTHON
+    - name: Certify then compare actual product lifecycle resource observations
+      # Five sequential app cells retain 300s native / 600s owned-launch /
+      # 620s wrapper bounds. Each measured cell retains two warmups + eight cycles.
+      # Both measured apps exit before either independent output decoder starts.
+      # 5*620 + 120 helper compilation + 2*300 decoding = 3820 seconds;
+      # the 4200s outer bound leaves 380s for bounded cleanup/checker overhead.
+      # Independent default output guards remain in the editable-output-guard job.
+      timeout-minutes: 74
+      run: >-
+        python3 scripts/run-bounded-command.py --timeout-seconds 4200
+        --log dist/editable-product-resource-comparison.log --report dist/editable-product-resource-comparison.json
+        -- bash scripts/editable-product-resource.sh
+        "$PWD/dist/editable-product-resource-installed/PicShot.app"
+        "$PWD/dist/evidence/editable-product-resource" "$GITHUB_SHA"
+    - name: Preserve exact binary all product inputs certificates outputs and raw resource evidence
+      if: always()
+      timeout-minutes: 4
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Editable-Product-Resource-arm64-${{ github.sha }}
+        path: |
+          dist/editable-product-resource-*.json
+          dist/editable-product-resource-*.log
+          dist/evidence/editable-product-resource/
+          dist/editable-product-resource-installed/PicShot.app/Contents/Info.plist
+          dist/editable-product-resource-installed/PicShot.app/Contents/MacOS/PicShot
+          dist/editable-product-resource-installed/PicShot.app/Contents/Resources/build-info.json
+          docs/editable-product-resource.md
+          scripts/editable-product-resource.sh
+          scripts/launch-editable-product.swift
+          scripts/launch-editable-component.swift
+          scripts/launch-smoke-app.swift
+          scripts/check-editable-product-resource.py
+          scripts/check-editable-components.py
+          scripts/verify-editable-product-pixels.swift
+          scripts/fixtures/editable-product-recipe.json
+        include-hidden-files: true
         if-no-files-found: error
         retention-days: 14
         compression-level: 6

@@ -3,6 +3,7 @@ import hashlib
 from pathlib import Path
 import re
 import unittest
+from product_launcher_source_contract import without_product_launcher_hooks
 
 from seed_render_crop_source_contract import without_substage_hooks
 
@@ -48,7 +49,7 @@ class RendererStorageSourceBindingTests(unittest.TestCase):
         }.items():
             with self.subTest(path=path):
                 self.assertEqual(hashlib.sha256((ROOT / path).read_bytes()).hexdigest(), expected)
-        launcher = read('scripts/launch-smoke-app.swift')
+        launcher = without_product_launcher_hooks(self, read('scripts/launch-smoke-app.swift'))
         self.assertEqual(launcher.count('"PICSHOT_RENDERER_STORAGE_STRATEGY", '), 1)
         self.assertEqual(hashlib.sha256(launcher.replace('"PICSHOT_RENDERER_STORAGE_STRATEGY", ', '', 1).encode()).hexdigest(),
                          '61bec476b22f3d6403b57e402fac8cf6326c9ce9204427edbdec89d5df058eae')
