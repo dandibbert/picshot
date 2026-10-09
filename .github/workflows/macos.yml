@@ -2601,12 +2601,15 @@ jobs:
     # 9-minute focused stage: native execution remains capped at 420 seconds.
     # The existing separate discovery remains capped at 60 seconds.
     timeout-minutes: 169
+    env:
+      PICSHOT_INSTALLED_PRODUCT_SOURCE: 'f991c23aaa60469db0e2dc77cb94198d0dc74c08'
+      PICSHOT_INSTALLED_PRODUCT_TREE: '2347fb7fe45cf809e4cd6aa43fc2426a1fbff7b1'
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
-          fetch-depth: 2
+          fetch-depth: 0
           persist-credentials: false
-      - name: Prove direct observer parent and exact reviewed provider/GIF source integration
+      - name: Archive diagnostic identity and select immutable source145 product checkout
         id: provenance
         timeout-minutes: 2
         run: |
@@ -2615,53 +2618,67 @@ jobs:
           python3 - <<'PYTHON'
           import hashlib, json, os, platform, subprocess
           from pathlib import Path
+          product_source = 'f991c23aaa60469db0e2dc77cb94198d0dc74c08'
+          product_tree = '2347fb7fe45cf809e4cd6aa43fc2426a1fbff7b1'
+          diagnostic_source = os.environ['GITHUB_SHA']
+          root = Path('dist/evidence/installed-diagnostic')
+          root.mkdir(parents=True, exist_ok=True)
           def git(*args):
-              return subprocess.check_output(['git', *args])
-          # Bind the published original-inventory observer source exactly.
-          base = '367571f0ead3aa29993cf1d18ce951c8c3472bb1'
-          base_tree = '726ba7060d3a432ba76162f917e898e228d20407'
-          if git('rev-parse', base + '^{tree}').decode().strip() != base_tree:
-              raise SystemExit('Pinned observer tree differs')
-          source = os.environ['GITHUB_SHA']
-          if git('rev-parse', 'HEAD').decode().strip() != source or git('rev-parse', 'HEAD^').decode().strip() != base:
-              raise SystemExit('Installed diagnostic must directly follow its pinned observer source')
+              return subprocess.check_output(['git', *args], timeout=10)
+          def revision(ref):
+              return git('rev-parse', ref).decode().strip()
           if platform.machine() != 'arm64' or platform.system() != 'Darwin':
               raise SystemExit('Expected the native ARM macOS runner')
-          def entries(ref):
-              return {row.split(b'\t', 1)[1].decode(): row.split(b'\t', 1)[0].decode()
-                      for row in git('ls-tree', '-r', '-z', ref).split(b'\0') if row}
-          reviewed = {'Sources/PicShot/DrawingRaster.swift': ['100644 blob cb22be2de05d101a40069a1e65e65b3eaab9e227', 'ab475861abf19212b66d51046e59e0225cc596f59e37cde7359b4cbcb7c77c7b'], 'Sources/PicShot/EditableProductResourceFixture.swift': ['100644 blob 1fa0eaccea97ba815a08d0ebd68af90ebae91aa7', '006496791b256696a906f159689c4095fe1378685450c13288e283a6911f6105'], 'Sources/PicShot/EditableProductRetirement.swift': ['100644 blob 6c0899bf67ea3f71e4aa3f5901b39bc9a0dfbb31', 'c4419e95edb9050f91615c356a039caf65060e923017c7d09fbea65bffa3c950'], 'Tests/PicShotTests/EditableProductRetirementTests.swift': ['100644 blob a849284a28aa1b243eb84dfa555e5dcc878c9f4a', '4f178447c9022a399ead5b6e75290d5c331eb163a4a4b0f3042f10451ee5c8bc'], 'Tests/PicShotTests/VideoTrimGIFFixture.swift': ['100644 blob 82c8ad0dc5ff4794dc1f4018d25f59e38575cc41', 'f0ff6d088e7a1458e655f2c4a6cb3be32567b80cdf2df4d3dc3ca930b59c9180'], 'Tests/PicShotTests/VideoTrimGIFFixtureTests.swift': ['100644 blob 12d5605ad5862b1b7407bbe4b5dbb26f221ce3fa', '8d516238dfc9ca608cf112ff85b2348365363f5da49c1d0ef6812f8ca0b88b2d'], 'Tests/PicShotTests/VideoTrimTests.swift': ['100644 blob fbe6560e8c78664a1864d2a76462d3c88eb14dda', '2877211270aaf4690343194f1df5ac79ea3aaff8b4a9c1e8cb55dead4514c927'], 'docs/editable-product-resource.md': ['100644 blob 4c468f44e2f62ee006588bd1625ae4c6bf05906a', '1573c5ca6a97e62f84eaba246417c2ec2cb192070e97356643a31b3977e642ff'], 'scripts/check-editable-product-resource.py': ['100644 blob b9a9d43acf4dbb03a1d8bfcaed02b05f1acf9e19', '9e215e88507ca20df90b4d4b1d4061819750896eaad1765ecc6a85817761029f'], 'scripts/tests/product_retirement_source_contract.py': ['100644 blob 7b373f11eac276aa71d1e20bcc09a8f38cfce278', '3c9be5baa213cf320db4ce1e170ee7f7a6ac88f19f705ba476f24ab5621646fd'], 'scripts/tests/test_check_editable_product_resource.py': ['100644 blob 15f6f4e86be876e964ec3be49525a98130ebaadf', '423f3cb3bb3d472ac16747129322737b9b30dd90864af117ed702aab0e2a35ab'], 'scripts/tests/test_editable_product_source_binding.py': ['100644 blob 08a5bcb88a91a4d7bd4e4648030665bdf8bd007d', '3d335fc7110d1ded20e4ee01f3a65bb6493043304a5c5639c3f37acd139afce3'], 'scripts/tests/test_video_trim_gif_fixture.py': ['100644 blob bb4a487537440145c41bd7d33bcf5522b695055c', '1f86ecf6c1fb1884440a5a9ef232448c743ba300a606b7eebcd5ea5a4309b166']}
-          before, after = entries(base), entries(source)
-          changed = sorted(path for path in before.keys() | after.keys() if before.get(path) != after.get(path))
-          if changed != sorted(['.github/workflows/macos.yml', *reviewed]) or len(before) != 704 or len(after) != 710:
-              raise SystemExit('Source entries differ from the exact reviewed provider/GIF integration')
-          if after['.github/workflows/macos.yml'].split()[:2] != ['100644', 'blob']:
-              raise SystemExit('Unexpected workflow mode or type')
-          for path, (entry, digest) in reviewed.items():
-              if after.get(path) != entry or hashlib.sha256(Path(path).read_bytes()).hexdigest() != digest:
-                  raise SystemExit('Reviewed source, file mode or bytes differ: ' + path)
-          workflow = Path('.github/workflows/macos.yml').read_text()
-          shared = workflow.split('  installed-diagnostic:\n', 1)[0]
-          if hashlib.sha256(shared.encode()).hexdigest() != '325550f6442447aa4c461f9489f053e12cb0790dc4d95a1e1d2ee536808e3c92':
-              raise SystemExit('Workflow routing or another job differs from the reviewed integration')
-          if git('status', '--porcelain', '--untracked-files=no').strip():
-              raise SystemExit('Tracked checkout differs from the verified tree')
-          inherited = b'\0'.join(path.encode() + b'\t' + after[path].encode() for path in sorted(after) if path not in changed)
-          record = dict(status='passed', diagnosticOnly=True, installerAcceptance=False,
-              sourceCommit=source, referenceCommit=base, sourceTree=git('rev-parse', 'HEAD^{tree}').decode().strip(),
-              referenceTree=git('rev-parse', base + '^{tree}').decode().strip(),
-              changedPaths=changed, reviewedEntries=reviewed, unchangedTrackedEntries=len(after)-len(changed),
-              unchangedEntriesSHA256=hashlib.sha256(inherited).hexdigest(), architecture=platform.machine(),
-              workflowRunID=os.environ['GITHUB_RUN_ID'], workflowRunAttempt=os.environ['GITHUB_RUN_ATTEMPT'],
-              buildVersion=os.environ['GITHUB_RUN_NUMBER'], exhaustiveNativeSuiteRun=False,
-              priorFailuresPreserved=True, fullProductionAcceptanceRequired=True,
-              scope='Reviewed retirement measurement and GIF fixture corrections; original baseline is a separate source/run')
-          Path('dist/evidence/installed-diagnostic/source-identity.json').write_text(json.dumps(record, indent=2)+'\n')
+          if revision('HEAD') != diagnostic_source or git('status', '--porcelain', '--untracked-files=no').strip():
+              raise SystemExit('Diagnostic checkout identity or tracked files differ')
+          workflow = Path('.github/workflows/macos.yml').read_bytes()
+          blob = hashlib.sha1(b'blob ' + str(len(workflow)).encode() + b'\0' + workflow).hexdigest()
+          entry = git('ls-tree', diagnostic_source, '.github/workflows/macos.yml').decode().strip()
+          if entry != '100644 blob ' + blob + '\t.github/workflows/macos.yml':
+              raise SystemExit('Actual diagnostic workflow blob or file mode differs')
+          if revision(product_source + '^{tree}') != product_tree:
+              raise SystemExit('Immutable source145 tree differs')
+          # Archive the actual workflow before detaching; all product commands subsequently
+          # execute source145 scripts, and package.sh naturally stamps git HEAD=source145.
+          (root/'diagnostic-workflow.yml').write_bytes(workflow)
+          guard_source = "import hashlib, json, os, re, subprocess, sys\nfrom pathlib import Path\nPRODUCT = 'f991c23aaa60469db0e2dc77cb94198d0dc74c08'\nTREE = '2347fb7fe45cf809e4cd6aa43fc2426a1fbff7b1'\nphase, stage = sys.argv[1:]\nif phase not in {'before', 'after', 'final'} or not re.fullmatch(r'[a-z_]+', stage):\n    raise SystemExit('Invalid product identity boundary')\nroot = Path('dist/evidence/installed-diagnostic')\nrecord = dict(phase=phase, stage=stage, status='failed', sourceCommit=PRODUCT,\n    diagnosticWorkflowCommit=os.environ['GITHUB_SHA'], diagnosticOnly=True, installerAcceptance=False)\ntry:\n    def git(*args):\n        return subprocess.check_output(['git', *args], timeout=5).decode().strip()\n    identity = git('rev-parse', 'HEAD', 'HEAD^{tree}').splitlines()\n    dirty = git('status', '--porcelain', '--untracked-files=no')\n    receipt = json.loads((root/'source-identity.json').read_text())\n    archive = (root/'diagnostic-workflow.yml').read_bytes()\n    record.update(observedCommit=identity[0], observedTree=identity[1], trackedCheckoutClean=not bool(dirty))\n    if (identity != [PRODUCT, TREE] or dirty\n            or os.environ['PICSHOT_INSTALLED_PRODUCT_SOURCE'] != PRODUCT\n            or os.environ['PICSHOT_INSTALLED_PRODUCT_TREE'] != TREE\n            or receipt['sourceCommit'] != PRODUCT or receipt['sourceTree'] != TREE\n            or receipt['diagnosticWorkflowCommit'] != os.environ['GITHUB_SHA']\n            or receipt['productWorkingDirectory'] != str(Path.cwd().resolve())\n            or hashlib.sha256(archive).hexdigest() != receipt['diagnosticWorkflowSHA256']):\n        raise ValueError('Immutable product checkout or archived diagnostic identity differs')\n    record['status'] = 'passed'\nexcept BaseException as error:\n    record['error'] = str(error)\n    raise\nfinally:\n    with (root/'product-source-boundaries.jsonl').open('a') as output:\n        output.write(json.dumps(record, sort_keys=True)+'\\n')\n"
+          (root/'verify-product-source.py').write_text(guard_source)
+          record = dict(status='diagnostic-bound-product-pending', diagnosticOnly=True, installerAcceptance=False,
+              sourceCommit=product_source, sourceTree=product_tree,
+              diagnosticWorkflowCommit=diagnostic_source, diagnosticWorkflowTree=revision('HEAD^{tree}'),
+              diagnosticWorkflowBlob=blob, diagnosticWorkflowSHA256=hashlib.sha256(workflow).hexdigest(),
+              productGuardSHA256=hashlib.sha256(guard_source.encode()).hexdigest(),
+              productWorkingDirectory=str(Path.cwd().resolve()), workflowRunID=os.environ['GITHUB_RUN_ID'],
+              workflowRunAttempt=os.environ['GITHUB_RUN_ATTEMPT'], buildVersion=os.environ['GITHUB_RUN_NUMBER'],
+              exhaustiveNativeSuiteRun=False, prior145FailurePreserved=True, fullProductionAcceptanceRequired=True,
+              noDirectParentAssumption=True, productOverlayApplied=False)
+          def write():
+              (root/'source-identity.json').write_text(json.dumps(record, indent=2)+'\n')
+          write()
+          try:
+              git('checkout', '--detach', product_source)
+              entries = git('ls-tree', '-r', '-z', 'HEAD').split(b'\0')
+              if (revision('HEAD') != product_source or revision('HEAD^{tree}') != product_tree
+                      or len([row for row in entries if row]) != 710
+                      or git('status', '--porcelain', '--untracked-files=no').strip()):
+                  raise ValueError('Product checkout is not the exact clean immutable145 tree')
+              record.update(status='passed', productTrackedCheckoutClean=True, productTrackedEntries=710,
+                  archivedDiagnosticIdentitySurvivesDetach=(root/'diagnostic-workflow.yml').read_bytes() == workflow)
+              if not record['archivedDiagnosticIdentitySurvivesDetach']:
+                  raise ValueError('Diagnostic identity archive changed while detaching')
+          except BaseException as error:
+              record.update(status='failed', error=str(error))
+              raise
+          finally:
+              write()
           PYTHON
       - name: Check existing bounded runner and installed-default contracts
         id: contracts
         timeout-minutes: 4
         run: |
+          set -e -o pipefail
+          python3 dist/evidence/installed-diagnostic/verify-product-source.py before contracts
+          trap 'picshot_stage_status=$?; trap - EXIT; set +e; python3 dist/evidence/installed-diagnostic/verify-product-source.py after contracts; picshot_identity_status=$?; if [ "$picshot_stage_status" -ne 0 ]; then exit "$picshot_stage_status"; fi; exit "$picshot_identity_status"' EXIT
           set -o pipefail
           for picshot_contract_pattern in test_run_bounded_command.py '*drawing*.py' test_check_editable_product_resource.py test_editable_product_source_binding.py test_video_trim_gif_fixture.py; do
             PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p "$picshot_contract_pattern" -v 2>&1 | tee -a dist/installed-default-contracts.log
@@ -2670,6 +2687,9 @@ jobs:
         id: optimized_contracts
         timeout-minutes: 4
         run: |
+          set -e -o pipefail
+          python3 dist/evidence/installed-diagnostic/verify-product-source.py before optimized_contracts
+          trap 'picshot_stage_status=$?; trap - EXIT; set +e; python3 dist/evidence/installed-diagnostic/verify-product-source.py after optimized_contracts; picshot_identity_status=$?; if [ "$picshot_stage_status" -ne 0 ]; then exit "$picshot_stage_status"; fi; exit "$picshot_identity_status"' EXIT
           set -o pipefail
           for picshot_contract_pattern in test_run_bounded_command.py '*drawing*.py' test_check_editable_product_resource.py test_editable_product_source_binding.py test_video_trim_gif_fixture.py; do
             PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p "$picshot_contract_pattern" -v 2>&1 | tee -a dist/installed-default-contracts-optimized.log
@@ -2677,26 +2697,34 @@ jobs:
       - name: Package exact-source ZIP and DMG for diagnostic execution only
         id: package
         run: |
+          set -e -o pipefail
+          python3 dist/evidence/installed-diagnostic/verify-product-source.py before package
+          trap 'picshot_stage_status=$?; trap - EXIT; set +e; python3 dist/evidence/installed-diagnostic/verify-product-source.py after package; picshot_identity_status=$?; if [ "$picshot_stage_status" -ne 0 ]; then exit "$picshot_stage_status"; fi; exit "$picshot_identity_status"' EXIT
           set -o pipefail
           bash scripts/package.sh 2>&1 | tee dist/package.log
       - name: Compile native tests without executing the exhaustive suite
         id: test_build
         timeout-minutes: 10
-        run: >-
-          python3 scripts/run-bounded-command.py --timeout-seconds 540
-          --log dist/test-build.log --report dist/test-build-report.json
-          -- swift build --build-tests
+        run: |
+          set -e -o pipefail
+          python3 dist/evidence/installed-diagnostic/verify-product-source.py before test_build
+          trap 'picshot_stage_status=$?; trap - EXIT; set +e; python3 dist/evidence/installed-diagnostic/verify-product-source.py after test_build; picshot_identity_status=$?; if [ "$picshot_stage_status" -ne 0 ]; then exit "$picshot_stage_status"; fi; exit "$picshot_identity_status"' EXIT
+          python3 scripts/run-bounded-command.py --timeout-seconds 540 --log dist/test-build.log --report dist/test-build-report.json -- swift build --build-tests
       - name: Discover exact focused and model native cases
         id: discovery
         timeout-minutes: 2
-        run: >-
-          python3 scripts/run-bounded-command.py --timeout-seconds 60
-          --log dist/native-test-discovery.log --report dist/native-test-discovery-report.json
-          -- swift test list --skip-build
+        run: |
+          set -e -o pipefail
+          python3 dist/evidence/installed-diagnostic/verify-product-source.py before discovery
+          trap 'picshot_stage_status=$?; trap - EXIT; set +e; python3 dist/evidence/installed-diagnostic/verify-product-source.py after discovery; picshot_identity_status=$?; if [ "$picshot_stage_status" -ne 0 ]; then exit "$picshot_stage_status"; fi; exit "$picshot_identity_status"' EXIT
+          python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/native-test-discovery.log --report dist/native-test-discovery-report.json -- swift test list --skip-build
       - name: Require exact retirement and GIF fixture native coverage before installed observations
         id: retirement_gif
         timeout-minutes: 9
         run: |
+          set -e -o pipefail
+          python3 dist/evidence/installed-diagnostic/verify-product-source.py before retirement_gif
+          trap 'picshot_stage_status=$?; trap - EXIT; set +e; python3 dist/evidence/installed-diagnostic/verify-product-source.py after retirement_gif; picshot_identity_status=$?; if [ "$picshot_stage_status" -ne 0 ]; then exit "$picshot_stage_status"; fi; exit "$picshot_identity_status"' EXIT
           set -euo pipefail
           python3 - <<'PYTHON'
           import hashlib, importlib.util, json, os, subprocess, sys
@@ -2705,7 +2733,7 @@ jobs:
           native = importlib.util.module_from_spec(spec); spec.loader.exec_module(native)
           root = Path('dist/evidence/installed-diagnostic')
           record = dict(status='running', diagnosticOnly=True, installerAcceptance=False,
-              sourceCommit=os.environ['GITHUB_SHA'], expectedMethods={'PicShotTests.EditableProductRetirementTests': ['testAlreadyBalancedReturnsWithoutSleepingAndChecksCancellationAndDeadline', 'testClearedCacheAndWeakJobCompletionWaitForHeldProviderThenRecordNaturalRelease', 'testCorruptedObservationsNewWorkAndBackwardTimeFailClosed', 'testFullDeadlineAndCancellationInterruptAnOutstandingProvider', 'testOwnerAndJobCompletionRemainRequiredEvenWhenDrawingIsBalanced', 'testRetainedProviderFailsShortCapAndPreservesOriginalEvidence'], 'PicShotTests.VideoTrimGIFFixtureTests': ['testChildMarkerRejectsIncompleteInvalidPIDAndExtraFields', 'testEOFTruncatedEmptyAndWrongRequestsNeverFabricateReadiness', 'testMarkerPublicationFailureDoesNotEmitProgressOrReplaceExistingBytes', 'testReadbackKeepsOwnedPIDAndRefusesExistingDestination', 'testReadinessRequiresCompleteRequestAndClosedMarkerBeforeReleaseReadback', 'testRequestMetacharactersRemainDataAndCannotCreateFiles', 'testUnreleasedChildExitsWithinItsOriginalTwentySecondBoundWithoutReadback'], 'PicShotTests.VideoTrimTests': ['testBusyGIFFailureCleansOnlyItsOwnCallerStage', 'testCancellationAfterHelperPublicationDoesNotPublishTrimDestination', 'testCancellationBeforeEncoderStartsCleansOwnedStagingAndPreservesOriginal', 'testChangedConfirmedDestinationIsPreserved', 'testCheckToReplaceRaceRestoresTheUnconfirmedFile', 'testClosingPreviewCancelsLoadingAndReleasesPlayerIdempotently', 'testDestinationAppearingAfterConfirmationCannotBeOverwritten', 'testExistingDestinationRequiresExplicitConfirmation', 'testGIFPrelaunchUnconfirmedExitDoesNotRetainCallerStaging', 'testGIFRejectsSelectionsBeyondExplicitDurationCap', 'testNewWriterDuringReplacementKeepsItsFileAndPreservesRecoveryCopy', 'testPreviewEditsRealRangeAndPauseCancelsSeekResume', 'testRangeIsRevalidatedAgainstActualAssetDuration', 'testRangeRejectsInvalidAndUnrepresentableTimes', 'testRangeRetainsFractionalFrameBoundaries', 'testSelectedGIFStartsAtChosenRangeAndPreservesItsPlaybackTime', 'testSourceCannotBeOverwrittenEvenWithConfirmationOrHardLinkAlias', 'testTrimPublishesDecodableMP4WithSelectedDurationAndFrames', 'testUnconfirmedGIFExitRemovesOuterStageWhileSiblingSurvivesUntilCrossFormatRecovery']},
+              sourceCommit=os.environ['PICSHOT_INSTALLED_PRODUCT_SOURCE'], expectedMethods={'PicShotTests.EditableProductRetirementTests': ['testAlreadyBalancedReturnsWithoutSleepingAndChecksCancellationAndDeadline', 'testClearedCacheAndWeakJobCompletionWaitForHeldProviderThenRecordNaturalRelease', 'testCorruptedObservationsNewWorkAndBackwardTimeFailClosed', 'testFullDeadlineAndCancellationInterruptAnOutstandingProvider', 'testOwnerAndJobCompletionRemainRequiredEvenWhenDrawingIsBalanced', 'testRetainedProviderFailsShortCapAndPreservesOriginalEvidence'], 'PicShotTests.VideoTrimGIFFixtureTests': ['testChildMarkerRejectsIncompleteInvalidPIDAndExtraFields', 'testEOFTruncatedEmptyAndWrongRequestsNeverFabricateReadiness', 'testMarkerPublicationFailureDoesNotEmitProgressOrReplaceExistingBytes', 'testProcessServiceAcceptsInitialProgressThenDistinctReadinessBeforeCancellation', 'testReadbackKeepsOwnedPIDAndRefusesExistingDestination', 'testReadinessRequiresCompleteRequestAndClosedMarkerBeforeReleaseReadback', 'testRequestMetacharactersRemainDataAndCannotCreateFiles', 'testUnreleasedChildExitsWithinItsOriginalTwentySecondBoundWithoutReadback'], 'PicShotTests.VideoTrimTests': ['testBusyGIFFailureCleansOnlyItsOwnCallerStage', 'testCancellationAfterHelperPublicationDoesNotPublishTrimDestination', 'testCancellationBeforeEncoderStartsCleansOwnedStagingAndPreservesOriginal', 'testChangedConfirmedDestinationIsPreserved', 'testCheckToReplaceRaceRestoresTheUnconfirmedFile', 'testClosingPreviewCancelsLoadingAndReleasesPlayerIdempotently', 'testDestinationAppearingAfterConfirmationCannotBeOverwritten', 'testExistingDestinationRequiresExplicitConfirmation', 'testGIFPrelaunchUnconfirmedExitDoesNotRetainCallerStaging', 'testGIFRejectsSelectionsBeyondExplicitDurationCap', 'testNewWriterDuringReplacementKeepsItsFileAndPreservesRecoveryCopy', 'testPreviewEditsRealRangeAndPauseCancelsSeekResume', 'testRangeIsRevalidatedAgainstActualAssetDuration', 'testRangeRejectsInvalidAndUnrepresentableTimes', 'testRangeRetainsFractionalFrameBoundaries', 'testSelectedGIFStartsAtChosenRangeAndPreservesItsPlaybackTime', 'testSourceCannotBeOverwrittenEvenWithConfirmationOrHardLinkAlias', 'testTrimPublishesDecodableMP4WithSelectedDurationAndFrames', 'testUnconfirmedGIFExitRemovesOuterStageWhileSiblingSurvivesUntilCrossFormatRecovery']},
               nativeTimeoutSeconds=420, fullProductionAcceptanceRequired=True)
           output = root/'retirement-gif-check.json'
           def write():
@@ -2717,13 +2745,13 @@ jobs:
               classes = set(record['expectedMethods'])
               expected = sorted(cls+'/'+method for cls, methods in record['expectedMethods'].items() for method in methods)
               selected = [name for name in inventory if name.split('/')[0] in classes]
-              native.need(selected == expected and len(expected) == 32, 'The exact 6 retirement, 7 GIF fixture and 19 original trim cases must be discovered')
+              native.need(selected == expected and len(expected) == 33, 'The exact 6 retirement, 8 GIF fixture and 19 original trim cases must be discovered')
               added = [name for name in expected if name.split('/')[0] != 'PicShotTests.VideoTrimTests']
               original = [name for name in inventory if name not in added]
-              native.need(len(inventory) == 1798 and len({name.split('/')[0] for name in inventory}) == 205
+              native.need(len(inventory) == 1799 and len({name.split('/')[0] for name in inventory}) == 205
                           and len(original) == 1785 and hashlib.sha256(('\n'.join(original)+'\n').encode()).hexdigest()
                           == '58e9fa791e2b711c49decd229e6f67438e38c9fc7ddccd8832da4524004e7bae',
-                          'Native inventory differs from the original 1785 methods plus the exact 13 reviewed additions')
+                          'Native inventory differs from the original 1785 methods plus the exact 14 reviewed additions')
               discovery = json.loads(native.bounded_text(Path('dist/native-test-discovery-report.json'), 1024*1024))
               def checked(report, seconds, command, log):
                   native.need(report['status'] == report['termination_reason'] == 'exited'
@@ -2745,7 +2773,7 @@ jobs:
               native.need(result.returncode == 0, 'Focused native wrapper failed; preserve the original outcome')
               checked(report, 420, command, log)
               passed, skipped = native.case_results(log, expected)
-              native.need(len(passed) == 32 and not skipped, 'Every exact focused native method must execute and pass without skips')
+              native.need(len(passed) == 33 and not skipped, 'Every exact focused native method must execute and pass without skips')
               record.update(status='passed', passedTests=passed, skippedTests=skipped,
                   logSHA256=hashlib.sha256(log.encode()).hexdigest())
           except BaseException as error:
@@ -2758,6 +2786,9 @@ jobs:
         id: fixtures
         if: ${{ !cancelled() && steps.package.outcome == 'success' }}
         run: |
+          set -e -o pipefail
+          python3 dist/evidence/installed-diagnostic/verify-product-source.py before fixtures
+          trap 'picshot_stage_status=$?; trap - EXIT; set +e; python3 dist/evidence/installed-diagnostic/verify-product-source.py after fixtures; picshot_identity_status=$?; if [ "$picshot_stage_status" -ne 0 ]; then exit "$picshot_stage_status"; fi; exit "$picshot_identity_status"' EXIT
           set -o pipefail
           python3 scripts/fetch-model-fixtures.py 2>&1 | tee dist/model-download.log
           python3 scripts/SmartErase-fetch-fixture.py 2>&1 | tee dist/erase-model-download.log
@@ -2765,6 +2796,9 @@ jobs:
         id: models
         if: ${{ !cancelled() && steps.retirement_gif.outcome == 'success' && steps.discovery.outcome == 'success' && steps.fixtures.outcome == 'success' }}
         run: |
+          set -e -o pipefail
+          python3 dist/evidence/installed-diagnostic/verify-product-source.py before models
+          trap 'picshot_stage_status=$?; trap - EXIT; set +e; python3 dist/evidence/installed-diagnostic/verify-product-source.py after models; picshot_identity_status=$?; if [ "$picshot_stage_status" -ne 0 ]; then exit "$picshot_stage_status"; fi; exit "$picshot_identity_status"' EXIT
           set -o pipefail
           export PICSHOT_ERASE_MODEL_DIR="$PWD/.build/model-fixtures/erase"
           export PICSHOT_FORMULA_MODEL_DIR="$PWD/.build/model-fixtures/formula"
@@ -2785,7 +2819,7 @@ jobs:
           passed, skipped = native.case_results(log, expected)
           native.need(not skipped and len(passed) == 12, 'Model cases missing or skipped')
           Path('dist/evidence/installed-diagnostic/model-check.json').write_text(json.dumps(dict(
-              status='passed', sourceCommit=os.environ['GITHUB_SHA'], passedTests=passed, skippedTests=skipped,
+              status='passed', sourceCommit=os.environ['PICSHOT_INSTALLED_PRODUCT_SOURCE'], diagnosticWorkflowCommit=os.environ['GITHUB_SHA'], passedTests=passed, skippedTests=skipped,
               inventorySHA256=hashlib.sha256(inventory.encode()).hexdigest(), logSHA256=hashlib.sha256(log.encode()).hexdigest(),
               diagnosticOnly=True, installerAcceptance=False), indent=2)+'\n')
           PYTHON
@@ -2794,6 +2828,9 @@ jobs:
         if: ${{ !cancelled() && steps.package.outcome == 'success' && steps.retirement_gif.outcome == 'success' && steps.models.outcome == 'success' }}
         timeout-minutes: 2
         run: |
+          set -e -o pipefail
+          python3 dist/evidence/installed-diagnostic/verify-product-source.py before installed_preflight
+          trap 'picshot_stage_status=$?; trap - EXIT; set +e; python3 dist/evidence/installed-diagnostic/verify-product-source.py after installed_preflight; picshot_identity_status=$?; if [ "$picshot_stage_status" -ne 0 ]; then exit "$picshot_stage_status"; fi; exit "$picshot_identity_status"' EXIT
           python3 - <<'PYTHON'
           import json, os, subprocess
           from pathlib import Path
@@ -2805,7 +2842,7 @@ jobs:
               if name.startswith('PicShot') or name in {'swift', 'swift-frontend', 'swift-test', 'xctest'} or '.xctest/' in command:
                   matches.append(dict(pid=int(pid), command=command))
           Path('dist/evidence/installed-diagnostic/installed-process-preflight.json').write_text(json.dumps(dict(
-              status='failed' if matches else 'passed', sourceCommit=os.environ['GITHUB_SHA'],
+              status='failed' if matches else 'passed', sourceCommit=os.environ['PICSHOT_INSTALLED_PRODUCT_SOURCE'],
               observedProcesses=matches, priorProcessesTerminatedByThisCheck=False, installerAcceptance=False), indent=2)+'\n')
           if matches:
               raise SystemExit('Prior app, helper or native-test process remains; refusing overlapping observation')
@@ -2814,6 +2851,9 @@ jobs:
         id: smoke
         if: ${{ !cancelled() && steps.installed_preflight.outcome == 'success' && steps.fixtures.outcome == 'success' }}
         run: |
+          set -e -o pipefail
+          python3 dist/evidence/installed-diagnostic/verify-product-source.py before smoke
+          trap 'picshot_stage_status=$?; trap - EXIT; set +e; python3 dist/evidence/installed-diagnostic/verify-product-source.py after smoke; picshot_identity_status=$?; if [ "$picshot_stage_status" -ne 0 ]; then exit "$picshot_stage_status"; fi; exit "$picshot_identity_status"' EXIT
           set -o pipefail
           bash scripts/smoke.sh 2>&1 | tee dist/smoke.log
       - name: Observe installed default independently only when broad smoke never reached it
@@ -2821,6 +2861,9 @@ jobs:
         if: ${{ !cancelled() && steps.installed_preflight.outcome == 'success' && steps.smoke.outcome != 'success' }}
         timeout-minutes: 57
         run: |
+          set -e -o pipefail
+          python3 dist/evidence/installed-diagnostic/verify-product-source.py before independent_default
+          trap 'picshot_stage_status=$?; trap - EXIT; set +e; python3 dist/evidence/installed-diagnostic/verify-product-source.py after independent_default; picshot_identity_status=$?; if [ "$picshot_stage_status" -ne 0 ]; then exit "$picshot_stage_status"; fi; exit "$picshot_identity_status"' EXIT
           set -euo pipefail
           # Any wrapper or evidence file means the original default was attempted.
           # Never replay it or replace its failure with another result.
@@ -2841,7 +2884,7 @@ jobs:
               if name.startswith('PicShot') or name in {'swift', 'swift-frontend', 'swift-test', 'xctest'} or '.xctest/' in command:
                   matches.append(dict(pid=int(pid), command=command))
           Path('dist/evidence/installed-diagnostic/independent-process-preflight.json').write_text(json.dumps(dict(
-              status='failed' if matches else 'passed', sourceCommit=os.environ['GITHUB_SHA'],
+              status='failed' if matches else 'passed', sourceCommit=os.environ['PICSHOT_INSTALLED_PRODUCT_SOURCE'],
               observedProcesses=matches, priorProcessesTerminatedByThisCheck=False, installerAcceptance=False), indent=2)+'\n')
           if matches:
               raise SystemExit('Prior app, helper or native-test process remains; refusing overlapping observation')
@@ -2863,7 +2906,7 @@ jobs:
           if str(app.resolve()) != str(app): raise SystemExit('Noncanonical installed application')
           info = plistlib.loads((app/'Contents/Info.plist').read_bytes())
           build = json.loads((app/'Contents/Resources/build-info.json').read_bytes())
-          if not (info['PicShotSourceCommit'] == build['sourceCommit'] == os.environ['GITHUB_SHA']
+          if not (info['PicShotSourceCommit'] == build['sourceCommit'] == os.environ['PICSHOT_INSTALLED_PRODUCT_SOURCE']
                   and info['CFBundleVersion'] == os.environ['GITHUB_RUN_NUMBER']
                   and info['CFBundleShortVersionString'] == build['version'] == '0.16.0'
                   and info['CFBundleExecutable'] == 'PicShot' and build['architecture'] == 'arm64'):
@@ -2872,14 +2915,14 @@ jobs:
           paths.update({name: app/name for name in ('Contents/MacOS/PicShot', 'Contents/Info.plist', 'Contents/Resources/build-info.json')})
           identities = {name: dict(bytes=path.stat().st_size, sha256=hashlib.sha256(path.read_bytes()).hexdigest()) for name,path in paths.items()}
           Path('dist/evidence/installed-diagnostic/independent-package-identity.json').write_text(json.dumps(dict(
-              status='passed', sourceCommit=os.environ['GITHUB_SHA'], buildVersion=info['CFBundleVersion'],
+              status='passed', sourceCommit=os.environ['PICSHOT_INSTALLED_PRODUCT_SOURCE'], diagnosticWorkflowCommit=os.environ['GITHUB_SHA'], buildVersion=info['CFBundleVersion'],
               bundlePath=str(app), identities=identities, separateObservation=True, installerAcceptance=False), indent=2)+'\n')
           PYTHON
           python3 scripts/run-bounded-command.py --timeout-seconds 3300 \
             --log "$PWD/dist/independent-installed-default.log" \
             --report "$PWD/dist/independent-installed-default-report.json" \
             -- bash scripts/editable-product-installed-default.sh "$app" \
-            "$PWD/dist/evidence/independent-installed-default" "$GITHUB_SHA"
+            "$PWD/dist/evidence/independent-installed-default" "$PICSHOT_INSTALLED_PRODUCT_SOURCE"
       - name: Record separate outcomes without installer acceptance
         if: always()
         timeout-minutes: 2
@@ -2891,14 +2934,15 @@ jobs:
           import json, os
           from pathlib import Path
           record = dict(diagnosticOnly=True, installerAcceptance=False, exhaustiveNativeSuiteRun=False,
-              sourceCommit=os.environ['GITHUB_SHA'], referenceCommit='367571f0ead3aa29993cf1d18ce951c8c3472bb1',
+              sourceCommit=os.environ['PICSHOT_INSTALLED_PRODUCT_SOURCE'], referenceCommit='f991c23aaa60469db0e2dc77cb94198d0dc74c08', diagnosticWorkflowCommit=os.environ['GITHUB_SHA'],
               steps=json.loads(os.environ['PICSHOT_DIAGNOSTIC_STEP_OUTCOMES']),
               broadDefaultAttempted=any(Path(path).exists() for path in (
                   'dist/editable-product-installed-default-report.json', 'dist/editable-product-installed-default.log',
                   'dist/evidence/zip/editable-product-installed-default')),
               independentDefaultAttempted=Path('dist/independent-installed-default-report.json').is_file(),
               fullProductionAcceptanceRequired=True, priorFailuresPreserved=True,
-              scope='Exact 32 focused cases, unchanged model and installed observations; no full-suite, Intel or release acceptance')
+              scope='Exact 33 focused cases, unchanged model and installed observations; no full-suite, Intel or release acceptance')
+          record['finalSourceIdentityCheckAvailable'] = Path('dist/evidence/installed-diagnostic/verify-product-source.py').is_file()
           Path('dist/evidence/installed-diagnostic/outcomes.json').write_text(json.dumps(record, indent=2)+'\n')
           PYTHON
       - name: Preserve diagnostic evidence only, never normal installer artifacts
