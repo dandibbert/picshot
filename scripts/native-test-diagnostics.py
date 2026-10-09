@@ -241,8 +241,31 @@ class WrapperBinding:
             self.record['lastObservedAtSeconds'] = round(time.monotonic() - self.started, 6)
 
 
-def is_xctest(value):
-    return value['executable'].endswith('.app/Contents/Developer/usr/bin/xctest')
+XCTEST_RELATIVE_EXECUTABLES = (
+    'usr/bin/xctest',
+    'Platforms/MacOSX.platform/Developer/Library/Xcode/Agents/xctest',
+)
+
+
+def xcode_developer_directory(leader):
+    """Use the selected Xcode of the already-owned SwiftPM executable."""
+    executable = leader['executable']
+    for prefix in ('Toolchains/XcodeDefault.xctoolchain/usr/bin/', 'usr/bin/'):
+        for name in ('swift', 'swift-frontend', 'swift-package', 'swift-test'):
+            suffix = '/' + prefix + name
+            if executable.endswith(suffix):
+                root = executable[:-len(suffix)]
+                if (root.startswith('/') and root.endswith('.app/Contents/Developer')
+                        and os.path.normpath(root) == root):
+                    return root
+    # A startup launcher may not have exec'd the selected Swift tool yet.
+    # Until it does, no XCTest executable is eligible for selection.
+    return None
+
+
+def is_xctest(value, developer_directory):
+    return (developer_directory is not None and value['executable'] in
+            tuple(developer_directory + '/' + relative for relative in XCTEST_RELATIVE_EXECUTABLES))
 
 
 def owned_target(wrapper_pid, leader_pid, identify, children=None,
@@ -272,6 +295,7 @@ def owned_target(wrapper_pid, leader_pid, identify, children=None,
              'Native leader does not belong to the launched wrapper')
         need(wrapper['uid'] == leader['uid'] == os.getuid(), 'Unexpected native process owner')
         census['anchorValidated'] = True
+        census['xcodeDeveloperDirectory'] = xcode_developer_directory(leader)
         queue = [(leader, 0)]
         seen = {wrapper_pid, leader_pid}
         while queue:
@@ -288,12 +312,14 @@ def owned_target(wrapper_pid, leader_pid, identify, children=None,
                      'Child identity no longer matches its owned parent')
                 seen.add(pid)
                 queue.append((member, depth + 1))
-        census['candidatePIDs'] = [member['pid'] for member in census['members'] if is_xctest(member)]
+        census['candidatePIDs'] = [member['pid'] for member in census['members']
+                                  if is_xctest(member, census['xcodeDeveloperDirectory'])]
         for member in [wrapper] + census['members']:
             need(identify(member['pid']) == member, 'Process identity changed during observation')
         census['complete'] = True
         need(len(census['candidatePIDs']) == 1, 'Expected exactly one owned Xcode XCTest process')
-        census['target'] = next(member for member in census['members'] if is_xctest(member))
+        census['target'] = next(member for member in census['members']
+                                if is_xctest(member, census['xcodeDeveloperDirectory']))
         return census
     except Exception as error:
         census['error'] = str(error)
@@ -451,7 +477,9 @@ class Ownership:
             return
         if census.get('complete'):
             for member in census['members']:
-                if is_xctest(member) and all(identity_key(member) != identity_key(known) for known in self.targets):
+                if (member['pid'] in census['candidatePIDs']
+                        and is_xctest(member, census.get('xcodeDeveloperDirectory'))
+                        and all(identity_key(member) != identity_key(known) for known in self.targets)):
                     need(len(self.targets) < MAX_DIAGNOSTIC_MEMBERS, 'Too many observed XCTest identities')
                     self.targets.append(member)
         if census.get('target'):

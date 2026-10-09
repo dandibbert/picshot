@@ -21,10 +21,12 @@ class ObserverSelfTestContracts(unittest.TestCase):
         self.output = self.root/'evidence'
         self.output.mkdir()
         self.wrapper = self.identity(100, os.getpid(), 90, '/usr/bin/python3')
-        self.leader = self.identity(200, 100, 200, '/usr/bin/swift-test')
+        self.developer = '/Applications/Xcode.app/Contents/Developer'
+        self.leader = self.identity(200, 100, 200, self.developer + '/usr/bin/swift-test')
         self.target = self.identity(300, 200, 300, '/Applications/Xcode.app/Contents/Developer/usr/bin/xctest')
         self.snapshot = dict(complete=True, anchorValidated=True, wrapper=self.wrapper,
-            leader=self.leader, target=self.target, members=[self.leader, self.target], candidatePIDs=[300])
+            leader=self.leader, target=self.target, members=[self.leader, self.target], candidatePIDs=[300],
+            xcodeDeveloperDirectory=self.developer)
         self.interpreter = self.identity(os.getpid(), os.getppid(), os.getpgrp(), '/usr/bin/python3')
         self.identify = mock.Mock(side_effect=lambda pid: {100:self.wrapper, 200:self.leader, 300:self.target, os.getpid():self.interpreter}[pid])
         self.command = ['swift', 'test', '--skip-build', '--package-path', '/generated']
@@ -67,6 +69,27 @@ class ObserverSelfTestContracts(unittest.TestCase):
         changed['target']['parentPID']=999
         with self.assertRaisesRegex(ValueError,'parent edge'):
             S.require_snapshot(changed,self.wrapper,self.leader)
+
+    def test_self_test_accepts_the_real_macos_xctest_agent_and_retains_it(self):
+        self.target['executable'] = self.developer + '/Platforms/MacOSX.platform/Developer/Library/Xcode/Agents/xctest'
+        self.assertEqual(S.require_snapshot(self.snapshot,self.wrapper,self.leader),self.target)
+        self.harness.remember_census(self.snapshot)
+        self.assertEqual(self.harness.targets,[self.target])
+
+    def test_self_test_rejects_foreign_root_platform_and_unbound_root(self):
+        for change in ('root','platform','missing-root'):
+            with self.subTest(change=change):
+                snapshot=copy.deepcopy(self.snapshot)
+                if change=='missing-root':
+                    snapshot['xcodeDeveloperDirectory']=None
+                else:
+                    path=self.developer+'/Platforms/MacOSX.platform/Developer/Library/Xcode/Agents/xctest'
+                    snapshot['target']['executable']=path.replace('Xcode.app','OtherXcode.app') if change=='root' else path.replace('MacOSX.platform','iPhoneOS.platform')
+                with self.assertRaisesRegex(ValueError,'selected Xcode allowlist'):
+                    S.require_snapshot(snapshot,self.wrapper,self.leader)
+                self.harness.remember_census(snapshot)
+                self.assertTrue(self.harness.census_uncertain)
+                self.assertEqual(self.harness.targets,[])
 
     def test_incomplete_census_can_never_establish_readiness(self):
         for field in ('complete','anchorValidated'):
@@ -114,7 +137,7 @@ class ObserverSelfTestContracts(unittest.TestCase):
                      members=[old_leader],candidatePIDs=[])
         with mock.patch.object(S.D,'owned_target',side_effect=[S.D.SelectionError('no target yet',pending),self.snapshot]) as owned:
             result=self.harness.target(native,prefix,ready,binding,self.command,20)
-        self.assertEqual(result['leader']['executable'],'/usr/bin/swift-test')
+        self.assertEqual(result['leader']['executable'],self.leader['executable'])
         self.assertFalse(self.harness.census_uncertain)
         self.assertEqual(len(owned.call_args_list),2)
         self.assertTrue(all(call.kwargs['expected_leader'] is None for call in owned.call_args_list))

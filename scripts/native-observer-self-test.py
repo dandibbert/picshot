@@ -104,6 +104,9 @@ def require_snapshot(snapshot, wrapper, leader):
          'Incomplete owned descendant census')
     need(snapshot['wrapper'] == wrapper and snapshot['leader'] == leader, 'Changed self-test anchor')
     target = snapshot['target']
+    need(snapshot.get('xcodeDeveloperDirectory') == D.xcode_developer_directory(leader)
+         and D.is_xctest(target, snapshot.get('xcodeDeveloperDirectory')),
+         'Self-test XCTest executable is outside the selected Xcode allowlist')
     need(target['pid'] in snapshot['candidatePIDs'] and len(snapshot['candidatePIDs']) == 1,
          'Ambiguous self-test XCTest candidate')
     need(target['groupID'] != leader['groupID'], 'Self-test did not exercise the real separate XCTest process group')
@@ -159,8 +162,9 @@ class Harness:
             self.census_uncertain = True
             return
         candidates = [member for member in census['members']
-                      if member['pid'] in census['candidatePIDs'] and D.is_xctest(member)]
-        if len(candidates) > 1:
+                      if member['pid'] in census['candidatePIDs']
+                      and D.is_xctest(member, census.get('xcodeDeveloperDirectory'))]
+        if len(candidates) != len(census['candidatePIDs']) or len(candidates) > 1:
             self.census_uncertain = True
         for target in candidates:
             if not any(D.identity_key(target) == D.identity_key(old) for old in self.targets):

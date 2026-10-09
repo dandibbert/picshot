@@ -351,6 +351,70 @@ class NativeDiagnosticTests(unittest.TestCase):
         self.assertTrue(value['complete'])
         self.assertEqual(value['candidatePIDs'], [201])
 
+    def test_both_exact_xctest_paths_are_recognized_under_the_owned_swiftpm_xcode(self):
+        developer = '/Applications/Xcode.app/Contents/Developer'
+        self.identities[200]['executable'] = developer + '/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift-package'
+        self.identities[201]['groupID'] = 201
+        for relative in D.XCTEST_RELATIVE_EXECUTABLES:
+            with self.subTest(relative=relative):
+                self.identities[201]['executable'] = developer + '/' + relative
+                census = self.snapshot()
+                self.assertEqual(census['xcodeDeveloperDirectory'], developer)
+                self.assertEqual(census['candidatePIDs'], [201])
+                ownership = D.Ownership(self.identities[100])
+                ownership.accept(census)
+                self.assertEqual(ownership.targets, [self.identities[201]])
+
+    def test_wrong_xcode_platform_basename_and_noncanonical_paths_are_ineligible(self):
+        developer = '/Applications/Xcode.app/Contents/Developer'
+        agent = developer + '/Platforms/MacOSX.platform/Developer/Library/Xcode/Agents/xctest'
+        wrong = [agent.replace('Xcode.app', 'OtherXcode.app'),
+                 agent.replace('MacOSX.platform', 'iPhoneOS.platform'), '/tmp/xctest',
+                 agent + '-helper', agent.replace('/Agents/', '/Agents/../Agents/'),
+                 developer + '/usr/bin/not-xctest']
+        for executable in wrong:
+            with self.subTest(executable=executable):
+                self.identities[201]['executable'] = executable
+                with self.assertRaises(D.SelectionError) as rejected:
+                    self.snapshot()
+                self.assertTrue(rejected.exception.census['complete'])
+                self.assertEqual(rejected.exception.census['candidatePIDs'], [])
+                ownership = D.Ownership(self.identities[100])
+                ownership.accept(rejected.exception.census)
+                self.assertEqual(ownership.targets, [])
+
+    def test_unresolved_startup_swift_root_has_no_target_without_fabricating_incomplete_census(self):
+        self.identities[200]['executable'] = '/usr/bin/swift'
+        with self.assertRaises(D.SelectionError) as rejected:
+            self.snapshot()
+        self.assertTrue(rejected.exception.census['complete'])
+        self.assertIsNone(rejected.exception.census['xcodeDeveloperDirectory'])
+        self.assertEqual(rejected.exception.census['candidatePIDs'], [])
+        ownership = D.Ownership(self.identities[100])
+        ownership.accept(rejected.exception.census)
+        self.assertFalse(ownership.record['uncertainCensus'])
+        self.assertEqual(ownership.targets, [])
+
+    def test_two_allowed_xctest_executables_are_ambiguous_and_both_remain_owned_for_cleanup(self):
+        developer = '/Applications/Xcode.app/Contents/Developer'
+        self.identities[202] = self.identity(202, 200, 202, developer + '/' + D.XCTEST_RELATIVE_EXECUTABLES[1])
+        with self.assertRaises(D.SelectionError) as rejected:
+            self.snapshot()
+        self.assertEqual(rejected.exception.census['candidatePIDs'], [201, 202])
+        ownership = D.Ownership(self.identities[100])
+        ownership.accept(rejected.exception.census)
+        self.assertTrue(ownership.record['uncertainCensus'])
+        self.assertEqual([target['pid'] for target in ownership.targets], [201, 202])
+
+    def test_selected_developer_root_requires_an_actual_known_swift_tool_location(self):
+        developer = '/Applications/Xcode_16.4.app/Contents/Developer'
+        for name in ('swift', 'swift-frontend', 'swift-package', 'swift-test'):
+            value = {'executable': developer + '/Toolchains/XcodeDefault.xctoolchain/usr/bin/' + name}
+            self.assertEqual(D.xcode_developer_directory(value), developer)
+        for executable in ('/tmp/swift-package', developer + '/usr/bin/unrelated',
+                           developer + '/Toolchains/Unknown.xctoolchain/usr/bin/swift-package'):
+            self.assertIsNone(D.xcode_developer_directory({'executable': executable}))
+
     def test_nested_child_groups_are_followed_but_unrelated_same_named_process_is_not(self):
         self.identities[202] = self.identity(202, 200, 202, '/usr/bin/helper')
         self.identities[201].update(parentPID=202, groupID=201)

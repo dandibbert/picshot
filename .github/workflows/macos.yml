@@ -2198,7 +2198,7 @@ jobs:
         with:
           fetch-depth: 2
           persist-credentials: false
-      - name: Prove exact source140 product and corrected diagnostic-only scope
+      - name: Prove exact source141 product and corrected diagnostic-only scope
         id: provenance
         timeout-minutes: 2
         run: |
@@ -2209,10 +2209,10 @@ jobs:
           from pathlib import Path
           def git(*args):
               return subprocess.check_output(['git', *args], timeout=20)
-          base = '2b4f75f6781defe684217245aedf34ea176c6259'
+          base = 'a371ad60c8aec007482911b249dbeb03144b9486'
           source = os.environ['GITHUB_SHA']
           if git('rev-parse', 'HEAD').decode().strip() != source or git('rev-parse', 'HEAD^').decode().strip() != base:
-              raise SystemExit('Diagnostic must directly inherit pinned source140')
+              raise SystemExit('Diagnostic must directly inherit pinned source141')
           if platform.machine() != 'arm64' or platform.system() != 'Darwin':
               raise SystemExit('Expected the native ARM macOS runner')
           def entries(ref):
@@ -2227,7 +2227,7 @@ jobs:
               raise SystemExit('Changed source exceeds the exact diagnostic workflow/helper/self-test scope')
           if any(not after[path].startswith(b'100644 blob ')
                  or not before.get(path, b'').startswith(b'100644 blob ') for path in allowed):
-              raise SystemExit('Diagnostic readiness corrections must preserve existing regular file modes')
+              raise SystemExit('Diagnostic executable recognition corrections must preserve existing regular file modes')
           workflow = '.github/workflows/macos.yml'
           original = git('show', base + ':' + workflow).decode()
           current = Path(workflow).read_text()
@@ -2478,7 +2478,7 @@ jobs:
               except (OSError, ValueError) as error:
                   observations[mode] = dict(status='unreadable-diagnostic-status', observationComplete=False, error=str(error))
           record = dict(diagnosticOnly=True, installerAcceptance=False, sourceCommit=os.environ['GITHUB_SHA'],
-              referenceCommit='2b4f75f6781defe684217245aedf34ea176c6259',
+              referenceCommit='a371ad60c8aec007482911b249dbeb03144b9486',
               steps=json.loads(os.environ['PICSHOT_NATIVE_DIAGNOSTIC_STEP_OUTCOMES']),
               observations=observations,
               observationScope='Native outcome and sample completeness are separate; missing/incomplete due captures are incomplete diagnostic evidence',
