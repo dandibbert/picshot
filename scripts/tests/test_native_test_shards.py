@@ -2,7 +2,11 @@ import copy
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
+import re
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -291,6 +295,89 @@ class NativeShardCoverageTests(unittest.TestCase):
                             self.write_native_result(directory, shard)
                     with self.assertRaisesRegex(ValueError, f'shard-{missing}-runner.json'):
                         shards.aggregate(plan, directory)
+
+
+class NativeWorkflowRoutingTests(unittest.TestCase):
+    """Execute the checked-in shell steps with a recording CLI, without macOS."""
+
+    def setUp(self):
+        workflow = (Path(__file__).parents[2] / '.github/workflows/macos.yml').read_text()
+        self.build = re.split(r'\n  [A-Za-z_][\w-]*:\n', workflow.split('\n  build:\n', 1)[1])[0]
+
+    @staticmethod
+    def scalar(value, arch):
+        if value.strip("'").isdigit():
+            return int(value.strip("'"))
+        match = re.fullmatch(r"\$\{\{ matrix\.arch == '(\w+)' && '?(\d+)'? \|\| '?(\d+)'? \}\}", value)
+        if match is None:
+            raise ValueError(f'Unknown workflow scalar: {value}')
+        return int(match[2] if arch == match[1] else match[3])
+
+    def environment(self, arch):
+        block = self.build.split('    env:\n', 1)[1].split('    steps:\n', 1)[0]
+        return {name: str(self.scalar(value, arch))
+                for name, value in re.findall(r'^      (\w+): (.+)$', block, re.M)}
+
+    def step(self, name):
+        match = re.search(r'^      - name: ' + re.escape(name) + r'\n(.*?)(?=^      -|\Z)',
+                          self.build, re.M | re.S)
+        self.assertIsNotNone(match, name)
+        return match[1]
+
+    def execute(self, name, arch, failed_index=''):
+        block = self.step(name).split('        run: |\n', 1)[1]
+        script = '\n'.join(line[10:] for line in block.splitlines() if line.strip())
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'dist').mkdir()
+            executable = root / 'python3'
+            executable.write_text(f'#!{sys.executable}\n' +
+                "import json, os, sys\n"
+                "args = sys.argv[1:]\n"
+                "with open(os.environ['CALLS_PATH'], 'a') as log: log.write(json.dumps(args) + '\\n')\n"
+                "if len(args) > 1 and args[1] == 'run' and args[args.index('--index') + 1] == os.environ['FAIL_INDEX']: sys.exit(124)\n")
+            executable.chmod(0o755)
+            calls = root / 'calls.jsonl'
+            environment = {**os.environ, **self.environment(arch), 'GITHUB_SHA': 'a' * 40,
+                           'PATH': str(root) + os.pathsep + os.environ['PATH'],
+                           'CALLS_PATH': str(calls), 'FAIL_INDEX': failed_index}
+            result = subprocess.run(['bash', '-e', '-c', script], cwd=root, env=environment,
+                                    capture_output=True, text=True, timeout=10)
+            return result, [json.loads(line) for line in calls.read_text().splitlines()]
+
+    def test_planning_routes_full_and_focused_counts_independently(self):
+        for arch, focused in [('arm64', 2), ('x86_64', 4)]:
+            with self.subTest(arch=arch):
+                result, calls = self.execute('Plan exhaustive and focused native test processes', arch)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                plans = [args for args in calls if len(args) > 1 and args[1] == 'plan']
+                self.assertEqual(len(plans), 2)
+                self.assertEqual([int(args[args.index('--process-count') + 1]) for args in plans], [4, focused])
+                self.assertNotIn('--selection-regex', plans[0])
+                self.assertIn('--selection-regex', plans[1])
+                self.assertTrue(all(args[args.index('--source') + 1] == 'a' * 40 for args in plans))
+
+    def test_every_process_runs_and_failure_remains_failure_after_aggregation(self):
+        for arch, focused in [('arm64', 2), ('x86_64', 4)]:
+            for name, count in [('Test native modules', 4),
+                    ('Check annotation, GIF, recording durability and inference boundaries', focused)]:
+                for failed_index in ('', '0'):
+                    with self.subTest(arch=arch, stage=name, failed=failed_index):
+                        result, calls = self.execute(name, arch, failed_index)
+                        runs = [args for args in calls if args[1] == 'run']
+                        self.assertEqual([int(args[args.index('--index') + 1]) for args in runs], list(range(count)))
+                        self.assertEqual(calls[-1][1], 'check')
+                        self.assertTrue(all(args[args.index('--expected-source') + 1] == 'a' * 40 for args in calls))
+                        self.assertEqual(result.returncode == 0, not failed_index)
+
+    def test_only_arm_full_stage_receives_four_process_cleanup_allowance(self):
+        full = re.search(r'^        timeout-minutes: (.+)$', self.step('Test native modules'), re.M)[1]
+        focused = re.search(r'^        timeout-minutes: (.+)$', self.step(
+            'Check annotation, GIF, recording durability and inference boundaries'), re.M)[1]
+        self.assertEqual([self.scalar(full, arch) for arch in ['arm64', 'x86_64']], [30, 16])
+        self.assertEqual([self.scalar(focused, arch) for arch in ['arm64', 'x86_64']], [16, 16])
+        self.assertGreater(60 * self.scalar(full, 'arm64'), 4 * (shards.PROCESS_SECONDS + 5.5) + 60)
+        self.assertEqual(re.search(r'^    timeout-minutes: (\d+)$', self.build, re.M)[1], '160')
 
 
 if __name__ == '__main__':

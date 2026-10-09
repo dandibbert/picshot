@@ -87,7 +87,9 @@ jobs:
     # Individual test, product, cancellation and smoke deadlines stay unchanged.
     timeout-minutes: 160
     env:
-      NATIVE_TEST_PROCESS_COUNT: ${{ matrix.arch == 'x86_64' && '4' || '2' }}
+      # Subdivide exhaustive ARM processes; preserve focused isolation.
+      NATIVE_TEST_PROCESS_COUNT: '4'
+      FOCUSED_TEST_PROCESS_COUNT: ${{ matrix.arch == 'x86_64' && '4' || '2' }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       - name: Test bounded CI command runner and annotation evidence checker
@@ -184,7 +186,7 @@ jobs:
           python3 -m unittest discover -s scripts/tests -p test_native_test_shards.py -v
           python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/native-test-discovery.log --report dist/native-test-discovery-report.json -- swift test list --skip-build
           python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$NATIVE_TEST_PROCESS_COUNT" --output dist/native-tests-plan.json
-          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$NATIVE_TEST_PROCESS_COUNT" --selection-regex 'DrawingRaster|EditableProductResource|EditableComponent|PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|AnnotationEditing|CaptureAspectRatio|CaptureRatio|MultiWindow|ImageOutputDecoration|EditorOutput|PinOriginalCurrent|ManualScroll|ScrollPreview|ScrollSequencePreview|AnnotationFreehand|AnnotationTextLine|NumberedCallout|AutomaticMosaic|RepeatedRegion|AutomaticPinOCR|PinOCR|TextResultSourceSelection|PinWorkflow|LaTeXPin|PinLaTeX|PinGroup|PinDesktop|EditorToolbarHierarchy|SaveWorkflow|OwnedVideoExportStage|ImageBacking|Codec|NativeExport|AnimatedWebP|WebPContainer|RecordingWebP|CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' --output dist/focused-tests-plan.json
+          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$FOCUSED_TEST_PROCESS_COUNT" --selection-regex 'DrawingRaster|EditableProductResource|EditableComponent|PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|AnnotationEditing|CaptureAspectRatio|CaptureRatio|MultiWindow|ImageOutputDecoration|EditorOutput|PinOriginalCurrent|ManualScroll|ScrollPreview|ScrollSequencePreview|AnnotationFreehand|AnnotationTextLine|NumberedCallout|AutomaticMosaic|RepeatedRegion|AutomaticPinOCR|PinOCR|TextResultSourceSelection|PinWorkflow|LaTeXPin|PinLaTeX|PinGroup|PinDesktop|EditorToolbarHierarchy|SaveWorkflow|OwnedVideoExportStage|ImageBacking|Codec|NativeExport|AnimatedWebP|WebPContainer|RecordingWebP|CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' --output dist/focused-tests-plan.json
       - name: Upload test compilation evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -202,7 +204,7 @@ jobs:
           execution_status=0
           {
             shard_failed=0
-            for ((shard = 0; shard < NATIVE_TEST_PROCESS_COUNT; shard++)); do
+            for ((shard = 0; shard < FOCUSED_TEST_PROCESS_COUNT; shard++)); do
               python3 scripts/native-test-shards.py run --plan dist/focused-tests-plan.json --expected-source "$GITHUB_SHA" --index "$shard" --directory dist/focused-test-shards || shard_failed=1
             done
             test "$shard_failed" -eq 0
@@ -229,7 +231,8 @@ jobs:
           set -o pipefail
           bash scripts/recording-recovery-smoke.sh 2>&1 | tee dist/recording-recovery.log
       - name: Test native modules
-        timeout-minutes: 16
+        # Four ARM processes retain 420s each plus bounded cleanup; Intel is unchanged.
+        timeout-minutes: ${{ matrix.arch == 'arm64' && 30 || 16 }}
         run: |
           set -o pipefail
           execution_status=0
