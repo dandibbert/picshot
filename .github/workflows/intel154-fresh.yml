@@ -1,0 +1,129 @@
+# PROPOSAL ONLY. Owner may publish only after current156 is verified terminal.
+# Standalone push-opt-in diagnostic; never installer acceptance or delivery.
+name: Intel154 fresh ZIP diagnostic (NOT ACCEPTED)
+on:
+  push:
+    branches: ['feat/native-picshot']
+    paths: ['.github/workflows/intel154-fresh.yml']
+permissions:
+  contents: read
+concurrency:
+  group: picshot-intel154-fresh-zip-diagnostic
+  cancel-in-progress: false
+jobs:
+  fresh-intel154:
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/feat/native-picshot' && contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') }}
+    runs-on: macos-15-intel
+    timeout-minutes: 50
+    defaults:
+      run:
+        shell: bash
+        working-directory: pinned154
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: 2ca03e348255a9af6adb7341752bae8c0170d452
+          path: pinned154
+          persist-credentials: false
+      - name: Record the pinned source and actual fresh VM environment
+        run: |
+          set -euo pipefail
+          mkdir -p dist/evidence/fresh-intel154
+          test "$(uname -m)" = x86_64
+          test "$(git rev-parse HEAD)" = 2ca03e348255a9af6adb7341752bae8c0170d452
+          git diff --exit-code HEAD --
+          git rev-parse HEAD HEAD^{tree} > dist/evidence/fresh-intel154/source.txt
+          git archive --format=tar.gz HEAD > dist/evidence/fresh-intel154/source.tar.gz
+          {
+            sw_vers
+            uname -a
+            xcodebuild -version
+            swift --version
+            system_profiler SPDisplaysDataType
+            printf 'ImageOS=%s\nImageVersion=%s\n' "${ImageOS:-unknown}" "${ImageVersion:-unknown}"
+            printf 'WorkflowSource=%s\nRunID=%s\nRunAttempt=%s\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+          } > dist/evidence/fresh-intel154/environment.txt
+          printf '%s\n' 'DIAGNOSTIC ONLY. New source-equivalent specimen, not the unavailable original Intel154 installer bytes. No installer acceptance or delivery.' > dist/evidence/fresh-intel154/NOT-ACCEPTED.txt
+      - name: Package the unchanged source with its original mandatory checks
+        run: |
+          set -euo pipefail
+          bash scripts/package.sh 2>&1 | tee dist/package.log
+      - name: Download and verify the original pinned models without inference
+        run: |
+          set -euo pipefail
+          python3 scripts/fetch-model-fixtures.py 2>&1 | tee dist/model-download.log
+          python3 scripts/SmartErase-fetch-fixture.py 2>&1 | tee dist/erase-model-download.log
+          find .build/model-fixtures -type f -print0 | xargs -0 shasum -a 256 > dist/evidence/fresh-intel154/model-files.sha256
+      - name: Run exactly the original first ZIP launch and its broad assertions
+        run: |
+          set -euo pipefail
+          git diff --exit-code HEAD --
+          # Select original shell text, without editing the tracked smoke or launcher.
+          # No native/model suite, UI preview, attribution launch, or warm-up is run.
+          python3 - <<'PY'
+          import hashlib
+          from pathlib import Path
+          smoke = Path('scripts/smoke.sh').read_bytes()
+          if hashlib.sha256(smoke).hexdigest() != '27d7fe30ed8c25d6e8cfb851f6e3180fd35505dd2482ed2b0c995854eca02e84':
+              raise SystemExit('Original smoke source differs')
+          text = smoke.decode()
+          prefix = text[text.index('export PICSHOT_RECORDING_COMPOSITION_TRACE=1\n'):text.index('\nhdiutil attach ')]
+          start = text.index('  app="$work/$format/PicShot.app"\n')
+          end = text.index('\nPY\n', start) + len('\nPY\n')
+          original = text[start:end]
+          if original.count('swift scripts/launch-smoke-app.swift') != 1:
+              raise SystemExit('Expected one unchanged original launch')
+          # Capture provenance before executing the same signed bytes. The original
+          # trap removes only its owned extraction, including on a failed report.
+          identity = r'''
+          export PICSHOT_SMOKE_GIF_RESOURCES=1
+          python3 - "$work/zip/PicShot.app" <<'PY_ID'
+          import hashlib, json, os, pathlib, plistlib, stat, subprocess, sys
+          app = pathlib.Path(sys.argv[1])
+          def manifest(root):
+              result = {}
+              for p in sorted(root.rglob('*')):
+                  key = str(p.relative_to(root))
+                  if p.is_symlink(): result[key] = dict(symlink=os.readlink(p))
+                  elif p.is_file(): result[key] = dict(sha256=hashlib.sha256(p.read_bytes()).hexdigest(), mode=stat.S_IMODE(p.stat().st_mode))
+              return result
+          installed, packaged = manifest(app), manifest(pathlib.Path('dist/PicShot.app'))
+          if installed != packaged: raise SystemExit('Extracted ZIP app bytes or modes differ')
+          build = json.loads((app/'Contents/Resources/build-info.json').read_text())
+          info = plistlib.loads((app/'Contents/Info.plist').read_bytes())
+          source = subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
+          if not (build['sourceCommit'] == info['PicShotSourceCommit'] == source == '2ca03e348255a9af6adb7341752bae8c0170d452' and build['architecture'] == 'x86_64'):
+              raise SystemExit('Installed source or architecture differs')
+          config = {k:v for k,v in os.environ.items() if k.startswith('PICSHOT_')}
+          allowed = {'PICSHOT_RECORDING_COMPOSITION_TRACE','PICSHOT_SMOKE_ERASE_MODEL_DIR','PICSHOT_SMOKE_FORMULA_MODEL_DIR','PICSHOT_SMOKE_FORMULA_INPUT','PICSHOT_SMOKE_TABLE_MODEL_DIR','PICSHOT_SMOKE_TABLE_INPUT','PICSHOT_SMOKE_GIF_RESOURCES'}
+          if set(config) != allowed: raise SystemExit('Unexpected diagnostic selector or configuration')
+          pathlib.Path('dist/evidence/fresh-intel154/installed-identity.json').write_text(json.dumps(dict(sourceCommit=source, bundlePath=str(app), build=build, fileManifest=installed, shellEnvironment=config, launcherEnvironment={'PICSHOT_SMOKE_TEST':'1','PICSHOT_SMOKE_REPORT':str(pathlib.Path('dist/evidence/zip/launch.json').resolve())}, computeUnits='cpuAndGPU (unchanged source)', installerAcceptance=False), indent=2)+'\n')
+          PY_ID
+          '''
+          out = Path('dist/evidence/fresh-intel154/original-zip-launch.sh')
+          out.write_text('#!/bin/bash\nset -euo pipefail\ncd -P .\n' + prefix + '\n' + identity + '\nformat=zip\n' + original)
+          PY
+          bash dist/evidence/fresh-intel154/original-zip-launch.sh 2>&1 | tee dist/fresh-intel154-smoke.log
+      - name: Preserve the same signed specimen and evidence even after smoke failure
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p dist/evidence/fresh-intel154
+          git status --porcelain --untracked-files=no > dist/evidence/fresh-intel154/tracked-status-after.txt
+          git diff HEAD -- > dist/evidence/fresh-intel154/tracked-diff-after.patch
+          if [[ -f dist/PicShot-0.16.0-macos-x86_64.zip ]]; then
+            cp dist/PicShot-0.16.0-macos-x86_64.zip dist/evidence/fresh-intel154/NOT-ACCEPTED-specimen.zip
+            shasum -a 256 dist/evidence/fresh-intel154/NOT-ACCEPTED-specimen.zip > dist/evidence/fresh-intel154/specimen.sha256
+          fi
+          git diff --exit-code HEAD --
+      - name: Retain diagnostic evidence only, with no installer release or delivery
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: NOT-ACCEPTED-Intel154-Fresh-ZIP-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            pinned154/dist/*.log
+            pinned154/dist/evidence/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
