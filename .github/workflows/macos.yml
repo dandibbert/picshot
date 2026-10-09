@@ -7,8 +7,8 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-product-resource' || contains(github.event.head_commit.message || '', '[seed-render-crop]') && 'seed-render-crop' || contains(github.event.head_commit.message || '', '[effect-context]') && 'effect-context' || contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && 'renderer-scope-controls' || contains(github.event.head_commit.message || '', '[renderer-storage]') && 'renderer-storage' || contains(github.event.head_commit.message || '', '[drawing-pair]') && 'drawing-pair' || contains(github.event.head_commit.message || '', '[editable-observation]') && 'editable-observation' || contains(github.event.head_commit.message || '', '[callout-retirement]') && 'callout-retirement' || contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-documents' || contains(github.event.head_commit.message || '', '[multiwindow-memory]') && 'multiwindow-memory' || contains(github.event.head_commit.message || '', '[recording-wait]') && 'recording-wait' || contains(github.event.head_commit.message || '', '[manual-hash]') && 'manual-hash' || contains(github.event.head_commit.message || '', '[scroll-memory]') && 'scroll-memory' || contains(github.event.head_commit.message || '', '[decode-exit-latch]') && 'decode-exit-latch' || contains(github.event.head_commit.message || '', '[decode-timing-v3]') && 'decode-timing-v3' || contains(github.event.head_commit.message || '', '[decode-large]') && 'decode-large' || contains(github.event.head_commit.message || '', '[pin-workflows]') && 'pins-010' || contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
-  cancel-in-progress: ${{ !(contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]')) && !contains(github.event.head_commit.message || '', '[seed-render-crop]') && !contains(github.event.head_commit.message || '', '[effect-context]') && !contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && !contains(github.event.head_commit.message || '', '[renderer-storage]') && !contains(github.event.head_commit.message || '', '[drawing-pair]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
+  group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[installed-diagnostic]') && 'installed-diagnostic' || contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-product-resource' || contains(github.event.head_commit.message || '', '[seed-render-crop]') && 'seed-render-crop' || contains(github.event.head_commit.message || '', '[effect-context]') && 'effect-context' || contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && 'renderer-scope-controls' || contains(github.event.head_commit.message || '', '[renderer-storage]') && 'renderer-storage' || contains(github.event.head_commit.message || '', '[drawing-pair]') && 'drawing-pair' || contains(github.event.head_commit.message || '', '[editable-observation]') && 'editable-observation' || contains(github.event.head_commit.message || '', '[callout-retirement]') && 'callout-retirement' || contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-documents' || contains(github.event.head_commit.message || '', '[multiwindow-memory]') && 'multiwindow-memory' || contains(github.event.head_commit.message || '', '[recording-wait]') && 'recording-wait' || contains(github.event.head_commit.message || '', '[manual-hash]') && 'manual-hash' || contains(github.event.head_commit.message || '', '[scroll-memory]') && 'scroll-memory' || contains(github.event.head_commit.message || '', '[decode-exit-latch]') && 'decode-exit-latch' || contains(github.event.head_commit.message || '', '[decode-timing-v3]') && 'decode-timing-v3' || contains(github.event.head_commit.message || '', '[decode-large]') && 'decode-large' || contains(github.event.head_commit.message || '', '[pin-workflows]') && 'pins-010' || contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
+  cancel-in-progress: ${{ !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && !(contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]')) && !contains(github.event.head_commit.message || '', '[seed-render-crop]') && !contains(github.event.head_commit.message || '', '[effect-context]') && !contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && !contains(github.event.head_commit.message || '', '[renderer-storage]') && !contains(github.event.head_commit.message || '', '[drawing-pair]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
 jobs:
   runner-check:
     if: ${{ contains(github.event.head_commit.message || '', '[runner-only]') }}
@@ -75,7 +75,7 @@ jobs:
           compression-level: 6
 
   build:
-    if: ${{ (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') && !contains(github.event.head_commit.message || '', '[codec-attribution]') && !contains(github.event.head_commit.message || '', '[runner-only]') && !contains(github.event.head_commit.message || '', '[scroll-memory]') && !contains(github.event.head_commit.message || '', '[manual-hash]') && !contains(github.event.head_commit.message || '', '[recording-wait]') && !contains(github.event.head_commit.message || '', '[multiwindow-memory]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-documents]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
+    if: ${{ !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') && !contains(github.event.head_commit.message || '', '[codec-attribution]') && !contains(github.event.head_commit.message || '', '[runner-only]') && !contains(github.event.head_commit.message || '', '[scroll-memory]') && !contains(github.event.head_commit.message || '', '[manual-hash]') && !contains(github.event.head_commit.message || '', '[recording-wait]') && !contains(github.event.head_commit.message || '', '[multiwindow-memory]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-documents]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
     strategy:
       fail-fast: false
       matrix:
@@ -2177,3 +2177,245 @@ jobs:
         if-no-files-found: error
         retention-days: 14
         compression-level: 6
+
+  # Independent observations only. This job never supplies release acceptance.
+  installed-diagnostic:
+    if: ${{ contains(github.event.head_commit.message || '', '[installed-diagnostic]') }}
+    runs-on: macos-15
+    timeout-minutes: 160
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Prove exact diagnostic source and workflow-only difference from build 137
+        id: provenance
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          mkdir -p dist/evidence/installed-diagnostic
+          python3 - <<'PYTHON'
+          import hashlib, json, os, platform, subprocess
+          from pathlib import Path
+          def git(*args):
+              return subprocess.check_output(['git', *args])
+          base = 'd0365c101e21fa85d9a6b9538db7bf5aeb1f2d69'
+          source = os.environ['GITHUB_SHA']
+          if git('rev-parse', 'HEAD').decode().strip() != source or git('rev-parse', 'HEAD^').decode().strip() != base:
+              raise SystemExit('Diagnostic must be the direct workflow-only child of pinned source137')
+          if platform.machine() != 'arm64' or platform.system() != 'Darwin':
+              raise SystemExit('Expected the native ARM macOS runner')
+          def entries(ref):
+              return {row.split(b'\t', 1)[1]: row.split(b'\t', 1)[0]
+                      for row in git('ls-tree', '-r', '-z', ref).split(b'\0') if row}
+          before, after = entries(base), entries(source)
+          changed = sorted(path for path in before.keys() | after.keys() if before.get(path) != after.get(path))
+          if changed != [b'.github/workflows/macos.yml']:
+              raise SystemExit('Non-workflow source, file mode, test, script or dependency changed')
+          if git('status', '--porcelain', '--untracked-files=no').strip():
+              raise SystemExit('Tracked checkout differs from the verified tree')
+          inherited = b'\0'.join(path + b'\t' + after[path] for path in sorted(after) if path not in changed)
+          record = dict(status='passed', diagnosticOnly=True, installerAcceptance=False,
+              sourceCommit=source, referenceCommit=base, sourceTree=git('rev-parse', 'HEAD^{tree}').decode().strip(),
+              referenceTree=git('rev-parse', base + '^{tree}').decode().strip(),
+              changedPaths=[p.decode() for p in changed], unchangedTrackedEntries=len(after)-1,
+              unchangedEntriesSHA256=hashlib.sha256(inherited).hexdigest(), architecture=platform.machine(),
+              workflowRunID=os.environ['GITHUB_RUN_ID'], workflowRunAttempt=os.environ['GITHUB_RUN_ATTEMPT'],
+              buildVersion=os.environ['GITHUB_RUN_NUMBER'], exhaustiveNativeSuiteRun=False)
+          Path('dist/evidence/installed-diagnostic/source-identity.json').write_text(json.dumps(record, indent=2)+'\n')
+          PYTHON
+      - name: Check existing bounded runner and installed-default contracts
+        id: contracts
+        timeout-minutes: 4
+        run: |
+          set -o pipefail
+          for picshot_contract_pattern in test_run_bounded_command.py '*drawing*.py' test_check_editable_product_resource.py test_editable_product_source_binding.py; do
+            PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p "$picshot_contract_pattern" -v 2>&1 | tee -a dist/installed-default-contracts.log
+          done
+      - name: Check existing contracts with Python assertions disabled
+        id: optimized_contracts
+        timeout-minutes: 4
+        run: |
+          set -o pipefail
+          for picshot_contract_pattern in test_run_bounded_command.py '*drawing*.py' test_check_editable_product_resource.py test_editable_product_source_binding.py; do
+            PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p "$picshot_contract_pattern" -v 2>&1 | tee -a dist/installed-default-contracts-optimized.log
+          done
+      - name: Package exact-source ZIP and DMG for diagnostic execution only
+        id: package
+        run: |
+          set -o pipefail
+          bash scripts/package.sh 2>&1 | tee dist/package.log
+      - name: Compile native tests without executing the exhaustive suite
+        id: test_build
+        timeout-minutes: 10
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 540
+          --log dist/test-build.log --report dist/test-build-report.json
+          -- swift build --build-tests
+      - name: Discover the exact existing model cases
+        id: discovery
+        timeout-minutes: 2
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 60
+          --log dist/native-test-discovery.log --report dist/native-test-discovery-report.json
+          -- swift test list --skip-build
+      - name: Fetch only approved pinned original model fixtures
+        id: fixtures
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
+        run: |
+          set -o pipefail
+          python3 scripts/fetch-model-fixtures.py 2>&1 | tee dist/model-download.log
+          python3 scripts/SmartErase-fetch-fixture.py 2>&1 | tee dist/erase-model-download.log
+      - name: Run the unchanged native model gate
+        id: models
+        if: ${{ !cancelled() && steps.discovery.outcome == 'success' && steps.fixtures.outcome == 'success' }}
+        run: |
+          set -o pipefail
+          export PICSHOT_ERASE_MODEL_DIR="$PWD/.build/model-fixtures/erase"
+          export PICSHOT_FORMULA_MODEL_DIR="$PWD/.build/model-fixtures/formula"
+          export PICSHOT_TEST_TABLE_MODEL_DIR="$PWD/.build/model-fixtures/table"
+          export PICSHOT_TEST_ML_HELPER="$(swift build --show-bin-path)/PicShotMLHelper"
+          swift build --product PicShotMLHelper
+          swift test --skip-build --filter 'FormulaEngineTests|RecordedModelOutputTests|SmartEraseEngineTests' 2>&1 | tee dist/model-inference.log
+          python3 - <<'PYTHON'
+          import hashlib, importlib.util, json, os
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('native', 'scripts/native-test-shards.py')
+          native = importlib.util.module_from_spec(spec); spec.loader.exec_module(native)
+          inventory = native.bounded_text(Path('dist/native-test-discovery.log'), native.MAX_INVENTORY_BYTES)
+          classes = {'PicShotMLHelperTests.FormulaEngineTests', 'PicShotTableEngineTests.RecordedModelOutputTests', 'PicShotEraseHelperTests.SmartEraseEngineTests'}
+          expected = [case for case in native.discover(inventory) if case.split('/')[0] in classes]
+          native.need(len(expected) == 12 and all(sum(case.split('/')[0] == cls for case in expected) == 4 for cls in classes), 'Model discovery differs from pinned 12-case contract')
+          log = native.bounded_text(Path('dist/model-inference.log'), native.MAX_LOG_BYTES)
+          passed, skipped = native.case_results(log, expected)
+          native.need(not skipped and len(passed) == 12, 'Model cases missing or skipped')
+          Path('dist/evidence/installed-diagnostic/model-check.json').write_text(json.dumps(dict(
+              status='passed', sourceCommit=os.environ['GITHUB_SHA'], passedTests=passed, skippedTests=skipped,
+              inventorySHA256=hashlib.sha256(inventory.encode()).hexdigest(), logSHA256=hashlib.sha256(log.encode()).hexdigest(),
+              diagnosticOnly=True, installerAcceptance=False), indent=2)+'\n')
+          PYTHON
+      - name: Require prior native processes to have exited before installed observations
+        id: installed_preflight
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
+        timeout-minutes: 2
+        run: |
+          python3 - <<'PYTHON'
+          import json, os, subprocess
+          from pathlib import Path
+          rows = subprocess.check_output(['/bin/ps', '-ax', '-o', 'pid=,comm='], text=True, timeout=5).splitlines()
+          matches = []
+          for row in rows:
+              pid, command = row.strip().split(None, 1)
+              name = Path(command).name
+              if name.startswith('PicShot') or name in {'swift', 'swift-frontend', 'swift-test', 'xctest'} or '.xctest/' in command:
+                  matches.append(dict(pid=int(pid), command=command))
+          Path('dist/evidence/installed-diagnostic/installed-process-preflight.json').write_text(json.dumps(dict(
+              status='failed' if matches else 'passed', sourceCommit=os.environ['GITHUB_SHA'],
+              observedProcesses=matches, priorProcessesTerminatedByThisCheck=False, installerAcceptance=False), indent=2)+'\n')
+          if matches:
+              raise SystemExit('Prior app, helper or native-test process remains; refusing overlapping observation')
+          PYTHON
+      - name: Run unchanged final ZIP and DMG smoke including its installed-default gate
+        id: smoke
+        if: ${{ !cancelled() && steps.installed_preflight.outcome == 'success' && steps.fixtures.outcome == 'success' }}
+        run: |
+          set -o pipefail
+          bash scripts/smoke.sh 2>&1 | tee dist/smoke.log
+      - name: Observe installed default independently only when broad smoke never reached it
+        id: independent_default
+        if: ${{ !cancelled() && steps.installed_preflight.outcome == 'success' && steps.smoke.outcome != 'success' }}
+        timeout-minutes: 57
+        run: |
+          set -euo pipefail
+          # Any wrapper or evidence file means the original default was attempted.
+          # Never replay it or replace its failure with another result.
+          if [[ -e dist/editable-product-installed-default-report.json || -e dist/editable-product-installed-default.log || -e dist/evidence/zip/editable-product-installed-default ]]; then
+            echo 'Broad smoke already attempted installed default; preserve its original outcome without replay.'
+            exit 0
+          fi
+          cd -P "$PWD"
+          test "$(cd dist && pwd -P)" = "$PWD/dist"
+          python3 - <<'PYTHON'
+          import json, os, subprocess
+          from pathlib import Path
+          rows = subprocess.check_output(['/bin/ps', '-ax', '-o', 'pid=,comm='], text=True, timeout=5).splitlines()
+          matches = []
+          for row in rows:
+              pid, command = row.strip().split(None, 1)
+              name = Path(command).name
+              if name.startswith('PicShot') or name in {'swift', 'swift-frontend', 'swift-test', 'xctest'} or '.xctest/' in command:
+                  matches.append(dict(pid=int(pid), command=command))
+          Path('dist/evidence/installed-diagnostic/independent-process-preflight.json').write_text(json.dumps(dict(
+              status='failed' if matches else 'passed', sourceCommit=os.environ['GITHUB_SHA'],
+              observedProcesses=matches, priorProcessesTerminatedByThisCheck=False, installerAcceptance=False), indent=2)+'\n')
+          if matches:
+              raise SystemExit('Prior app, helper or native-test process remains; refusing overlapping observation')
+          PYTHON
+          installed="$PWD/dist/installed-diagnostic-zip"
+          test ! -e "$installed"
+          mkdir "$installed"
+          ditto -x -k "dist/PicShot-0.16.0-macos-arm64.zip" "$installed"
+          app="$installed/PicShot.app"
+          codesign --verify --deep --strict "$app"
+          test "$(lipo -archs "$app/Contents/MacOS/PicShot")" = arm64
+          for relative in Contents/MacOS/PicShot Contents/Info.plist Contents/Resources/build-info.json; do
+            cmp "dist/PicShot.app/$relative" "$app/$relative"
+          done
+          python3 - "$app" <<'PYTHON'
+          import hashlib, json, os, plistlib, sys
+          from pathlib import Path
+          app = Path(sys.argv[1])
+          if str(app.resolve()) != str(app): raise SystemExit('Noncanonical installed application')
+          info = plistlib.loads((app/'Contents/Info.plist').read_bytes())
+          build = json.loads((app/'Contents/Resources/build-info.json').read_bytes())
+          if not (info['PicShotSourceCommit'] == build['sourceCommit'] == os.environ['GITHUB_SHA']
+                  and info['CFBundleVersion'] == os.environ['GITHUB_RUN_NUMBER']
+                  and info['CFBundleShortVersionString'] == build['version'] == '0.16.0'
+                  and info['CFBundleExecutable'] == 'PicShot' and build['architecture'] == 'arm64'):
+              raise SystemExit('Installed source, architecture or version mismatch')
+          paths = {name: Path('dist')/name for name in ('PicShot-0.16.0-macos-arm64.zip', 'PicShot-0.16.0-macos-arm64.dmg')}
+          paths.update({name: app/name for name in ('Contents/MacOS/PicShot', 'Contents/Info.plist', 'Contents/Resources/build-info.json')})
+          identities = {name: dict(bytes=path.stat().st_size, sha256=hashlib.sha256(path.read_bytes()).hexdigest()) for name,path in paths.items()}
+          Path('dist/evidence/installed-diagnostic/independent-package-identity.json').write_text(json.dumps(dict(
+              status='passed', sourceCommit=os.environ['GITHUB_SHA'], buildVersion=info['CFBundleVersion'],
+              bundlePath=str(app), identities=identities, separateObservation=True, installerAcceptance=False), indent=2)+'\n')
+          PYTHON
+          python3 scripts/run-bounded-command.py --timeout-seconds 3300 \
+            --log "$PWD/dist/independent-installed-default.log" \
+            --report "$PWD/dist/independent-installed-default-report.json" \
+            -- bash scripts/editable-product-installed-default.sh "$app" \
+            "$PWD/dist/evidence/independent-installed-default" "$GITHUB_SHA"
+      - name: Record separate outcomes without installer acceptance
+        if: always()
+        timeout-minutes: 2
+        env:
+          PICSHOT_DIAGNOSTIC_STEP_OUTCOMES: ${{ toJSON(steps) }}
+        run: |
+          mkdir -p dist/evidence/installed-diagnostic
+          python3 - <<'PYTHON'
+          import json, os
+          from pathlib import Path
+          record = dict(diagnosticOnly=True, installerAcceptance=False, exhaustiveNativeSuiteRun=False,
+              sourceCommit=os.environ['GITHUB_SHA'], referenceCommit='d0365c101e21fa85d9a6b9538db7bf5aeb1f2d69',
+              steps=json.loads(os.environ['PICSHOT_DIAGNOSTIC_STEP_OUTCOMES']),
+              broadDefaultAttempted=any(Path(path).exists() for path in (
+                  'dist/editable-product-installed-default-report.json', 'dist/editable-product-installed-default.log',
+                  'dist/evidence/zip/editable-product-installed-default')),
+              independentDefaultAttempted=Path('dist/independent-installed-default-report.json').is_file(),
+              scope='Independent model and installed observations only; no full-suite, Intel or release acceptance')
+          Path('dist/evidence/installed-diagnostic/outcomes.json').write_text(json.dumps(record, indent=2)+'\n')
+          PYTHON
+      - name: Preserve diagnostic evidence only, never normal installer artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-DIAGNOSTIC-NONRELEASE-Installed-arm64-${{ github.sha }}
+          path: |
+            dist/*.log
+            dist/*-report.json
+            dist/*.sha256
+            dist/*.build-info.json
+            dist/evidence/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
