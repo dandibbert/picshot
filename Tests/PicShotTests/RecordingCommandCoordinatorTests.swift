@@ -284,49 +284,63 @@ final class RecordingCommandCoordinatorTests: XCTestCase {
         nativeService.inputMonitor.options.clicks = true
         nativeService.inputMonitor.beginSession(frame: CGRect(x: 20, y: 30, width: 320, height: 180), at: 100)
         defer { nativeService.inputMonitor.endSession() }
-        var controller: RecordingPanelController? = RecordingPanelController(service: nativeService, capture: CaptureService(),
-            commands: owner, transportFactory: { transport.actions = $0; return transport }, presentWindows: false)
-        weak var weakController = controller
-        controller?.expandControls()
+        var controller: RecordingPanelController?
+        weak var weakController: RecordingPanelController?
         var windowCloses = 0
-        let token = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification,
-            object: controller?.window, queue: .main) { _ in windowCloses += 1 }
+        // Bound AppKit's temporary ownership to each synchronous fixture phase.
+        // An autorelease pool must never span the async start below.
+        let token = autoreleasepool {
+            controller = RecordingPanelController(service: nativeService, capture: CaptureService(),
+                commands: owner, transportFactory: { transport.actions = $0; return transport }, presentWindows: false)
+            weakController = controller
+            // Start completes on a separate actor turn. Keep the real callback,
+            // but bound its synchronous AppKit work to that turn's own pool.
+            let recordingBegan = owner.onRecordingBegan
+            owner.onRecordingBegan = { autoreleasepool { recordingBegan?() } }
+            controller?.expandControls()
+            return NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification,
+                object: controller?.window, queue: .main) { _ in windowCloses += 1 }
+        }
         defer { NotificationCenter.default.removeObserver(token) }
         let start = try XCTUnwrap(owner.start(displayID: CGMainDisplayID(), options: .init(), delay: 0) {
             CGRect(x: 20, y: 30, width: 320, height: 180)
         })
         await start.value
-        XCTAssertEqual(controller?.presentation, .compact)
-        XCTAssertEqual(transport.showCount, 1)
-        controller?.setTransportShortcutLabels(pause: "⌃⌥P", stop: "⌃⌥S")
-        XCTAssertEqual(transport.snapshot?.pauseShortcut, "⌃⌥P")
-        XCTAssertEqual(transport.snapshot?.stopShortcut, "⌃⌥S")
-        for _ in 0..<10 {
-            transport.actions?.expand()
-            XCTAssertEqual(controller?.presentation, .expanded)
-            controller?.collapseToTransport()
+        // Include orderOut, notification delivery, hosting-view detachment and
+        // the last strong release in one pool; check actual ownership after it drains.
+        autoreleasepool {
             XCTAssertEqual(controller?.presentation, .compact)
+            XCTAssertEqual(transport.showCount, 1)
+            controller?.setTransportShortcutLabels(pause: "⌃⌥P", stop: "⌃⌥S")
+            XCTAssertEqual(transport.snapshot?.pauseShortcut, "⌃⌥P")
+            XCTAssertEqual(transport.snapshot?.stopShortcut, "⌃⌥S")
+            for _ in 0..<10 {
+                transport.actions?.expand()
+                XCTAssertEqual(controller?.presentation, .expanded)
+                controller?.collapseToTransport()
+                XCTAssertEqual(controller?.presentation, .compact)
+            }
+            NotificationCenter.default.post(name: NSApplication.didChangeScreenParametersNotification, object: nil)
+            XCTAssertEqual(transport.placementCount, 2)
+            XCTAssertEqual(transport.placementPreservation, [false, true])
+            XCTAssertTrue(transport.preservedPosition)
+            XCTAssertEqual(windowCloses, 0)
+            XCTAssertTrue(nativeService.inputMonitor.isMonitoring)
+            XCTAssertEqual(installations, 1, "All registrations are injected; presentation never replaces the monitor")
+            XCTAssertEqual(removals, 0, "Expand/collapse must not end input monitoring")
+            XCTAssertEqual(service.calls, ["start"])
+            XCTAssertTrue(service.controlState.isRecording)
+            XCTAssertEqual(service.changeSubscriptions, 1)
+            XCTAssertEqual(service.outputSubscriptions, 1)
+            controller?.teardown()
+            XCTAssertEqual(transport.teardownCount, 1)
+            let placements = transport.placementCount
+            NotificationCenter.default.post(name: NSApplication.didChangeScreenParametersNotification, object: nil)
+            XCTAssertEqual(transport.placementCount, placements)
+            XCTAssertEqual(service.changeSubscriptions, 0)
+            XCTAssertEqual(service.outputSubscriptions, 0)
+            controller = nil
         }
-        NotificationCenter.default.post(name: NSApplication.didChangeScreenParametersNotification, object: nil)
-        XCTAssertEqual(transport.placementCount, 2)
-        XCTAssertEqual(transport.placementPreservation, [false, true])
-        XCTAssertTrue(transport.preservedPosition)
-        XCTAssertEqual(windowCloses, 0)
-        XCTAssertTrue(nativeService.inputMonitor.isMonitoring)
-        XCTAssertEqual(installations, 1, "All registrations are injected; presentation never replaces the monitor")
-        XCTAssertEqual(removals, 0, "Expand/collapse must not end input monitoring")
-        XCTAssertEqual(service.calls, ["start"])
-        XCTAssertTrue(service.controlState.isRecording)
-        XCTAssertEqual(service.changeSubscriptions, 1)
-        XCTAssertEqual(service.outputSubscriptions, 1)
-        controller?.teardown()
-        XCTAssertEqual(transport.teardownCount, 1)
-        let placements = transport.placementCount
-        NotificationCenter.default.post(name: NSApplication.didChangeScreenParametersNotification, object: nil)
-        XCTAssertEqual(transport.placementCount, placements)
-        XCTAssertEqual(service.changeSubscriptions, 0)
-        XCTAssertEqual(service.outputSubscriptions, 0)
-        controller = nil
         XCTAssertNil(weakController)
         XCTAssertEqual(service.cancelCount, 0)
     }

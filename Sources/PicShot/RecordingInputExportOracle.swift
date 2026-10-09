@@ -62,6 +62,81 @@ enum RecordingInputExportOracle {
         if !value { throw NSError(domain: "PicShot.RecordingInputExport", code: 1,
                                  userInfo: [NSLocalizedDescriptionKey: message]) }
     }
+
+    /// CoreMedia may deliver a zero-sample control marker in addition to media
+    /// samples. Never turn it into a frame or infer/fix a media sample duration.
+    /// A real empty playback interval, payload, or unrecognized empty buffer is
+    /// not a harmless marker. Callers separately cap all returned buffers.
+    static func isControlMarker(_ sample: CMSampleBuffer, context: String) throws -> Bool {
+        guard CMSampleBufferGetNumSamples(sample) == 0 else { return false }
+        var known = false
+        for key in [kCMSampleBufferAttachmentKey_EmptyMedia,
+                    kCMSampleBufferAttachmentKey_EndsPreviousSampleDuration,
+                    kCMSampleBufferAttachmentKey_PermanentEmptyMedia] {
+            guard let value = CMGetAttachment(sample, key: key, attachmentModeOut: nil) else { continue }
+            try require(CFGetTypeID(value) == CFBooleanGetTypeID(), "Malformed control-marker flag: \(context)")
+            known = known || (value as? NSNumber)?.boolValue == true
+        }
+        let dataBytes = CMSampleBufferGetDataBuffer(sample).map { CMBlockBufferGetDataLength($0) } ?? 0
+        let entry = sampleTimingEntry(sample)
+        let boundedTiming = (entry.status == noErr && (0...1).contains(entry.count))
+            || (entry.status == kCMSampleBufferError_BufferHasNoSampleTimingInfo && entry.count == 0)
+        let durations = [CMSampleBufferGetDuration(sample), CMSampleBufferGetOutputDuration(sample), entry.timing.duration]
+        try require(CMSampleBufferIsValid(sample) && CMSampleBufferDataIsReady(sample) && known
+            && CMSampleBufferGetTotalSampleSize(sample) == 0 && dataBytes == 0
+            && CMSampleBufferGetImageBuffer(sample) == nil
+            && boundedTiming
+            && durations.allSatisfy { !$0.isValid || ($0.isNumeric && $0.seconds == 0) },
+                    "Malformed/nonempty control marker: \(context)")
+        return true
+    }
+
+    /// A marker's timing entry can describe an empty interval even when the
+    /// aggregate duration sums zero media samples. Read at most one raw entry.
+    private static func sampleTimingEntry(_ sample: CMSampleBuffer) -> (status: OSStatus, count: CMItemCount, timing: CMSampleTimingInfo) {
+        var count: CMItemCount = 0
+        var timing = CMSampleTimingInfo(duration: .invalid, presentationTimeStamp: .invalid, decodeTimeStamp: .invalid)
+        let status = CMSampleBufferGetSampleTimingInfoArray(sample, entryCount: 1,
+            arrayToFill: &timing, entriesNeededOut: &count)
+        return (status, count, timing)
+    }
+
+    /// Fixed-size scalar diagnostics only: no payloads, images, URLs, or arbitrary
+    /// attachment descriptions. Invalid CMTime flags remain visible as-is.
+    static func sampleTimingDescription(_ sample: CMSampleBuffer, route: String, phase: String,
+                                        buffer: Int, media: Int, expected: Int) -> String {
+        func time(_ value: CMTime) -> String {
+            "\(value.value)/\(value.timescale):flags=\(value.flags.rawValue):epoch=\(value.epoch):seconds=\(value.seconds)"
+        }
+        func flag(_ key: CFString) -> String {
+            guard let value = CMGetAttachment(sample, key: key, attachmentModeOut: nil) else { return "absent" }
+            guard CFGetTypeID(value) == CFBooleanGetTypeID(), let number = value as? NSNumber else { return "invalid-type" }
+            return number.boolValue ? "true" : "false"
+        }
+        func trim(_ key: CFString) -> String {
+            guard let value = CMGetAttachment(sample, key: key, attachmentModeOut: nil) else { return "absent" }
+            guard let dictionary = value as? NSDictionary else { return "invalid-type" }
+            return [kCMTimeValueKey, kCMTimeScaleKey, kCMTimeFlagsKey, kCMTimeEpochKey].map {
+                (dictionary[$0] as? NSNumber)?.stringValue ?? "missing"
+            }.joined(separator: "/")
+        }
+        let bytes = CMSampleBufferGetDataBuffer(sample).map { CMBlockBufferGetDataLength($0) } ?? 0
+        let entry = sampleTimingEntry(sample)
+        return "route=\(route) phase=\(phase) buffer=\(buffer) media=\(media)/\(expected)"
+            + " valid=\(CMSampleBufferIsValid(sample)) ready=\(CMSampleBufferDataIsReady(sample))"
+            + " samples=\(CMSampleBufferGetNumSamples(sample)) sampleBytes=\(CMSampleBufferGetTotalSampleSize(sample)) dataBytes=\(bytes)"
+            + " pts=\(time(CMSampleBufferGetPresentationTimeStamp(sample)))"
+            + " dts=\(time(CMSampleBufferGetDecodeTimeStamp(sample))) duration=\(time(CMSampleBufferGetDuration(sample)))"
+            + " outputPTS=\(time(CMSampleBufferGetOutputPresentationTimeStamp(sample)))"
+            + " outputDuration=\(time(CMSampleBufferGetOutputDuration(sample)))"
+            + " timingEntries=\(entry.count) timingStatus=\(entry.status) sampleDuration=\(time(entry.timing.duration))"
+            + " samplePTS=\(time(entry.timing.presentationTimeStamp)) sampleDTS=\(time(entry.timing.decodeTimeStamp))"
+            + " empty=\(flag(kCMSampleBufferAttachmentKey_EmptyMedia))"
+            + " endsPrevious=\(flag(kCMSampleBufferAttachmentKey_EndsPreviousSampleDuration))"
+            + " permanentEmpty=\(flag(kCMSampleBufferAttachmentKey_PermanentEmptyMedia))"
+            + " trimStart=\(trim(kCMSampleBufferAttachmentKey_TrimDurationAtStart))"
+            + " trimEnd=\(trim(kCMSampleBufferAttachmentKey_TrimDurationAtEnd))"
+    }
     static func check(_ deadline: Double) throws {
         try Task.checkCancellation()
         try require(ProcessInfo.processInfo.systemUptime < deadline, "Derived input verification deadline exceeded")
@@ -201,6 +276,7 @@ enum RecordingInputExportOracle {
     }
 
     static func movie(_ url: URL, selected: Bool, source: Movie? = nil, deadline: Double) async throws -> Movie {
+        let route = selected ? "selected" : "source"
         _ = try boundedData(url)
         let asset = AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
         let tracks = try await asset.loadTracks(withMediaType: .video)
@@ -216,8 +292,9 @@ enum RecordingInputExportOracle {
         }, "Derived movie is not bounded 320x180 H.264")
         let measuredDuration = try await asset.load(.duration).seconds
         let count = selected ? selectedFrames : sourceFrames, expectedDuration = selected ? duration : 2.2
-        try require(abs(measuredDuration - expectedDuration) <= 1.0 / 600, "Selected interval duration differs")
-        let packetEnd = try packets(asset, track: tracks[0], count: count, duration: expectedDuration, deadline: deadline)
+        try require(abs(measuredDuration - expectedDuration) <= 1.0 / 600,
+                    "Selected interval duration differs: route=\(route) actual=\(measuredDuration) expected=\(expectedDuration)")
+        let packetEnd = try packets(asset, track: tracks[0], route: route, count: count, duration: expectedDuration, deadline: deadline)
         let reader = try AVAssetReader(asset: asset)
         defer { if reader.status == .reading { reader.cancelReading() } }
         let output = AVAssetReaderTrackOutput(track: tracks[0], outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
@@ -228,16 +305,27 @@ enum RecordingInputExportOracle {
         let sourceGenerator = selected ? source.map { generator($0.url) } : nil
         defer { sourceGenerator?.cancelAllCGImageGeneration() }
         var frames: [Observation] = []
+        var buffers = 0
         while let sample = output.copyNextSampleBuffer() {
             try check(deadline)
+            let detail = sampleTimingDescription(sample, route: route, phase: "decoded", buffer: buffers, media: frames.count, expected: count)
+            try require(buffers < count * 2, "Decoded buffer cap exceeded: \(detail)")
+            buffers += 1
+            if try isControlMarker(sample, context: detail) {
+                print("[recording-input-timing] control-marker \(detail)")
+                continue
+            }
             try autoreleasepool {
-                try require(frames.count < count, "Derived decoder exceeded frame cap")
+                try require(frames.count < count, "Derived decoder exceeded frame cap: \(detail)")
+                try require(CMSampleBufferIsValid(sample) && CMSampleBufferDataIsReady(sample)
+                    && CMSampleBufferGetNumSamples(sample) == 1, "Invalid decoded MP4 sample: \(detail)")
                 let pts = CMSampleBufferGetPresentationTimeStamp(sample).seconds
                 try require(pts.isFinite && abs(pts - Double(frames.count) / 10) <= 1.0 / 600,
-                            "Decoded MP4 PTS/start selection differs")
+                            "Decoded MP4 PTS/start selection differs: \(detail)")
                 guard let pixels = CMSampleBufferGetImageBuffer(sample),
                       let image = context.createCGImage(CIImage(cvPixelBuffer: pixels), from: CGRect(x: 0, y: 0, width: width, height: height))
-                else { throw NSError(domain: "PicShot.RecordingInputExport", code: 4) }
+                else { throw NSError(domain: "PicShot.RecordingInputExport", code: 4,
+                                     userInfo: [NSLocalizedDescriptionKey: "Decoded MP4 has no raster: \(detail)"]) }
                 try require(CVPixelBufferGetWidth(pixels) == width && CVPixelBufferGetHeight(pixels) == height,
                             "Decoded MP4 canvas differs")
                 let rgba = try raster(image)
@@ -259,10 +347,12 @@ enum RecordingInputExportOracle {
                 frames.append(frame)
             }
         }
-        try require(reader.status == .completed && frames.count == count, "Derived movie decode did not finish")
+        try require(reader.status == .completed && frames.count == count,
+                    "Derived movie decode did not finish: route=\(route) status=\(reader.status.rawValue) buffers=\(buffers) media=\(frames.count)/\(count)")
+        print("[recording-input-timing] route=\(route) phase=decoded buffers=\(buffers) media=\(frames.count) duration=\(measuredDuration) packetEnd=\(packetEnd)")
         return Movie(url: url, frameCount: count, duration: measuredDuration, packetEnd: packetEnd, observations: frames)
     }
-    private static func packets(_ asset: AVAsset, track: AVAssetTrack, count: Int, duration: Double, deadline: Double) throws -> Double {
+    private static func packets(_ asset: AVAsset, track: AVAssetTrack, route: String, count: Int, duration: Double, deadline: Double) throws -> Double {
         let reader = try AVAssetReader(asset: asset)
         defer { if reader.status == .reading { reader.cancelReading() } }
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
@@ -271,19 +361,30 @@ enum RecordingInputExportOracle {
         // Compressed packets may arrive in decode order after HighestQuality
         // reencoding. Retain only <=22 scalar intervals, then check PTS order.
         var intervals: [(Double, Double)] = []
+        var buffers = 0
         while let sample = output.copyNextSampleBuffer() {
             try check(deadline)
+            let detail = sampleTimingDescription(sample, route: route, phase: "compressed", buffer: buffers, media: intervals.count, expected: count)
+            // Extra control markers are bounded in total by the media count.
+            // The <=22/21 stored and decoded media-frame caps remain unchanged.
+            try require(buffers < count * 2, "Compressed buffer cap exceeded: \(detail)")
+            buffers += 1
+            if try isControlMarker(sample, context: detail) {
+                print("[recording-input-timing] control-marker \(detail)")
+                continue
+            }
             let pts = CMSampleBufferGetPresentationTimeStamp(sample).seconds
             let length = CMSampleBufferGetDuration(sample).seconds
             try require(intervals.count < count && CMSampleBufferGetNumSamples(sample) == 1
-                && pts.isFinite && length.isFinite && length > 0, "Invalid/beyond-cap stored MP4 packets")
+                && CMSampleBufferIsValid(sample) && CMSampleBufferDataIsReady(sample)
+                && pts.isFinite && length.isFinite && length > 0, "Invalid/beyond-cap stored MP4 packets: \(detail)")
             intervals.append((pts, length))
         }
         intervals.sort { $0.0 < $1.0 }
         var end = 0.0
         for (index, interval) in intervals.enumerated() {
             try require(abs(interval.0 - Double(index) / 10) <= 1.0 / 600 && abs(interval.0 - end) <= 1.0 / 600,
-                        "Stored MP4 packets are not adjacent in presentation order")
+                        "Stored MP4 packets are not adjacent in presentation order: route=\(route) index=\(index) pts=\(interval.0) duration=\(interval.1) previousEnd=\(end)")
             end = interval.0 + interval.1
         }
         // A track edit may clip playback halfway through its last nominal
@@ -292,7 +393,8 @@ enum RecordingInputExportOracle {
         try require(reader.status == .completed && intervals.count == count
             && end >= duration - 1.0 / 600 && end <= duration + 0.1 + 1.0 / 600
             && (intervals.last?.0 ?? duration) < duration,
-                    "Stored MP4 endpoint exceeds its final presented packet")
+                    "Stored MP4 endpoint exceeds its final presented packet: route=\(route) status=\(reader.status.rawValue) buffers=\(buffers) media=\(intervals.count)/\(count) packetEnd=\(end) playbackEnd=\(duration) lastPTS=\(intervals.last?.0 ?? .nan)")
+        print("[recording-input-timing] route=\(route) phase=compressed buffers=\(buffers) media=\(intervals.count) playbackEnd=\(duration) intervals=\(intervals)")
         return end
     }
 

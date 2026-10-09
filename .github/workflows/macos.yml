@@ -309,6 +309,19 @@ jobs:
           finally:
               (root/'regression-report.json').write_text(json.dumps(record, indent=2)+'\n')
           PYTHON
+      - name: Reproduce recording packet and panel lifetime regressions
+        # Additive early reproduction; both IDs still execute in the unchanged
+        # focused and exhaustive gates. Original 420s process caps are retained.
+        timeout-minutes: 16
+        run: |
+          set -o pipefail
+          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count 2 --selection-regex '^PicShotTests\.(RecordingInputExportTests/testAuthoredInputTrimPreservesAllSelectedPixelsAndPacketBoundaries|RecordingCommandCoordinatorTests/testExpandCollapseAndDisplayChangesRetainOneOwnerWithoutClosingSession)$' --output dist/recording-regression-plan.json
+          execution_status=0
+          for shard in 0 1; do
+            python3 scripts/native-test-shards.py run --plan dist/recording-regression-plan.json --expected-source "$GITHUB_SHA" --index "$shard" --directory dist/evidence/recording-018-regression || execution_status=1
+          done
+          python3 scripts/native-test-shards.py check --plan dist/recording-regression-plan.json --expected-source "$GITHUB_SHA" --directory dist/evidence/recording-018-regression --output dist/recording-regression-report.json
+          test "$execution_status" -eq 0
       - name: Upload test compilation evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
