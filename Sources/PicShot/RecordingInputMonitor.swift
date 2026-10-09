@@ -202,6 +202,7 @@ final class RecordingInputMonitor: ObservableObject {
     func refreshPermissions() {
         let latest = dependencies.permissions()
         let changed = latest != permissions
+        if changed { state.clearEvents(at: dependencies.clock()) }
         permissions = latest
         if sessionToken != nil, !isPaused, options.isEnabled, changed || installationFailed || !isMonitoring { rebuildMonitoring() }
     }
@@ -210,7 +211,9 @@ final class RecordingInputMonitor: ObservableObject {
         removeMonitoring()
         installationFailed = false
         guard sessionToken != nil, !isPaused, options.isEnabled else { return }
-        permissions = dependencies.permissions()
+        let latest = dependencies.permissions()
+        if latest != permissions { state.clearEvents(at: dependencies.clock()) }
+        permissions = latest
         // Conservatively require current Input Monitoring permission even for
         // mouse events; global key monitoring additionally requires AX trust.
         guard permissions.inputMonitoring else { state.clearEvents(at: dependencies.clock()); return }

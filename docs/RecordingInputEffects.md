@@ -10,6 +10,8 @@ Shortcut input accepts only a fixed whitelist of physical key codes accompanied 
 
 Permission checks are read-only. The app does not grant or automatically request Input Monitoring or Accessibility permission for this feature. When an option needs access, the controls explain the missing permission and allow an explicit settings visit and recheck. PicShot's own controls are excluded from both the movie and global input monitoring.
 
+Any permission change observed by a callback, the health check, explicit Recheck, or a monitor reinstall clears all pending effect values before further composition. This also applies when Accessibility is revoked but permitted pointer monitoring continues. Already encoded frames remain unchanged. The extended existing native revocation test is pending candidate159 execution; no physical permission change is performed by this fixture.
+
 Pause, Stop, cancellation and recording errors remove the monitor and clear events. Resume rejects callbacks queued before the new boundary. Effects end for future output at the Stop request, before potentially slow encoder or disk finalization. Screen coordinates use the event's original point, transformed to the selected recording rectangle; pointer events outside that rectangle are ignored.
 
 The planned native checks use injected input metadata and permissions, bounded synthetic video, independent frame decoding, and native control previews. They do not grant OS permissions, post global input, or prove event delivery from other applications on a physical Mac.

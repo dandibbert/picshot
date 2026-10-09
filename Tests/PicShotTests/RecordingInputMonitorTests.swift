@@ -153,6 +153,51 @@ final class RecordingInputMonitorTests: XCTestCase {
         XCTAssertEqual(fixture.cancelledHealthChecks, 2)
         XCTAssertTrue(state.snapshot(at: fixture.now).events.isEmpty)
         monitor.endSession()
+
+        // Explicit refresh can observe AX revocation before a callback or health
+        // tick. Pointer monitoring stays permitted, but its new generation must
+        // not keep compositing a shortcut captured before revocation.
+        fixture.permissions = .init(inputMonitoring: true, accessibility: true)
+        fixture.now = 200
+        monitor.options = .init(clicks: true, shortcuts: true)
+        monitor.beginSession(frame: frame, at: fixture.now)
+        fixture.now = 200.1; fixture.emit(shortcut(at: fixture.now))
+        XCTAssertEqual(state.snapshot(at: fixture.now).events.count, 1)
+        let retiredCallback = fixture.callbacks.count - 1
+        fixture.permissions.accessibility = false
+        fixture.now = 200.2; monitor.refreshPermissions()
+        XCTAssertFalse(monitor.permissions.accessibility)
+        XCTAssertTrue(monitor.isMonitoring, "Permitted pointer monitoring continues")
+        XCTAssertFalse(fixture.masks.last?.contains(.keyDown) ?? true)
+        XCTAssertTrue(state.snapshot(at: fixture.now).events.isEmpty,
+                      "Future compositions must not retain a pre-revocation shortcut")
+        fixture.healthCallbacks.last?()
+        fixture.emit(shortcut(at: fixture.now), callback: retiredCallback)
+        fixture.emit(shortcut(at: fixture.now))
+        XCTAssertTrue(state.snapshot(at: fixture.now).events.isEmpty)
+        fixture.now = 200.3; fixture.emit(click(at: fixture.now))
+        XCTAssertEqual(state.snapshot(at: fixture.now).events.count, 1)
+
+        // An option-driven reinstall also probes permissions. setOptions alone
+        // retains shortcuts because their user preference is still enabled.
+        fixture.permissions.accessibility = true
+        monitor.refreshPermissions()
+        fixture.now = 200.4; fixture.emit(shortcut(at: fixture.now))
+        XCTAssertTrue(state.snapshot(at: fixture.now).events.contains {
+            if case .shortcut = $0.kind { return true }
+            return false
+        })
+        fixture.permissions.accessibility = false
+        fixture.now = 200.5; monitor.options.scrolls = true
+        XCTAssertFalse(monitor.permissions.accessibility)
+        XCTAssertTrue(monitor.isMonitoring)
+        XCTAssertFalse(fixture.masks.last?.contains(.keyDown) ?? true)
+        XCTAssertTrue(fixture.masks.last?.contains(.scrollWheel) ?? false)
+        XCTAssertTrue(state.snapshot(at: fixture.now).events.isEmpty,
+                      "Permission changes detected during reinstall must also clear old effects")
+        fixture.now = 200.6; fixture.emit(click(at: fixture.now))
+        XCTAssertEqual(state.snapshot(at: fixture.now).events.count, 1)
+        monitor.endSession()
     }
 
     func testSecureAndUnknownFocusSuppressShortcutsAndDiscardTheirQueuedEvents() {
