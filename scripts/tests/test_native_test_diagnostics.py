@@ -653,7 +653,7 @@ class NativeDiagnosticTests(unittest.TestCase):
              mock.patch.object(D.subprocess, 'Popen') as launch:
             D.start_capture(self.args, child, report, 180, lambda _: None)
         argv = launch.call_args.args[0]
-        self.assertEqual(argv[argv.index('--timeout-seconds') + 1], '8')
+        self.assertEqual(argv[argv.index('--timeout-seconds') + 1], '20')
         self.assertEqual(argv[argv.index('--grace-seconds') + 1], '0.5')
         self.assertEqual(argv[argv.index('--max-log-bytes') + 1], str(256 * 1024))
         self.assertNotIn('shell', launch.call_args.kwargs)
@@ -830,7 +830,7 @@ class NativeDiagnosticTests(unittest.TestCase):
                 if create_file:
                     prefix.with_suffix('.txt').write_text('sampled thread stacks')
                 prefix.with_suffix('.runner.json').write_text(json.dumps({'status': 'exited',
-                    'exit_code': 0, 'child_returncode': 0, 'timeout_seconds': 8}))
+                    'exit_code': 0, 'child_returncode': 0, 'timeout_seconds': 20}))
                 active = {'prefix': str(prefix), 'target': target,
                           'samplerStartedMonotonic': time.monotonic()}
                 after = {**target, 'birthMicroseconds': 13} if changed else target

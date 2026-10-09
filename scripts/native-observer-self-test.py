@@ -20,6 +20,7 @@ D = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(D)
 BUILD_SECONDS = 120
 RUN_SECONDS = 20
+NORMAL_RUN_SECONDS = 40
 TIMEOUT_SECONDS = 12
 DISCOVERY_SECONDS = 10
 WRAPPER_ALLOWANCE = 10
@@ -129,11 +130,18 @@ class Harness:
         self.processes = []
         self.targets = []
         self.census_uncertain = False
+        self.census_evidence = dict(totalCensusCount=0, uncertainCensusCount=0,
+            retainedUncertainCount=0, omittedUncertainCount=0,
+            firstUncertain=None, latestUncertain=None)
         self.report = dict(schemaVersion=1, sourceCommit=source, diagnosticOnly=True, installerAcceptance=False,
-            status='running', realSwiftPM=True, scenarios=[], temporaryPackageRemoved=False,
+            status='running', realSwiftPM=True, scenarios=[], temporaryPackageRemoved=False, censusUncertain=False,
             cleanupConfirmed=False, allOwnedTargetsRetired=False, originalNativeProcessSeconds=420,
             selfTestBuildSeconds=BUILD_SECONDS, selfTestRunSeconds=RUN_SECONDS,
+            selfTestNormalRunSeconds=NORMAL_RUN_SECONDS, samplerTimeoutSeconds=D.SAMPLE_TIMEOUT,
             selfTestTimeoutScenarioSeconds=TIMEOUT_SECONDS, selfTestBudgetSeconds=SELF_TEST_SECONDS)
+        self.report['censusEvidence'] = self.census_evidence
+        self.report['discoveryErrors'] = dict(totalCount=0, retainedCount=0, omittedCount=0,
+                                             retainedPerScenarioLimit=16)
         self.package = None
 
     def checkpoint(self):
@@ -155,17 +163,38 @@ class Harness:
             time.sleep(0.05)
         return process.returncode
 
-    def remember_census(self, census):
+    def remember_census(self, census, error=None, context=None):
         if not isinstance(census, dict):
             return
+        self.census_evidence['totalCensusCount'] += 1
+        reasons = []
         if census.get('complete') is not True or census.get('anchorValidated') is not True:
+            if census.get('complete') is not True:
+                reasons.append('incomplete-census')
+            if census.get('anchorValidated') is not True:
+                reasons.append('unvalidated-anchor')
+            candidates = []
+        else:
+            candidates = [member for member in census['members']
+                          if member['pid'] in census['candidatePIDs']
+                          and D.is_xctest(member, census.get('xcodeDeveloperDirectory'))]
+            if len(candidates) != len(census['candidatePIDs']):
+                reasons.append('unrecognized-candidate-identity')
+            if len(candidates) > 1:
+                reasons.append('ambiguous-candidates')
+        if reasons:
             self.census_uncertain = True
-            return
-        candidates = [member for member in census['members']
-                      if member['pid'] in census['candidatePIDs']
-                      and D.is_xctest(member, census.get('xcodeDeveloperDirectory'))]
-        if len(candidates) != len(census['candidatePIDs']) or len(candidates) > 1:
-            self.census_uncertain = True
+            self.report['censusUncertain'] = True
+            evidence = self.census_evidence
+            evidence['uncertainCensusCount'] += 1
+            evidence['retainedUncertainCount'] = min(2, evidence['uncertainCensusCount'])
+            evidence['omittedUncertainCount'] = max(0, evidence['uncertainCensusCount'] - 2)
+            record = dict(censusIndex=evidence['totalCensusCount'], context=context,
+                elapsedSeconds=round(time.monotonic() - self.started, 6), reasons=reasons,
+                error=str(error)[:2048] if error is not None else None, census=copy.deepcopy(census))
+            if evidence['firstUncertain'] is None:
+                evidence['firstUncertain'] = record
+            evidence['latestUncertain'] = record
         for target in candidates:
             if not any(D.identity_key(target) == D.identity_key(old) for old in self.targets):
                 self.targets.append(target)
@@ -193,17 +222,24 @@ class Harness:
                 snapshot = D.owned_target(process.pid, raw['pid'], self.identify,
                     expected_wrapper=wrapper, expected_leader=leader)
                 leader = snapshot['leader']
-                self.remember_census(snapshot)
+                self.remember_census(snapshot, context=str(prefix))
                 save(prefix.with_suffix('.identity.json'), snapshot)
+                save(self.directory/'self-test-report.json', self.report)
                 require_snapshot(snapshot, wrapper, leader)
                 if ready.is_file():
                     return snapshot
             except Exception as error:
                 census = getattr(error, 'census', None)
-                self.remember_census(census)
+                self.remember_census(census, error=error, context=str(prefix))
+                counts = self.report['discoveryErrors']
+                counts['totalCount'] += 1
                 if len(attempts) < 16:
-                    attempts.append({'error': str(error), 'census': census})
+                    attempts.append({'error': str(error), 'census': census,
+                                     'elapsedSeconds': round(time.monotonic() - self.started, 6)})
+                    counts['retainedCount'] += 1
                     save(prefix.with_suffix('.discovery-attempts.json'), attempts)
+                counts['omittedCount'] = counts['totalCount'] - counts['retainedCount']
+                save(self.directory/'self-test-report.json', self.report)
                 if binding.record.get('status') == 'blocked':
                     raise ValueError('Owned wrapper readiness binding rejected') from error
             time.sleep(0.05)
@@ -243,7 +279,7 @@ class Harness:
         survives_term = name in ('cancellation', 'timeout')
         environment = dict(os.environ, PICSHOT_OBSERVER_SELF_TEST_GATE=str(gate),
             PICSHOT_OBSERVER_SELF_TEST_SURVIVE_TERM='1' if survives_term else '0')
-        seconds = TIMEOUT_SECONDS if name == 'timeout' else RUN_SECONDS
+        seconds = {'normal': NORMAL_RUN_SECONDS, 'cancellation': RUN_SECONDS, 'timeout': TIMEOUT_SECONDS}[name]
         command = ['swift', 'test', '--skip-build', '--package-path', str(self.package),
                    '--filter', 'ObserverSelfTestTests.ObserverOwnershipTests/testWaitForGate']
         prefix = root/'native'

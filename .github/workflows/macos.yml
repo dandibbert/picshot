@@ -2196,20 +2196,32 @@ jobs:
     concurrency:
       group: picshot-native-timeout-diagnostic-job-${{ github.ref }}
       cancel-in-progress: false
-    # Explicit stage maxima total 96m baseline, or 126m with the opt-in control.
+    # Two pinned checkouts add 2m: stage maxima are 98m baseline or 128m with control.
     # Five extra minutes cover step handovers. Each native process still has 420s.
-    timeout-minutes: ${{ contains(github.event.head_commit.message || '', '[native-timeout-unbuffered]') && 131 || 101 }}
+    timeout-minutes: ${{ contains(github.event.head_commit.message || '', '[native-timeout-unbuffered]') && 133 || 103 }}
     env:
       # Preserve the original ARM build job's inherited native-test environment.
       NATIVE_TEST_PROCESS_COUNT: '4'
       FOCUSED_TEST_PROCESS_COUNT: '2'
+    defaults:
+      run:
+        working-directory: native-baseline142
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         timeout-minutes: 2
         with:
+          ref: ${{ github.sha }}
+          path: observer-source
           fetch-depth: 2
           persist-credentials: false
-      - name: Prove exact source141 product and corrected diagnostic-only scope
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        timeout-minutes: 2
+        with:
+          ref: 367571f0ead3aa29993cf1d18ce951c8c3472bb1
+          path: native-baseline142
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Bind immutable source142 product to the separate current observer
         id: provenance
         timeout-minutes: 2
         run: |
@@ -2218,53 +2230,83 @@ jobs:
           python3 - <<'PYTHON'
           import hashlib, json, os, platform, subprocess
           from pathlib import Path
-          def git(*args):
-              return subprocess.check_output(['git', *args], timeout=20)
-          base = 'a371ad60c8aec007482911b249dbeb03144b9486'
-          source = os.environ['GITHUB_SHA']
-          if git('rev-parse', 'HEAD').decode().strip() != source or git('rev-parse', 'HEAD^').decode().strip() != base:
-              raise SystemExit('Diagnostic must directly inherit pinned source141')
+          workspace = Path(os.environ['GITHUB_WORKSPACE']).resolve()
+          product = workspace/'native-baseline142'
+          observer = workspace/'observer-source'
+          product_source = '367571f0ead3aa29993cf1d18ce951c8c3472bb1'
+          product_tree = '726ba7060d3a432ba76162f917e898e228d20407'
+          observer_base = '8fbc38d6a95409a9d726c173147addb1ab46b380'
+          observer_base_tree = 'f918035f8768f580e490356f4df54cda2e61da63'
+          observer_source = os.environ['GITHUB_SHA']
+          def git(root, *args):
+              return subprocess.check_output(['git', '-C', str(root), *args], timeout=20)
+          def revision(root, ref):
+              return git(root, 'rev-parse', ref).decode().strip()
+          if (Path.cwd().resolve() != product or product.is_symlink() or observer.is_symlink()
+                  or product.resolve() != product or observer.resolve() != observer
+                  or revision(product, '--show-toplevel') != str(product)
+                  or revision(observer, '--show-toplevel') != str(observer)):
+              raise SystemExit('Product and observer must be distinct isolated checkout roots')
+          if revision(product, 'HEAD') != product_source or revision(product, 'HEAD^{tree}') != product_tree:
+              raise SystemExit('Native product checkout differs from immutable source142')
+          if (revision(observer, 'HEAD') != observer_source or revision(observer, 'HEAD^') != observer_base
+                  or revision(observer, observer_base + '^{tree}') != observer_base_tree):
+              raise SystemExit('Observer must directly preserve the reviewed source143 branch')
           if platform.machine() != 'arm64' or platform.system() != 'Darwin':
               raise SystemExit('Expected the native ARM macOS runner')
-          def entries(ref):
+          def entries(root, ref):
               return {row.split(b'\t', 1)[1]: row.split(b'\t', 1)[0]
-                      for row in git('ls-tree', '-r', '-z', ref).split(b'\0') if row}
-          before, after = entries(base), entries(source)
+                      for row in git(root, 'ls-tree', '-r', '-z', ref).split(b'\0') if row}
+          before, after = entries(observer, observer_base), entries(observer, observer_source)
           changed = sorted(path for path in before.keys() | after.keys() if before.get(path) != after.get(path))
-          allowed = [b'.github/workflows/macos.yml', b'scripts/native-observer-self-test.py',
+          allowed = {b'.github/workflows/macos.yml', b'scripts/native-observer-self-test.py',
                      b'scripts/native-test-diagnostics.py', b'scripts/tests/test_native_observer_self_test.py',
-                     b'scripts/tests/test_native_test_diagnostics.py']
-          if changed != allowed:
-              raise SystemExit('Changed source exceeds the exact diagnostic workflow/helper/self-test scope')
+                     b'scripts/tests/test_native_test_diagnostics.py'}
+          if set(changed) != allowed:
+              raise SystemExit('Current branch changes differ from the exact five-path diagnostic scope')
           if any(not after[path].startswith(b'100644 blob ')
-                 or not before.get(path, b'').startswith(b'100644 blob ') for path in allowed):
-              raise SystemExit('Diagnostic executable recognition corrections must preserve existing regular file modes')
+                 or not before.get(path, b'').startswith(b'100644 blob ') for path in changed):
+              raise SystemExit('Diagnostic changes must preserve existing regular file modes')
           workflow = '.github/workflows/macos.yml'
-          original = git('show', base + ':' + workflow).decode()
-          current = Path(workflow).read_text()
-          # The installed job remains the final job, byte-for-byte unchanged.
-          def installed_definition(text):
-              return text[text.index('  installed-diagnostic:\n'):]
-          if installed_definition(original) != installed_definition(current):
-              raise SystemExit('Installed diagnostic job definition changed')
-          if git('status', '--porcelain', '--untracked-files=no').strip():
-              raise SystemExit('Tracked checkout differs from the verified source tree')
-          inherited = b'\0'.join(path + b'\t' + after[path] for path in sorted(after) if path not in changed)
-          record = dict(status='passed', diagnosticOnly=True, installerAcceptance=False,
-              sourceCommit=source, referenceCommit=base, sourceTree=git('rev-parse', 'HEAD^{tree}').decode().strip(),
-              referenceTree=git('rev-parse', base + '^{tree}').decode().strip(),
-              changedPaths=[path.decode() for path in changed], unchangedTrackedEntries=len(after)-len(changed),
-              unchangedEntriesSHA256=hashlib.sha256(inherited).hexdigest(), architecture=platform.machine(),
-              installedDiagnosticDefinitionUnchanged=True, workflowRunID=os.environ['GITHUB_RUN_ID'],
-              workflowRunAttempt=os.environ['GITHUB_RUN_ATTEMPT'],
+          original = git(observer, 'show', observer_base + ':' + workflow).decode()
+          current = (observer/workflow).read_text()
+          def outside_native(text):
+              prefix, rest = text.split('  # Optional observations only. No packaging, installed smoke, or release acceptance.\n', 1)
+              _, suffix = rest.split('  # Independent observations only. This job never supplies release acceptance.\n', 1)
+              return prefix, suffix
+          if outside_native(original) != outside_native(current):
+              raise SystemExit('Other jobs, routing or installed143 diagnostic definition changed')
+          for root in (product, observer):
+              if git(root, 'status', '--porcelain', '--untracked-files=no').strip():
+                  raise SystemExit('Tracked checkout differs from its verified source tree')
+          tooling = {}
+          for name, expected in (
+              ('scripts/run-bounded-command.py', 'ef85307a6227a0d99641b17c75e2aa625ae7344376fbcb3ec1af1c5be7e2d5d2'),
+              ('scripts/native-test-shards.py', '797e5ddaf62b140dc60775fd5ddc267b2da1ffb0d21f6537fbf4fb9124387380')):
+              actual = hashlib.sha256((observer/name).read_bytes()).hexdigest()
+              if actual != expected or (observer/name).read_bytes() != (product/name).read_bytes():
+                  raise SystemExit('Observer runner/planner differs from original142 bytes')
+              tooling[name] = actual
+          observer_files = {name.decode(): hashlib.sha256((observer/name.decode()).read_bytes()).hexdigest()
+                            for name in sorted(allowed)}
+          record = dict(schemaVersion=2, status='passed', diagnosticOnly=True, installerAcceptance=False,
+              sourceCommit=product_source, sourceTree=product_tree, productWorkingDirectory=str(product),
+              observerCommit=observer_source, observerTree=revision(observer, 'HEAD^{tree}'),
+              observerWorkingDirectory=str(observer), observerReferenceCommit=observer_base,
+              observerReferenceTree=observer_base_tree, observerChangedPaths=[path.decode() for path in changed],
+              observerFileSHA256=observer_files, originalRunnerAndPlannerSHA256=tooling,
+              originalProductTrackedEntries=len(entries(product, 'HEAD')), architecture=platform.machine(),
+              installedDiagnosticDefinitionUnchanged=True, otherJobsAndRoutingUnchanged=True,
+              productOverlayApplied=False, productTrackedCheckoutClean=True, observerTrackedCheckoutClean=True,
+              workflowRunID=os.environ['GITHUB_RUN_ID'], workflowRunAttempt=os.environ['GITHUB_RUN_ATTEMPT'],
               nativeProcessEnvironment={key: os.environ.get(key) for key in (
                   'NATIVE_TEST_PROCESS_COUNT', 'FOCUSED_TEST_PROCESS_COUNT')},
               inheritedUnbufferedIO=dict(present='NSUnbufferedIO' in os.environ,
                   recognizedSetting=os.environ.get('NSUnbufferedIO') if os.environ.get('NSUnbufferedIO') in
                       {'YES', 'NO', '1', '0', 'true', 'false'} else None),
               inheritedCodecHelperOverridePresent='PICSHOT_CODEC_HELPER_PATH' in os.environ,
-              stageMinutesBaseline=96, stageMinutesWithControl=126,
-              jobMinutesBaseline=101, jobMinutesWithControl=131, nativeSecondsPerProcess=420)
+              stageMinutesBaseline=98, stageMinutesWithControl=128,
+              jobMinutesBaseline=103, jobMinutesWithControl=133, nativeSecondsPerProcess=420)
           Path('dist/native-timeout-diagnostic/source-identity.json').write_text(json.dumps(record, indent=2)+'\n')
           PYTHON
       - name: Verify original runner and native plan plus optional observer contracts
@@ -2273,7 +2315,7 @@ jobs:
         run: |
           set -o pipefail
           for pattern in test_run_bounded_command.py test_native_test_shards.py test_native_test_diagnostics.py test_native_observer_self_test.py; do
-            PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p "$pattern" -v 2>&1 | tee -a dist/native-timeout-diagnostic/contracts.log
+            PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "$GITHUB_WORKSPACE/observer-source/scripts/tests" -p "$pattern" -v 2>&1 | tee -a dist/native-timeout-diagnostic/contracts.log
           done
       - name: Verify the same contracts with Python assertions disabled
         id: optimized_contracts
@@ -2281,17 +2323,17 @@ jobs:
         run: |
           set -o pipefail
           for pattern in test_run_bounded_command.py test_native_test_shards.py test_native_test_diagnostics.py test_native_observer_self_test.py; do
-            PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p "$pattern" -v 2>&1 | tee -a dist/native-timeout-diagnostic/contracts-optimized.log
+            PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s "$GITHUB_WORKSPACE/observer-source/scripts/tests" -p "$pattern" -v 2>&1 | tee -a dist/native-timeout-diagnostic/contracts-optimized.log
           done
       - name: Prove real SwiftPM descendant sampling and retirement before product work
         id: observer_self_test
         timeout-minutes: 6
         run: |
           set -euo pipefail
-          python3 scripts/run-bounded-command.py --timeout-seconds 330 --grace-seconds 25 \
+          python3 "$GITHUB_WORKSPACE/observer-source/scripts/run-bounded-command.py" --timeout-seconds 330 --grace-seconds 25 \
             --log dist/native-timeout-diagnostic/observer-self-test-launch.log \
             --report dist/native-timeout-diagnostic/observer-self-test-launch-report.json \
-            -- python3 scripts/native-observer-self-test.py \
+            -- python3 "$GITHUB_WORKSPACE/observer-source/scripts/native-observer-self-test.py" \
             --directory dist/native-timeout-diagnostic/observer-self-test --expected-source "$GITHUB_SHA"
           python3 - <<'PYTHON'
           import hashlib, json, os
@@ -2305,6 +2347,12 @@ jobs:
           if not (report.get('status') == 'passed' and report.get('sourceCommit') == os.environ['GITHUB_SHA']
                   and report.get('installerAcceptance') is False and report.get('censusUncertain') is False
                   and report.get('originalNativeProcessSeconds') == 420
+                  and report.get('samplerTimeoutSeconds') == 20
+                  and report.get('selfTestNormalRunSeconds') == 40
+                  and report.get('selfTestRunSeconds') == 20
+                  and report.get('selfTestTimeoutScenarioSeconds') == 12
+                  and report.get('selfTestBudgetSeconds') == 300
+                  and report.get('censusEvidence', {}).get('uncertainCensusCount') == 0
                   and all(report.get(key) is True for key in required)
                   and [case['name'] for case in report['scenarios']] == ['normal', 'cancellation', 'timeout']
                   and all(case['cleanupConfirmed'] for case in report['scenarios'])
@@ -2357,14 +2405,14 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/native-timeout-diagnostic/native-test-discovery.log --report dist/native-timeout-diagnostic/native-test-discovery-report.json -- swift test list --skip-build
-          python3 scripts/native-test-shards.py plan --inventory dist/native-timeout-diagnostic/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$NATIVE_TEST_PROCESS_COUNT" --output dist/native-timeout-diagnostic/native-tests-plan.json
+          python3 scripts/native-test-shards.py plan --inventory dist/native-timeout-diagnostic/native-test-discovery.log --source 367571f0ead3aa29993cf1d18ce951c8c3472bb1 --process-count "$NATIVE_TEST_PROCESS_COUNT" --output dist/native-timeout-diagnostic/native-tests-plan.json
           python3 - <<'PYTHON'
           import hashlib, importlib.util, json, os
           from pathlib import Path
           spec = importlib.util.spec_from_file_location('native', 'scripts/native-test-shards.py')
           native = importlib.util.module_from_spec(spec); spec.loader.exec_module(native)
           root = Path('dist/native-timeout-diagnostic')
-          plan = native.checked_plan(root/'native-tests-plan.json', os.environ['GITHUB_SHA'])
+          plan = native.checked_plan(root/'native-tests-plan.json', '367571f0ead3aa29993cf1d18ce951c8c3472bb1')
           inventory = plan['discoveredTests']
           digest = hashlib.sha256(('\n'.join(inventory)+'\n').encode()).hexdigest()
           expected = ['b1a7d85cfd0b7ab017786761a81d6f424b88c8bae39f747d7c74f1debe0e3cad',
@@ -2379,7 +2427,10 @@ jobs:
                   and [shard['index'] for shard in plan['shards']] == [0, 1, 2, 3] and shard_digests == expected):
               raise SystemExit('Native discovery or four-process inventory/order differs from source137/138')
           (root/'inventory-identity.json').write_text(json.dumps(dict(
-              status='passed', diagnosticOnly=True, installerAcceptance=False, sourceCommit=os.environ['GITHUB_SHA'],
+              status='passed', diagnosticOnly=True, installerAcceptance=False, sourceCommit='367571f0ead3aa29993cf1d18ce951c8c3472bb1', observerCommit=os.environ['GITHUB_SHA'],
+              sourceTree='726ba7060d3a432ba76162f917e898e228d20407',
+              observerTree=json.loads((root/'source-identity.json').read_text())['observerTree'],
+              planSHA256=hashlib.sha256((root/'native-tests-plan.json').read_bytes()).hexdigest(),
               referenceProductCommit='6dca7272e4484fc3a2309bd566c65bbf049a606d',
               referenceInventoryCommit='d0365c101e21fa85d9a6b9538db7bf5aeb1f2d69',
               methodCount=len(inventory), classCount=203, canonicalInventorySHA256=digest,
@@ -2393,6 +2444,14 @@ jobs:
           python3 - <<'PYTHON'
           import json, os, subprocess
           from pathlib import Path
+          expected_root = Path(os.environ['GITHUB_WORKSPACE']).resolve()/'native-baseline142'
+          if (Path.cwd().resolve() != expected_root
+                  or subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True, timeout=20).strip()
+                     != '367571f0ead3aa29993cf1d18ce951c8c3472bb1'
+                  or subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True, timeout=20).strip()
+                     != '726ba7060d3a432ba76162f917e898e228d20407'
+                  or subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=no'], timeout=20).strip()):
+              raise SystemExit('Compilation/discovery changed the immutable native source or working directory')
           rows = subprocess.check_output(['/bin/ps', '-ax', '-o', 'pid=,comm='], text=True, timeout=5).splitlines()
           matches = []
           for row in rows:
@@ -2401,7 +2460,7 @@ jobs:
               if name.startswith('PicShot') or name in {'swift', 'swift-frontend', 'swift-test', 'xctest'} or '.xctest/' in command:
                   matches.append(dict(pid=int(pid), command=command))
           Path('dist/native-timeout-diagnostic/baseline-process-preflight.json').write_text(json.dumps(dict(
-              status='failed' if matches else 'passed', sourceCommit=os.environ['GITHUB_SHA'],
+              status='failed' if matches else 'passed', sourceCommit='367571f0ead3aa29993cf1d18ce951c8c3472bb1', observerCommit=os.environ['GITHUB_SHA'],
               observedProcesses=matches, priorProcessesTerminatedByThisCheck=False,
               diagnosticOnly=True, installerAcceptance=False), indent=2)+'\n')
           if matches:
@@ -2412,8 +2471,8 @@ jobs:
         timeout-minutes: 30
         run: |
           set -o pipefail
-          python3 scripts/native-test-diagnostics.py suite \
-            --plan dist/native-timeout-diagnostic/native-tests-plan.json --expected-source "$GITHUB_SHA" \
+          python3 "$GITHUB_WORKSPACE/observer-source/scripts/native-test-diagnostics.py" suite \
+            --plan dist/native-timeout-diagnostic/native-tests-plan.json --expected-source 367571f0ead3aa29993cf1d18ce951c8c3472bb1 \
             --directory dist/native-timeout-diagnostic/baseline/shards \
             --diagnostics dist/native-timeout-diagnostic/baseline/observations \
             --output dist/native-timeout-diagnostic/baseline/test-report.json --output-mode baseline \
@@ -2429,7 +2488,7 @@ jobs:
           root = Path('dist/native-timeout-diagnostic')
           status = json.loads((root/'baseline/test-report-diagnostic-status.json').read_text())
           if not (status.get('cleanupConfirmed') is True and status.get('completedIndices') == [0, 1, 2, 3]
-                  and status.get('sourceCommit') == os.environ['GITHUB_SHA']
+                  and status.get('sourceCommit') == '367571f0ead3aa29993cf1d18ce951c8c3472bb1'
                   and status.get('outputMode') == 'baseline' and status.get('status') == 'native-failed'):
               raise SystemExit('Baseline native/sampler retirement is uncertain; control is forbidden')
           records = [json.loads((root/f'baseline/shards/shard-{index}-runner.json').read_text()) for index in range(4)]
@@ -2450,7 +2509,7 @@ jobs:
               if name.startswith('PicShot') or name in {'swift', 'swift-frontend', 'swift-test', 'xctest', 'sample'} or '.xctest/' in command:
                   matches.append(dict(pid=int(pid), command=command))
           (root/'control-process-preflight.json').write_text(json.dumps(dict(
-              status='failed' if matches else 'passed', sourceCommit=os.environ['GITHUB_SHA'],
+              status='failed' if matches else 'passed', sourceCommit='367571f0ead3aa29993cf1d18ce951c8c3472bb1', observerCommit=os.environ['GITHUB_SHA'],
               observedProcesses=matches, priorProcessesTerminatedByThisCheck=False, baselineTimeoutIndices=timeout_indices,
               diagnosticOnly=True, installerAcceptance=False, baselineFailurePreserved=True), indent=2)+'\n')
           if matches:
@@ -2464,8 +2523,8 @@ jobs:
         timeout-minutes: 30
         run: |
           set -o pipefail
-          python3 scripts/native-test-diagnostics.py suite \
-            --plan dist/native-timeout-diagnostic/native-tests-plan.json --expected-source "$GITHUB_SHA" \
+          python3 "$GITHUB_WORKSPACE/observer-source/scripts/native-test-diagnostics.py" suite \
+            --plan dist/native-timeout-diagnostic/native-tests-plan.json --expected-source 367571f0ead3aa29993cf1d18ce951c8c3472bb1 \
             --directory dist/native-timeout-diagnostic/unbuffered-control/shards \
             --diagnostics dist/native-timeout-diagnostic/unbuffered-control/observations \
             --output dist/native-timeout-diagnostic/unbuffered-control/test-report.json --output-mode unbuffered \
@@ -2478,9 +2537,16 @@ jobs:
         run: |
           mkdir -p dist/native-timeout-diagnostic
           python3 - <<'PYTHON'
-          import json, os
+          import hashlib, json, os, subprocess
           from pathlib import Path
           root = Path('dist/native-timeout-diagnostic')
+          identity_path = root/'source-identity.json'
+          source_identity = json.loads(identity_path.read_text()) if identity_path.is_file() else None
+          product_clean = not subprocess.check_output(
+              ['git', 'status', '--porcelain', '--untracked-files=no'], timeout=20).strip()
+          artifacts = {str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+                       for path in root.rglob('*') if path.is_file() and not path.is_symlink()
+                       and path.name != 'outcomes.json'}
           observations = {}
           for mode in ('baseline', 'unbuffered-control'):
               path = root/mode/'test-report-diagnostic-status.json'
@@ -2488,8 +2554,10 @@ jobs:
                   observations[mode] = json.loads(path.read_text()) if path.is_file() else dict(status='not-run-or-no-status', observationComplete=False)
               except (OSError, ValueError) as error:
                   observations[mode] = dict(status='unreadable-diagnostic-status', observationComplete=False, error=str(error))
-          record = dict(diagnosticOnly=True, installerAcceptance=False, sourceCommit=os.environ['GITHUB_SHA'],
-              referenceCommit='a371ad60c8aec007482911b249dbeb03144b9486',
+          record = dict(diagnosticOnly=True, installerAcceptance=False, sourceCommit='367571f0ead3aa29993cf1d18ce951c8c3472bb1', observerCommit=os.environ['GITHUB_SHA'],
+              sourceTree='726ba7060d3a432ba76162f917e898e228d20407', observerReferenceCommit='8fbc38d6a95409a9d726c173147addb1ab46b380',
+              observerTree=source_identity['observerTree'] if source_identity else None,
+              sourceIdentity=source_identity, evidenceSHA256=artifacts, productTrackedCheckoutClean=product_clean,
               steps=json.loads(os.environ['PICSHOT_NATIVE_DIAGNOSTIC_STEP_OUTCOMES']),
               observations=observations,
               observationScope='Native outcome and sample completeness are separate; missing/incomplete due captures are incomplete diagnostic evidence',
@@ -2499,6 +2567,8 @@ jobs:
               eventualAcceptanceRequiresFrozenProductionWorkflow=True,
               scope='Independent ARM native timeout observations; no installed, Intel, or release acceptance')
           Path('dist/native-timeout-diagnostic/outcomes.json').write_text(json.dumps(record, indent=2)+'\n')
+          if not product_clean:
+              raise SystemExit('Native work changed tracked source142 bytes')
           PYTHON
       - name: Preserve all diagnostic logs reports and owned-process samples
         if: always()
@@ -2508,12 +2578,12 @@ jobs:
           name: PicShot-DIAGNOSTIC-NONRELEASE-NativeTimeout-arm64-${{ github.sha }}
           include-hidden-files: true
           path: |
-            dist/native-timeout-diagnostic/
-            .build/native-codecs/logs/
-            .build/native-codecs/evidence/
-            .build/native-codecs/build-attempt-arm64.json
-            .build/native-codecs/install/native-build.json
-            .build/native-codecs/install/native-selftest-dependencies.txt
+            native-baseline142/dist/native-timeout-diagnostic/
+            native-baseline142/.build/native-codecs/logs/
+            native-baseline142/.build/native-codecs/evidence/
+            native-baseline142/.build/native-codecs/build-attempt-arm64.json
+            native-baseline142/.build/native-codecs/install/native-build.json
+            native-baseline142/.build/native-codecs/install/native-selftest-dependencies.txt
           if-no-files-found: error
           retention-days: 14
           compression-level: 6

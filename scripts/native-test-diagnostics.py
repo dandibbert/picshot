@@ -35,7 +35,8 @@ BOUNDED = module('bounded_command', 'run-bounded-command.py')
 CAPTURE_AT = (180, 360)
 SAMPLE_SECONDS = 2
 SAMPLE_INTERVAL_MS = 10
-SAMPLE_TIMEOUT = 8
+# Diagnostic completion allowance; the sampled workload still has its original deadline.
+SAMPLE_TIMEOUT = 20
 SAMPLE_GRACE = 0.5
 SAMPLE_FILE_CAP = 2 * 1024 * 1024
 METADATA_CAP = 1024 * 1024

@@ -157,6 +157,70 @@ class ObserverSelfTestContracts(unittest.TestCase):
         attempts=json.loads(prefix.with_suffix('.discovery-attempts.json').read_text())
         self.assertEqual(attempts[0]['error'],'child enumeration denied')
 
+    def test_uncertainty_after_startup_history_cap_stays_visible_and_blocks_cleanup(self):
+        prefix=self.output/'native'
+        prefix.with_suffix('.runner.json').write_text(json.dumps(dict(status='running',pid=200,
+            command=self.command,timeout_seconds=40)))
+        ready=self.output/'normal-gate.ready'; ready.write_text('ready')
+        native=mock.Mock(pid=100); native.poll.return_value=None
+        binding=S.D.WrapperBinding(native,self.identify,self.interpreter['executable'])
+        pending=dict(complete=True,anchorValidated=True,members=[self.leader],candidatePIDs=[])
+        partial=dict(complete=False,anchorValidated=True,members=[self.leader],candidatePIDs=[])
+        other=self.identity(301,200,301,self.target['executable'])
+        ambiguous=dict(self.snapshot,members=[self.leader,self.target,other],candidatePIDs=[300,301])
+        unanchored=dict(complete=True,anchorValidated=False,members=[],candidatePIDs=[])
+        observations=([S.D.SelectionError('startup',pending) for _ in range(16)] +
+            [S.D.SelectionError('first partial census',partial),
+             S.D.SelectionError('intermediate ambiguous census',ambiguous),
+             S.D.SelectionError('latest anchor failure',unanchored), self.snapshot])
+        self.harness.started=99
+        S.save(self.output/'self-test-report.json',self.harness.report)
+        with mock.patch.object(S.D,'owned_target',side_effect=observations), \
+             mock.patch.object(S.time,'sleep'), mock.patch.object(S.time,'monotonic',return_value=100):
+            self.assertEqual(self.harness.target(native,prefix,ready,binding,self.command,40),self.snapshot)
+        attempts=json.loads(prefix.with_suffix('.discovery-attempts.json').read_text())
+        self.assertEqual(len(attempts),16)
+        self.assertTrue(all(row['error']=='startup' for row in attempts))
+        archived=json.loads((self.output/'self-test-report.json').read_text())
+        self.assertTrue(archived['censusUncertain'])
+        self.assertEqual(archived['discoveryErrors'],dict(totalCount=19,retainedCount=16,
+            omittedCount=3,retainedPerScenarioLimit=16))
+        evidence=archived['censusEvidence']
+        self.assertEqual(evidence['totalCensusCount'],20)
+        self.assertEqual(evidence['uncertainCensusCount'],3)
+        self.assertEqual(evidence['retainedUncertainCount'],2)
+        self.assertEqual(evidence['omittedUncertainCount'],1)
+        self.assertEqual(evidence['firstUncertain']['error'],'first partial census')
+        self.assertEqual(evidence['firstUncertain']['reasons'],['incomplete-census'])
+        self.assertEqual(evidence['firstUncertain']['census'],partial)
+        self.assertEqual(evidence['firstUncertain']['censusIndex'],17)
+        self.assertEqual(evidence['latestUncertain']['error'],'latest anchor failure')
+        self.assertEqual(evidence['latestUncertain']['reasons'],['unvalidated-anchor'])
+        self.assertEqual(evidence['latestUncertain']['censusIndex'],19)
+        self.assertEqual(evidence['firstUncertain']['elapsedSeconds'],1)
+        self.assertEqual(evidence['latestUncertain']['context'],str(prefix))
+        self.assertEqual(self.harness.targets,[self.target,other])
+        with mock.patch.object(S.D,'retire_targets',return_value=self.retirement()):
+            self.harness.finish()
+        self.assertEqual(self.harness.report['status'],'failed')
+        self.assertTrue(self.harness.report['allOwnedTargetsRetired'])
+        self.assertFalse(self.harness.report['cleanupConfirmed'])
+        self.assertEqual(self.harness.report['censusEvidence'],evidence)
+
+    def test_uncertainty_records_are_bounded_snapshots(self):
+        partial=dict(complete=False,anchorValidated=True,members=[dict(self.leader)],candidatePIDs=[])
+        self.harness.remember_census(partial,error='x'*4096)
+        partial['members'][0]['pid']=999
+        for _ in range(30):
+            self.harness.remember_census(partial,error='latest')
+        evidence=self.harness.census_evidence
+        self.assertEqual(evidence['firstUncertain']['census']['members'][0]['pid'],200)
+        self.assertEqual(len(evidence['firstUncertain']['error']),2048)
+        self.assertEqual(evidence['latestUncertain']['census']['members'][0]['pid'],999)
+        self.assertEqual(evidence['uncertainCensusCount'],31)
+        self.assertEqual(evidence['retainedUncertainCount'],2)
+        self.assertEqual(evidence['omittedUncertainCount'],29)
+
     def test_gate_ready_suffix_matches_archived_swift_fixture(self):
         gate=self.root/'normal-gate'
         self.assertEqual(gate.with_suffix('.ready').name,'normal-gate.ready')
@@ -289,6 +353,41 @@ class ObserverSelfTestContracts(unittest.TestCase):
         self.assertEqual(command[-3:],['swift','test','--skip-build'])
         self.assertEqual(self.harness.report['originalNativeProcessSeconds'],420)
         self.assertEqual(S.SELF_TEST_SECONDS,300)
+
+    def test_only_normal_fixture_gets_the_longer_sampler_completion_budget(self):
+        for name,seconds in [('normal',40),('cancellation',20),('timeout',12)]:
+            with self.subTest(name=name):
+                harness=S.Harness(self.output,'a'*40,self.identify)
+                harness.package=self.root/'package'
+                with mock.patch.object(harness,'launch',side_effect=ValueError('stop before launch')) as launch:
+                    with self.assertRaisesRegex(ValueError,'stop before launch'):
+                        harness.scenario(name)
+                self.assertEqual(launch.call_args.args[1],seconds)
+        self.assertEqual(self.harness.report['selfTestNormalRunSeconds'],40)
+        self.assertEqual(self.harness.report['samplerTimeoutSeconds'],20)
+        self.assertEqual(self.harness.report['selfTestRunSeconds'],20)
+        self.assertEqual(self.harness.report['selfTestTimeoutScenarioSeconds'],12)
+        self.assertEqual(S.D.SAMPLE_FILE_CAP,2*1024*1024)
+        self.assertEqual((S.D.SAMPLE_SECONDS,S.D.SAMPLE_INTERVAL_MS),(2,10))
+        self.assertLess(390+S.D.SAMPLE_TIMEOUT+S.D.SAMPLE_GRACE+2,420)
+
+    def test_sampler_timeout_is_not_promoted_by_a_partial_stack_or_retirement(self):
+        prefix=self.output/'timed-out-sample'
+        prefix.with_suffix('.txt').write_text('ObserverOwnershipTests partial sample')
+        with mock.patch.object(self.harness,'launch',return_value=mock.Mock()) as launch, \
+             mock.patch.object(self.harness,'wait',return_value=124), \
+             mock.patch.object(S,'final_envelope',return_value={'status':'timeout','exit_code':124}):
+            with self.assertRaisesRegex(ValueError,'missing or incomplete') as rejected:
+                self.harness.sample(self.snapshot,prefix)
+        self.assertEqual(launch.call_args.args[1],20)
+        self.assertEqual(launch.call_args.kwargs['grace_seconds'],0.5)
+        self.harness.report['error']=str(rejected.exception)
+        self.mark_success()
+        with mock.patch.object(S.D,'retire_targets',return_value=self.retirement()):
+            self.harness.finish()
+        self.assertEqual(self.harness.report['status'],'failed')
+        self.assertTrue(self.harness.report['allOwnedTargetsRetired'])
+        self.assertTrue(prefix.with_suffix('.txt').is_file())
 
     def test_wrong_birth_is_rejected_without_a_sample_or_identity_change(self):
         prefix=self.output/'wrong'
