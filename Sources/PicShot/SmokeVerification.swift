@@ -9,6 +9,18 @@ import PicShotFormulaRenderCore
         let url=URL(fileURLWithPath:report);let directory=url.deletingLastPathComponent()
         do{
             try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
+            // Separate fresh-process product measurement/certification; never
+            // lowers the work or changes checks in the full correctness route.
+            let hasProductRequest = ProcessInfo.processInfo.environment.contains { $0.key.hasPrefix("PICSHOT_EDITABLE_PRODUCT_") }
+            if hasProductRequest {
+                defer { try? FileManager.default.removeItem(at: history.directory) }
+                guard let payload = try await EditableProductResourceFixture.runIfRequested(evidenceDirectory: directory) else {
+                    throw PicShotError.message("Product resource request disappeared")
+                }
+                try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]).write(to: url, options: .atomic)
+                try? FileManager.default.removeItem(at: history.directory)
+                NSApp.terminate(nil); return
+            }
             if ProcessInfo.processInfo.environment["PICSHOT_EFFECT_OUTPUT_FAILURE_ONLY"] == "1" {
                 defer { try? FileManager.default.removeItem(at: history.directory) }
                 var payload = try await EffectOutputFailureNativeFixture.verify(evidenceDirectory: directory)

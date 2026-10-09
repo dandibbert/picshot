@@ -932,7 +932,8 @@ jobs:
           - runner: macos-15-intel
             arch: x86_64
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    # Two-minute verifier compilation stage; product and test deadlines stay fixed.
+    timeout-minutes: 47
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       - name: Prepare pinned native codec dependencies
@@ -946,12 +947,18 @@ jobs:
           python3 scripts/run-bounded-command.py --timeout-seconds 540
           --log dist/editable-build.log --report dist/editable-build.json
           -- swift build --build-tests
+      - name: Compile independent post-exit product pixel verifier
+        timeout-minutes: 2
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 90
+          --log dist/editable-product-pixel-build.log --report dist/editable-product-pixel-build.json
+          -- swiftc scripts/verify-editable-product-pixels.swift -o dist/verify-editable-product-pixels
       - name: Discover and bind editable workflow tests
         timeout-minutes: 2
         run: |
           python3 -m unittest discover -s scripts/tests -p test_native_test_shards.py -v
           python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/native-test-discovery.log --report dist/editable-discovery.json -- swift test list --skip-build
-          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --selection-regex 'SeedRenderCropSubstage|EffectContext|RendererStorage|DrawingRaster|SourceFormatOwnedCopy|EditableComponent|PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|ImageEditorTests|EditorOutputProjection|AnnotationEditing|PinOriginalCurrent|PinSession|History|Retention|AutomaticMosaic' --output dist/editable-tests-plan.json
+          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --selection-regex 'EditableProductResource|SeedRenderCropSubstage|EffectContext|RendererStorage|DrawingRaster|SourceFormatOwnedCopy|EditableComponent|PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|ImageEditorTests|EditorOutputProjection|AnnotationEditing|PinOriginalCurrent|PinSession|History|Retention|AutomaticMosaic' --output dist/editable-tests-plan.json
       - name: Exercise editable state and existing crop/pin/history behavior
         timeout-minutes: 16
         run: |
