@@ -686,7 +686,7 @@ final class AnnotationEffectsTests: XCTestCase {
     @MainActor
     func testNativeCropUndoRedoAndNewWatermarkKeepTheOriginalCaptureTime() throws {
         _ = NSApplication.shared
-        let image = try solidImage(width: 640, height: 480)
+        let image = try EditableUIFixtures.source(width: 640, height: 480)
         let presentation = FrozenCapturePresentation(frozenImage: image, displayID: 7,
             displayFrame: CGRect(x: 0, y: 0, width: 640, height: 480),
             selectionFrame: CGRect(x: 100, y: 80, width: 320, height: 240), capturedAt: frozenDate)
@@ -701,23 +701,69 @@ final class AnnotationEffectsTests: XCTestCase {
         XCTAssertTrue(original.timestampIsCaptureDate)
         XCTAssertEqual(original.frozenTimestamp, frozenDate)
         let originalText = AnnotationWatermarkLayout.resolvedText(original)
+        let originalPayload = try editor.editablePayload()
+        let fullReference = try render(selected, [original])
+        let crop = CGRect(x: 30, y: 30, width: 220, height: 150)
+        // Independent CGImage crop: convert the editor's y-up rectangle to top-left coordinates.
+        let referenceCrop = CGRect(x: 30, y: 60, width: 220, height: 150)
+        let croppedReference = try XCTUnwrap(fullReference.cropping(to: referenceCrop))
+
+        @MainActor func assertState(_ marks: [ImageAnnotation], viewport: CGRect?, reference: CGImage,
+                                   file: StaticString = #filePath, line: UInt = #line) throws {
+            XCTAssertTrue(canvas.image === selected, file: file, line: line)
+            XCTAssertEqual(canvas.image.width, 320, file: file, line: line)
+            XCTAssertEqual(canvas.image.height, 240, file: file, line: line)
+            XCTAssertEqual(canvas.cropViewportInBase, viewport, file: file, line: line)
+            XCTAssertEqual(canvas.annotations.map(\.id), marks.map(\.id), file: file, line: line)
+            XCTAssertEqual(canvas.captureDate, frozenDate, file: file, line: line)
+            XCTAssertTrue(canvas.captureTimestampKnown, file: file, line: line)
+            for mark in canvas.annotations {
+                XCTAssertEqual(mark.tool, .watermark, file: file, line: line)
+                XCTAssertEqual(mark.frozenTimestamp, frozenDate, file: file, line: line)
+                XCTAssertTrue(mark.timestampIsCaptureDate, file: file, line: line)
+                XCTAssertEqual(AnnotationWatermarkLayout.resolvedText(mark), originalText, file: file, line: line)
+            }
+            let payload = try editor.editablePayload()
+            XCTAssertTrue(payload.originalImage === selected, file: file, line: line)
+            XCTAssertTrue(payload.baseImage === selected, file: file, line: line)
+            var expectedDocument = originalPayload.document
+            expectedDocument.annotations = marks; expectedDocument.cropViewportInBase = viewport
+            // Compare all layer fields, asset IDs, capture metadata and base/output geometry.
+            XCTAssertEqual(try EditableAnnotationDocumentCodec.encode(payload.document),
+                           try EditableAnnotationDocumentCodec.encode(expectedDocument), file: file, line: line)
+            let width = viewport == nil ? 320 : 220, height = viewport == nil ? 240 : 150
+            XCTAssertEqual(canvas.outputPixelWidth, width, file: file, line: line)
+            XCTAssertEqual(canvas.outputPixelHeight, height, file: file, line: line)
+            let flattened = try XCTUnwrap(canvas.flattened(), file: file, line: line)
+            XCTAssertEqual(flattened.width, width, file: file, line: line)
+            XCTAssertEqual(flattened.height, height, file: file, line: line)
+            XCTAssertEqual(try imageBytes(flattened), try imageBytes(reference), file: file, line: line)
+        }
+
+        try assertState([original], viewport: nil, reference: fullReference)
         try selectMenuTool(.crop, editor)
         try drag(canvas, from: CGPoint(x: 30, y: 30), to: CGPoint(x: 250, y: 180))
         canvas.keyDown(with: try key(canvas, "\r", code: 36))
-        XCTAssertTrue(canvas.annotations.isEmpty)
-        XCTAssertEqual(canvas.image.width, 220); XCTAssertEqual(canvas.image.height, 150)
+        try assertState([original], viewport: crop, reference: croppedReference)
         try selectMenuTool(.watermark, editor); try click(canvas, CGPoint(x: 50, y: 50))
-        XCTAssertEqual(canvas.annotations[0].frozenTimestamp, frozenDate)
-        XCTAssertTrue(canvas.annotations[0].timestampIsCaptureDate)
-        XCTAssertEqual(AnnotationWatermarkLayout.resolvedText(canvas.annotations[0]), originalText)
-        try command(canvas, "z", code: 6); try command(canvas, "z", code: 6)
-        XCTAssertEqual(canvas.image.width, 320); XCTAssertEqual(canvas.image.height, 240)
-        XCTAssertEqual(canvas.annotations[0].id, original.id)
-        XCTAssertEqual(canvas.annotations[0].frozenTimestamp, frozenDate)
-        for _ in 0..<2 { try command(canvas, "z", code: 6, shift: true) }
-        XCTAssertEqual(canvas.image.width, 220); XCTAssertEqual(canvas.image.height, 150)
-        XCTAssertEqual(canvas.annotations[0].frozenTimestamp, frozenDate)
-        XCTAssertEqual(AnnotationWatermarkLayout.resolvedText(canvas.annotations[0]), originalText)
+        XCTAssertEqual(canvas.annotations.count, 2)
+        let newWatermark = try XCTUnwrap(canvas.annotations.last)
+        XCTAssertNotEqual(newWatermark.id, original.id)
+        XCTAssertEqual(newWatermark.frozenTimestamp, frozenDate)
+        XCTAssertTrue(newWatermark.timestampIsCaptureDate)
+        XCTAssertEqual(AnnotationWatermarkLayout.resolvedText(newWatermark), originalText)
+        let twoWatermarks = try render(selected, [original, newWatermark])
+        let bothCroppedReference = try XCTUnwrap(twoWatermarks.cropping(to: referenceCrop))
+        try assertState([original, newWatermark], viewport: crop, reference: bothCroppedReference)
+
+        try command(canvas, "z", code: 6) // Undo only the new watermark.
+        try assertState([original], viewport: crop, reference: croppedReference)
+        try command(canvas, "z", code: 6) // Undo the viewport without rebuilding the first watermark.
+        try assertState([original], viewport: nil, reference: fullReference)
+        try command(canvas, "z", code: 6, shift: true)
+        try assertState([original], viewport: crop, reference: croppedReference)
+        try command(canvas, "z", code: 6, shift: true)
+        try assertState([original, newWatermark], viewport: crop, reference: bothCroppedReference)
     }
 
     @MainActor
