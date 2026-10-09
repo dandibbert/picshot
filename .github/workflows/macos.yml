@@ -7,8 +7,8 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[installed-diagnostic]') && 'installed-diagnostic' || contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-product-resource' || contains(github.event.head_commit.message || '', '[seed-render-crop]') && 'seed-render-crop' || contains(github.event.head_commit.message || '', '[effect-context]') && 'effect-context' || contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && 'renderer-scope-controls' || contains(github.event.head_commit.message || '', '[renderer-storage]') && 'renderer-storage' || contains(github.event.head_commit.message || '', '[drawing-pair]') && 'drawing-pair' || contains(github.event.head_commit.message || '', '[editable-observation]') && 'editable-observation' || contains(github.event.head_commit.message || '', '[callout-retirement]') && 'callout-retirement' || contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-documents' || contains(github.event.head_commit.message || '', '[multiwindow-memory]') && 'multiwindow-memory' || contains(github.event.head_commit.message || '', '[recording-wait]') && 'recording-wait' || contains(github.event.head_commit.message || '', '[manual-hash]') && 'manual-hash' || contains(github.event.head_commit.message || '', '[scroll-memory]') && 'scroll-memory' || contains(github.event.head_commit.message || '', '[decode-exit-latch]') && 'decode-exit-latch' || contains(github.event.head_commit.message || '', '[decode-timing-v3]') && 'decode-timing-v3' || contains(github.event.head_commit.message || '', '[decode-large]') && 'decode-large' || contains(github.event.head_commit.message || '', '[pin-workflows]') && 'pins-010' || contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
-  cancel-in-progress: ${{ !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && !(contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]')) && !contains(github.event.head_commit.message || '', '[seed-render-crop]') && !contains(github.event.head_commit.message || '', '[effect-context]') && !contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && !contains(github.event.head_commit.message || '', '[renderer-storage]') && !contains(github.event.head_commit.message || '', '[drawing-pair]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
+  group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && 'native-timeout-diagnostic' || contains(github.event.head_commit.message || '', '[installed-diagnostic]') && 'installed-diagnostic' || contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-product-resource' || contains(github.event.head_commit.message || '', '[seed-render-crop]') && 'seed-render-crop' || contains(github.event.head_commit.message || '', '[effect-context]') && 'effect-context' || contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && 'renderer-scope-controls' || contains(github.event.head_commit.message || '', '[renderer-storage]') && 'renderer-storage' || contains(github.event.head_commit.message || '', '[drawing-pair]') && 'drawing-pair' || contains(github.event.head_commit.message || '', '[editable-observation]') && 'editable-observation' || contains(github.event.head_commit.message || '', '[callout-retirement]') && 'callout-retirement' || contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-documents' || contains(github.event.head_commit.message || '', '[multiwindow-memory]') && 'multiwindow-memory' || contains(github.event.head_commit.message || '', '[recording-wait]') && 'recording-wait' || contains(github.event.head_commit.message || '', '[manual-hash]') && 'manual-hash' || contains(github.event.head_commit.message || '', '[scroll-memory]') && 'scroll-memory' || contains(github.event.head_commit.message || '', '[decode-exit-latch]') && 'decode-exit-latch' || contains(github.event.head_commit.message || '', '[decode-timing-v3]') && 'decode-timing-v3' || contains(github.event.head_commit.message || '', '[decode-large]') && 'decode-large' || contains(github.event.head_commit.message || '', '[pin-workflows]') && 'pins-010' || contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
+  cancel-in-progress: ${{ !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && !(contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]')) && !contains(github.event.head_commit.message || '', '[seed-render-crop]') && !contains(github.event.head_commit.message || '', '[effect-context]') && !contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && !contains(github.event.head_commit.message || '', '[renderer-storage]') && !contains(github.event.head_commit.message || '', '[drawing-pair]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
 jobs:
   runner-check:
     if: ${{ contains(github.event.head_commit.message || '', '[runner-only]') }}
@@ -75,7 +75,7 @@ jobs:
           compression-level: 6
 
   build:
-    if: ${{ !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') && !contains(github.event.head_commit.message || '', '[codec-attribution]') && !contains(github.event.head_commit.message || '', '[runner-only]') && !contains(github.event.head_commit.message || '', '[scroll-memory]') && !contains(github.event.head_commit.message || '', '[manual-hash]') && !contains(github.event.head_commit.message || '', '[recording-wait]') && !contains(github.event.head_commit.message || '', '[multiwindow-memory]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-documents]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
+    if: ${{ !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') && !contains(github.event.head_commit.message || '', '[codec-attribution]') && !contains(github.event.head_commit.message || '', '[runner-only]') && !contains(github.event.head_commit.message || '', '[scroll-memory]') && !contains(github.event.head_commit.message || '', '[manual-hash]') && !contains(github.event.head_commit.message || '', '[recording-wait]') && !contains(github.event.head_commit.message || '', '[multiwindow-memory]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-documents]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
     strategy:
       fail-fast: false
       matrix:
@@ -2177,6 +2177,293 @@ jobs:
         if-no-files-found: error
         retention-days: 14
         compression-level: 6
+
+  # Optional observations only. No packaging, installed smoke, or release acceptance.
+  native-timeout-diagnostic:
+    if: ${{ contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') }}
+    runs-on: macos-15
+    concurrency:
+      group: picshot-native-timeout-diagnostic-job-${{ github.ref }}
+      cancel-in-progress: false
+    # Explicit stage maxima total 90m baseline, or 120m with the opt-in control.
+    # Five extra minutes cover step handovers. Each native process still has 420s.
+    timeout-minutes: ${{ contains(github.event.head_commit.message || '', '[native-timeout-unbuffered]') && 125 || 95 }}
+    env:
+      # Preserve the original ARM build job's inherited native-test environment.
+      NATIVE_TEST_PROCESS_COUNT: '4'
+      FOCUSED_TEST_PROCESS_COUNT: '2'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        timeout-minutes: 2
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Prove exact source138 product and additive diagnostic-only scope
+        id: provenance
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          mkdir -p dist/native-timeout-diagnostic
+          python3 - <<'PYTHON'
+          import hashlib, json, os, platform, subprocess
+          from pathlib import Path
+          def git(*args):
+              return subprocess.check_output(['git', *args], timeout=20)
+          base = '6dca7272e4484fc3a2309bd566c65bbf049a606d'
+          source = os.environ['GITHUB_SHA']
+          if git('rev-parse', 'HEAD').decode().strip() != source or git('rev-parse', 'HEAD^').decode().strip() != base:
+              raise SystemExit('Diagnostic must directly inherit pinned source138')
+          if platform.machine() != 'arm64' or platform.system() != 'Darwin':
+              raise SystemExit('Expected the native ARM macOS runner')
+          def entries(ref):
+              return {row.split(b'\t', 1)[1]: row.split(b'\t', 1)[0]
+                      for row in git('ls-tree', '-r', '-z', ref).split(b'\0') if row}
+          before, after = entries(base), entries(source)
+          changed = sorted(path for path in before.keys() | after.keys() if before.get(path) != after.get(path))
+          allowed = [b'.github/workflows/macos.yml', b'scripts/native-test-diagnostics.py',
+                     b'scripts/tests/test_native_test_diagnostics.py']
+          if changed != allowed:
+              raise SystemExit('Changed source exceeds the exact workflow/new-helper/new-test scope')
+          if any(path in before or not after[path].startswith(b'100644 blob ') for path in allowed[1:]):
+              raise SystemExit('Diagnostic helper and portable tests must be new regular files')
+          workflow = '.github/workflows/macos.yml'
+          original = git('show', base + ':' + workflow).decode()
+          current = Path(workflow).read_text()
+          # The installed job remains the final job, byte-for-byte unchanged.
+          def installed_definition(text):
+              return text[text.index('  installed-diagnostic:\n'):]
+          if installed_definition(original) != installed_definition(current):
+              raise SystemExit('Installed diagnostic job definition changed')
+          if git('status', '--porcelain', '--untracked-files=no').strip():
+              raise SystemExit('Tracked checkout differs from the verified source tree')
+          inherited = b'\0'.join(path + b'\t' + after[path] for path in sorted(after) if path not in changed)
+          record = dict(status='passed', diagnosticOnly=True, installerAcceptance=False,
+              sourceCommit=source, referenceCommit=base, sourceTree=git('rev-parse', 'HEAD^{tree}').decode().strip(),
+              referenceTree=git('rev-parse', base + '^{tree}').decode().strip(),
+              changedPaths=[path.decode() for path in changed], unchangedTrackedEntries=len(after)-len(changed),
+              unchangedEntriesSHA256=hashlib.sha256(inherited).hexdigest(), architecture=platform.machine(),
+              installedDiagnosticDefinitionUnchanged=True, workflowRunID=os.environ['GITHUB_RUN_ID'],
+              workflowRunAttempt=os.environ['GITHUB_RUN_ATTEMPT'],
+              nativeProcessEnvironment={key: os.environ.get(key) for key in (
+                  'NATIVE_TEST_PROCESS_COUNT', 'FOCUSED_TEST_PROCESS_COUNT')},
+              inheritedUnbufferedIO=dict(present='NSUnbufferedIO' in os.environ,
+                  recognizedSetting=os.environ.get('NSUnbufferedIO') if os.environ.get('NSUnbufferedIO') in
+                      {'YES', 'NO', '1', '0', 'true', 'false'} else None),
+              inheritedCodecHelperOverridePresent='PICSHOT_CODEC_HELPER_PATH' in os.environ,
+              stageMinutesBaseline=90, stageMinutesWithControl=120,
+              jobMinutesBaseline=95, jobMinutesWithControl=125, nativeSecondsPerProcess=420)
+          Path('dist/native-timeout-diagnostic/source-identity.json').write_text(json.dumps(record, indent=2)+'\n')
+          PYTHON
+      - name: Verify original runner and native plan plus optional observer contracts
+        id: contracts
+        timeout-minutes: 2
+        run: |
+          set -o pipefail
+          for pattern in test_run_bounded_command.py test_native_test_shards.py test_native_test_diagnostics.py; do
+            PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p "$pattern" -v 2>&1 | tee -a dist/native-timeout-diagnostic/contracts.log
+          done
+      - name: Verify the same contracts with Python assertions disabled
+        id: optimized_contracts
+        timeout-minutes: 2
+        run: |
+          set -o pipefail
+          for pattern in test_run_bounded_command.py test_native_test_shards.py test_native_test_diagnostics.py; do
+            PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p "$pattern" -v 2>&1 | tee -a dist/native-timeout-diagnostic/contracts-optimized.log
+          done
+      - name: Build production pinned native codec dependencies without packaging
+        id: dependencies
+        timeout-minutes: 15
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 840
+          --log dist/native-timeout-diagnostic/dependencies.log --report dist/native-timeout-diagnostic/dependencies-report.json
+          -- python3 scripts/build-native-codecs.py --arch arm64
+      - name: Compile production debug app
+        id: app_build
+        timeout-minutes: 8
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 420
+          --log dist/native-timeout-diagnostic/debug-build.log --report dist/native-timeout-diagnostic/debug-build-report.json
+          -- swift build --product PicShot
+      - name: Compile exact native tests
+        id: test_build
+        timeout-minutes: 10
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 540
+          --log dist/native-timeout-diagnostic/test-build.log --report dist/native-timeout-diagnostic/test-build-report.json
+          -- swift build --build-tests
+      - name: Compile dedicated codec helper for unchanged lifecycle tests
+        id: helper_build
+        timeout-minutes: 8
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 420
+          --log dist/native-timeout-diagnostic/helper-build.log --report dist/native-timeout-diagnostic/helper-build-report.json
+          -- swift build --product PicShotCodecHelper
+      - name: Preserve full native discovery and exact four-process inventory
+        id: discovery
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/native-timeout-diagnostic/native-test-discovery.log --report dist/native-timeout-diagnostic/native-test-discovery-report.json -- swift test list --skip-build
+          python3 scripts/native-test-shards.py plan --inventory dist/native-timeout-diagnostic/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$NATIVE_TEST_PROCESS_COUNT" --output dist/native-timeout-diagnostic/native-tests-plan.json
+          python3 - <<'PYTHON'
+          import hashlib, importlib.util, json, os
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('native', 'scripts/native-test-shards.py')
+          native = importlib.util.module_from_spec(spec); spec.loader.exec_module(native)
+          root = Path('dist/native-timeout-diagnostic')
+          plan = native.checked_plan(root/'native-tests-plan.json', os.environ['GITHUB_SHA'])
+          inventory = plan['discoveredTests']
+          digest = hashlib.sha256(('\n'.join(inventory)+'\n').encode()).hexdigest()
+          expected = ['b1a7d85cfd0b7ab017786761a81d6f424b88c8bae39f747d7c74f1debe0e3cad',
+                      'd5985b5ecf1a096560428f65e272720a854e62342c73564b5d0ea6b2bc19b434',
+                      'e2b53ebb3259864939ca5ff8026fc4c36bc32e26fe4ac90799c801490c0537dc',
+                      'c7ad58f2d3b4085fe2d314585887ee81c42b45a0c51aa4a14d0a782a31036c11']
+          shard_digests = [hashlib.sha256(('\n'.join(shard['tests'])+'\n').encode()).hexdigest() for shard in plan['shards']]
+          if not (len(inventory) == 1785 and len({case.split('/')[0] for case in inventory}) == 203
+                  and digest == '58e9fa791e2b711c49decd229e6f67438e38c9fc7ddccd8832da4524004e7bae'
+                  and plan['selectedTests'] == inventory and plan['selectionRegex'] == ''
+                  and plan['processCount'] == 4 and plan['timeoutSecondsPerProcess'] == 420
+                  and [shard['index'] for shard in plan['shards']] == [0, 1, 2, 3] and shard_digests == expected):
+              raise SystemExit('Native discovery or four-process inventory/order differs from source137/138')
+          (root/'inventory-identity.json').write_text(json.dumps(dict(
+              status='passed', diagnosticOnly=True, installerAcceptance=False, sourceCommit=os.environ['GITHUB_SHA'],
+              referenceProductCommit='6dca7272e4484fc3a2309bd566c65bbf049a606d',
+              referenceInventoryCommit='d0365c101e21fa85d9a6b9538db7bf5aeb1f2d69',
+              methodCount=len(inventory), classCount=203, canonicalInventorySHA256=digest,
+              processOrder=[0, 1, 2, 3], processMethodCounts=[len(shard['tests']) for shard in plan['shards']],
+              processInventorySHA256=shard_digests, timeoutSecondsPerProcess=420), indent=2)+'\n')
+          PYTHON
+      - name: Require a clean native process boundary before baseline
+        id: baseline_preflight
+        timeout-minutes: 1
+        run: |
+          python3 - <<'PYTHON'
+          import json, os, subprocess
+          from pathlib import Path
+          rows = subprocess.check_output(['/bin/ps', '-ax', '-o', 'pid=,comm='], text=True, timeout=5).splitlines()
+          matches = []
+          for row in rows:
+              pid, command = row.strip().split(None, 1)
+              name = Path(command).name
+              if name.startswith('PicShot') or name in {'swift', 'swift-frontend', 'swift-test', 'xctest'} or '.xctest/' in command:
+                  matches.append(dict(pid=int(pid), command=command))
+          Path('dist/native-timeout-diagnostic/baseline-process-preflight.json').write_text(json.dumps(dict(
+              status='failed' if matches else 'passed', sourceCommit=os.environ['GITHUB_SHA'],
+              observedProcesses=matches, priorProcessesTerminatedByThisCheck=False,
+              diagnosticOnly=True, installerAcceptance=False), indent=2)+'\n')
+          if matches:
+              raise SystemExit('Prior app/helper/native process remains; refusing overlapping baseline')
+          PYTHON
+      - name: Observe complete baseline with original inherited environment
+        id: baseline
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          python3 scripts/native-test-diagnostics.py suite \
+            --plan dist/native-timeout-diagnostic/native-tests-plan.json --expected-source "$GITHUB_SHA" \
+            --directory dist/native-timeout-diagnostic/baseline/shards \
+            --diagnostics dist/native-timeout-diagnostic/baseline/observations \
+            --output dist/native-timeout-diagnostic/baseline/test-report.json --output-mode baseline \
+            2>&1 | tee dist/native-timeout-diagnostic/baseline-execution.log
+      - name: Permit requested control only after verified timeout and clean retirement
+        id: control_gate
+        if: ${{ !cancelled() && contains(github.event.head_commit.message || '', '[native-timeout-unbuffered]') && steps.baseline.outcome == 'failure' }}
+        timeout-minutes: 1
+        run: |
+          python3 - <<'PYTHON'
+          import json, os, subprocess
+          from pathlib import Path
+          root = Path('dist/native-timeout-diagnostic')
+          status = json.loads((root/'baseline/test-report-diagnostic-status.json').read_text())
+          if not (status.get('cleanupConfirmed') is True and status.get('completedIndices') == [0, 1, 2, 3]
+                  and status.get('sourceCommit') == os.environ['GITHUB_SHA']
+                  and status.get('outputMode') == 'baseline' and status.get('status') == 'native-failed'):
+              raise SystemExit('Baseline native/sampler retirement is uncertain; control is forbidden')
+          records = [json.loads((root/f'baseline/shards/shard-{index}-runner.json').read_text()) for index in range(4)]
+          if any(record.get('status') not in {'exited', 'timeout'}
+                 or record.get('termination_reason') != record.get('status')
+                 or record.get('child_returncode') is None or record.get('cleanup_errors')
+                 or record.get('timeout_seconds') != 420 for record in records):
+              raise SystemExit('Baseline lacks four cleanly retired original native processes')
+          timeout_indices = [index for index, record in enumerate(records)
+                             if record['status'] == 'timeout' and record['exit_code'] == 124]
+          if not timeout_indices or status.get('nativeTimedOutIndices') != timeout_indices:
+              raise SystemExit('No matching verified baseline timeout; optional control is not useful')
+          rows = subprocess.check_output(['/bin/ps', '-ax', '-o', 'pid=,comm='], text=True, timeout=5).splitlines()
+          matches = []
+          for row in rows:
+              pid, command = row.strip().split(None, 1)
+              name = Path(command).name
+              if name.startswith('PicShot') or name in {'swift', 'swift-frontend', 'swift-test', 'xctest', 'sample'} or '.xctest/' in command:
+                  matches.append(dict(pid=int(pid), command=command))
+          (root/'control-process-preflight.json').write_text(json.dumps(dict(
+              status='failed' if matches else 'passed', sourceCommit=os.environ['GITHUB_SHA'],
+              observedProcesses=matches, priorProcessesTerminatedByThisCheck=False, baselineTimeoutIndices=timeout_indices,
+              diagnosticOnly=True, installerAcceptance=False, baselineFailurePreserved=True), indent=2)+'\n')
+          if matches:
+              raise SystemExit('Prior native/sampler process remains; refusing overlapping control')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('run=true\n')
+          PYTHON
+      - name: Observe separate opt-in unbuffered full-suite control
+        id: unbuffered_control
+        if: ${{ !cancelled() && steps.control_gate.outputs.run == 'true' }}
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          python3 scripts/native-test-diagnostics.py suite \
+            --plan dist/native-timeout-diagnostic/native-tests-plan.json --expected-source "$GITHUB_SHA" \
+            --directory dist/native-timeout-diagnostic/unbuffered-control/shards \
+            --diagnostics dist/native-timeout-diagnostic/unbuffered-control/observations \
+            --output dist/native-timeout-diagnostic/unbuffered-control/test-report.json --output-mode unbuffered \
+            2>&1 | tee dist/native-timeout-diagnostic/unbuffered-control-execution.log
+      - name: Record baseline and optional control outcomes without release acceptance
+        if: always()
+        timeout-minutes: 2
+        env:
+          PICSHOT_NATIVE_DIAGNOSTIC_STEP_OUTCOMES: ${{ toJSON(steps) }}
+        run: |
+          mkdir -p dist/native-timeout-diagnostic
+          python3 - <<'PYTHON'
+          import json, os
+          from pathlib import Path
+          root = Path('dist/native-timeout-diagnostic')
+          observations = {}
+          for mode in ('baseline', 'unbuffered-control'):
+              path = root/mode/'test-report-diagnostic-status.json'
+              try:
+                  observations[mode] = json.loads(path.read_text()) if path.is_file() else dict(status='not-run-or-no-status', observationComplete=False)
+              except (OSError, ValueError) as error:
+                  observations[mode] = dict(status='unreadable-diagnostic-status', observationComplete=False, error=str(error))
+          record = dict(diagnosticOnly=True, installerAcceptance=False, sourceCommit=os.environ['GITHUB_SHA'],
+              referenceCommit='6dca7272e4484fc3a2309bd566c65bbf049a606d',
+              steps=json.loads(os.environ['PICSHOT_NATIVE_DIAGNOSTIC_STEP_OUTCOMES']),
+              observations=observations,
+              observationScope='Native outcome and sample completeness are separate; missing/incomplete due captures are incomplete diagnostic evidence',
+              baselineFailurePreserved=True, noInstallerArtifacts=True, noNativeRepartition=True,
+              nativeSecondsPerProcess=420, processOrder=[0, 1, 2, 3],
+              priorJobStateReplayed=False, observerMayPerturbTiming=True, originalBuild137FailureUnchanged=True,
+              eventualAcceptanceRequiresFrozenProductionWorkflow=True,
+              scope='Independent ARM native timeout observations; no installed, Intel, or release acceptance')
+          Path('dist/native-timeout-diagnostic/outcomes.json').write_text(json.dumps(record, indent=2)+'\n')
+          PYTHON
+      - name: Preserve all diagnostic logs reports and owned-process samples
+        if: always()
+        timeout-minutes: 5
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-DIAGNOSTIC-NONRELEASE-NativeTimeout-arm64-${{ github.sha }}
+          include-hidden-files: true
+          path: |
+            dist/native-timeout-diagnostic/
+            .build/native-codecs/logs/
+            .build/native-codecs/evidence/
+            .build/native-codecs/build-attempt-arm64.json
+            .build/native-codecs/install/native-build.json
+            .build/native-codecs/install/native-selftest-dependencies.txt
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
 
   # Independent observations only. This job never supplies release acceptance.
   installed-diagnostic:
