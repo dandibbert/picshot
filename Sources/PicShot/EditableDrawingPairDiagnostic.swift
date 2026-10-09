@@ -16,6 +16,7 @@ import CryptoKit
     }
     static func begin(includeResources: Bool) throws {
         process = nil
+        try SeedRenderCropSubstageProbe.begin(includeResources: includeResources)
         let environment = ProcessInfo.processInfo.environment
         guard environment["PICSHOT_DRAWING_RASTER_STRATEGY"] != nil else { return }
         try O.require(environment["PICSHOT_SMOKE_TEST"] == "1"
@@ -36,6 +37,7 @@ import CryptoKit
         checkpoints.append(["workload": workload, "label": label, "memory": try O.memory(), "drawing": tracker])
         try RendererStoragePairDiagnostic.process?.checkpoint(drawingCheckpoint: checkpoints[checkpoints.count - 1])
         try EffectContextPairDiagnostic.process?.checkpoint(drawingCheckpoint: checkpoints[checkpoints.count - 1])
+        try SeedRenderCropSubstageProbe.process?.observeDrawingCheckpoint(checkpoints[checkpoints.count - 1])
     }
     func documents(original: Data, applied: Data) throws {
         try O.require(documentRows.count < 12 && original.count <= 131_072 && applied.count <= 131_072,
@@ -60,5 +62,6 @@ import CryptoKit
         try data.write(to: directory.appendingPathComponent("editable-drawing-pair.json"), options: .atomic)
         try RendererStoragePairDiagnostic.process?.write(native: native, nativeData: nativeData, drawingData: data, directory: directory)
         try EffectContextPairDiagnostic.process?.write(native: native, nativeData: nativeData, drawingData: data, directory: directory)
+        try SeedRenderCropSubstageProbe.process?.write(native: native, nativeData: nativeData, drawingData: data, directory: directory)
     }
 }

@@ -4,6 +4,8 @@ from pathlib import Path
 import re
 import unittest
 
+from seed_render_crop_source_contract import without_substage_hooks
+
 ROOT = Path(__file__).resolve().parents[2]
 KIND = 'effect-context-memory-target'
 PAIR = 'Sources/PicShot/EffectContextPairDiagnostic.swift'
@@ -24,7 +26,8 @@ def read(name):
 
 class EffectContextSourceBindingTests(unittest.TestCase):
     def test_only_three_drawing_hooks_at_existing_boundaries(self):
-        source = read('Sources/PicShot/EditableDrawingPairDiagnostic.swift')
+        source = without_substage_hooks('Sources/PicShot/EditableDrawingPairDiagnostic.swift',
+                                         read('Sources/PicShot/EditableDrawingPairDiagnostic.swift'))
         for hook in HOOKS:
             self.assertEqual(source.count(hook), 1)
         self.assertLess(source.index(HOOKS[0]), source.index('try process?.checkpoint(workload: "entry"'))
@@ -51,7 +54,8 @@ class EffectContextSourceBindingTests(unittest.TestCase):
         }
         for path, expected in expected_hashes.items():
             with self.subTest(path=path):
-                self.assertEqual(hashlib.sha256((ROOT / path).read_bytes()).hexdigest(), expected)
+                source = without_substage_hooks(path, read(path))
+                self.assertEqual(hashlib.sha256(source.encode()).hexdigest(), expected)
 
     def test_pair_launcher_fixes_drawing_renderer_and_observation_and_has_closed_policy(self):
         source = read(LAUNCHER)

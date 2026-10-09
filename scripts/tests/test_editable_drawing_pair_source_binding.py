@@ -10,6 +10,8 @@ from pathlib import Path
 import re
 import unittest
 
+from seed_render_crop_source_contract import without_substage_hooks
+
 
 ROOT = Path(__file__).resolve().parents[2]
 NATIVE = 'Sources/PicShot/EditableAnnotationNativeFixture.swift'
@@ -43,7 +45,7 @@ class DrawingPairSourceBinding(unittest.TestCase):
         return source.replace(hook, replacement, 1)
 
     def test_full_native_workload_is_preserved_after_only_four_declared_hooks(self):
-        source = read(NATIVE)
+        source = without_substage_hooks(NATIVE, read(NATIVE))
         hooks = [
             ('        try EditableDrawingPairDiagnostic.begin(includeResources: includeResources)\n', ''),
             ('        defer { O.diagnostic = nil; EditableDrawingPairDiagnostic.process = nil }\n',

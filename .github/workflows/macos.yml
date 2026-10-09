@@ -7,8 +7,8 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[effect-context]') && 'effect-context' || contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && 'renderer-scope-controls' || contains(github.event.head_commit.message || '', '[renderer-storage]') && 'renderer-storage' || contains(github.event.head_commit.message || '', '[drawing-pair]') && 'drawing-pair' || contains(github.event.head_commit.message || '', '[editable-observation]') && 'editable-observation' || contains(github.event.head_commit.message || '', '[callout-retirement]') && 'callout-retirement' || contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-documents' || contains(github.event.head_commit.message || '', '[multiwindow-memory]') && 'multiwindow-memory' || contains(github.event.head_commit.message || '', '[recording-wait]') && 'recording-wait' || contains(github.event.head_commit.message || '', '[manual-hash]') && 'manual-hash' || contains(github.event.head_commit.message || '', '[scroll-memory]') && 'scroll-memory' || contains(github.event.head_commit.message || '', '[decode-exit-latch]') && 'decode-exit-latch' || contains(github.event.head_commit.message || '', '[decode-timing-v3]') && 'decode-timing-v3' || contains(github.event.head_commit.message || '', '[decode-large]') && 'decode-large' || contains(github.event.head_commit.message || '', '[pin-workflows]') && 'pins-010' || contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
-  cancel-in-progress: ${{ !contains(github.event.head_commit.message || '', '[effect-context]') && !contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && !contains(github.event.head_commit.message || '', '[renderer-storage]') && !contains(github.event.head_commit.message || '', '[drawing-pair]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
+  group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[seed-render-crop]') && 'seed-render-crop' || contains(github.event.head_commit.message || '', '[effect-context]') && 'effect-context' || contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && 'renderer-scope-controls' || contains(github.event.head_commit.message || '', '[renderer-storage]') && 'renderer-storage' || contains(github.event.head_commit.message || '', '[drawing-pair]') && 'drawing-pair' || contains(github.event.head_commit.message || '', '[editable-observation]') && 'editable-observation' || contains(github.event.head_commit.message || '', '[callout-retirement]') && 'callout-retirement' || contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-documents' || contains(github.event.head_commit.message || '', '[multiwindow-memory]') && 'multiwindow-memory' || contains(github.event.head_commit.message || '', '[recording-wait]') && 'recording-wait' || contains(github.event.head_commit.message || '', '[manual-hash]') && 'manual-hash' || contains(github.event.head_commit.message || '', '[scroll-memory]') && 'scroll-memory' || contains(github.event.head_commit.message || '', '[decode-exit-latch]') && 'decode-exit-latch' || contains(github.event.head_commit.message || '', '[decode-timing-v3]') && 'decode-timing-v3' || contains(github.event.head_commit.message || '', '[decode-large]') && 'decode-large' || contains(github.event.head_commit.message || '', '[pin-workflows]') && 'pins-010' || contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
+  cancel-in-progress: ${{ !contains(github.event.head_commit.message || '', '[seed-render-crop]') && !contains(github.event.head_commit.message || '', '[effect-context]') && !contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && !contains(github.event.head_commit.message || '', '[renderer-storage]') && !contains(github.event.head_commit.message || '', '[drawing-pair]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
 jobs:
   runner-check:
     if: ${{ contains(github.event.head_commit.message || '', '[runner-only]') }}
@@ -951,7 +951,7 @@ jobs:
         run: |
           python3 -m unittest discover -s scripts/tests -p test_native_test_shards.py -v
           python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/native-test-discovery.log --report dist/editable-discovery.json -- swift test list --skip-build
-          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --selection-regex 'EffectContext|RendererStorage|DrawingRaster|SourceFormatOwnedCopy|EditableComponent|PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|ImageEditorTests|EditorOutputProjection|AnnotationEditing|PinOriginalCurrent|PinSession|History|Retention|AutomaticMosaic' --output dist/editable-tests-plan.json
+          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --selection-regex 'SeedRenderCropSubstage|EffectContext|RendererStorage|DrawingRaster|SourceFormatOwnedCopy|EditableComponent|PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|ImageEditorTests|EditorOutputProjection|AnnotationEditing|PinOriginalCurrent|PinSession|History|Retention|AutomaticMosaic' --output dist/editable-tests-plan.json
       - name: Exercise editable state and existing crop/pin/history behavior
         timeout-minutes: 16
         run: |
@@ -1730,6 +1730,180 @@ jobs:
           dist/effect-context-installed/PicShot.app/Contents/Info.plist
           dist/effect-context-installed/PicShot.app/Contents/MacOS/PicShot
           dist/effect-context-installed/PicShot.app/Contents/Resources/build-info.json
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 6
+
+  # Diagnostic attribution only; product-only acceptance decides delivery.
+  seed-render-crop:
+    if: ${{ contains(github.event.head_commit.message || '', '[seed-render-crop]') }}
+    runs-on: macos-15
+    # Step maxima total 122 minutes; 8 minutes remain for scheduling/cleanup.
+    timeout-minutes: 130
+    steps:
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      timeout-minutes: 2
+    - name: Check preserved drawing contracts
+      timeout-minutes: 3
+      run: |
+        set -o pipefail
+        mkdir -p dist
+        python3 -m unittest discover -s scripts/tests -p '*drawing*.py' -v 2>&1 | tee dist/seed-render-crop-drawing-contracts.log
+    - name: Check optimized drawing contracts
+      timeout-minutes: 3
+      run: |
+        set -o pipefail
+        python3 -O -m unittest discover -s scripts/tests -p '*drawing*.py' -v 2>&1 | tee dist/seed-render-crop-drawing-contracts-optimized.log
+    - name: Check all explicit renderer comparison contracts
+      timeout-minutes: 6
+      run: |
+        set -o pipefail
+        for picshot_contract_pattern in '*renderer_storage*.py' '*renderer_scope*.py'; do
+          python3 -m unittest discover -s scripts/tests -p "$picshot_contract_pattern" -v 2>&1 | tee -a dist/seed-render-crop-renderer-contracts.log
+        done
+    - name: Check optimized renderer comparison contracts
+      timeout-minutes: 6
+      run: |
+        set -o pipefail
+        for picshot_contract_pattern in '*renderer_storage*.py' '*renderer_scope*.py'; do
+          python3 -O -m unittest discover -s scripts/tests -p "$picshot_contract_pattern" -v 2>&1 | tee -a dist/seed-render-crop-renderer-contracts-optimized.log
+        done
+    - name: Check finite effect-context comparison contracts
+      timeout-minutes: 6
+      run: |
+        set -o pipefail
+        python3 -m unittest discover -s scripts/tests -p '*effect_context*.py' -v 2>&1 | tee dist/seed-render-crop-contracts.log
+    - name: Check optimized effect-context comparison contracts
+      timeout-minutes: 6
+      run: |
+        set -o pipefail
+        python3 -O -m unittest discover -s scripts/tests -p '*effect_context*.py' -v 2>&1 | tee dist/seed-render-crop-contracts-optimized.log
+    - name: Check bounded seed render crop contracts
+      timeout-minutes: 6
+      run: |
+        set -o pipefail
+        python3 -m unittest discover -s scripts/tests -p '*seed_render_crop*' -v 2>&1 | tee dist/seed-render-crop-substage-contracts.log
+    - name: Check optimized seed render crop contracts
+      timeout-minutes: 6
+      run: |
+        set -o pipefail
+        python3 -O -m unittest discover -s scripts/tests -p '*seed_render_crop*' -v 2>&1 | tee dist/seed-render-crop-substage-contracts-optimized.log
+    - name: Package one signed application without user installers
+      timeout-minutes: 31
+      env:
+        PICSHOT_PACKAGE_APP_ONLY: '1'
+      run: python3 scripts/run-bounded-command.py --timeout-seconds 1800 --log dist/seed-render-crop-package.log --report dist/seed-render-crop-package.json -- bash scripts/package.sh
+    - name: Compile the complete native test target
+      timeout-minutes: 10
+      run: python3 scripts/run-bounded-command.py --timeout-seconds 540 --log dist/seed-render-crop-test-build.log --report dist/seed-render-crop-test-build.json -- swift build --build-tests
+    - name: Execute exact discovered drawing renderer effect and substage native inventory
+      timeout-minutes: 9
+      run: |
+        set -euo pipefail
+        python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/seed-render-crop-test-discovery.log --report dist/seed-render-crop-test-discovery.json -- swift test list --skip-build
+        python3 scripts/run-bounded-command.py --timeout-seconds 420 --log dist/seed-render-crop-native-tests.log --report dist/seed-render-crop-native-tests.json -- swift test --skip-build --filter 'DrawingRasterTests|RendererStorageTests|EffectContextConfigurationTests|EffectContextGuardControlTests|SeedRenderCropSubstageProbeTests'
+        python3 - <<'PYTHON'
+        import hashlib, importlib.util, json, os
+        from pathlib import Path
+        spec = importlib.util.spec_from_file_location('native_cases', 'scripts/native-test-shards.py')
+        native = importlib.util.module_from_spec(spec); spec.loader.exec_module(native)
+        inventory = Path('dist/seed-render-crop-test-discovery.log').read_text()
+        discovered = native.discover(inventory)
+        classes = {'PicShotTests.DrawingRasterTests', 'PicShotTests.RendererStorageTests',
+                   'PicShotTests.EffectContextConfigurationTests', 'PicShotTests.EffectContextGuardControlTests',
+                   'PicShotTests.SeedRenderCropSubstageProbeTests'}
+        expected = [name for name in discovered if name.split('/')[0] in classes]
+        native.need({name.split('/')[0] for name in expected} == classes,
+                    'Native drawing/renderer/effect/substage class inventory differs')
+        probe_methods = {
+            'testAbsentFlagIsNoOpAndFiniteSelectionFixesEveryAxis',
+            'testInvalidSelectorsRoutesAndPolicyChangesFailClosed',
+            'testSchemaRawByteBindingsAndCompleteMemoryArePreserved',
+            'testActualFullMemoryDictionaryRoundTripsWithoutLosingBackingFields',
+            'testExactBoundsOrderAndMissingWorkflowRejection',
+            'testExistingDrawingMetadataDoesNotSampleOrRetainObjects',
+            'testMemorySchemaRejectsObjectsMissingBackingAndOversizeMetadata',
+            'testRunningWriteDoesNothingAndFinalSidecarIsBounded',
+        }
+        native.need({name.split('/')[1] for name in expected if name.split('/')[0] == 'PicShotTests.SeedRenderCropSubstageProbeTests'}
+                    == probe_methods, 'The eight dedicated substage cases differ')
+        discovery = json.loads(Path('dist/seed-render-crop-test-discovery.json').read_text())
+        runner = json.loads(Path('dist/seed-render-crop-native-tests.json').read_text())
+        log = Path('dist/seed-render-crop-native-tests.log').read_text()
+        for report, seconds, command, raw in [
+            (discovery, 60, ['swift', 'test', 'list', '--skip-build'], inventory),
+            (runner, 420, ['swift', 'test', '--skip-build', '--filter', 'DrawingRasterTests|RendererStorageTests|EffectContextConfigurationTests|EffectContextGuardControlTests|SeedRenderCropSubstageProbeTests'], log),
+        ]:
+            native.need(report['status'] == report['termination_reason'] == 'exited'
+                        and report['exit_code'] == report['child_returncode'] == 0
+                        and report['timeout_seconds'] == seconds and report['command'] == command
+                        and report['log_bytes'] == len(raw.encode()) and not report['log_truncated']
+                        and not report['sigterm_sent'] and not report['sigkill_sent'],
+                        'Native inventory or test process incomplete')
+        passed, skipped = native.case_results(log, expected)
+        native.need(not skipped, 'Native diagnostic cases skipped')
+        Path('dist/seed-render-crop-native-check.json').write_text(json.dumps({
+            'status': 'passed', 'sourceCommit': os.environ['GITHUB_SHA'], 'discoveredCount': len(discovered),
+            'selectedClasses': sorted(classes), 'expectedTests': expected, 'passedTests': passed,
+            'dedicatedSubstageMethods': sorted(probe_methods), 'skippedTests': skipped,
+            'inventorySHA256': hashlib.sha256(inventory.encode()).hexdigest(),
+            'logSHA256': hashlib.sha256(log.encode()).hexdigest(), 'productAcceptance': False
+        }, indent=2) + '\n')
+        PYTHON
+    - name: Relocate and bind the single exact signed ARM application
+      timeout-minutes: 2
+      run: |
+        set -euo pipefail
+        test ! -e dist/seed-render-crop-installed
+        mkdir -p dist/seed-render-crop-installed
+        ditto dist/PicShot.app dist/seed-render-crop-installed/PicShot.app
+        codesign --verify --deep --strict dist/seed-render-crop-installed/PicShot.app
+        test "$(lipo -archs dist/seed-render-crop-installed/PicShot.app/Contents/MacOS/PicShot)" = arm64
+        cmp dist/PicShot.app/Contents/MacOS/PicShot dist/seed-render-crop-installed/PicShot.app/Contents/MacOS/PicShot
+        cmp dist/PicShot.app/Contents/Info.plist dist/seed-render-crop-installed/PicShot.app/Contents/Info.plist
+        cmp dist/PicShot.app/Contents/Resources/build-info.json dist/seed-render-crop-installed/PicShot.app/Contents/Resources/build-info.json
+        python3 - <<'PYTHON'
+        import hashlib, json, os, plistlib
+        from pathlib import Path
+        app = Path('dist/seed-render-crop-installed/PicShot.app').resolve()
+        executable = (app / 'Contents/MacOS/PicShot').read_bytes()
+        plist_bytes = (app / 'Contents/Info.plist').read_bytes()
+        build_bytes = (app / 'Contents/Resources/build-info.json').read_bytes()
+        info, build = plistlib.loads(plist_bytes), json.loads(build_bytes)
+        if not (info['PicShotSourceCommit'] == build['sourceCommit'] == os.environ['GITHUB_SHA']
+                and build['architecture'] == 'arm64'
+                and info['CFBundleExecutable'] == 'PicShot'
+                and info['CFBundleShortVersionString'] == build['version']
+                and info['CFBundleVersion'] == os.environ['GITHUB_RUN_NUMBER']):
+            raise SystemExit('Installed substage source, build or architecture mismatch')
+        Path('dist/seed-render-crop-installed-identity.json').write_text(json.dumps({
+            'sourceCommit': info['PicShotSourceCommit'], 'bundlePath': str(app), 'architecture': 'arm64',
+            'version': info['CFBundleShortVersionString'], 'buildVersion': info['CFBundleVersion'],
+            'executableSHA256': hashlib.sha256(executable).hexdigest(), 'executableBytes': len(executable),
+            'plistSHA256': hashlib.sha256(plist_bytes).hexdigest(), 'buildInfoSHA256': hashlib.sha256(build_bytes).hexdigest(),
+            'oneBinaryForEveryCell': True, 'productionDefaultChanged': False, 'installerAcceptance': False,
+            'productAcceptance': False
+        }, indent=2) + '\n')
+        PYTHON
+    - name: Certify then observe the unchanged full seed render crop workflow
+      # Exactly two sequential fresh cells, with 300s native/600s owned/620s wrapper bounds.
+      # The 1300s outer bound covers two 620s cells plus 60s runner/checker overhead.
+      # Independent default output guards remain in the editable-output-guard job.
+      timeout-minutes: 24
+      run: python3 scripts/run-bounded-command.py --timeout-seconds 1300 --log dist/seed-render-crop-substage.log --report dist/seed-render-crop-substage.json -- bash scripts/seed-render-crop-substage-diagnostic.sh "$PWD/dist/seed-render-crop-installed/PicShot.app" "$PWD/dist/evidence/seed-render-crop-substage" "$GITHUB_SHA"
+    - name: Preserve actual binary and raw substage certification resource evidence
+      if: always()
+      timeout-minutes: 2
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Seed-Render-Crop-arm64-${{ github.sha }}
+        path: |
+          dist/seed-render-crop-*.json
+          dist/seed-render-crop-*.log
+          dist/evidence/seed-render-crop-substage/
+          dist/seed-render-crop-installed/PicShot.app/Contents/Info.plist
+          dist/seed-render-crop-installed/PicShot.app/Contents/MacOS/PicShot
+          dist/seed-render-crop-installed/PicShot.app/Contents/Resources/build-info.json
         if-no-files-found: error
         retention-days: 14
         compression-level: 6

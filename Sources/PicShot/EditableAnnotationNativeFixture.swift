@@ -132,7 +132,9 @@ import PicShotCore
         try drag(seed.annotationCanvas, CGPoint(x: crop.minX + 0.25, y: crop.minY + 0.25),
             CGPoint(x: crop.maxX - 0.25, y: crop.maxY - 0.25))
         try click("editor.applyCrop", editor: seed)
+        try SeedRenderCropSubstageProbe.process?.checkpoint(.afterNativeCrop)
         let full = try O.required(ImageEditorRenderer.render(image: base, annotations: seed.annotationCanvas.annotations), "Full effect render failed")
+        try SeedRenderCropSubstageProbe.process?.checkpoint(.afterReferenceFullRender)
         lifetime.image(full, role: "current")
         let expectedCrop = try O.required(ImageEditorRenderer.crop(image: full, to: crop), "Reference crop failed")
         lifetime.image(expectedCrop, role: "current")

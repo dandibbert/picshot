@@ -4,6 +4,8 @@ from pathlib import Path
 import re
 import unittest
 
+from seed_render_crop_source_contract import without_substage_hooks
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -13,7 +15,8 @@ def read(name):
 
 class RendererStorageSourceBindingTests(unittest.TestCase):
     def test_exact_existing_drawing_hooks_preserve_prior_diagnostics(self):
-        source = read('Sources/PicShot/EditableDrawingPairDiagnostic.swift')
+        source = without_substage_hooks('Sources/PicShot/EditableDrawingPairDiagnostic.swift',
+                                         read('Sources/PicShot/EditableDrawingPairDiagnostic.swift'))
         for hook in [
             '        try EffectContextPairDiagnostic.begin(includeResources: includeResources, observer: observer)\n',
             '        try EffectContextPairDiagnostic.process?.checkpoint(drawingCheckpoint: checkpoints[checkpoints.count - 1])\n',

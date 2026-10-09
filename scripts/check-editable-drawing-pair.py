@@ -53,6 +53,19 @@ def comparison_contract(kind):
         else 'scripts/launch-renderer-storage-pair.swift')
 
 
+SUBSTAGE_OBSERVATION_KIND = 'seed-render-crop'
+
+
+def observation_contract(kind, strategy, comparison_kind):
+    # A separate finite observation route, never an additional comparison arm.
+    if kind is None:
+        return
+    N.need(kind == SUBSTAGE_OBSERVATION_KIND and type(kind) is str,
+           'unknown substage observation kind')
+    N.need(comparison_kind == 'drawing-input' and strategy == 'owned-srgb8',
+           'substage observation requires fixed owned drawing and no comparison intervention')
+
+
 def renderer_autorelease_scope(strategy):
     N.need(type(strategy) is str and strategy in RENDERER_POLICIES, 'unknown renderer strategy')
     return RENDERER_POLICIES[strategy]
@@ -325,12 +338,16 @@ def validate_pair_sidecar(pair, native, native_bytes, diagnostic, strategy, reso
     return normalized
 
 
-def validate_launch(launcher, wrapper, envelope, native, identity, directory, strategy, mode, comparison_kind='drawing-input'):
+def validate_launch(launcher, wrapper, envelope, native, identity, directory, strategy, mode, comparison_kind='drawing-input', *, observation_kind=None):
+    observation_contract(observation_kind, strategy, comparison_kind)
     _, _, launch_script = comparison_contract(comparison_kind)
     expected_drawing = drawing_strategy(strategy, comparison_kind)
     extra_fields = {'rendererStorageStrategy', 'comparisonKind', 'rendererAutoreleaseScope'} if comparison_kind != 'drawing-input' else set()
     if comparison_kind == 'effect-context-memory-target':
         extra_fields |= {'effectContextPolicy'}
+    if observation_kind is not None:
+        launch_script = 'scripts/launch-seed-render-crop-substage.swift'
+        extra_fields |= {'substageProbe', 'rendererStorageStrategy', 'rendererAutoreleaseScope', 'effectContextPolicy'}
     N.keys(launcher, {'schemaVersion', 'status', 'launcherExitCode', 'drawingStrategy', 'drawingMode',
         'hashObservation', 'selectedAppPath', 'createsNewApplicationInstance', 'timeoutSeconds', 'elapsedSeconds',
         'launchBeganUptimeSeconds', 'finishUptimeSeconds', 'callbackReceived', 'ownedExitConfirmed',
@@ -341,7 +358,12 @@ def validate_launch(launcher, wrapper, envelope, native, identity, directory, st
            and launcher['ownedExitConfirmed'] is True and launcher['createsNewApplicationInstance'] is True,
            'fresh owned application exit unverified')
     N.need(launcher['processStartMemoryCaptured'] is False, 'launcher incorrectly claims birth memory')
-    if comparison_kind == 'effect-context-memory-target':
+    if observation_kind is not None:
+        N.need(launcher['substageProbe'] == observation_kind
+               and launcher['rendererStorageStrategy'] == 'native'
+               and launcher['rendererAutoreleaseScope'] == 'caller'
+               and launcher['effectContextPolicy'] == 'reference', 'launcher fixed substage selection differs')
+    elif comparison_kind == 'effect-context-memory-target':
         N.need(launcher['effectContextPolicy'] == strategy and launcher['comparisonKind'] == comparison_kind,
                'launcher effect context selection differs')
         N.need(launcher['rendererStorageStrategy'] == 'native' and launcher['rendererAutoreleaseScope'] == 'caller',
@@ -389,6 +411,8 @@ def validate_launch(launcher, wrapper, envelope, native, identity, directory, st
     commands = [command] if comparison_kind == 'drawing-input' else [command + [comparison_kind]]
     if comparison_kind == 'renderer-final-storage':
         commands.append(command)  # Preserve original default launcher invocations.
+    if observation_kind is not None:
+        commands = [['swift', launch_script, identity['bundlePath'], str(directory / 'launch.json'), mode]]
     N.need(wrapper['command'] in commands, 'bounded command selection differs')
     N.string(wrapper['started_at'])
     start = datetime.datetime.fromisoformat(wrapper['started_at'])
@@ -397,7 +421,8 @@ def validate_launch(launcher, wrapper, envelope, native, identity, directory, st
             'wrapperStartEpochSeconds': start.timestamp(), 'wrapperDurationSeconds': duration}
 
 
-def load_cell(directory, identity, strategy, mode, launcher_status=0, comparison_kind='drawing-input'):
+def load_cell(directory, identity, strategy, mode, launcher_status=0, comparison_kind='drawing-input', *, observation_kind=None):
+    observation_contract(observation_kind, strategy, comparison_kind)
     expected_drawing = drawing_strategy(strategy, comparison_kind)
     N.need(mode in ('certify', 'resources'), 'unknown pair selection')
     equal_int(launcher_status, 0, 'invoked launcher exit')
@@ -416,7 +441,7 @@ def load_cell(directory, identity, strategy, mode, launcher_status=0, comparison
     documents = validate_pair_sidecar(values['drawing'], native, native_bytes, values['diagnostic'], expected_drawing, resources)
     all_memory(native)
     native_memory_timeline(native)
-    lifecycle = validate_launch(values['launcher'], values['wrapper'], values['envelope'], native, identity, directory, strategy, mode, comparison_kind)
+    lifecycle = validate_launch(values['launcher'], values['wrapper'], values['envelope'], native, identity, directory, strategy, mode, comparison_kind, observation_kind=observation_kind)
     for key in ('native', 'diagnostic', 'drawing'):
         observation_times(values[key], lifecycle['launchBeganUptimeSeconds'], lifecycle['finishUptimeSeconds'])
     bounds = values['drawing']['sessionDateBounds']
