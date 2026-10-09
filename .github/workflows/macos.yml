@@ -190,7 +190,7 @@ jobs:
           python3 -m unittest discover -s scripts/tests -p test_native_test_shards.py -v
           python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/native-test-discovery.log --report dist/native-test-discovery-report.json -- swift test list --skip-build
           python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$NATIVE_TEST_PROCESS_COUNT" --output dist/native-tests-plan.json
-          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$FOCUSED_TEST_PROCESS_COUNT" --selection-regex 'DrawingRaster|EditableProductResource|EditableProductRetirement|EditableComponent|PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|AnnotationEditing|CaptureAspectRatio|CaptureRatio|MultiWindow|ImageOutputDecoration|EditorOutput|PinOriginalCurrent|ManualScroll|ScrollPreview|ScrollSequencePreview|AnnotationFreehand|AnnotationTextLine|NumberedCallout|AutomaticMosaic|RepeatedRegion|AutomaticPinOCR|PinOCR|TextResultSourceSelection|PinWorkflow|LaTeXPin|PinLaTeX|PinGroup|PinDesktop|EditorToolbarHierarchy|SaveWorkflow|OwnedVideoExportStage|ImageBacking|Codec|NativeExport|AnimatedWebP|WebPContainer|RecordingWebP|CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' --output dist/focused-tests-plan.json
+          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$FOCUSED_TEST_PROCESS_COUNT" --selection-regex 'DrawingRaster|EditableProductResource|EditableProductRetirement|EditableComponent|PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|AnnotationEditing|CaptureAspectRatio|CaptureRatio|MultiWindow|ImageOutputDecoration|EditorOutput|PinOriginalCurrent|ManualScroll|ScrollPreview|ScrollSequencePreview|AnnotationFreehand|AnnotationTextLine|NumberedCallout|AutomaticMosaic|RepeatedRegion|AutomaticPinOCR|PinOCR|TextResultSourceSelection|PinWorkflow|LaTeXPin|PinLaTeX|PinGroup|PinDesktop|EditorToolbarHierarchy|SaveWorkflow|OwnedVideoExportStage|ImageBacking|Codec|NativeExport|AnimatedWebP|WebPContainer|RecordingWebP|CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingInput|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' --output dist/focused-tests-plan.json
       - name: Reproduce the exact pin Apply regression before broader native gates
         # Method first, then its four-method class. Each keeps 420s native,
         # 5s TERM grace and 8MiB log cap: 2 * (420s + 10s cleanup) + 60s = 920s.
@@ -3094,7 +3094,7 @@ jobs:
           installed="$PWD/dist/installed-diagnostic-zip"
           test ! -e "$installed"
           mkdir "$installed"
-          ditto -x -k "dist/PicShot-0.16.0-macos-arm64.zip" "$installed"
+          ditto -x -k "dist/PicShot-0.17.0-macos-arm64.zip" "$installed"
           app="$installed/PicShot.app"
           codesign --verify --deep --strict "$app"
           test "$(lipo -archs "$app/Contents/MacOS/PicShot")" = arm64
@@ -3110,10 +3110,10 @@ jobs:
           build = json.loads((app/'Contents/Resources/build-info.json').read_bytes())
           if not (info['PicShotSourceCommit'] == build['sourceCommit'] == os.environ['PICSHOT_INSTALLED_PRODUCT_SOURCE']
                   and info['CFBundleVersion'] == os.environ['GITHUB_RUN_NUMBER']
-                  and info['CFBundleShortVersionString'] == build['version'] == '0.16.0'
+                  and info['CFBundleShortVersionString'] == build['version'] == '0.17.0'
                   and info['CFBundleExecutable'] == 'PicShot' and build['architecture'] == 'arm64'):
               raise SystemExit('Installed source, architecture or version mismatch')
-          paths = {name: Path('dist')/name for name in ('PicShot-0.16.0-macos-arm64.zip', 'PicShot-0.16.0-macos-arm64.dmg')}
+          paths = {name: Path('dist')/name for name in ('PicShot-0.17.0-macos-arm64.zip', 'PicShot-0.17.0-macos-arm64.dmg')}
           paths.update({name: app/name for name in ('Contents/MacOS/PicShot', 'Contents/Info.plist', 'Contents/Resources/build-info.json')})
           identities = {name: dict(bytes=path.stat().st_size, sha256=hashlib.sha256(path.read_bytes()).hexdigest()) for name,path in paths.items()}
           Path('dist/evidence/installed-diagnostic/independent-package-identity.json').write_text(json.dumps(dict(

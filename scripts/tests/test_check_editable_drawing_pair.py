@@ -226,7 +226,7 @@ def identity_at(root):
     executable.parent.mkdir(parents=True)
     executable.write_bytes(bytes.fromhex('cffaedfe') + struct.pack('<I', 0x0100000c) + b'synthetic-not-executable')
     (app / 'Contents/Info.plist').write_bytes(plistlib.dumps({'PicShotSourceCommit': '2' * 40,
-        'CFBundleShortVersionString': '0.16.0', 'CFBundleVersion': '105'}))
+        'CFBundleShortVersionString': '0.17.0', 'CFBundleVersion': '105'}))
     return C.N.bundle_identity(app, '2' * 40)
 
 

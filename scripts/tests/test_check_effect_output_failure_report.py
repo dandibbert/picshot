@@ -47,13 +47,13 @@ MISSING = object()
 
 class EffectGuardCheckerTests(unittest.TestCase):
     def setUp(self):
-        self.info = dict(PicShotSourceCommit='a' * 40, CFBundleShortVersionString='0.16.0',
+        self.info = dict(PicShotSourceCommit='a' * 40, CFBundleShortVersionString='0.17.0',
                          CFBundleVersion='113', CFBundleExecutable='PicShot')
         self.app = '/owned/PicShot.app'
         self.launcher = dict(status='exited', schemaVersion=1, launcherExitCode=0, processIdentifier=4321,
             createsNewApplicationInstance=True, callbackReceived=True, ownedExitConfirmed=True,
             selectedAppPath=self.app, launchedAppPath=self.app, launchedExecutablePath=self.app + '/Contents/MacOS/PicShot')
-        self.report = dict(status='passed', sourceCommit='a' * 40, version='0.16.0', buildVersion='113',
+        self.report = dict(status='passed', sourceCommit='a' * 40, version='0.17.0', buildVersion='113',
             bundlePath=self.app, executablePath=self.app + '/Contents/MacOS/PicShot', processIdentifier=4321,
             **ROOT_COUNTS)
         self.report.update({name: False for name in FALSE_FLAGS})

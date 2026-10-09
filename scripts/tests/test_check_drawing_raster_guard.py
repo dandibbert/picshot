@@ -42,7 +42,7 @@ class DrawingGuardCheckerTests(unittest.TestCase):
         self.sidecar_path = self.directory / 'drawing-raster-output-guard.json'
         self.sidecar = dict(schemaVersion=1, status='observed', diagnosticOnly=True,
             observationBoundary='after-effect-output-failure-fixture-return',
-            sourceCommit=self.source, version='0.16.0', buildVersion='113', bundlePath=str(self.app),
+            sourceCommit=self.source, version='0.17.0', buildVersion='113', bundlePath=str(self.app),
             executablePath=str(self.app / 'Contents/MacOS/PicShot'), processIdentifier=4321,
             nativeReportPath=str(self.native_path), nativeReportBytes=0, nativeReportSHA256='',
             requestedStrategy='owned-srgb8', selectedStrategy='owned-srgb8', productionDefaultStrategy='owned-srgb8',

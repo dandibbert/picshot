@@ -137,7 +137,7 @@ exit 97
 
     def extraction_root(self, script):
         arguments = self.arguments.read_text().splitlines()
-        self.assertEqual(arguments[:3], ['-x', '-k', 'dist/PicShot-0.16.0-macos-' + os.uname().machine + '.zip'])
+        self.assertEqual(arguments[:3], ['-x', '-k', 'dist/PicShot-0.17.0-macos-' + os.uname().machine + '.zip'])
         destination = Path(arguments[3])
         return destination.parent if script == 'smoke' else destination
 

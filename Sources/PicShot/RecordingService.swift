@@ -72,6 +72,7 @@ final class RecordingService: ObservableObject {
     let composition: RecordingCompositionState
     let camera: RecordingCameraController
     let overlay: RecordingOverlayController
+    let inputMonitor: RecordingInputMonitor
 
     private var startingTask: Task<Void, Error>?
     private var startingID: UUID?
@@ -97,6 +98,7 @@ final class RecordingService: ObservableObject {
         self.composition = composition
         camera = RecordingCameraController(composition: composition)
         overlay = RecordingOverlayController(state: composition)
+        inputMonitor = RecordingInputMonitor(state: composition.inputEffects)
     }
 
     static var supportsMicrophone: Bool {
@@ -176,6 +178,7 @@ final class RecordingService: ObservableObject {
         } catch {
             if !(error is CancellationError), startingID == id { self.error = error.localizedDescription }
             if sessionID == nil {
+                inputMonitor.endSession()
                 overlay.hide()
                 if isRestarting { await camera.suspend() } else { await camera.disable() }
             }
@@ -196,10 +199,21 @@ final class RecordingService: ObservableObject {
         guard isRecording, !isStopping, let sink, let id = sessionID else { throw RecordingError.notRecording }
         controlRevision += 1
         let revision = controlRevision
-        let snapshot = try await sink.setPaused(paused)
+        // Remove native input listeners immediately on Pause. A rejected writer
+        // command cannot leave input monitoring active behind an error message.
+        if paused { inputMonitor.setPaused(true, at: ProcessInfo.processInfo.systemUptime) }
+        let snapshot: RecordingWriterSnapshot
+        do { snapshot = try await sink.setPaused(paused) }
+        catch {
+            inputMonitor.endSession()
+            throw error
+        }
         guard sessionID == id, isRecording, !isStopping else { throw RecordingError.notRecording }
         elapsed = max(elapsed, snapshot.elapsed)
-        if revision == controlRevision { isPaused = snapshot.isPaused }
+        if revision == controlRevision {
+            isPaused = snapshot.isPaused
+            inputMonitor.setPaused(snapshot.isPaused, at: ProcessInfo.processInfo.systemUptime)
+        }
     }
 
     /// Save the unfinished take by default. Explicit `discardUnfinished: true`
@@ -241,6 +255,9 @@ final class RecordingService: ObservableObject {
     }
 
     private func stopSession() async throws -> URL {
+        // Effects disappear for future output at the user's stop request, and
+        // no global monitor survives potentially slow encoder/disk finalization.
+        inputMonitor.endSession()
         guard !hasPendingTake else { throw RecordingError.pendingTake }
         if countdown != nil, let startingTask {
             startingTask.cancel()
@@ -283,6 +300,7 @@ final class RecordingService: ObservableObject {
     }
 
     private func cancelSession() async throws {
+        inputMonitor.endSession()
         guard !hasPendingTake else { throw RecordingError.pendingTake }
         let targetID = sessionID
         cancelRequested = true
@@ -384,11 +402,14 @@ final class RecordingService: ObservableObject {
             #endif
             self.stream = capture
             self.sink = writer
+            var inputFrame: CGRect?
             if let screen = NSScreen.screens.first(where: {
                 ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == displayID
             }) {
-                overlay.show(frame: CGRect(x: screen.frame.minX + source.minX, y: screen.frame.maxY - source.maxY,
-                    width: source.width, height: source.height), canvasSize: size)
+                let frame = CGRect(x: screen.frame.minX + source.minX, y: screen.frame.maxY - source.maxY,
+                    width: source.width, height: source.height)
+                inputFrame = frame
+                overlay.show(frame: frame, canvasSize: size)
             }
             if camera.requested, camera.status == .off { await camera.enable() }
             try Task.checkCancellation()
@@ -396,6 +417,9 @@ final class RecordingService: ObservableObject {
             try Task.checkCancellation()
             guard !cancelRequested else { throw CancellationError() }
             isRecording = true
+            if let inputFrame {
+                inputMonitor.beginSession(frame: inputFrame, at: ProcessInfo.processInfo.systemUptime)
+            }
             wallStartedAt = ContinuousClock.now
             timerTask = Task { [weak self] in
                 while !Task.isCancelled {
@@ -417,6 +441,7 @@ final class RecordingService: ObservableObject {
             }
         } catch {
             let originalError = error
+            inputMonitor.endSession()
             // Freeze and detach capture before any fallible disk protection.
             if let createdSink { _ = await createdSink.stopAccepting() }
             overlay.hide()
@@ -439,6 +464,7 @@ final class RecordingService: ObservableObject {
     }
 
     private func finish(stream: SCStream, sink: RecordingWriter, id: UUID) async throws -> URL {
+        inputMonitor.endSession()
         defer {
             if sessionID == id {
                 self.stream = nil
@@ -1007,7 +1033,7 @@ final class RecordingWriter: NSObject, SCStreamOutput, SCStreamDelegate, @unchec
         if let compositor {
             result["compositorNeedsRefresh"] = compositor.needsRefresh
             result["compositorLastRevision"] = compositor.lastRevision.map { $0 as Any } ?? NSNull()
-            result["compositionRevision"] = compositor.state.snapshot().revision
+            result["compositionRevision"] = compositor.state.currentRevision
             result["lastPixelPoolAllocationStatus"] = compositor.smokeLastAllocationStatus.map { $0 as Any } ?? NSNull()
         }
         return result

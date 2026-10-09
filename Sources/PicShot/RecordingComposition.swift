@@ -38,6 +38,7 @@ struct RecordingCompositionSnapshot {
     let cameraLayout: RecordingCameraLayout
     let annotations: [ImageAnnotation]
     let canvasSize: CGSize
+    let inputEffects: RecordingInputEffectsSnapshot
 }
 
 /// Exactly one camera surface, one immutable vector snapshot, no frame history.
@@ -45,6 +46,7 @@ struct RecordingCompositionSnapshot {
 final class RecordingCompositionState: @unchecked Sendable {
     static let maximumAnnotations = 256
     static let maximumPointsPerStroke = 4_096
+    let inputEffects = RecordingInputEffectsState()
     private let lock = NSLock()
     private var revision: UInt64 = 0
     private var cameraToken: UUID?
@@ -53,10 +55,15 @@ final class RecordingCompositionState: @unchecked Sendable {
     private var annotations: [ImageAnnotation] = []
     private var canvasSize = CGSize(width: 1_920, height: 1_080)
 
-    func snapshot() -> RecordingCompositionSnapshot {
+    var currentRevision: UInt64 {
+        lock.lock(); defer { lock.unlock() }
+        return revision
+    }
+
+    func snapshot(at time: TimeInterval = ProcessInfo.processInfo.systemUptime) -> RecordingCompositionSnapshot {
         lock.lock(); defer { lock.unlock() }
         return RecordingCompositionSnapshot(revision: revision, camera: camera, cameraLayout: layout,
-            annotations: annotations, canvasSize: canvasSize)
+            annotations: annotations, canvasSize: canvasSize, inputEffects: inputEffects.snapshot(at: time))
     }
 
     func setCameraSession(_ token: UUID?) {
@@ -120,16 +127,19 @@ final class RecordingFrameCompositor {
     private var format: CMVideoFormatDescription?
     private var frozenSnapshot: RecordingCompositionSnapshot?
     private(set) var lastRevision: UInt64?
+    private var lastInputRevision: UInt64?
+    private let clock: () -> TimeInterval
     // Opt-in synthetic smoke observation only; no extra surface or pixel retention.
     var smokeDiagnosticsEnabled = false
     private(set) var smokeLastAllocationStatus: CVReturn?
 
-    init(size: CGSize, state: RecordingCompositionState) throws {
+    init(size: CGSize, state: RecordingCompositionState,
+         clock: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) throws {
         guard size.width.isFinite, size.height.isFinite, size.width >= 2, size.height >= 2,
               size.width <= 3_840, size.height <= 3_840, size.width * size.height <= 8_294_400 else {
             throw RecordingError.failed("The recording overlay size is outside the bounded encoder dimensions.")
         }
-        self.size = size; self.state = state
+        self.size = size; self.state = state; self.clock = clock
         var created: CVPixelBufferPool?
         let attributes: [String: Any] = [
             kCVPixelBufferWidthKey as String: Int(size.width),
@@ -144,19 +154,27 @@ final class RecordingFrameCompositor {
         pool = created
     }
 
-    var needsRefresh: Bool { frozenSnapshot == nil && state.snapshot().revision != lastRevision }
+    var needsRefresh: Bool {
+        guard frozenSnapshot == nil else { return false }
+        let snapshot = state.snapshot(at: clock())
+        // A static desktop still needs frames while a ring fades and one final
+        // clean frame after expiry. The writer retains its existing FPS limit.
+        return snapshot.revision != lastRevision || snapshot.inputEffects.hasVisibleEffects ||
+            snapshot.inputEffects.revision != lastInputRevision
+    }
 
     /// Called on the encoder queue at its stop barrier. Pending-resume output
     /// must not sample a camera frame or annotation changed after Stop.
-    func freeze() { if frozenSnapshot == nil { frozenSnapshot = state.snapshot() } }
+    func freeze() { if frozenSnapshot == nil { frozenSnapshot = state.snapshot(at: clock()) } }
     func releaseFrozenSnapshot() { frozenSnapshot = nil }
 
     /// Source sample timing is replaced only by RecordingWriter's shared timeline.
     func composite(_ source: CMSampleBuffer) throws -> CMSampleBuffer? {
-        let snapshot = frozenSnapshot ?? state.snapshot()
+        let snapshot = frozenSnapshot ?? state.snapshot(at: clock())
         guard let sourcePixels = CMSampleBufferGetImageBuffer(source) else { return nil }
-        if snapshot.camera == nil, snapshot.annotations.isEmpty {
+        if snapshot.camera == nil, snapshot.annotations.isEmpty, !snapshot.inputEffects.hasVisibleEffects {
             lastRevision = snapshot.revision
+            lastInputRevision = snapshot.inputEffects.revision
             return source
         }
         var allocated: CVPixelBuffer?
@@ -195,6 +213,7 @@ final class RecordingFrameCompositor {
             extent: CGRect(origin: .zero, size: snapshot.canvasSize))
         drawing.restoreGState()
         guard complete else { throw RecordingError.failed("The recording annotations could not be rendered completely.") }
+        RecordingInputEffectsRenderer.draw(snapshot.inputEffects, in: drawing, size: size)
         if format == nil {
             guard CMVideoFormatDescriptionCreateForImageBuffer(allocator: kCFAllocatorDefault, imageBuffer: pixels,
                 formatDescriptionOut: &format) == noErr else { throw RecordingError.failed("Invalid overlay pixel format.") }
@@ -206,6 +225,7 @@ final class RecordingFrameCompositor {
             imageBuffer: pixels, formatDescription: format, sampleTiming: &timing, sampleBufferOut: &output) == noErr,
               let output else { throw RecordingError.failed("The recording overlay frame could not be prepared.") }
         lastRevision = snapshot.revision
+        lastInputRevision = snapshot.inputEffects.revision
         return output
     }
 

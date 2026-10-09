@@ -4,6 +4,8 @@ Original, local-first macOS screenshot, annotation, pinning and recording utilit
 
 **Development preview. Not full PixPin parity yet.** This project is not affiliated with PixPin and uses no proprietary source, assets, subscription bypasses, or hosted recognition credentials. See [feature ledger](docs/PARITY.md) for actual scope and [verification](docs/VERIFICATION.md) for the test boundary.
 
+The latest accepted packages are ARM 0.16.0/build154 and Intel 0.11.0/build69. This branch's 0.17 candidate adds [opt-in recording input effects](docs/RecordingInputEffects.md); its native validation is pending.
+
 ## Build
 
 ```sh
@@ -23,8 +25,9 @@ The `dist/` folder contains a `.app`, drag-to-Applications DMG, ZIP, checksums, 
 - Menu bar → region/window/display capture, scrolling capture, recording, paste pin
 - New-install configurable shortcuts: ⌃1 region capture, ⌃2 clipboard pin, ⌃3 restore the last closed pin, ⌃⌘H history. Existing saved mappings are preserved
 - Double-click a history item to annotate; right-click to pin, copy, OCR, star or trash
-- The editor provides byte-derived PNG/JPEG/TIFF/BMP/PDF/WebP/AVIF export previews and flattened outputs, solid redaction, blur and pixelation. Blur/pixelation are cosmetic; use opaque redaction for secrets
-- ARM 0.12 adds offline same-size repeated-region matching with explicit review, manual correction, synchronized masks and undo; see [automatic mosaic](docs/AutomaticMosaic.md). Intel remains at verified 0.11 until its independent 0.12 gates pass
+- The editor provides byte-derived PNG/JPEG/TIFF/BMP/PDF/WebP/AVIF export previews and flattened outputs, solid redaction, blur and pixelation. Blur/pixelation are cosmetic; use opaque redaction in a flattened output when sharing secrets. Editable history and pins retain original pixels and removable layers, so they are not secure deletion
+- ARM supports offline same-size repeated-region matching with explicit review, manual correction, synchronized masks and undo; see [automatic mosaic](docs/AutomaticMosaic.md). Intel remains at verified 0.11 pending independent installer acceptance
+- ARM 0.16 preserves editable layers and nondestructive crop in new history and managed image pins. Legacy flattened images cannot regain layers; annotation hiding affects display only, while Copy/Save/OCR use the annotated current image
 - Save and Naming settings provide quick-save, exact-byte save-and-copy, collision-safe names and default-off final-action PNG copies; see [save workflows](docs/SaveWorkflow.md)
 - Pins float over apps; the menu restores click-through pins. Image pins support selectable local OCR, optional default-off automatic recognition, source-linked text results and multiple barcode regions; see [pin OCR](docs/PinOCRWorkflow.md)
 - Named region/delay presets are stored locally; changed displays invalidate stale presets. UI-element selection uses existing Accessibility access and otherwise falls back to manual selection

@@ -8,14 +8,14 @@ mkdir -p dist
 test "$(cd dist && pwd -P)" = "$PWD/dist"
 work=$(mktemp -d "$PWD/dist/ui-preview.XXXXXXXX")
 trap 'rm -rf "$work"' EXIT
-ditto -x -k "dist/PicShot-0.16.0-macos-$(uname -m).zip" "$work"
+ditto -x -k "dist/PicShot-0.17.0-macos-$(uname -m).zip" "$work"
 app="$work/PicShot.app"
 codesign --verify --deep --strict "$app"
 mkdir -p dist/evidence/ui
 export PICSHOT_UI_PREVIEW_ONLY=1
 swift scripts/launch-smoke-app.swift "$app" "$PWD/dist/evidence/ui/preview.json"
 python3 - "$PWD/dist/evidence/ui/preview.json" "$(git rev-parse HEAD)" <<'PY'
-import json,sys
+import json,pathlib,sys
 r=json.load(open(sys.argv[1]));assert r['status']=='passed',r
 assert r['uiPreviewOnly'] and not r['captureStarted'],r
 assert r['sourceCommit']==sys.argv[2],r
@@ -34,6 +34,22 @@ layout=batch['capturePresetsElements']['fakeProvider']['elementButtonLayout']
 assert len(layout)==3 and {item['identifier'] for item in layout}=={'capture.elements.toggle','capture.elements.parent','capture.elements.child'},layout
 assert all(item['hitTargetVerified'] is True for item in layout),layout
 assert r['codecUIPreview']['status']=='passed',r['codecUIPreview']
+inputs=r['recordingInputControls']
+assert inputs['status'] in ['passed','layout-only'] and inputs['contentWidthPoints']==440,inputs
+assert inputs['nativeMonitorRegistrations']==0 and inputs['injectedPermissions'] is True,inputs
+for key in ['recordingStarted','screenCaptureStarted','permissionRequested','globalInputPosted']:
+    assert inputs[key] is False,inputs
+assert len(inputs['appearances'])==2 and {x['appearance'] for x in inputs['appearances']}=={'light','dark'},inputs
+for appearance in inputs['appearances']:
+    assert appearance['defaultOff'] is True and appearance['initialPermissionChecks']==0,appearance
+    assert appearance['nativeMonitorRegistrations']==0,appearance
+    assert appearance['interactionStatus'] in ['passed','pending'],appearance
+    if appearance['interactionStatus']=='passed':
+        assert appearance['nativeTogglePresses']==9 and appearance['helpAndRefreshVerified'] is True,appearance
+    else:
+        assert appearance.get('reason'),appearance
+    for filename in appearance['files']:
+        assert pathlib.Path(filename).name==filename and (pathlib.Path(sys.argv[1]).parent/filename).is_file(),filename
 save=r['saveWorkflowUI']
 assert save['status']=='passed' and save['quietAutomaticFinalizedAction'],save
 assert not save['userPreferencesRead'] and not save['generalPasteboardReadOrWritten'],save
@@ -58,7 +74,7 @@ assert not ocr['includeResourceCycles'] and ocr['resourceEvidence']['status']=='
 print(json.dumps(r,indent=2))
 PY
 
-python3 scripts/check-pin-ocr-report.py "$PWD/dist/evidence/ui/pin-ocr/pin-ocr-workflow.json" "$app" "$(git rev-parse HEAD)" 0.16.0 "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")"
+python3 scripts/check-pin-ocr-report.py "$PWD/dist/evidence/ui/pin-ocr/pin-ocr-workflow.json" "$app" "$(git rev-parse HEAD)" 0.17.0 "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")"
 python3 scripts/check-automatic-mosaic-report.py "$PWD/dist/evidence/ui/automatic-mosaic/automatic-mosaic-workflow.json" "$app" "$(git rev-parse HEAD)" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")"
 
 python3 scripts/check-annotation-details-report.py "$PWD/dist/evidence/ui/annotation-details/annotation-details.json" "$app" "$(git rev-parse HEAD)" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")"

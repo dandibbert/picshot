@@ -9,7 +9,7 @@ export PICSHOT_SMOKE_FORMULA_MODEL_DIR="$PWD/.build/model-fixtures/formula"
 export PICSHOT_SMOKE_FORMULA_INPUT="$PWD/Tests/PicShotMLHelperTests/Fixtures/energy.png"
 export PICSHOT_SMOKE_TABLE_MODEL_DIR="$PWD/.build/model-fixtures/table"
 export PICSHOT_SMOKE_TABLE_INPUT="$PWD/Tests/PicShotTableEngineTests/Fixtures/merged-table.png"
-base="PicShot-0.16.0-macos-$(uname -m)"
+base="PicShot-0.17.0-macos-$(uname -m)"
 # Keep the actual installed bundle and all evidence on physical workspace paths.
 # /var-style temporary aliases are rejected by the strict product protocol.
 mkdir -p dist
@@ -121,6 +121,25 @@ for cycle in composition['cycles']:
     assert cycle['postStopMutationExcluded'] and cycle['temporaryFilesRemaining']==0,cycle
 for key in ['screenCaptureStarted','cameraCaptureStarted','microphoneStarted','permissionRequested']:
     assert composition[key] is False,composition
+inputs=r['recordingInputEvidence']
+assert inputs['status']=='passed' and inputs['sourceCommit']==sys.argv[3],inputs
+assert inputs['temporaryDirectoryRemoved'] and inputs['decodedFrames']==22,inputs
+assert inputs['width']==320 and inputs['height']==180 and inputs['frameRate']==10,inputs
+for key in ['captureStarted','permissionRequested','globalInputPosted']:
+    assert inputs[key] is False,inputs
+checks={'decodedClickPixels','decodedScrollDirection','decodedShortcutGlyphs','decodedExpiryClear',
+        'decodedResumeClear','decodedStopFrozenTimeAndValues','cameraAndAnnotationsPreserved',
+        'disabledSourceIdentity','boundedEventRetention','staleSessionRejected',
+        'cancelledWriterReleased','exportWriterReleased','storedTimingAndPauseRemoval'}
+assert set(inputs['functionalAssertions'])==checks,inputs
+assert all(inputs['functionalAssertions'][key] is True for key in checks),inputs
+for key in ['releasedExportObjects','releasedCancellationObjects']:
+    assert set(inputs[key])=={'writer','compositor','state','inputEffects'},inputs
+    assert all(value is False for value in inputs[key].values()),inputs
+timing=inputs['storedPacketTiming']
+assert timing['packets']==22 and timing['adjacent'] and timing['positiveDurations'],timing
+assert abs(timing['endSeconds']-2.2)<0.001,timing
+assert inputs['elapsedSeconds']<60 and inputs['cooperativeDeadlineSeconds']==60,inputs
 ocr=r['pinOCRWorkflow']
 assert ocr['status']=='passed' and ocr['sourceCommit']==sys.argv[3],ocr
 assert ocr['realAppleVisionRan'] and ocr['actualFunctionalVisionCalls'] >= 1,ocr
@@ -173,7 +192,7 @@ PY
   if [[ "$format" == zip ]];then
     bash scripts/multiwindow-resource-smoke.sh "$app" "$PWD/dist/evidence/$format/multiwindow-resources" "$(git rev-parse HEAD)"
   fi
-  python3 scripts/check-pin-ocr-report.py "$PWD/dist/evidence/$format/pin-ocr/pin-ocr-workflow.json" "$app" "$(git rev-parse HEAD)" 0.16.0 "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")" --full
+  python3 scripts/check-pin-ocr-report.py "$PWD/dist/evidence/$format/pin-ocr/pin-ocr-workflow.json" "$app" "$(git rev-parse HEAD)" 0.17.0 "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")" --full
   python3 scripts/check-automatic-mosaic-report.py "$PWD/dist/evidence/$format/automatic-mosaic/automatic-mosaic-workflow.json" "$app" "$(git rev-parse HEAD)" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")" --full
   python3 scripts/check-annotation-details-report.py "$PWD/dist/evidence/$format/annotation-details/annotation-details.json" "$app" "$(git rev-parse HEAD)" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")" --full
   bash scripts/pin-workflows-smoke.sh "$app" "$PWD/dist/evidence/$format/pin-workflows" "$(git rev-parse HEAD)"

@@ -113,7 +113,7 @@ final class RecordingPanelController: NSWindowController, NSWindowDelegate {
     init(service: RecordingService, capture: CaptureService, previews: RecordingPreviewWindowStore? = nil) {
         self.service = service
         self.previews = previews ?? RecordingPreviewWindowStore()
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 430),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 490),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         super.init(window: window)
         window.delegate = self
@@ -138,10 +138,16 @@ final class RecordingPanelController: NSWindowController, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    func windowWillClose(_ notification: Notification) {
+        // Also cover programmatic close, which can bypass windowShouldClose.
+        service.inputMonitor.endSession()
+    }
+
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         var state = service.controlState
         state.isWorking = operationInFlight
         guard state.blocksClosing else {
+            service.inputMonitor.endSession()
             service.overlay.hide()
             Task { await service.camera.disable() }
             return true
@@ -261,7 +267,8 @@ struct RecordingPanel: View {
                 .help(previous.lastPathComponent)
             }
             Divider()
-            RecordingEffectsControls(camera: service.camera, overlay: service.overlay, isRecording: service.isRecording)
+            RecordingEffectsControls(camera: service.camera, overlay: service.overlay,
+                inputMonitor: service.inputMonitor, isRecording: service.isRecording)
                 .disabled(service.isStarting || service.isRestarting || service.isStopping || service.hasPendingTake || working)
             Text(service.error ?? message).font(.system(size: 11)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -271,7 +278,7 @@ struct RecordingPanel: View {
                 .font(.system(size: 10)).foregroundStyle(.secondary)
             Spacer(minLength: 0)
         }
-        .padding(18).frame(width: 480, height: 430)
+        .padding(18).frame(width: 480, height: 490)
         // onChange can coalesce the old take's URL and the new start's nil.
         // Receive every publication so a failed restart still preserves its URL.
         .onReceive(service.$outputURL) { url in

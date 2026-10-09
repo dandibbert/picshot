@@ -97,7 +97,7 @@ def statistics(index=0):
 
 
 def report(resources=False):
-    identity = {'sourceCommit': '2' * 40, 'version': '0.16.0', 'buildVersion': '105',
+    identity = {'sourceCommit': '2' * 40, 'version': '0.17.0', 'buildVersion': '105',
                 'bundlePath': '/test/PicShot.app', 'architecture': 'arm64', 'executableSHA256': '3' * 64, 'executableBytes': 1024}
     result = dict(identity, processIdentifier=1234, schemaVersion=2, status='passed', deadlineSeconds=300, elapsedSeconds=120,
                   resourcesRequested=resources, entryMemory=memory(), finalMemory=memory(20), resources=None,
@@ -268,7 +268,7 @@ class EditableReportTests(unittest.TestCase):
             executable.parent.mkdir(parents=True)
             executable.write_bytes(bytes.fromhex('cffaedfe') + struct.pack('<I', 0x0100000c) + b'synthetic-not-native')
             (app / 'Contents/Info.plist').write_bytes(plistlib.dumps({'PicShotSourceCommit': '2' * 40,
-                'CFBundleShortVersionString': '0.16.0', 'CFBundleVersion': '105'}))
+                'CFBundleShortVersionString': '0.17.0', 'CFBundleVersion': '105'}))
             identity = CHECK.bundle_identity(app, '2' * 40)
             self.assertEqual(identity['architecture'], 'arm64')
             value, _ = report(); value.update(identity)

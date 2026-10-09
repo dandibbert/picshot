@@ -174,6 +174,9 @@ private final class RecordingOverlayView: NSView {
         context.scaleBy(x: bounds.width / snapshot.canvasSize.width, y: bounds.height / snapshot.canvasSize.height)
         let complete = ImageEditorRenderer.drawAnnotations(snapshot.annotations, in: context,
             extent: CGRect(origin: .zero, size: snapshot.canvasSize))
+        if complete {
+            RecordingInputEffectsRenderer.draw(snapshot.inputEffects, in: context, size: snapshot.canvasSize)
+        }
         context.restoreGState()
         guard complete else { context.clear(bounds); return }
         if controller.cameraEditing {
@@ -196,7 +199,7 @@ private final class RecordingOverlayView: NSView {
     override func mouseUp(with event: NSEvent) { controller?.end(at: canvasPoint(event)) }
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 53 { controller?.cancelInteraction() }
-        else if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "z" { controller?.undo() }
+        else if event.modifierFlags.contains(.command), event.keyCode == 6 { controller?.undo() }
         else { super.keyDown(with: event) }
     }
 }
@@ -205,6 +208,7 @@ private final class RecordingOverlayView: NSView {
 struct RecordingEffectsControls: View {
     @ObservedObject var camera: RecordingCameraController
     @ObservedObject var overlay: RecordingOverlayController
+    @ObservedObject var inputMonitor: RecordingInputMonitor
     let isRecording: Bool
     @State private var settings = false
     @State private var mirror = true
@@ -231,6 +235,7 @@ struct RecordingEffectsControls: View {
                     Button("清空") { overlay.clear() }.disabled(overlay.annotationCount == 0)
                 }
             }
+            RecordingInputEffectsControls(monitor: inputMonitor)
             if isRecording, overlay.drawing {
                 HStack(spacing: 6) {
                     Picker("工具", selection: $overlay.tool) {
@@ -281,4 +286,67 @@ struct RecordingEffectsControls: View {
         }.padding(14).frame(width: 300).task { await camera.refreshDevices() }
     }
     private func updateCrop() { overlay.setCameraCrop(zoom: zoom, horizontal: cropX, vertical: cropY) }
+}
+
+
+/// In-memory settings default off and are never persisted as background capture. Opening instructions or checking
+/// current authorization never invokes an OS permission request or grants access.
+@MainActor
+struct RecordingInputEffectsControls: View {
+    @ObservedObject var monitor: RecordingInputMonitor
+    @State private var showsHelp = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 10) {
+                Text("输入提示").font(.system(size: 11)).foregroundStyle(.secondary)
+                Toggle("点击", isOn: $monitor.options.clicks).accessibilityIdentifier("recording-input-clicks")
+                Toggle("滚动", isOn: $monitor.options.scrolls).accessibilityIdentifier("recording-input-scrolls")
+                Toggle("快捷键", isOn: $monitor.options.shortcuts).accessibilityIdentifier("recording-input-shortcuts")
+                Button { monitor.refreshPermissions(); showsHelp.toggle() } label: {
+                    Image(systemName: "info.circle")
+                }
+                .accessibilityIdentifier("recording-input-help")
+                .help("输入提示的隐私和权限说明")
+                .popover(isPresented: $showsHelp) { privacyHelp }
+            }.controlSize(.small)
+            if monitor.options.isEnabled {
+                Text(status).font(.system(size: 10)).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("recording-input-status")
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var status: String {
+        if !monitor.permissions.inputMonitoring { return "输入提示未启用：请在系统设置中检查「输入监控」权限。" }
+        if monitor.options.shortcuts, !monitor.permissions.accessibility {
+            return "快捷键提示未启用：需「辅助功能」权限；已开启的点击 / 滚动可单独使用。"
+        }
+        if monitor.installationFailed { return "输入提示监听未能启动；请检查权限后点击「重新检查」。" }
+        if monitor.privacySuppressed { return "安全输入或无法确认的焦点：键盘提示已隐藏。" }
+        return monitor.isMonitoring ? "提示会写入视频；只显示 ⌘ / ⌃ 组合，不读取输入文字。" : "开始 / 继续录制后生效；暂停会清空提示。"
+    }
+
+    private var privacyHelp: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("输入提示默认关闭").font(.headline)
+            Text("点击、滚动和快捷键提示会写入视频。PicShot 自己的窗口操作不会产生提示。")
+            Text("快捷键只用按键位置和 ⌘ / ⌃ 组合生成固定名称；不读取普通输入、剪贴板或控件文字。键名按固定键位标识，不随输入法变化。")
+            Text("检测到安全键盘输入、安全文本框或无法确认的焦点时，快捷键提示会隐藏。应用可能未正确标记敏感字段，无法保证识别所有密码框；输入敏感信息前请关闭提示或暂停录制。")
+            Text("输入监控：\(monitor.permissions.inputMonitoring ? "已允许" : "未允许") · 辅助功能：\(monitor.permissions.accessibility ? "已允许" : "未允许")")
+            Text("如需使用，请自行前往「系统设置 → 隐私与安全性 → 输入监控」允许 PicShot；快捷键还需「辅助功能」。完成后点击重新检查，必要时重新打开 PicShot。")
+            HStack {
+                Button("打开系统设置") {
+                    if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.systempreferences") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+                Button("重新检查") { monitor.refreshPermissions() }
+                    .accessibilityIdentifier("recording-input-refresh")
+            }
+        }
+        .font(.system(size: 11)).fixedSize(horizontal: false, vertical: true)
+        .padding(14).frame(width: 345)
+    }
 }
