@@ -16,7 +16,18 @@ final class VideoTrimGIFFixtureTests: XCTestCase {
                        VideoTrimGIFFixture.progressBytes)
         let marker = try VideoTrimGIFFixture.ChildMarker(data: Data(contentsOf: child.marker))
         XCTAssertEqual(marker.pid, child.process.processIdentifier)
-        XCTAssertEqual(marker.directory, child.root.path)
+        // /var and /private/var may name the same directory on macOS even
+        // after Foundation URL resolution. Compare the actual filesystem
+        // objects, with both endpoints required to be directories.
+        var markerDirectory = stat(), expectedDirectory = stat()
+        guard lstat(marker.directory, &markerDirectory) == 0,
+              lstat(child.root.path, &expectedDirectory) == 0 else {
+            throw GIFProcessTestSupportError.failed("Cannot inspect trim GIF child directory identity")
+        }
+        XCTAssertEqual(markerDirectory.st_mode & S_IFMT, S_IFDIR)
+        XCTAssertEqual(expectedDirectory.st_mode & S_IFMT, S_IFDIR)
+        XCTAssertEqual(markerDirectory.st_dev, expectedDirectory.st_dev)
+        XCTAssertEqual(markerDirectory.st_ino, expectedDirectory.st_ino)
         XCTAssertTrue(child.process.isRunning)
         XCTAssertFalse(FileManager.default.fileExists(atPath: child.readback.path))
         // Control cancellation is intentionally ignored by this stranded-child
@@ -27,6 +38,69 @@ final class VideoTrimGIFFixtureTests: XCTestCase {
         try Data().write(to: child.release)
         XCTAssertEqual(try child.exitStatus(seconds: 3), 0)
         XCTAssertEqual(try Data(contentsOf: child.readback), child.sourceBytes)
+    }
+
+    func testProcessServiceAcceptsInitialProgressThenDistinctReadinessBeforeCancellation() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("picshot-trim-gif-protocol-'quote space-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source.mp4")
+        let sourceBytes = Data([0, 255, 39, 34, 10, 92, 1, 2, 3])
+        try sourceBytes.write(to: source)
+        let destination = root.appendingPathComponent("must-not-publish.gif")
+        let marker = root.appendingPathComponent("child.ready")
+        let release = root.appendingPathComponent("release")
+        let readback = root.appendingPathComponent("readback.mp4")
+        let progress = GIFProcessTestProgress()
+        let cancellation = GIFProcessTestCancellation()
+        // This runs the actual private process-pipe parser, not a replica or
+        // a line decoder. Keep the original readiness wall/observer bounds.
+        let service = GIFExportProcessService(configuration: .init(
+            executable: { VideoTrimGIFFixture.executableURL },
+            arguments: try VideoTrimGIFFixture.arguments(marker: marker, release: release, readback: readback),
+            wallSeconds: 0.5))
+        let operation = InferenceTestOperation {
+            try await service.export(sourceURL: source, destinationURL: destination) { value in
+                progress.record(value)
+                XCTAssertFalse(cancellation.wasRequested, "Every fixture event must precede cancellation")
+                if value == VideoTrimGIFFixture.readyFraction {
+                    do {
+                        let child = try VideoTrimGIFFixture.ChildMarker(data: Data(contentsOf: marker))
+                        XCTAssertEqual(Darwin.kill(child.pid, 0), 0, "Readiness must arrive while the actual child is alive")
+                        XCTAssertFalse(FileManager.default.fileExists(atPath: readback.path))
+                    } catch { XCTFail("Readiness preceded a complete closed marker: \(error)") }
+                    cancellation.request()
+                }
+            }
+        }
+        cancellation.install { operation.cancel() }
+        defer { cancellation.clear(); operation.cancel() }
+        do {
+            _ = try await operation.value(timeout: 15, phase: "trim GIF fixture actual protocol readiness")
+            XCTFail("The readiness callback must cancel export before publication")
+        } catch {
+            if !(error is CancellationError) {
+                await GIFProcessTestDiagnostics.record(service: service, phase: "trim GIF fixture actual protocol readiness",
+                    detail: String(describing: error))
+            }
+            XCTAssertTrue(error is CancellationError, "Expected readiness cancellation, got \(error)")
+        }
+        XCTAssertEqual(progress.values, [0, VideoTrimGIFFixture.readyFraction])
+        XCTAssertTrue(cancellation.wasRequested, "Initial zero alone must not cancel export")
+        let state = await service.snapshot()
+        XCTAssertFalse(state.active)
+        let metrics = try XCTUnwrap(state.lastJob)
+        XCTAssertEqual(metrics.outcome, "cancelled")
+        XCTAssertEqual(metrics.configuredWallSeconds, 0.5)
+        XCTAssertEqual(metrics.stdoutBytes, VideoTrimGIFFixture.progressBytes.count)
+        XCTAssertTrue(metrics.childLaunched)
+        XCTAssertTrue(metrics.childExitConfirmed)
+        XCTAssertTrue(metrics.temporaryDirectoryRemoved)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: readback.path))
+        XCTAssertEqual(try Data(contentsOf: source), sourceBytes)
+        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: root.path).contains { $0.hasPrefix(".picshot-") })
     }
 
     func testEOFTruncatedEmptyAndWrongRequestsNeverFabricateReadiness() throws {
@@ -77,7 +151,16 @@ final class VideoTrimGIFFixtureTests: XCTestCase {
               ProcessInfo.processInfo.systemUptime < deadline { Thread.sleep(forTimeInterval: 0.005) }
         XCTAssertEqual(executablePath(ownedPID), "/bin/cat", "exec must keep readback in the actual owned child")
         XCTAssertEqual(child.process.processIdentifier, ownedPID)
-        let descriptor = open(child.source.path, O_WRONLY | O_NONBLOCK)
+        // exec identity can become visible before cat opens the FIFO. Wait
+        // for that real reader using the same deadline, never a blocking open.
+        var descriptor: Int32 = -1
+        while descriptor < 0, child.process.isRunning, ProcessInfo.processInfo.systemUptime < deadline {
+            descriptor = open(child.source.path, O_WRONLY | O_NONBLOCK)
+            if descriptor < 0 {
+                guard errno == ENXIO || errno == EINTR else { break }
+                Thread.sleep(forTimeInterval: 0.005)
+            }
+        }
         guard descriptor >= 0 else { return XCTFail("Owned cat did not open its independent source") }
         let writer = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
         try writer.write(contentsOf: child.sourceBytes)

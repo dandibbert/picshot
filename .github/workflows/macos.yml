@@ -84,8 +84,10 @@ jobs:
     # Retain the prior 90-minute full validation allowance plus the independent
     # 55-minute installed-default gate, two 4-minute portable contract steps,
     # and seven minutes for cleanup and evidence publication overhead.
+    # Intel adds 14 minutes to each four-process native stage: 160 + 14 + 14 = 188.
+    # ARM keeps its existing 160-minute job and 16/30-minute native stages.
     # Individual test, product, cancellation and smoke deadlines stay unchanged.
-    timeout-minutes: 160
+    timeout-minutes: ${{ matrix.arch == 'x86_64' && 188 || 160 }}
     env:
       # Subdivide exhaustive ARM processes; preserve focused isolation.
       NATIVE_TEST_PROCESS_COUNT: '4'
@@ -198,7 +200,9 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
       - name: Check annotation, GIF, recording durability and inference boundaries
-        timeout-minutes: 16
+        # Intel: 4 * (420s command + 10s cleanup allowance) + 60s stage overhead
+        # = 1780s within 30 minutes. ARM keeps two processes within 16 minutes.
+        timeout-minutes: ${{ matrix.arch == 'x86_64' && 30 || 16 }}
         run: |
           set -o pipefail
           execution_status=0
@@ -231,8 +235,9 @@ jobs:
           set -o pipefail
           bash scripts/recording-recovery-smoke.sh 2>&1 | tee dist/recording-recovery.log
       - name: Test native modules
-        # Four ARM processes retain 420s each plus bounded cleanup; Intel is unchanged.
-        timeout-minutes: ${{ matrix.arch == 'arm64' && 30 || 16 }}
+        # Both architectures have four 420s processes; 4 * 430s + 60s = 1780s.
+        # Discovery has its own unchanged 2-minute stage; aggregation is included here.
+        timeout-minutes: 30
         run: |
           set -o pipefail
           execution_status=0

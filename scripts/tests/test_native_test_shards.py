@@ -1,3 +1,4 @@
+import ast
 import copy
 import hashlib
 import importlib.util
@@ -371,13 +372,113 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
                         self.assertEqual(result.returncode == 0, not failed_index)
 
     def test_only_arm_full_stage_receives_four_process_cleanup_allowance(self):
+        # Retain the historical regression ID while fixing Intel's old shortage.
         full = re.search(r'^        timeout-minutes: (.+)$', self.step('Test native modules'), re.M)[1]
         focused = re.search(r'^        timeout-minutes: (.+)$', self.step(
             'Check annotation, GIF, recording durability and inference boundaries'), re.M)[1]
-        self.assertEqual([self.scalar(full, arch) for arch in ['arm64', 'x86_64']], [30, 16])
-        self.assertEqual([self.scalar(focused, arch) for arch in ['arm64', 'x86_64']], [16, 16])
-        self.assertGreater(60 * self.scalar(full, 'arm64'), 4 * (shards.PROCESS_SECONDS + 5.5) + 60)
-        self.assertEqual(re.search(r'^    timeout-minutes: (\d+)$', self.build, re.M)[1], '160')
+        self.assertEqual([self.scalar(full, arch) for arch in ['arm64', 'x86_64']], [30, 30])
+        self.assertEqual([self.scalar(focused, arch) for arch in ['arm64', 'x86_64']], [16, 30])
+        budgets = self.checked_serial_budgets()
+        self.assertEqual([budgets[arch]['jobMinutes'] for arch in ['arm64', 'x86_64']], [160, 188])
+        self.assertEqual(budgets['arm64']['focusedRequiredSeconds'], 920)
+        self.assertEqual(budgets['x86_64']['focusedRequiredSeconds'], 1780)
+        self.assertEqual(budgets['x86_64']['fullRequiredSeconds'], 1780)
+
+    def checked_serial_budgets(self):
+        # These are enclosing-stage allowances, not new command deadlines.
+        # Ten seconds reserves the existing cleanup timers and observation/tick
+        # overhead; sixty seconds covers serial startup, plan checks and aggregation.
+        cleanup_seconds, stage_overhead_seconds = 10, 60
+        if shards.PROCESS_SECONDS != 420:
+            raise ValueError('Native process deadline changed')
+        focused_name = 'Check annotation, GIF, recording durability and inference boundaries'
+        focused = re.search(r'^        timeout-minutes: (.+)$', self.step(focused_name), re.M)[1]
+        full = re.search(r'^        timeout-minutes: (.+)$', self.step('Test native modules'), re.M)[1]
+        job = re.search(r'^    timeout-minutes: (.+)$', self.build, re.M)[1]
+        discovery = self.step('Plan exhaustive and focused native test processes')
+        discovery_minutes = re.search(r'^        timeout-minutes: (.+)$', discovery, re.M)[1]
+        discovery_seconds = int(re.search(r'run-bounded-command\.py --timeout-seconds (\d+)', discovery)[1])
+        budgets = {}
+        for arch in ['arm64', 'x86_64']:
+            env = self.environment(arch)
+            focused_count, full_count = int(env['FOCUSED_TEST_PROCESS_COUNT']), int(env['NATIVE_TEST_PROCESS_COUNT'])
+            focused_minutes, full_minutes, job_minutes = (self.scalar(value, arch) for value in [focused, full, job])
+            focused_required = focused_count * (shards.PROCESS_SECONDS + cleanup_seconds) + stage_overhead_seconds
+            full_required = full_count * (shards.PROCESS_SECONDS + cleanup_seconds) + stage_overhead_seconds
+            if 60 * focused_minutes < focused_required:
+                raise ValueError(f'{arch} focused serial process envelope exceeds its stage')
+            if 60 * full_minutes < full_required:
+                raise ValueError(f'{arch} full serial process envelope exceeds its stage')
+            # Keep the original job allowance for all other work. Only Intel's
+            # two formerly 16-minute stages require added allowance.
+            previous_full = 30 if arch == 'arm64' else 16
+            required_job = 160 + max(0, focused_minutes - 16) + max(0, full_minutes - previous_full)
+            if job_minutes < required_job:
+                raise ValueError(f'{arch} job does not preserve the prior allowance plus native stage increases')
+            # Discovery is outside both execution stages. Its 2-minute stage
+            # retains 60s command + 10s cleanup allowance + 50s planning overhead.
+            if discovery_seconds != 60 or 60 * self.scalar(discovery_minutes, arch) < discovery_seconds + cleanup_seconds + 50:
+                raise ValueError(f'{arch} discovery/planning stage is under-budgeted or changed')
+            budgets[arch] = dict(focusedRequiredSeconds=focused_required, fullRequiredSeconds=full_required,
+                                 focusedMinutes=focused_minutes, fullMinutes=full_minutes, jobMinutes=job_minutes)
+        return budgets
+
+    def replace_stage_budget(self, name, minutes):
+        stage = self.step(name)
+        revised, count = re.subn(r'^        timeout-minutes: .+$', f'        timeout-minutes: {minutes}', stage, count=1, flags=re.M)
+        self.assertEqual(count, 1)
+        return self.build.replace(stage, revised, 1)
+
+    def test_each_intel_stage_rejects_the_old_budget_and_insufficient_cleanup_margin(self):
+        for name in ['Check annotation, GIF, recording durability and inference boundaries', 'Test native modules']:
+            for minutes in [16, 28, 29]:
+                arm_minutes = 30 if name == 'Test native modules' else 16
+                value = f"${{{{ matrix.arch == 'x86_64' && {minutes} || {arm_minutes} }}}}"
+                with self.subTest(stage=name, minutes=minutes), mock.patch.object(self, 'build', self.replace_stage_budget(name, value)):
+                    with self.assertRaisesRegex(ValueError, 'serial process envelope'):
+                        self.checked_serial_budgets()
+
+    def test_stage_budget_tracks_process_count_and_rejects_native_deadline_changes(self):
+        enlarged = self.build.replace("NATIVE_TEST_PROCESS_COUNT: '4'", "NATIVE_TEST_PROCESS_COUNT: '8'")
+        with mock.patch.object(self, 'build', enlarged), self.assertRaisesRegex(ValueError, 'full serial process envelope'):
+            self.checked_serial_budgets()
+        with mock.patch.object(shards, 'PROCESS_SECONDS', 421), self.assertRaisesRegex(ValueError, 'deadline changed'):
+            self.checked_serial_budgets()
+
+    def test_intel_job_preserves_allowance_for_both_stage_increases(self):
+        for minutes in [160, 174, 187]:
+            changed = self.build.replace("matrix.arch == 'x86_64' && 188 || 160", f"matrix.arch == 'x86_64' && {minutes} || 160", 1)
+            with self.subTest(minutes=minutes), mock.patch.object(self, 'build', changed):
+                with self.assertRaisesRegex(ValueError, 'job does not preserve'):
+                    self.checked_serial_budgets()
+
+    def test_discovery_budget_is_separate_from_serial_execution(self):
+        changed = self.replace_stage_budget('Plan exhaustive and focused native test processes', 1)
+        with mock.patch.object(self, 'build', changed), self.assertRaisesRegex(ValueError, 'discovery/planning'):
+            self.checked_serial_budgets()
+
+    def test_unchanged_runner_cleanup_timers_fit_the_reserved_stage_allowance(self):
+        source = ast.parse((Path(__file__).parents[1] / 'run-bounded-command.py').read_text())
+        grace = [ast.literal_eval(keyword.value) for node in ast.walk(source)
+                 if isinstance(node, ast.Call) and node.args and isinstance(node.args[0], ast.Constant)
+                 and node.args[0].value == '--grace-seconds' for keyword in node.keywords if keyword.arg == 'default']
+        waits = [ast.literal_eval(keyword.value) for node in ast.walk(source)
+                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == 'wait'
+                 and isinstance(node.func.value, ast.Name) and node.func.value.id == 'process'
+                 for keyword in node.keywords if keyword.arg == 'timeout']
+        kill_settle = [ast.literal_eval(node.comparators[0]) for node in ast.walk(source)
+                       if isinstance(node, ast.Compare) and isinstance(node.left, ast.BinOp)
+                       and isinstance(node.left.right, ast.Name) and node.left.right.id == 'kill_at']
+        observations = [ast.literal_eval(node.value) for node in source.body
+                        if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name)
+                        and target.id == 'GROUP_OBSERVATION_SECONDS' for target in node.targets)]
+        self.assertEqual(grace, [5.0])
+        self.assertEqual(waits, [1, 1])
+        self.assertEqual(kill_settle, [0.5])
+        self.assertEqual(observations, [0.5])
+        # 7.5s explicit cleanup timers + 2.5s allowance for observation/ticks.
+        # This is budget accounting, not a claim of a hard I/O/scheduler bound.
+        self.assertEqual(grace[0] + sum(waits) + kill_settle[0] + 2.5, 10)
 
 
 if __name__ == '__main__':

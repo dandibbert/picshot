@@ -5,6 +5,7 @@ production request validation, or native exit observation. Native XCTest is
 required separately. The expected line is input data for the fixture's text
 comparison, not a second implementation of the production request encoder.
 """
+import errno
 import os
 from pathlib import Path
 import select
@@ -18,7 +19,8 @@ import unittest
 SOURCE = Path(__file__).parents[2] / 'Tests/PicShotTests/VideoTrimGIFFixture.swift'
 SCRIPT = textwrap.dedent(SOURCE.read_text().split('static let script = #"""\n', 1)[1].split('    """#', 1)[0])
 REQUEST = b'{"fixture":"request text only"}'
-PROGRESS = b'{"version":1,"kind":"progress","fraction":0.5}\n'
+PROGRESS = (b'{"version":1,"kind":"progress","fraction":0}\n'
+            b'{"version":1,"kind":"progress","fraction":0.5}\n')
 PAYLOAD = bytes(range(256)) * 3
 
 
@@ -153,7 +155,18 @@ class VideoTrimGIFFixtureTests(unittest.TestCase):
                 break
             time.sleep(0.005)
         self.assertEqual(Path(os.readlink(f'/proc/{owned_pid}/exe')).name, 'cat')
-        writer = os.open(child.source, os.O_WRONLY | os.O_NONBLOCK)
+        # exec is observable before cat opens its FIFO. Keep the same deadline
+        # and nonblocking semantics while waiting for the actual reader.
+        writer = None
+        while child.process.poll() is None and time.monotonic() < deadline:
+            try:
+                writer = os.open(child.source, os.O_WRONLY | os.O_NONBLOCK)
+                break
+            except OSError as error:
+                if error.errno not in (errno.ENXIO, errno.EINTR):
+                    raise
+                time.sleep(0.005)
+        self.assertIsNotNone(writer, 'owned cat did not open its independent source within the original deadline')
         try:
             self.assertEqual(os.write(writer, PAYLOAD), len(PAYLOAD))
         finally:
