@@ -141,7 +141,7 @@ enum HotKeyEventPhase: Equatable { case pressed, released }
                 let owner = Unmanaged<CarbonHotKeyBackend>.fromOpaque(pointer).takeUnretainedValue()
                 return owner.receive(event)
             }
-        }, UInt32(types.count), &types, Unmanaged.passUnretained(self).toOpaque(), &handler)
+        }, types.count, &types, Unmanaged.passUnretained(self).toOpaque(), &handler)
         if status != noErr {
             if let handler { RemoveEventHandler(handler) }
             handler = nil

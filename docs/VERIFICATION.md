@@ -2116,3 +2116,8 @@ The strict early UI gate found overlapping native control frames in the first de
 ## Intel159 terminal installed result
 
 Intel159 completed full/focused native and actual-model gates, then exhausted the unchanged 240-second repeated manual-scroll resource deadline after 8 warmups and 9/16 measured cycles. The earlier functional report passed. The failed-cycle predicate state is unrecorded; subsequent DMG/default gates and installer uploads were unrun. See [the exact incomplete scope](Intel159InstalledFailure.md). ARM159 acceptance and delivery remain unchanged.
+
+
+## Recording-control candidate160 compile failure
+
+Source0435499a7c1c1d661c213f88140959b609dc9bd5, run37980019468/build160: ARM release compilation rejected `UInt32(types.count)` passed to the imported Carbon `InstallEventHandler` count parameter, which requires `Int`. Early UI, native tests and installed gates did not run. The follow-on changes only that argument to `types.count`; it must compile and pass the original complete gates before acceptance. Intel terminal result is recorded independently. ARM0.17/build159 remains accepted.
