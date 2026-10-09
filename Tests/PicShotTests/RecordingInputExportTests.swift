@@ -2,6 +2,8 @@ import XCTest
 import Foundation
 import CoreMedia
 import CoreVideo
+import CoreGraphics
+import ImageIO
 @testable import PicShot
 
 @MainActor
@@ -32,6 +34,40 @@ final class RecordingInputExportTests: XCTestCase {
             XCTAssertEqual(options.animation?.maximumDuration, 3)
             XCTAssertEqual(options.lossless, lossless)
         }
+        // Exercise native GIF metadata in this existing ID. The logical screen
+        // and each indexed image must agree, even if global image keys are absent.
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("canvas.gif")
+        let provider = try XCTUnwrap(CGDataProvider(data: Data(raster()) as CFData))
+        let image = try XCTUnwrap(CGImage(width: Oracle.width, height: Oracle.height,
+            bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: Oracle.width * 4,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent))
+        try GIFSingleFrame.requireOpaque(image)
+        let still = try GIFSingleFrame.encode(image: image)
+        let writer = try GIFStreamingWriter(url: url)
+        for _ in 0..<41 { try writer.append(singleFrameGIF: still, delay: 0.05) }
+        try writer.finish()
+        var metadata: [String: Any] = [:]
+        let decoder = try Oracle.gifContainer(Data(contentsOf: url)) { metadata = $0 }
+        XCTAssertEqual(metadata["logicalScreenWidth"] as? Int, 320)
+        XCTAssertEqual(metadata["logicalScreenHeight"] as? Int, 180)
+        XCTAssertEqual(metadata["imageCount"] as? Int, 41)
+        XCTAssertEqual((metadata["loopCount"] as? NSNumber)?.intValue, 0)
+        for index in 0..<41 {
+            let properties = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(decoder, index, nil) as? [CFString: Any])
+            XCTAssertNoThrow(try Oracle.gifFrameDimensions(properties, index: index))
+            let decoded = try XCTUnwrap(CGImageSourceCreateImageAtIndex(decoder, index, nil))
+            XCTAssertNoThrow(try Oracle.raster(decoded))
+        }
+        XCTAssertThrowsError(try Oracle.gifContainer(still), "A single image cannot satisfy the 41-frame gate")
+        var changed = try Data(contentsOf: url)
+        let loop = try XCTUnwrap(changed.range(of: Data("NETSCAPE2.0".utf8)))
+        changed[loop.upperBound + 2] = 1
+        XCTAssertThrowsError(try Oracle.gifContainer(changed) { metadata = $0 })
+        XCTAssertEqual((metadata["loopCount"] as? NSNumber)?.intValue, 1,
+                       "Actual native metadata must survive a failed assertion")
     }
 
     func testPixelOracleUsesTopDownRGBAAndDetectsEffectRelocationAndExpiry() throws {
@@ -383,6 +419,27 @@ final class RecordingInputExportTests: XCTestCase {
         XCTAssertThrowsError(try Oracle.boundedData(alias))
         XCTAssertThrowsError(try Oracle.boundedData(source, maximum: 32))
         XCTAssertEqual(try Oracle.boundedData(source, maximum: 33).count, 33)
+        let header = Data(Array("GIF89a".utf8) + [0x40, 0x01, 0xB4, 0, 0x70, 0, 0])
+        XCTAssertEqual(try Oracle.gifCanvas(header).width, 320)
+        XCTAssertEqual(try Oracle.gifCanvas(header).height, 180)
+        var oldVersion = header; oldVersion[4] = 0x37
+        XCTAssertNoThrow(try Oracle.gifCanvas(oldVersion))
+        for count in 0..<13 { XCTAssertThrowsError(try Oracle.gifCanvas(Data(header.prefix(count)))) }
+        var wrong = header; wrong[0] = 0
+        XCTAssertThrowsError(try Oracle.gifCanvas(wrong))
+        for offset in [6, 7, 8, 9] {
+            wrong = header; wrong[offset] = 0xFF
+            XCTAssertThrowsError(try Oracle.gifCanvas(wrong))
+        }
+        wrong = header; wrong[10] = 0x80
+        XCTAssertThrowsError(try Oracle.gifCanvas(wrong), "A truncated declared global table must fail before ImageIO")
+        wrong.append(contentsOf: [0, 0, 0, 255, 255, 255])
+        XCTAssertNoThrow(try Oracle.gifCanvas(wrong))
+        let invalidProperties: [[CFString: Any]] = [[:], [kCGImagePropertyPixelWidth: 319, kCGImagePropertyPixelHeight: 180],
+                                                   [kCGImagePropertyPixelWidth: 320, kCGImagePropertyPixelHeight: "180"]]
+        for properties in invalidProperties {
+            XCTAssertThrowsError(try Oracle.gifFrameDimensions(properties, index: 0))
+        }
     }
 
     /// Native write/trim/decode test uses actual RecordingWriter + compositor

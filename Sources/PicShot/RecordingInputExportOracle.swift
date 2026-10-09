@@ -460,14 +460,16 @@ enum RecordingInputExportOracle {
             }
             let tolerance = region.width == 1 ? 65.0 : ["camera", "annotation"].contains(region.name) ? 25.0 : 12.0
             try require(zip(a.rgb, e.rgb).allSatisfy { abs($0.0 - $0.1) <= tolerance },
-                        "Decoded \(region.name) color/location differs at source frame \(expected.index)")
-            for (observed, reference) in zip([a.yellow, a.pink, a.mint, a.white], [e.yellow, e.pink, e.mint, e.white]) {
+                        "Decoded \(region.name) color/location differs at source frame \(expected.index): actualRGB=\(a.rgb) referenceRGB=\(e.rgb) tolerance=\(tolerance)")
+            for (feature, pair) in zip(["yellow", "pink", "mint", "white"],
+                                      zip([a.yellow, a.pink, a.mint, a.white], [e.yellow, e.pink, e.mint, e.white])) {
+                let (observed, reference) = pair
                 try require(abs(observed.count - reference.count) <= max(20, Int(Double(reference.count) * 0.55)),
-                            "Decoded \(region.name) feature presence/expiry differs at source frame \(expected.index)")
+                            "Decoded \(region.name) \(feature) feature presence/expiry differs at source frame \(expected.index): actual=\(observed) reference=\(reference)")
                 if reference.count >= 30 {
                     try require(observed.count >= max(10, reference.count / 3)
                         && abs(observed.x - reference.x) <= 4 && abs(observed.y - reference.y) <= 4,
-                                "Decoded \(region.name) feature moved at source frame \(expected.index)")
+                                "Decoded \(region.name) \(feature) feature moved at source frame \(expected.index): actual=\(observed) reference=\(reference)")
                 }
             }
         }
@@ -673,7 +675,7 @@ enum RecordingInputExportOracle {
             for channel in 0..<3 { canvasError += Double(abs(Int(pixels[offset + channel]) - Int(reference[offset + channel]))) }
         }
         let canvasMean = canvasError / Double(width * height * 3)
-        try require(canvasMean <= canvasLimit, "Unexpected pixels outside effect/anchor regions")
+        try require(canvasMean <= canvasLimit, "Unexpected pixels outside effect/anchor regions: mean=\(canvasMean) limit=\(canvasLimit)")
         errors["wholeCanvas"] = canvasMean
         return errors
     }
@@ -687,29 +689,74 @@ enum RecordingInputExportOracle {
             && frames.first?.sourceIndex == 1 && frames.last?.sourceIndex == 21,
                     "Sampling missed a required effect/expiry/resume/Stop/boundary witness")
     }
-    static func gif(_ url: URL, selectedURL: URL, selected: Movie, deadline: Double) throws -> [Comparison] {
-        let data = try boundedData(url)
+    /// The GIF logical screen owns the canvas. ImageIO's container dictionary
+    /// need not contain the individual image PixelWidth/PixelHeight keys.
+    /// Bound the header before ImageIO and every indexed image before decoding.
+    static func gifCanvas(_ data: Data) throws -> (width: Int, height: Int) {
+        try require(data.count >= 13 && data.count <= maximumFileBytes, "Invalid GIF header byte bounds")
+        return try data.withUnsafeBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            let signature = String(decoding: bytes[0..<6], as: UTF8.self)
+            try require(signature == "GIF87a" || signature == "GIF89a", "Invalid GIF signature")
+            let canvasWidth = Int(bytes[6]) | Int(bytes[7]) << 8
+            let canvasHeight = Int(bytes[8]) | Int(bytes[9]) << 8
+            try require(canvasWidth == width && canvasHeight == height, "GIF logical-screen canvas differs")
+            let paletteBytes = bytes[10] & 0x80 == 0 ? 0 : 3 * (2 << Int(bytes[10] & 7))
+            try require(data.count >= 13 + paletteBytes, "Truncated GIF global color table")
+            return (canvasWidth, canvasHeight)
+        }
+    }
+    private static func gifNumber(_ value: Any?) -> Any {
+        guard let value else { return "absent" }
+        if let number = value as? NSNumber { return number }
+        return "invalid-type"
+    }
+    static func gifFrameDimensions(_ properties: [CFString: Any], index: Int) throws {
+        try require((properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue == width
+            && (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue == height,
+                    "GIF indexed dimensions differ at frame \(index): width=\(gifNumber(properties[kCGImagePropertyPixelWidth])) height=\(gifNumber(properties[kCGImagePropertyPixelHeight]))")
+    }
+    static func gifContainer(_ data: Data, recordMetadata: (([String: Any]) -> Void)? = nil) throws -> CGImageSource {
+        let canvas = try gifCanvas(data)
         guard let decoder = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
               CGImageSourceGetType(decoder) as String? == "com.compuserve.gif",
               let properties = CGImageSourceCopyProperties(decoder, nil) as? [CFString: Any],
               let metadata = properties[kCGImagePropertyGIFDictionary] as? [CFString: Any]
         else { throw NSError(domain: "PicShot.RecordingInputExport", code: 7) }
-        try require((properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue == width
-            && (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue == height
-            && CGImageSourceGetCount(decoder) == animationFrames
-            && (metadata[kCGImagePropertyGIFLoopCount] as? NSNumber)?.intValue == 0,
-                    "GIF frame count or infinite looping differs")
+        recordMetadata?(["logicalScreenWidth": canvas.width, "logicalScreenHeight": canvas.height,
+            "globalPixelWidth": gifNumber(properties[kCGImagePropertyPixelWidth]),
+            "globalPixelHeight": gifNumber(properties[kCGImagePropertyPixelHeight]),
+            "imageCount": CGImageSourceGetCount(decoder),
+            "loopCount": gifNumber(metadata[kCGImagePropertyGIFLoopCount]), "frames": [[String: Any]]()])
+        try require(CGImageSourceGetCount(decoder) == animationFrames, "GIF frame count differs")
+        try require((metadata[kCGImagePropertyGIFLoopCount] as? NSNumber)?.intValue == 0, "GIF infinite looping differs")
+        return decoder
+    }
+    static func gif(_ url: URL, selectedURL: URL, selected: Movie, deadline: Double,
+                    recordMetadata: (([String: Any]) -> Void)? = nil) throws -> [Comparison] {
+        var metadata: [String: Any] = [:]
+        let decoder = try gifContainer(boundedData(url)) { observed in
+            metadata = observed; recordMetadata?(metadata)
+        }
         let generator = Self.generator(selectedURL)
         defer { generator.cancelAllCGImageGeneration() }
         var frames: [Comparison] = []
+        var frameMetadata: [[String: Any]] = []
         for index in 0..<animationFrames {
-            try autoreleasepool {
+            do { try autoreleasepool {
                 try check(deadline)
-                guard let image = CGImageSourceCreateImageAtIndex(decoder, index, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary),
-                      let properties = CGImageSourceCopyPropertiesAtIndex(decoder, index, nil) as? [CFString: Any],
-                      let metadata = properties[kCGImagePropertyGIFDictionary] as? [CFString: Any],
-                      let delay = (metadata[kCGImagePropertyGIFUnclampedDelayTime] ?? metadata[kCGImagePropertyGIFDelayTime]) as? NSNumber
+                guard let properties = CGImageSourceCopyPropertiesAtIndex(decoder, index, nil) as? [CFString: Any],
+                      let gif = properties[kCGImagePropertyGIFDictionary] as? [CFString: Any],
+                      let delay = (gif[kCGImagePropertyGIFUnclampedDelayTime] ?? gif[kCGImagePropertyGIFDelayTime]) as? NSNumber
                 else { throw NSError(domain: "PicShot.RecordingInputExport", code: 8) }
+                frameMetadata.append(["index": index, "pixelWidth": gifNumber(properties[kCGImagePropertyPixelWidth]),
+                    "pixelHeight": gifNumber(properties[kCGImagePropertyPixelHeight])])
+                metadata["frames"] = frameMetadata; recordMetadata?(metadata)
+                try gifFrameDimensions(properties, index: index)
+                guard let image = CGImageSourceCreateImageAtIndex(decoder, index, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
+                else { throw NSError(domain: "PicShot.RecordingInputExport", code: 8) }
+                frameMetadata[index]["decodedWidth"] = image.width; frameMetadata[index]["decodedHeight"] = image.height
+                metadata["frames"] = frameMetadata; recordMetadata?(metadata)
                 let pixels = try raster(image)
                 try require(delay.doubleValue.isFinite && abs(delay.doubleValue * 1_000 - Double(delayMS(index, format: .gif))) < 0.01,
                             "GIF stored delay is not the planned centisecond duration")
@@ -717,6 +764,9 @@ enum RecordingInputExportOracle {
                     try compareAnimation($0, index: index, actualDelayMS: Int((delay.doubleValue * 1_000).rounded()),
                                          format: .gif, generator: generator, selected: selected, deadline: deadline)
                 })
+            } } catch {
+                throw NSError(domain: "PicShot.RecordingInputExport", code: 8,
+                    userInfo: [NSLocalizedDescriptionKey: "GIF frame \(index) request=\(sampleTime(index).seconds): \(error.localizedDescription)"])
             }
         }
         try verifyTimeline(frames)

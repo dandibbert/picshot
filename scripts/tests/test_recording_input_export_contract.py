@@ -66,6 +66,13 @@ class RecordingInputExportEvidenceTests(unittest.TestCase):
                                            sourceFrameIndices=list(range(1, 22)))
         self.native["selectedSourceFrameIndices"] = list(range(1, 22))
         self.native["verifiedLoopCounts"] = {"gif": 0, "webpLossless": 0, "webpLossy": 0}
+        # Fixed scalar diagnostics add no decoded storage and must fit the same
+        # report budget alongside all original evidence, even on a full success.
+        self.fixture["gifMetadata"] = dict(logicalScreenWidth=320, logicalScreenHeight=180,
+            globalPixelWidth="absent", globalPixelHeight="absent", imageCount=41, loopCount=0,
+            frames=[dict(index=i, pixelWidth=320, pixelHeight=180, decodedWidth=320, decodedHeight=180)
+                    for i in range(41)])
+        self.native["gifMetadata"] = copy.deepcopy(self.fixture["gifMetadata"])
         for route, name in GATE.MEDIA:
             (self.root / name).write_bytes(b"unit output, not decoded pixels: " + route.encode())
             item = dict(route=route, file=name, sha256=GATE.digest(self.root / name), bytes=(self.root / name).stat().st_size)
@@ -111,6 +118,7 @@ class RecordingInputExportEvidenceTests(unittest.TestCase):
         self.save()
         # Match Swift's pretty-printed evidence and leave headroom under 128 KiB.
         self.assertLess(len(json.dumps(self.native, sort_keys=True, indent=2).encode()), GATE.REPORT_CAP)
+        self.assertLess(len(json.dumps(self.fixture, sort_keys=True, indent=2).encode()), GATE.REPORT_CAP)
 
 
     def test_first_frame_only_or_imageio_webp_cannot_pass(self):

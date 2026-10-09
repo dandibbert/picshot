@@ -85,8 +85,10 @@ enum RecordingInputExportSmokeFixture {
             let selected = try await Oracle.movie(selectedURL, selected: true, source: original, deadline: deadline)
             report["selectedMP4"] = ["frames": selected.frameCount, "duration": selected.duration,
                                       "rawPacketEnd": selected.rawPacketEnd, "packetTiming": try Oracle.object(selected.packetTiming), "sourceFrameIndices": selected.observations.map(\.index)]
-            report["gifFrames"] = try Oracle.object(Oracle.gif(evidenceDirectory.appendingPathComponent(Oracle.mediaNames[1]),
-                selectedURL: selectedURL, selected: selected, deadline: deadline))
+            let gifFrames = try Oracle.gif(evidenceDirectory.appendingPathComponent(Oracle.mediaNames[1]),
+                selectedURL: selectedURL, selected: selected, deadline: deadline,
+                recordMetadata: { report["gifMetadata"] = $0 })
+            report["gifFrames"] = try Oracle.object(gifFrames)
             report["destinationSentinels"] = try await sentinels(source: source, root: root, range: range, deadline: deadline)
             report["cancellations"] = try await cancellations(source: source, root: root, range: range, deadline: deadline)
             try Oracle.require(try Oracle.hash(source) == sourceHash, "Failure/cancellation checks modified original bytes")

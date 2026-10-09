@@ -59,8 +59,10 @@ struct RecordingInputExportValidator {
             report["sourcePacketTiming"] = try Oracle.object(source.packetTiming)
             report["selectedPacketTiming"] = try Oracle.object(selected.packetTiming)
             report["selectedSourceFrameIndices"] = selected.observations.map(\.index)
-            report["gif"] = try Oracle.object(Oracle.gif(root.appendingPathComponent(Oracle.mediaNames[1]),
-                selectedURL: selectedURL, selected: selected, deadline: deadline))
+            let gifFrames = try Oracle.gif(root.appendingPathComponent(Oracle.mediaNames[1]),
+                selectedURL: selectedURL, selected: selected, deadline: deadline,
+                recordMetadata: { report["gifMetadata"] = $0 })
+            report["gif"] = try Oracle.object(gifFrames)
             report["webpLossless"] = try Oracle.object(webp(root.appendingPathComponent(Oracle.mediaNames[2]),
                 selectedURL: selectedURL, selected: selected, format: .webpLossless, deadline: deadline))
             report["webpLossy"] = try Oracle.object(webp(root.appendingPathComponent(Oracle.mediaNames[3]),

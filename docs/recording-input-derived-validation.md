@@ -83,6 +83,16 @@ setting is checked. Required sampled source indices include 1, 2, 4, 6, 9, 13,
 18, 19, 20 and 21. The final sample therefore observes frozen Stop, while the
 preceding samples observe the clear post-pause frame.
 
+GIF canvas dimensions come from its bounded logical-screen header, followed by
+each indexed ImageIO property dictionary before decoding and every decoded raster.
+Global ImageIO PixelWidth/PixelHeight are optional observations, not a canvas
+requirement. Installed and independent reports retain bounded `gifMetadata`
+with those actual global values, the image count and loop count, and the indexed
+and decoded dimensions reached before success or failure. A failing scalar
+comparison includes its GIF frame/request and actual/reference values. This
+changes no frame, delay, color, pixel, helper or report limit; native execution
+must still establish the missing-metadata hypothesis and all remaining checks.
+
 The original source is independently decoded first. Trim pixels are compared
 with decoded original H.264 pixels; GIF/WebP pixels are compared with decoded
 selected H.264 samples. Positive/expired masks, feature counts and centroids,
