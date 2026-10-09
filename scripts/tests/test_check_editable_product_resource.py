@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -164,6 +165,33 @@ class ProductEvidenceTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
+
+    def test_common_gate_validates_actual_native_deadline_scope_without_allowing_unknown_fields(self):
+        source = (SCRIPTS.parent / 'Sources/PicShot/EditableProductResourceFixture.swift').read_text()
+        emitted = re.findall(r'"(deadlineScope)": ("(?:[^"\\]|\\.)*")', source)
+        self.assertEqual(len(emitted), 1, 'Expected exactly one actual native deadlineScope field')
+        field, encoded = emitted[0]
+        for mode, extra in [('certify', P.CERT_FIELDS), ('measure', P.MEASURE_FIELDS)]:
+            report = dict.fromkeys(P.COMMON_FIELDS | extra)
+            # Take both the key and value from the producer, not a synthetic
+            # checker fixture that could repeat an omitted native field.
+            report[field] = json.loads(encoded)
+            def check(value):
+                return P.common(value, {}, {'operatingSystem': 'synthetic'}, {}, mode, 'a'*64, 1)
+            # Stop after this first schema/interpretation gate. The rest of
+            # common() requires independent native process evidence.
+            with mock.patch.object(P.C, 'identity', side_effect=RuntimeError('identity gate reached')):
+                with self.subTest(mode=mode), self.assertRaisesRegex(RuntimeError, 'identity gate reached'):
+                    check(report)
+                for mutation in (
+                    lambda value: value.pop(field),
+                    lambda value: value.update({field: '300-second hard deadline'}),
+                    lambda value: value.update({field: True}),
+                    lambda value: value.update({'unknownDeadlineField': report[field]}),
+                ):
+                    changed = copy.deepcopy(report); mutation(changed)
+                    with self.subTest(mode=mode, mutation=mutation), self.assertRaises(ValueError):
+                        check(changed)
 
     def test_audited_full_document_recipe_accepts_only_narrow_identity_and_date_changes(self):
         seven, eight = docs()

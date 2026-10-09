@@ -1,5 +1,6 @@
 import AppKit
 import CryptoKit
+import Darwin
 import XCTest
 @testable import PicShot
 
@@ -97,6 +98,11 @@ import XCTest
     }
     func testDirectoryValidationDoesNotFollowSymlinkAncestors() throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let physical = try XCTUnwrap(root.path.withCString { realpath($0, nil) })
+        defer { free(physical) }
+        // Preserve POSIX spelling, including /private when it is the physical
+        // anchor. Foundation URL abbreviation must not insert a /var symlink.
+        XCTAssertEqual(root.path, String(cString: physical))
         let actual = root.appendingPathComponent("actual"), link = root.appendingPathComponent("link")
         try FileManager.default.createDirectory(at: actual, withIntermediateDirectories: false)
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: actual)
@@ -113,7 +119,7 @@ import XCTest
         XCTAssertNoThrow(try EditableProductResourceFixture.safeDirectory(safe, create: false))
     }
     private func temporaryDirectory() throws -> URL {
-        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        let root = try EditableProductResourceFixture.systemTemporaryDirectory()
             .appendingPathComponent("PicShotProductFixtureTests-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
         return root

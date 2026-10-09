@@ -619,7 +619,7 @@ def stages(report, directory, seed, golden_paths):
 COMMON_FIELDS = C.IDENTITY_FIELDS | {'version', 'buildVersion', 'schemaVersion', 'protocol', 'mode', 'runIdentifier',
     'requestedDrawingStrategy', 'drawingOverridePresent',
     'status', 'deadlineSeconds', 'entryMemory', 'memoryStabilityAssessed', 'zeroRSSClaim', 'privateBackingReleaseProved',
-    'fullCorrectnessFixtureReplaced', 'scope', 'entryPoints', 'latencyScope', 'flags', 'limits', 'inputManifestSHA256',
+    'fullCorrectnessFixtureReplaced', 'scope', 'entryPoints', 'latencyScope', 'deadlineScope', 'flags', 'limits', 'inputManifestSHA256',
     'inputCertificateSHA256', 'inputPreparationProcessIdentifier', 'inputCertificateProcessIdentifier',
     'inputOriginalEncodedBytes', 'inputBaseEncodedBytes', 'fixtureRetainedInputRasterBytes', 'sessionDateBounds',
     'sampledMemory', 'finalMemory', 'configuration', 'elapsedSeconds'}
@@ -633,6 +633,9 @@ MEASURE_FIELDS = {'resourcePolicy', 'beforeWarmup', 'cycles', 'completedWarmupCy
 def common(report, installed, manifest, component, mode, certificate_hash, certificate_pid, strategy='reference'):
     measure = mode == 'measure'
     keys(report, COMMON_FIELDS | (MEASURE_FIELDS if measure else CERT_FIELDS), 'product report')
+    equal(report['deadlineScope'], '300-second cooperative native deadline. AppDelegate.openRecord retains normal modal error '
+        'presentation; a blocking native modal cannot be preempted by cooperative checks. The owned-process launcher must '
+        'enforce the unchanged 600-second terminal cap.', 'native deadline interpretation')
     C.identity(report, {k: v for k, v in installed.items() if k != 'infoPlistSHA256'}, manifest['operatingSystem'])
     info = plistlib.loads(read(Path(installed['bundlePath']) / 'Contents/Info.plist', 1048576))
     equal(report['version'], info['CFBundleShortVersionString'], 'bundle version')

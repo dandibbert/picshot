@@ -178,7 +178,7 @@ import PicShotCore
         var phaseTimings: [[String: Any]] = []
         var cycle = 0, errors: [String] = []
         init(directory: URL) throws {
-            let ownedRoot = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("picshot-product-" + UUID().uuidString)
+            let ownedRoot = try systemTemporaryDirectory().appendingPathComponent("picshot-product-" + UUID().uuidString)
             let ownedDefaultsName = "PicShot.ProductFixture." + UUID().uuidString
             let ownedDefaults = try O.required(UserDefaults(suiteName: ownedDefaultsName), "Isolated defaults unavailable")
             var ready = false
@@ -940,22 +940,44 @@ import PicShotCore
         try O.require(directory.path.withCString { lstat($0, &info) } == 0 && (info.st_mode & S_IFMT) == S_IFDIR,
             "Product directory missing or unsafe")
     }
+    /// Canonicalize only the trusted OS temporary anchor. Foundation URL
+    /// resolution can abbreviate /private/var to its /var symlink on macOS.
+    /// Requested input/evidence paths never use this canonicalization escape.
+    static func systemTemporaryDirectory() throws -> URL {
+        let pointer = FileManager.default.temporaryDirectory.path.withCString { realpath($0, nil) }
+        guard let pointer else { throw O.failure("Cannot resolve the system temporary directory") }
+        defer { free(pointer) }
+        let directory = URL(fileURLWithPath: String(cString: pointer), isDirectory: true)
+        try checkedDirectoryAncestors(directory, includingLeaf: true, allowingMissing: false)
+        return directory
+    }
     private static func checkedDirectoryAncestors(_ url: URL, includingLeaf: Bool, allowingMissing: Bool) throws {
-        var cursor = includingLeaf ? url.standardizedFileURL : url.standardizedFileURL.deletingLastPathComponent()
+        // Walk the supplied filesystem spelling, not standardizedFileURL:
+        // Foundation can abbreviate canonical /private/var back to /var, which
+        // is itself a system symlink. Lexical parent removal introduces none.
+        func parent(_ path: String) -> String {
+            guard let slash = path.lastIndex(of: "/"), slash != path.startIndex else { return "/" }
+            return String(path[..<slash])
+        }
+        var path = url.path
+        try O.require(path.hasPrefix("/") && path.utf8.count <= 4096, "Product directory path must be absolute and bounded")
+        while path.count > 1 && path.hasSuffix("/") { path.removeLast() }
+        if !includingLeaf { path = parent(path) }
         var count = 0
         while true {
             count += 1; try O.require(count <= 128, "Product path depth exceeds bound")
             var info = stat()
-            let result = cursor.path.withCString { lstat($0, &info) }
+            let result = path.withCString { lstat($0, &info) }
             if result == 0 {
-                try O.require((info.st_mode & S_IFMT) == S_IFDIR, "Product path contains a symlink or non-directory ancestor")
+                try O.require((info.st_mode & S_IFMT) == S_IFDIR,
+                    "Product directory ancestor rejected (mode \(info.st_mode & S_IFMT), depth \(count)): " + path)
             } else {
-                try O.require(allowingMissing && errno == ENOENT, "Product directory ancestor cannot be inspected")
+                let code = errno
+                try O.require(allowingMissing && code == ENOENT,
+                    "Product directory ancestor inspection failed (errno \(code), depth \(count)): " + path)
             }
-            if cursor.path == "/" { break }
-            let parent = cursor.deletingLastPathComponent()
-            try O.require(parent.path != cursor.path, "Product path has no safe root")
-            cursor = parent
+            if path == "/" { break }
+            path = parent(path)
         }
     }
     static func safeSize(_ url: URL, maximum: Int) throws -> Int {
