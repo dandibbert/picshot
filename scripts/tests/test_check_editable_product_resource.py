@@ -91,8 +91,12 @@ def state(phase='cycle-released', strategy='reference'):
 
 
 def cycles(strategy='reference'):
-    report = dict(cycles=[], actions=[], checkpoints=[], phaseTimings=[], beforeWarmup=C.memory(99),
+    report = dict(cycles=[], actions=[], checkpoints=[], phaseTimings=[], retirementObservations=[], beforeWarmup=C.memory(99),
                   completedWarmupCycles=2, completedMeasuredCycles=8)
+    # Synthetic actions/checkpoints occupy their actual named phases, including
+    # room for the provider-retirement observation before each released point.
+    action_offsets = [0, .04, .08, .12, .16, .25, .29, .33, .37, .5, .59, .75, 1, 1.25, 1.29, 1.34, 1.43]
+    point_offsets = [.03, .15, .23, .28, .36, .45, .55, .68, .98, 1.15, 1.33, 1.39, 1.9]
     for ordinal in range(1, 11):
         start, end = 100 + (ordinal-1)*3, 102 + (ordinal-1)*3
         row = dict(ordinal=ordinal, warmup=ordinal <= 2, cold=ordinal == 1,
@@ -106,15 +110,49 @@ def cycles(strategy='reference'):
             report['phaseTimings'].append(dict(cycle=ordinal,phase=phase,startUptimeSeconds=begin,
                 endUptimeSeconds=finish,elapsedSeconds=finish-begin))
         for index, name in enumerate(P.ACTIONS):
-            begin = start + index*.05
+            begin = start + action_offsets[index]
             report['actions'].append(dict(cycle=ordinal, name=name, startUptimeSeconds=begin,
                                          endUptimeSeconds=begin+.025, elapsedSeconds=.025))
         for index, phase in enumerate(P.CHECKPOINTS):
-            report['checkpoints'].append(dict(cycle=ordinal, phase=phase, memory=C.memory(start+index*.1),
-                                             state=state(phase, strategy), ownership=owner()))
+            point = dict(cycle=ordinal, phase=phase, memory=C.memory(start+point_offsets[index]),
+                         state=state(phase, strategy), ownership=owner())
+            report['checkpoints'].append(point)
+            if phase in P.RETIREMENT_PHASES:
+                snapshot = dict(uptimeSeconds=point['memory']['uptimeSeconds']-.005, ownership=copy.deepcopy(point['ownership']),
+                    work={name:point['state'][name] for name in P.RETIREMENT_WORK}, drawing=copy.deepcopy(point['state']['drawing']))
+                report['retirementObservations'].append(dict(cycle=ordinal, phase=phase, maximumWaitSeconds=2.0,
+                    pollIntervalSeconds=.01, status='retired', pollCount=0, elapsedSeconds=0.0,
+                    weakJobDrained=copy.deepcopy(snapshot), providerRetired=copy.deepcopy(snapshot)))
     report.update(afterWarmupBaseline=report['cycles'][1]['afterMemory'], afterMeasuredCycles=report['cycles'][-1]['afterMemory'],
         warmupDeltaBytes=dict.fromkeys(P.C.MEMORY, 0), afterWarmupToMeasuredDeltaBytes=dict.fromkeys(P.C.MEMORY, 0),
-        lateMeasuredIncrements=[dict.fromkeys(P.C.MEMORY, 0) for _ in range(3)])
+        lateMeasuredIncrements=[dict.fromkeys(P.C.MEMORY, 0) for _ in range(3)],
+        fixedRunOwnershipAfterRelease={**owner(), 'created':5}, finalMemory=C.memory(end+.2),
+        configuration={'drawing':D.state(strategy)})
+    snapshot = dict(uptimeSeconds=end+.1, ownership=copy.deepcopy(report['fixedRunOwnershipAfterRelease']),
+        work={name:report['cycles'][-1]['afterReleaseState'][name] for name in P.RETIREMENT_WORK}, drawing=D.state(strategy))
+    report['retirementObservations'].append(dict(cycle=0, phase='fixed-run-released', maximumWaitSeconds=2.0,
+        pollIntervalSeconds=.01, status='retired', pollCount=0, elapsedSeconds=0.0,
+        weakJobDrained=copy.deepcopy(snapshot), providerRetired=copy.deepcopy(snapshot)))
+    return report
+
+
+def delayed_retirement():
+    """A completed provider allocation outlives weak owners by three polls."""
+    report = cycles('owned-srgb8')
+    drawing = D.state('owned-srgb8', 1)
+    for point in report['checkpoints']:
+        point['state']['drawing'] = copy.deepcopy(drawing)
+    for cycle in report['cycles']:
+        cycle['afterReleaseState']['drawing'] = copy.deepcopy(drawing)
+    for row in report['retirementObservations']:
+        row['weakJobDrained']['drawing'] = copy.deepcopy(drawing)
+        row['providerRetired']['drawing'] = copy.deepcopy(drawing)
+    report['configuration']['drawing'] = copy.deepcopy(drawing)
+    row = report['retirementObservations'][0]
+    row.update(pollCount=3, elapsedSeconds=.03)
+    row['weakJobDrained']['uptimeSeconds'] -= .03
+    row['weakJobDrained']['drawing'].update(deallocations=0, releaseCallbacks=0,
+        deallocatedBytes=0, callbackBytes=0, activeBytes=4096)
     return report
 
 
@@ -188,6 +226,8 @@ class ProductEvidenceTests(unittest.TestCase):
         self.root = Path(self.temp.name).resolve()
 
     def test_closed_installed_default_and_explicit_pair_selection_protocols(self):
+        self.assertEqual(P.PROTOCOL, 'editable-product-resource-v3')
+        self.assertEqual(P.INSTALLED_DEFAULT_PROTOCOL, 'editable-product-installed-default-v2')
         for mode, strategy in [('certify','reference'), ('measure','reference'),
                                ('measure','owned-srgb8'), ('installed-default','owned-srgb8')]:
             value = drawing_selection(mode, strategy)
@@ -196,6 +236,8 @@ class ProductEvidenceTests(unittest.TestCase):
                 lambda v: v.update(drawingOverridePresent=not v['drawingOverridePresent']),
                 lambda v: v.update(drawingOverridePresent=int(v['drawingOverridePresent'])),
                 lambda v: v.update(protocol='editable-product-resource-v1'),
+                lambda v: v.update(protocol='editable-product-resource-v2'),
+                lambda v: v.update(protocol='editable-product-installed-default-v1'),
                 lambda v: v.update(mode='measure' if mode != 'measure' else 'installed-default'),
                 lambda v: v.update(requestedDrawingStrategy='reference' if strategy != 'reference' else 'owned-srgb8'),
                 lambda v: v['configuration'].update(drawingProductionDefault='reference'),
@@ -433,6 +475,143 @@ class ProductEvidenceTests(unittest.TestCase):
         for mutation in mutations:
             value=cycles();mutation(value)
             with self.subTest(mutation=mutation),self.assertRaises(REJECTED):P.cycles(value)
+
+    def test_provider_retirement_keeps_active_weak_job_instant_and_exact_later_endpoint(self):
+        value = delayed_retirement()
+        original = copy.deepcopy(value)
+        P.cycles(value, 'owned-srgb8')
+        self.assertEqual(value, original, 'The checker must preserve the original weak/job observation')
+        first = value['retirementObservations'][0]
+        self.assertEqual(first['weakJobDrained']['drawing']['activeBytes'], 4096)
+        self.assertEqual(first['providerRetired']['drawing']['activeBytes'], 0)
+        self.assertEqual((first['pollCount'], first['elapsedSeconds']), (3, .03))
+        self.assertEqual(len(value['retirementObservations']), 31)
+        self.assertEqual([(row['cycle'], row['phase']) for row in value['retirementObservations']],
+            [(cycle, phase) for cycle in range(1, 11) for phase in P.RETIREMENT_PHASES] + [(0, 'fixed-run-released')])
+        # Native window shells can disappear while callbacks catch up; the
+        # released weak controller/window-graph counts are still all zero.
+        first['weakJobDrained']['ownership']['retainedWindowShells'] = 1
+        P.cycles(value, 'owned-srgb8')
+        # The checked summary retains both scalar observations, too.
+        value.update(entryMemory=C.memory(98), elapsedSeconds=32,
+            sampledMemory={'total':{'sampledPeakBytes':C.memory()['counters']},
+                'phases':{f'cycle-{cycle}-{phase}':{'sampledPeakBytes':C.memory()['counters']}
+                    for cycle in range(1, 11) for phase in P.SAMPLE_PHASES}})
+        summary = P.observations(value, {})
+        self.assertEqual(summary['retirementObservations'], value['retirementObservations'])
+        summary['retirementObservations'][0]['weakJobDrained']['drawing']['activeBytes'] = 0
+        self.assertEqual(first['weakJobDrained']['drawing']['activeBytes'], 4096)
+
+    def test_retirement_observation_schema_count_order_and_zero_work_are_closed(self):
+        mutations = [
+            lambda v:v.pop('retirementObservations'),
+            lambda v:v['retirementObservations'].pop(),
+            lambda v:v['retirementObservations'].append(copy.deepcopy(v['retirementObservations'][-1])),
+            lambda v:v['retirementObservations'].reverse(),
+            lambda v:v['retirementObservations'][0].update(cycle=True),
+            lambda v:v['retirementObservations'][0].update(phase='cycle-released'),
+            lambda v:v['retirementObservations'][0].update(status='failed'),
+            lambda v:v['retirementObservations'][0].update(maximumWaitSeconds=3),
+            lambda v:v['retirementObservations'][0].update(pollIntervalSeconds=.02),
+            lambda v:v['retirementObservations'][0].update(unreportedWait=True),
+            lambda v:v['retirementObservations'][0]['weakJobDrained'].pop('work'),
+            lambda v:v['retirementObservations'][0]['providerRetired'].update(extra=0),
+            lambda v:v['retirementObservations'][0]['weakJobDrained']['ownership'].update(liveEditors=1),
+            lambda v:v['retirementObservations'][0]['weakJobDrained']['ownership'].update(attachedWindowGraphs=1),
+            lambda v:v['retirementObservations'][0]['weakJobDrained']['work'].pop('exportSessions'),
+            lambda v:v['retirementObservations'][0]['weakJobDrained']['work'].update(ownedOpenDescriptors=0),
+            lambda v:v['retirementObservations'][0]['weakJobDrained']['work'].update(projectionBusy=0),
+            lambda v:v['retirementObservations'][0]['weakJobDrained']['work'].update(projectionStarted=1),
+            lambda v:v['retirementObservations'][0]['weakJobDrained']['work'].update(projectionCompleted=True),
+            lambda v:v['retirementObservations'][0]['weakJobDrained']['drawing'].update(eligibleCount=3),
+            lambda v:v['retirementObservations'][0]['weakJobDrained']['drawing'].update(ownedCount=0),
+        ]
+        for name in P.RETIREMENT_WORK - {'projectionStarted', 'projectionCompleted', 'projectionBusy'}:
+            mutations.append(lambda v,name=name:v['retirementObservations'][0]['weakJobDrained']['work'].update({name:1}))
+        for mutation in mutations:
+            value = delayed_retirement(); mutation(value)
+            with self.subTest(mutation=mutation), self.assertRaises(REJECTED):P.cycles(value, 'owned-srgb8')
+
+    def test_retirement_rejects_active_endpoint_or_new_work_owners_and_backward_counters(self):
+        def allocate_after(value):
+            drawing = value['retirementObservations'][0]['providerRetired']['drawing']
+            drawing.update(ownedCount=2, eligibleCount=3, allocations=2, deallocations=2, releaseCallbacks=2,
+                allocatedBytes=8192, deallocatedBytes=8192, callbackBytes=8192)
+        mutations = [
+            lambda v:v['retirementObservations'][0]['providerRetired'].update(drawing=copy.deepcopy(v['retirementObservations'][0]['weakJobDrained']['drawing'])),
+            allocate_after,
+            lambda v:v['retirementObservations'][0]['providerRetired']['drawing'].update(presentationReuseCount=1),
+            lambda v:v['retirementObservations'][0]['providerRetired']['drawing'].update(seededContextCount=2,eligibleCount=3,seededContextBytes=8192),
+            lambda v:v['retirementObservations'][0]['providerRetired']['drawing'].update(peakActiveBytes=8192),
+            lambda v:v['retirementObservations'][0]['providerRetired']['drawing'].update(unsupportedCounts={'colorSpace':1}),
+            lambda v:v['retirementObservations'][0]['providerRetired']['work'].update(projectionStarted=1,projectionCompleted=1),
+            lambda v:v['retirementObservations'][0]['weakJobDrained']['ownership'].update(created=15),
+            lambda v:v['retirementObservations'][0]['providerRetired']['ownership'].update(retainedWindowShells=1),
+            lambda v:v['retirementObservations'][0]['weakJobDrained']['drawing'].update(releaseCallbacks=2),
+            lambda v:v['retirementObservations'][0]['weakJobDrained']['drawing'].update(callbackBytes=8192),
+            lambda v:v['retirementObservations'][0]['weakJobDrained']['drawing'].update(peakActiveBytes=8192),
+        ]
+        for mutation in mutations:
+            value = delayed_retirement(); mutation(value)
+            with self.subTest(mutation=mutation), self.assertRaises(REJECTED):P.retirement_observations(value, 'owned-srgb8')
+        # A later balanced report cannot erase callbacks/allocations already
+        # observed at the prior retirement boundary.
+        value = delayed_retirement()
+        for observation in ('weakJobDrained', 'providerRetired'):
+            value['retirementObservations'][1][observation]['drawing'] = D.state('owned-srgb8')
+        value['checkpoints'][P.CHECKPOINTS.index('group-hidden-released')]['state']['drawing'] = D.state('owned-srgb8')
+        with self.assertRaisesRegex(ValueError, 'moved backward'):
+            P.retirement_observations(value, 'owned-srgb8')
+
+    def test_retirement_rejects_fabricated_elapsed_poll_counts_and_out_of_phase_observations(self):
+        mutations = [
+            lambda v:v['retirementObservations'][0].update(pollCount=True),
+            lambda v:v['retirementObservations'][0].update(pollCount=-1),
+            lambda v:v['retirementObservations'][0].update(pollCount=201),
+            lambda v:v['retirementObservations'][0].update(pollCount=1.5),
+            lambda v:v['retirementObservations'][0].update(pollCount=4),
+            lambda v:v['retirementObservations'][0].update(pollCount=0),
+            lambda v:v['retirementObservations'][0].update(elapsedSeconds=True),
+            lambda v:v['retirementObservations'][0].update(elapsedSeconds=-.01),
+            lambda v:v['retirementObservations'][0].update(elapsedSeconds=.02),
+            lambda v:v['retirementObservations'][0].update(elapsedSeconds=2),
+            lambda v:v['retirementObservations'][0].update(elapsedSeconds=float('inf')),
+            lambda v:v['retirementObservations'][0]['weakJobDrained'].update(uptimeSeconds=float('nan')),
+            lambda v:v['retirementObservations'][0]['providerRetired'].update(uptimeSeconds=0),
+            lambda v:v['retirementObservations'][0]['weakJobDrained'].update(drawing=copy.deepcopy(v['retirementObservations'][0]['providerRetired']['drawing'])),
+        ]
+        for mutation in mutations:
+            value = delayed_retirement(); mutation(value)
+            with self.subTest(mutation=mutation), self.assertRaises(REJECTED):P.retirement_observations(value, 'owned-srgb8')
+        for row_index, offset in [(0, -.5), (1, -.5), (2, -.5), (30, -1), (30, 1)]:
+            value = cycles()
+            for observation in ('weakJobDrained', 'providerRetired'):
+                value['retirementObservations'][row_index][observation]['uptimeSeconds'] += offset
+            with self.subTest(row=row_index,offset=offset), self.assertRaisesRegex(ValueError, 'outside'):
+                P.retirement_observations(value, 'reference')
+        value = cycles()
+        row = value['retirementObservations'][0]
+        row['providerRetired']['uptimeSeconds'] += .001
+        row['elapsedSeconds'] = .001
+        with self.assertRaisesRegex(ValueError, 'zero-poll retirement observations'):
+            P.retirement_observations(value, 'reference')
+
+    def test_retirement_binds_exact_checkpoint_cycle_and_fixed_final_snapshots(self):
+        mutations = [
+            lambda v:v['checkpoints'][2]['ownership'].update(retainedWindowShells=1),
+            lambda v:v['checkpoints'][2]['state']['drawing'].update(presentationReuseCount=1),
+            lambda v:v['checkpoints'][2]['state'].update(projectionStarted=1,projectionCompleted=1),
+            lambda v:v['checkpoints'][2]['memory'].update(uptimeSeconds=100.19),
+            lambda v:v['cycles'][0]['ownershipAfterRelease'].update(retainedWindowShells=1),
+            lambda v:v['cycles'][0]['afterReleaseState']['drawing'].update(presentationReuseCount=1),
+            lambda v:v['cycles'][0]['afterReleaseState'].update(projectionStarted=1,projectionCompleted=1),
+            lambda v:v['fixedRunOwnershipAfterRelease'].update(retainedWindowShells=1),
+            lambda v:v['configuration']['drawing'].update(presentationReuseCount=1),
+            lambda v:v['retirementObservations'][-1]['weakJobDrained']['ownership'].update(created=16),
+        ]
+        for mutation in mutations:
+            value = delayed_retirement(); mutation(value)
+            with self.subTest(mutation=mutation), self.assertRaises(REJECTED):P.cycles(value, 'owned-srgb8')
 
     def test_copy_file_identity_bounds_and_content_addressing(self):
         data=b'synthetic encoded bytes'; digest=P.C.digest(data)

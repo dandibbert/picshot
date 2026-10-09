@@ -17,16 +17,22 @@ struct DrawingRasterConfiguration: @unchecked Sendable {
     let limits: DrawingRaster.Limits
     let tracker: DrawingRasterTracker
     let failureInjection: DrawingRaster.FailureInjection
+    /// Explicit test construction only. Observe the actual provider before
+    /// CGImage may copy it; process/environment configurations always set nil.
+    let providerObserverForTesting: ((CGDataProvider) -> Void)?
     private let selection: Result<DrawingRasterStrategy, DrawingRaster.Failure>
 
     init(strategy: DrawingRasterStrategy, limits: DrawingRaster.Limits = .standard,
          tracker: DrawingRasterTracker = DrawingRasterTracker(),
-         failureInjection: DrawingRaster.FailureInjection = .none) {
+         failureInjection: DrawingRaster.FailureInjection = .none,
+         providerObserverForTesting: ((CGDataProvider) -> Void)? = nil) {
         self.limits = limits; self.tracker = tracker; self.failureInjection = failureInjection
+        self.providerObserverForTesting = providerObserverForTesting
         selection = .success(strategy)
     }
     init(environment: [String: String]) {
         limits = .standard; tracker = DrawingRasterTracker(); failureInjection = .none
+        providerObserverForTesting = nil
         do { selection = .success(try Self.selection(environment: environment)) }
         catch { selection = .failure(.invalidConfiguration) }
     }
@@ -157,6 +163,7 @@ enum DrawingRaster {
                     let owner = Unmanaged<Bytes>.fromOpaque(info).takeRetainedValue()
                     owner.tracker.callback(actual: size, expected: owner.count)
                 }) else { retained.release(); throw Failure.providerFailed }
+            configuration.providerObserverForTesting?(provider)
             guard let color = CGColorSpace(name: CGColorSpace.sRGB),
                   let image = CGImage(width: source.width, height: source.height, bitsPerComponent: 8,
                     bitsPerPixel: 32, bytesPerRow: rowBytes, space: color, bitmapInfo: bitmapInfo,

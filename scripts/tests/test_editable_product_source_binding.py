@@ -8,11 +8,24 @@ from pathlib import Path
 import re
 import unittest
 from product_launcher_source_contract import without_product_launcher_hooks
+from product_retirement_source_contract import without_product_retirement_waits, without_provider_test_observer
 
 ROOT=Path(__file__).resolve().parents[2]
 
 
 class ProductSourceBindingTests(unittest.TestCase):
+    def test_provider_observer_is_inert_for_process_and_preserves_original_drawing_implementation(self):
+        source=(ROOT/'Sources/PicShot/DrawingRaster.swift').read_text()
+        environment=source[source.index('    init(environment:'):source.index('    static let process =')]
+        self.assertEqual(environment.count('providerObserverForTesting = nil'),1)
+        self.assertIn('static let process = DrawingRasterConfiguration(environment: ProcessInfo.processInfo.environment)',source)
+        callback=source.index('            configuration.providerObserverForTesting?(provider)')
+        self.assertLess(source.index('guard let provider = CGDataProvider('),callback)
+        self.assertLess(callback,source.index('let image = CGImage(',callback))
+        stripped=without_provider_test_observer(self,source)
+        self.assertEqual(hashlib.sha256(stripped.encode()).hexdigest(),
+            'ab3166f71cd826b10e137bf2c4f2171dd3b8fbf8e4da3a279337a866199c2363')
+
     def test_general_launcher_preserves_prior_body_after_four_literal_insertions(self):
         source=(ROOT/'scripts/launch-smoke-app.swift').read_text()
         stripped=without_product_launcher_hooks(self,source)
@@ -83,9 +96,10 @@ class ProductSourceBindingTests(unittest.TestCase):
         self.assertIn('CGImage.read(url: input.directory.appendingPathComponent("base.png"))',measured)
         self.assertIn('static let deadlineSeconds = 300.0, copyBufferBytes = 65_536',source)
         self.assertIn('static let warmups = 2, measured = 8, width = 3840, height = 2160',source)
-        # Source133's entire actual workload, snapshots, copy accounting and
-        # retirement implementation remain unchanged for default validation.
+        # Strip only the exact bounded-retirement substitutions. The historical
+        # actual workload, snapshots, outputs and copy accounting stay frozen.
         core=source[source.index('    private static func measure('):source.index('    private static func loadInput(')]
+        core=without_product_retirement_waits(self,core)
         self.assertEqual(hashlib.sha256(core.encode()).hexdigest(),
             '8c27512aff4ee6ab7772ff5bfd16c1456a671f23e9ef5cd94b7553470e4d2844')
 

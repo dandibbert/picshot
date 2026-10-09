@@ -147,37 +147,36 @@ final class VideoTrimTests: XCTestCase {
             try oldDestination.write(to: target)
             let destination = try VideoExportDestination(url: target, preserving: source, overwriteConfirmed: true)
             let range = try VideoTrimRange(start: 0, end: 0.5, sourceDuration: 2)
-            let marker = root.appendingPathComponent("child.json")
+            let marker = root.appendingPathComponent("child.ready")
             let release = root.appendingPathComponent("release")
             let readback = root.appendingPathComponent("copied-input.mp4")
-            let script = """
-            import json,os,sys,time
-            sys.stdin.buffer.readline()
-            with open(sys.argv[1], 'x') as marker:
-                json.dump({'directory':os.getcwd(),'pid':os.getpid()}, marker)
-            print('{"version":1,"kind":"progress","fraction":0}', flush=True)
-            deadline=time.monotonic()+20
-            while not os.path.exists(sys.argv[2]) and time.monotonic()<deadline:
-                time.sleep(0.02)
-            if os.path.exists(sys.argv[2]):
-                with open('source.mp4','rb') as source, open(sys.argv[3],'xb') as output:
-                    output.write(source.read())
-            sys.exit(1)
-            """
-            // Signals alone are injected. The service still observes a real
-            // child, uses its unchanged 3.8-second window, and confirms exit.
-            let gif = GIFExportProcessService(configuration: .init(executable: { python },
-                arguments: ["-u", "-c", script, marker.path, release.path, readback.path], wallSeconds: 0.5,
-                stopActionsForTesting: .init(terminate: { _ in }, kill: { _ in })))
+            let launch = GIFProcessLaunchDiagnostics()
+            let cancellation = GIFProcessTestCancellation()
+            // Cancel only after the child's distinct progress event. The
+            // existing 0.5-second wall limit remains a hard fallback: missing
+            // readiness is a failure, never permission to assume a live child.
+            // Signals alone are injected; actual exit observation and the
+            // service's 3.8-second unconfirmed-exit window remain unchanged.
+            let gif = GIFExportProcessService(configuration: .init(executable: { VideoTrimGIFFixture.executableURL },
+                arguments: try VideoTrimGIFFixture.arguments(marker: marker, release: release, readback: readback), wallSeconds: 0.5,
+                stopActionsForTesting: .init(terminate: { _ in }, kill: { _ in }), launchDiagnosticsForTesting: launch))
             let operation = InferenceTestOperation {
                 try await GIFExporter.withProcessServiceForTesting(gif) {
-                    try await VideoTrimExporter.exportGIF(sourceURL: source, destination: destination, range: range)
+                    try await VideoTrimExporter.exportGIF(sourceURL: source, destination: destination, range: range) { value in
+                        if value == VideoTrimGIFFixture.trimReadyFraction { cancellation.request() }
+                    }
                 }
             }
+            // Handles either ordering of callback and task installation.
+            cancellation.install { operation.cancel() }
+            defer { cancellation.clear(); operation.cancel() }
             do {
                 do { _ = try await operation.value(timeout: 15, phase: "unconfirmed trim GIF exit"); XCTFail("Must fail with an unconfirmed exit") }
                 catch GIFExportProcessError.exitUnconfirmed { }
-                let child = try JSONDecoder().decode(TrimChildMarker.self, from: Data(contentsOf: marker))
+                guard cancellation.wasRequested else {
+                    throw GIFProcessTestSupportError.failed("Trim GIF child readiness was not observed before the unchanged wall deadline")
+                }
+                let child = try VideoTrimGIFFixture.ChildMarker(data: Data(contentsOf: marker))
                 let job = URL(fileURLWithPath: child.directory, isDirectory: true)
                 // Darwin may report /private/var while Foundation retains
                 // /var. Compare the actual parent directories, not their aliases.
@@ -199,6 +198,9 @@ final class VideoTrimTests: XCTestCase {
                 XCTAssertEqual(try Data(contentsOf: target), oldDestination)
                 let stranded = await gif.snapshot()
                 XCTAssertTrue(stranded.active)
+                XCTAssertEqual(stranded.lastJob?.outcome, "exitUnconfirmed")
+                XCTAssertEqual(stranded.lastJob?.childLaunched, true)
+                XCTAssertEqual(stranded.lastJob?.configuredWallSeconds, 0.5)
                 XCTAssertEqual(stranded.lastJob?.childExitConfirmed, false)
                 XCTAssertEqual(stranded.lastJob?.temporaryDirectoryRemoved, false)
 
@@ -230,6 +232,10 @@ final class VideoTrimTests: XCTestCase {
                 try assertNoStaging(in: root)
             } catch {
                 let failure = error
+                let launchJSON = launch.snapshot().boundedJSON().map { String(decoding: $0, as: UTF8.self) } ?? "unavailable"
+                await GIFProcessTestDiagnostics.record(service: gif, phase: "late-exit trim GIF readiness",
+                    detail: "\(failure); childProgressObserved=\(cancellation.wasRequested); markerExists=\(FileManager.default.fileExists(atPath: marker.path))")
+                print("Trim GIF launch diagnostic: \(launchJSON)")
                 try? Data().write(to: release)
                 operation.cancel()
                 _ = try? await operation.value(timeout: 6, phase: "failed late-exit fixture unwind")
@@ -598,7 +604,3 @@ private final class ProgressRecorder: @unchecked Sendable {
     func record(_ value: Double) { lock.lock(); defer { lock.unlock() }; recorded.append(value) }
 }
 
-private struct TrimChildMarker: Decodable {
-    let directory: String
-    let pid: Int32
-}

@@ -7,8 +7,8 @@ import PicShotCore
 /// stays separate. Only `certify` draws reference pixels; measured modes never do.
 @MainActor enum EditableProductResourceFixture {
     typealias O = EditableAnnotationFixtureObservation
-    static let protocolID = "editable-product-resource-v2"
-    static let installedDefaultProtocolID = "editable-product-installed-default-v1"
+    static let protocolID = "editable-product-resource-v3"
+    static let installedDefaultProtocolID = "editable-product-installed-default-v2"
     static let warmups = 2, measured = 8, width = 3840, height = 2160
     static let deadlineSeconds = 300.0, copyBufferBytes = 65_536
     static let maximumPNGBytes = 40 * 1_024 * 1_024
@@ -137,7 +137,9 @@ import PicShotCore
             sampler.stop(); report["status"] = "failed"; report["error"] = error.localizedDescription
             report["sampledMemory"] = sampler.report; report["finalMemory"] = try? O.memory()
             report["elapsedSeconds"] = ProcessInfo.processInfo.systemUptime - began
-            try? write(report, evidenceDirectory.appendingPathComponent(request.mode == .certify ? "product-certificate.json" : "editable-product-resource.json"))
+            // A failed retirement must leave its original scalar observation on
+            // disk before this error propagates. A write failure is itself fatal.
+            try write(report, evidenceDirectory.appendingPathComponent(request.mode == .certify ? "product-certificate.json" : "editable-product-resource.json"))
             throw error
         }
     }
@@ -172,6 +174,17 @@ import PicShotCore
             probes.compactMap { $0.role == "window" ? $0.value as? NSWindow : nil }
                 .filter { $0.contentView != nil || $0.delegate != nil }.count
         }
+        var observedAppDelegate: AppDelegate? {
+            probes.first { $0.role == "appDelegate" }?.value as? AppDelegate
+        }
+        var observedPinSession: PinSessionCoordinator? {
+            probes.first { $0.role == "pinSessionCoordinator" }?.value as? PinSessionCoordinator
+        }
+        var retirementSnapshot: EditableProductRetirement.Ownership {
+            .init(created: probes.count, aliveNonWindowObjects: alive, liveEditors: editorCount,
+                livePins: pinCount, attachedWindowGraphs: attachedWindowCount,
+                retainedWindowShells: probes.filter { $0.role == "window" && $0.value != nil }.count)
+        }
         var report: [String: Any] {
             ["created": probes.count, "aliveNonWindowObjects": alive, "liveEditors": editorCount,
                 "livePins": pinCount, "attachedWindowGraphs": attachedWindowCount,
@@ -186,6 +199,7 @@ import PicShotCore
         var identities: Set<O.OwnedFileIdentity> = []
         var checkpoints: [[String: Any]] = [], stages: [[String: Any]] = [], actions: [[String: Any]] = []
         var phaseTimings: [[String: Any]] = []
+        var retirementObservations: [EditableProductRetirement.Evidence] = []
         var cycle = 0, errors: [String] = []
         init(directory: URL) throws {
             let ownedRoot = try systemTemporaryDirectory().appendingPathComponent("picshot-product-" + UUID().uuidString)
@@ -216,6 +230,15 @@ import PicShotCore
             identities.formUnion(try O.ownedFileIdentities(root))
             try FileManager.default.removeItem(at: root)
             defaults.removePersistentDomain(forName: defaultsName)
+        }
+        func retire(_ phase: String, deadline: Double) async throws {
+            let index = retirementObservations.count
+            try O.require(index < 30, "Product retirement observation bound exceeded")
+            _ = try await EditableProductRetirement.wait(cycle: cycle, phase: phase, deadline: deadline,
+                observe: { retirementState(self.observation, run: self) }, record: { evidence in
+                    if self.retirementObservations.count == index { self.retirementObservations.append(evidence) }
+                    else { self.retirementObservations[index] = evidence }
+                })
         }
         func record(_ phase: String) throws {
             try O.require(checkpoints.count < maximumCheckpoints, "Product checkpoint bound exceeded")
@@ -306,8 +329,16 @@ import PicShotCore
             report["afterCloseOwnership"] = run!.observation.report
             report["sessionDateBounds"] = ["start": (report["sessionDateBounds"] as? [String: Double])?["start"] ?? 0,
                 "end": Date().timeIntervalSinceReferenceDate]
+            var retirements = run!.retirementObservations
             run = nil
-            try await wait(deadline) { fixedOwnership.alive == 0 && drained() }
+            _ = try await EditableProductRetirement.wait(cycle: 0, phase: "fixed-run-released", deadline: deadline,
+                observe: { retirementState(fixedOwnership, run: nil) }, record: { evidence in
+                    if retirements.count == 30 { retirements.append(evidence) }
+                    else { retirements[30] = evidence }
+                    // Evidence is scalars only; preserve the original observation
+                    // even when cancellation or the bounded retirement wait fails.
+                    report["retirementObservations"] = try scalar(retirements)
+                })
             try await settle(deadline)
             try O.require(drained(), "Global projection/export job survived run release")
             report["fixedRunOwnershipAfterRelease"] = fixedOwnership.report
@@ -317,6 +348,7 @@ import PicShotCore
                 report["stages"] = current.stages; report["checkpoints"] = current.checkpoints
                 report["actions"] = current.actions; report["evidenceCopies"] = current.artifacts.report
                 report["phaseTimings"] = current.phaseTimings
+                report["retirementObservations"] = try scalar(current.retirementObservations)
             }
             throw error
         }
@@ -348,7 +380,7 @@ import PicShotCore
             let historyID = try await seedEditCropSaveClose(run, input: input, deadline: deadline)
             // The seed helper has returned. Neither its controller nor its
             // original/base/payload locals are retained across this boundary.
-            try await wait(deadline) { run.observation.editorCount == 0 && run.observation.alive == 0 && run.observation.attachedWindowCount == 0 && drained() }
+            try await run.retire("seed-closed", deadline: deadline)
             try run.record("seed-closed")
             try nextPhase("reopen")
             let pinID = try await reopenEditUndoPinClose(run, historyID: historyID, input: input, deadline: deadline)
@@ -358,14 +390,14 @@ import PicShotCore
             try await annotationVisibility(run, pinID: pinID, deadline: deadline)
             try nextPhase("group-hide")
             try await run.action("group-hide", deadline: deadline) { try run.session.hideCurrentGroup() }
-            try await wait(deadline) { run.observation.alive == 0 && run.observation.attachedWindowCount == 0 && run.session.livePinCount == 0 && drained() }
+            try await run.retire("group-hidden-released", deadline: deadline)
             try run.record("group-hidden-released")
             try nextPhase("group-show")
             try await showGroup(run, pinID: pinID, deadline: deadline)
             try nextPhase("space-apply")
             try await spaceApplyClose(run, pinID: pinID, input: input, deadline: deadline)
             try nextPhase("release")
-            try await wait(deadline) { run.observation.alive == 0 && run.observation.attachedWindowCount == 0 && run.session.livePinCount == 0 && drained() }
+            try await run.retire("cycle-released", deadline: deadline)
             run.identities.formUnion(try O.ownedFileIdentities(run.root))
             let handles = try O.ownedFileDescriptors(run.root, identities: run.identities)
             try O.require(handles.isEmpty, "Cycle-owned descriptor remained open")
@@ -387,6 +419,7 @@ import PicShotCore
             report["stages"] = run.stages; report["checkpoints"] = run.checkpoints
             report["actions"] = run.actions; report["evidenceCopies"] = run.artifacts.report
             report["phaseTimings"] = run.phaseTimings
+            report["retirementObservations"] = try scalar(run.retirementObservations)
             if ordinal == warmups { report["afterWarmupBaseline"] = after }
             try write(report, directory.appendingPathComponent("editable-product-resource.json"))
         }
@@ -873,6 +906,25 @@ import PicShotCore
             .compactMap(\.documentView).first { $0.menu === menu && $0.acceptsFirstResponder }, "Native pin responder missing")
         try O.require(canvas.window === pin.window && pin.window?.makeFirstResponder(canvas) == true, "Pin canvas is not the native key responder")
         return canvas
+    }
+    private static func retirementState(_ ownership: Ownership, run: Run?) -> EditableProductRetirement.State {
+        // After releasing Run, continue reading the real app/session through
+        // weak probes. A zero then means the observed owner is actually absent,
+        // not merely that the fixture's strong Run variable was cleared.
+        let app = run?.app ?? ownership.observedAppDelegate
+        let session = run?.session ?? ownership.observedPinSession
+        return .init(ownership: ownership.retirementSnapshot,
+            work: .init(appEditorCount: app?.controllers.compactMap { $0 as? ImageEditorController }.count ?? 0,
+                pinCount: session?.livePinCount ?? 0,
+                pinEditorCount: session?.liveControllers.values.filter { $0.annotationEditor != nil }.count ?? 0,
+                projectionBusy: EditorOutputProjection.shared.isBusy,
+                projectionReservedBytes: EditorOutputProjection.shared.reservedBytes,
+                projectionQueueOperations: EditorOutputProjection.shared.queue.operationCount,
+                projectionStarted: EditorOutputProjection.shared.startedCount,
+                projectionCompleted: EditorOutputProjection.shared.completedCount,
+                exportSessions: ImageExportController.activeSessionCount,
+                exportQueueOperations: ImageExportService.queue.operationCount),
+            drawing: DrawingRasterConfiguration.process.tracker.snapshot())
     }
     private static func drained() -> Bool {
         !EditorOutputProjection.shared.isBusy && EditorOutputProjection.shared.reservedBytes == 0

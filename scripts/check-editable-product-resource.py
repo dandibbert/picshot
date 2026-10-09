@@ -35,8 +35,8 @@ D = module('product_drawing_check', 'check-editable-drawing-pair.py')
 R = module('product_renderer_check', 'check-renderer-storage-pair.py')
 E = module('product_effect_check', 'check-effect-context-pair.py')
 need, keys, integer, number, sha = C.need, C.keys, C.integer, C.number, C.sha
-PROTOCOL = 'editable-product-resource-v2'
-INSTALLED_DEFAULT_PROTOCOL = 'editable-product-installed-default-v1'
+PROTOCOL = 'editable-product-resource-v3'
+INSTALLED_DEFAULT_PROTOCOL = 'editable-product-installed-default-v2'
 PIXEL_PROTOCOL = 'editable-product-pixels-v1'
 MAX_JSON = 2 * 1024 * 1024
 MAX_RAW_REPORT = 8 * 1024 * 1024
@@ -267,6 +267,12 @@ LIVE_COUNTS = {'editor-open': (1, 0, 0), 'history-saved': (1, 0, 0), 'seed-close
 ASSERTIONS = ('nativeEditUndo', 'cropApplied', 'appDelegateHistorySave', 'appDelegateOpenRecord',
               'nativePinCallback', 'hiddenGeometry', 'groupRetiredAndReloaded', 'spaceSharedOriginal',
               'nativeEighthLayerApplied', 'committedVersionsPreserved', 'controllerGraphsRetired', 'jobsAndDescriptorsDrained')
+RETIREMENT_PHASES = {'seed-closed': 'seed', 'group-hidden-released': 'group-hide', 'cycle-released': 'release'}
+RETIREMENT_WORK = {'appEditorCount', 'pinCount', 'pinEditorCount', 'projectionBusy', 'projectionReservedBytes',
+                   'projectionQueueOperations', 'projectionStarted', 'projectionCompleted', 'exportSessions',
+                   'exportQueueOperations'}
+RETIREMENT_COUNTERS = {'deallocations', 'releaseCallbacks', 'deallocatedBytes', 'callbackBytes'}
+RETIREMENT_TIME_EPSILON = 1e-9
 
 
 def owner(value, *, released=False):
@@ -278,6 +284,97 @@ def owner(value, *, released=False):
     if released:
         for name in ('aliveNonWindowObjects', 'liveEditors', 'livePins', 'attachedWindowGraphs'):
             equal(value[name], 0, 'released ' + name)
+
+
+def retirement_work(value):
+    keys(value, RETIREMENT_WORK, 'retirement work snapshot')
+    need(value['projectionBusy'] is False, 'projection busy at weak/job drain')
+    for name in RETIREMENT_WORK - {'projectionBusy'}:
+        integer(value[name], 0, 2**40)
+        if name not in ('projectionStarted', 'projectionCompleted'):
+            equal(value[name], 0, 'retirement work not drained: ' + name)
+    equal(value['projectionStarted'], value['projectionCompleted'], 'retirement projection jobs not drained')
+
+
+def drawing_retired(value):
+    return (value['activeBytes'] == 0
+        and value['allocations'] == value['deallocations'] == value['releaseCallbacks']
+        and value['allocatedBytes'] == value['deallocatedBytes'] == value['callbackBytes'])
+
+
+def retirement_observations(report, strategy):
+    """Keep the original weak/job instant and bind the later exact endpoint.
+
+    Only provider callbacks/deallocation may advance during this bounded wait.
+    Neither instant attributes a remaining native backing to a particular holder.
+    """
+    rows = report['retirementObservations']
+    expected = [(cycle, phase) for cycle in range(1, 11) for phase in RETIREMENT_PHASES]
+    expected.append((0, 'fixed-run-released'))
+    need(type(rows) is list and len(rows) == len(expected), 'all 31 retirement observations required')
+    previous_drawing = None
+    for row, (cycle, phase) in zip(rows, expected):
+        keys(row, {'cycle', 'phase', 'maximumWaitSeconds', 'pollIntervalSeconds', 'status', 'pollCount',
+                   'elapsedSeconds', 'weakJobDrained', 'providerRetired'}, 'retirement observation')
+        equal(row['cycle'], cycle, 'retirement cycle'); equal(row['phase'], phase, 'retirement phase order')
+        need(number(row['maximumWaitSeconds']) == 2.0, 'retirement wait cap differs')
+        need(number(row['pollIntervalSeconds']) == .01, 'retirement poll interval differs')
+        equal(row['status'], 'retired', 'retirement did not succeed')
+        polls = integer(row['pollCount'], 0, 200)
+        elapsed = number(row['elapsedSeconds'], 0, 2)
+        need(elapsed < 2, 'retirement wait reached/exceeded cap')
+        before, after = row['weakJobDrained'], row['providerRetired']
+        for label, value in [('weak/job', before), ('provider-retired', after)]:
+            keys(value, {'uptimeSeconds', 'ownership', 'work', 'drawing'}, label + ' observation')
+            number(value['uptimeSeconds'])
+            owner(value['ownership'], released=True)
+            retirement_work(value['work'])
+            drawing = value['drawing']
+            D.drawing_snapshot(drawing, strategy, previous=previous_drawing, released=label == 'provider-retired')
+            equal(drawing['allocations'], drawing['ownedCount'], 'retirement successful allocation work')
+            equal(drawing['eligibleCount'], drawing['ownedCount'] + drawing['seededContextCount'],
+                  'retirement successful eligible work')
+            previous_drawing = drawing
+        begin, end = before['uptimeSeconds'], after['uptimeSeconds']
+        need(begin <= end and abs((end - begin) - elapsed) <= RETIREMENT_TIME_EPSILON,
+             'retirement elapsed arithmetic differs')
+        equal(before['work'], after['work'], 'new work during provider retirement')
+        equal(before['ownership']['created'], after['ownership']['created'], 'owners created during provider retirement')
+        for name in before['ownership']:
+            need(after['ownership'][name] <= before['ownership'][name], 'ownership increased during provider retirement')
+        for name in before['drawing'].keys() - RETIREMENT_COUNTERS - {'activeBytes'}:
+            equal(before['drawing'][name], after['drawing'][name], 'drawing work changed during provider retirement: ' + name)
+        if polls == 0:
+            need(drawing_retired(before['drawing']), 'zero-poll retirement started with active providers')
+            equal(before, after, 'zero-poll retirement observations')
+            need(elapsed == 0, 'zero-poll retirement delay differs')
+        else:
+            need(not drawing_retired(before['drawing']), 'balanced providers unnecessarily polled')
+            need(elapsed + RETIREMENT_TIME_EPSILON >= polls * .01, 'retirement delay omits polling time')
+        if cycle:
+            offset = (cycle - 1) * len(CHECKPOINTS) + CHECKPOINTS.index(phase)
+            point = report['checkpoints'][offset]
+            phase_row = report['phaseTimings'][(cycle - 1) * len(SAMPLE_PHASES)
+                                               + SAMPLE_PHASES.index(RETIREMENT_PHASES[phase])]
+            need(phase_row['startUptimeSeconds'] <= begin <= end <= point['memory']['uptimeSeconds']
+                 <= phase_row['endUptimeSeconds'], 'retirement outside named phase/checkpoint')
+            equal(after['ownership'], point['ownership'], 'retirement/checkpoint ownership')
+            equal(after['drawing'], point['state']['drawing'], 'retirement/checkpoint drawing')
+            equal(after['work'], {name: point['state'][name] for name in RETIREMENT_WORK}, 'retirement/checkpoint work')
+            if phase == 'cycle-released':
+                endpoint = report['cycles'][cycle - 1]
+                equal(after['ownership'], endpoint['ownershipAfterRelease'], 'retirement/cycle endpoint ownership')
+                equal(after['drawing'], endpoint['afterReleaseState']['drawing'], 'retirement/cycle endpoint drawing')
+                equal(after['work'], {name: endpoint['afterReleaseState'][name] for name in RETIREMENT_WORK},
+                      'retirement/cycle endpoint work')
+        else:
+            need(report['phaseTimings'][-1]['endUptimeSeconds'] <= begin <= end <= report['finalMemory']['uptimeSeconds'],
+                 'fixed retirement outside final cleanup')
+            equal(after['ownership'], report['fixedRunOwnershipAfterRelease'], 'retirement/fixed ownership')
+            equal(after['drawing'], report['configuration']['drawing'], 'retirement/final drawing')
+            equal(after['drawing'], report['cycles'][-1]['afterReleaseState']['drawing'], 'drawing work after final cycle')
+            equal(after['work'], {name: report['cycles'][-1]['afterReleaseState'][name] for name in RETIREMENT_WORK},
+                  'retirement/final work')
 
 
 def state(value, *, released=False, strategy='reference'):
@@ -442,6 +539,7 @@ def cycles(report, strategy='reference'):
     equal(report['warmupDeltaBytes'], delta(report['beforeWarmup'], rows[1]['afterMemory']), 'warmup arithmetic')
     equal(report['afterWarmupToMeasuredDeltaBytes'], delta(rows[1]['afterMemory'], rows[-1]['afterMemory']), 'measured arithmetic')
     equal(report['lateMeasuredIncrements'], [delta(a['afterMemory'], b['afterMemory']) for a, b in zip(rows[-4:-1], rows[-3:])], 'late growth arithmetic')
+    retirement_observations(report, strategy)
 
 
 def json_value(data):
@@ -628,7 +726,7 @@ COMMON_FIELDS = C.IDENTITY_FIELDS | {'version', 'buildVersion', 'schemaVersion',
     'sampledMemory', 'finalMemory', 'configuration', 'elapsedSeconds'}
 CERT_FIELDS = {'goldens', 'originalDocumentBase64', 'appliedDocumentBase64', 'goldenSource', 'memoryComparisonExcluded'}
 MEASURE_FIELDS = {'resourcePolicy', 'beforeWarmup', 'cycles', 'completedWarmupCycles', 'completedMeasuredCycles',
-    'stages', 'checkpoints', 'actions', 'phaseTimings', 'evidenceCopies', 'afterWarmupBaseline', 'afterMeasuredCycles',
+    'stages', 'checkpoints', 'actions', 'phaseTimings', 'retirementObservations', 'evidenceCopies', 'afterWarmupBaseline', 'afterMeasuredCycles',
     'warmupDeltaBytes', 'afterWarmupToMeasuredDeltaBytes', 'lateMeasuredIncrements', 'ownedTemporaryDirectoryRemoved',
     'ownedOpenDescriptorsAfterCleanup', 'afterCloseOwnership', 'fixedRunOwnershipAfterRelease', 'fixedRunOwnersReleased'}
 
@@ -791,7 +889,8 @@ def observations(report, copies):
             'ledger_phys_footprint_peak': final['backingAccounting']['standard']['ledgerBytes']['ledger_phys_footprint_peak']},
         'coldCycle': {'elapsedSeconds': rows[0]['elapsedSeconds'], 'deltaBytes': rows[0]['deltaBytes'],
             'entryToReleasedBytes': delta(entry, rows[0]['afterMemory'])},
-        'cycles': [], 'evidenceCopies': copies, 'elapsedSeconds': report['elapsedSeconds'],
+        'cycles': [], 'retirementObservations': copy.deepcopy(report['retirementObservations']),
+        'evidenceCopies': copies, 'elapsedSeconds': report['elapsedSeconds'],
         'allEightCounters': list(C.MEMORY), 'fullBackingAccountingPreservedInRawReport': True,
         'memoryStabilityAssessed': False, 'universalRSSLimitApplied': False}
     for ordinal, row in enumerate(rows, 1):
