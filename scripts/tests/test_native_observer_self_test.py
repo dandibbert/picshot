@@ -125,6 +125,24 @@ class ObserverSelfTestContracts(unittest.TestCase):
         self.assertTrue(self.harness.census_uncertain)
         self.assertEqual(self.harness.report['vanishedChildEvidence']['unresolvedCount'],1)
 
+    def test_initial_child_admission_is_preserved_without_granting_target_or_cleanup_rights(self):
+        row=dict(status='stabilized',before={'pid':999},after={'pid':999},acceptedAsOwnedTarget=False)
+        pending=dict(complete=True,anchorValidated=True,members=[self.leader],candidatePIDs=[],
+                     initialChildObservations=[row])
+        self.harness.remember_census(pending)
+        self.assertEqual(self.harness.targets,[])
+        self.assertFalse(self.harness.census_uncertain)
+        self.assertEqual(self.harness.report['initialChildEvidence']['stabilizedCount'],1)
+        self.harness.remember_census(self.snapshot)
+        self.assertEqual(self.harness.targets,[self.target])
+        unknown=dict(row,status='unresolved',error='changed birth identity')
+        self.harness.remember_census(dict(complete=False,anchorValidated=True,initialChildObservations=[unknown]))
+        self.harness.remember_census(self.snapshot)
+        self.assertTrue(self.harness.census_uncertain)
+        self.assertEqual(self.harness.report['initialChildEvidence']['unresolvedCount'],1)
+        self.assertEqual(self.harness.report['initialChildEvidence']['first'],row)
+        self.assertEqual(self.harness.report['initialChildEvidence']['latest'],unknown)
+
     def test_ambiguous_verified_candidates_are_retained_but_not_success(self):
         other=self.identity(301,200,301,self.target['executable'])
         self.harness.remember_census(dict(self.snapshot,members=[self.leader,self.target,other],candidatePIDs=[300,301]))

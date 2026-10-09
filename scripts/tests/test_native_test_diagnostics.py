@@ -587,6 +587,205 @@ class NativeDiagnosticTests(unittest.TestCase):
         self.assertEqual(evidence['first']['parent']['pid'],200)
         self.assertEqual(evidence['latest']['pid'],3)
 
+    def startup_child_fixture(self, transitions=None):
+        root='/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/'
+        self.identities[200]['executable']=root+'swift-package'
+        initial=self.identity(202,200,200,root+'swift-package')
+        settled=dict(initial,groupID=202,executable=root+'swift-driver')
+        sequence=iter([initial]+(transitions if transitions is not None else [settled]*4))
+        child_reads=[];traversal_reads=[]
+        def identify(pid):
+            if pid==202:
+                value=next(sequence,settled)
+                child_reads.append(value)
+                if isinstance(value,Exception):raise value
+                return value.copy()
+            return self.identities[pid].copy()
+        def children(pid):
+            if pid==202:traversal_reads.append(len(child_reads))
+            return [202,201] if pid==200 else []
+        return initial,settled,identify,children,child_reads,traversal_reads
+
+    def test_provisional_fork_child_stabilizes_before_traversal_and_target_selection(self):
+        initial,settled,identify,children,reads,traversals=self.startup_child_fixture()
+        census=D.owned_target(100,200,identify,children,expected_wrapper=self.identities[100])
+        row=census['initialChildObservations'][0]
+        self.assertEqual(row['before'],initial)
+        self.assertEqual(row['after'],settled)
+        self.assertEqual(row['status'],'stabilized')
+        self.assertEqual(set(row['differences']),{'groupID','executable'})
+        self.assertFalse(row['acceptedAsOwnedTarget'])
+        self.assertEqual(row['identityReads'],3)
+        self.assertEqual(len(row['observations']),3)
+        self.assertEqual(traversals,[4])
+        self.assertEqual(census['candidatePIDs'],[201])
+        self.assertEqual(row['totalCensusBudgetSeconds'],0.2)
+
+    def test_provisional_child_lifetime_path_and_group_changes_remain_failures(self):
+        initial,settled,*_=self.startup_child_fixture()
+        changes={'pid':999,'parentPID':999,'uid':os.getuid()+1,'birthSeconds':99999,
+                 'birthMicroseconds':999,'groupID':999,'executable':'/tmp/swift-driver'}
+        for field,value in changes.items():
+            with self.subTest(field=field):
+                _,_,identify,children,_,traversals=self.startup_child_fixture([dict(settled,**{field:value})])
+                with self.assertRaises(D.SelectionError) as rejected:
+                    D.owned_target(100,200,identify,children,expected_wrapper=self.identities[100])
+                census=rejected.exception.census;row=census['initialChildObservations'][0]
+                self.assertFalse(census['complete'])
+                self.assertEqual(row['status'],'unresolved')
+                self.assertEqual(row['after'][field],value)
+                self.assertIn(field,row['differences'])
+                self.assertEqual(traversals,[])
+        for error in (D.PIDInfoAbsent(202),OSError(errno.EACCES,'denied'),
+                      ValueError('Cannot read executable identity (errno 3)')):
+            with self.subTest(error=error):
+                _,_,identify,children,_,traversals=self.startup_child_fixture([error])
+                with self.assertRaises(D.SelectionError) as rejected:
+                    D.owned_target(100,200,identify,children,expected_wrapper=self.identities[100])
+                row=rejected.exception.census['initialChildObservations'][0]
+                self.assertEqual(row['status'],'unresolved')
+                self.assertIsNone(row['observations'][-1]['identity'])
+                self.assertIn('error',row['observations'][-1])
+                self.assertEqual(traversals,[])
+
+    def test_provisional_child_group_cannot_return_to_inherited_group_or_exhaust_bounds(self):
+        initial,settled,*_=self.startup_child_fixture()
+        for transitions in ([settled,dict(settled,groupID=200)], [initial]*D.INITIAL_CHILD_READS,
+                            [settled,dict(settled,executable=settled['executable'].replace('swift-driver','swift-frontend'))]*3):
+            _,_,identify,children,_,traversals=self.startup_child_fixture(transitions)
+            with self.assertRaises(D.SelectionError) as rejected:
+                D.owned_target(100,200,identify,children,expected_wrapper=self.identities[100])
+            self.assertFalse(rejected.exception.census['complete'])
+            self.assertEqual(traversals,[])
+        _,_,identify,children,reads,traversals=self.startup_child_fixture([initial]*6)
+        clock=[0.0]
+        with mock.patch.object(D.time,'monotonic',side_effect=lambda:clock[0]), \
+             mock.patch.object(D.time,'sleep',side_effect=lambda _:clock.__setitem__(0,0.3)):
+            with self.assertRaisesRegex(D.SelectionError,'deadline exhausted'):
+                D.owned_target(100,200,identify,children,expected_wrapper=self.identities[100])
+        self.assertEqual(len(reads),2)
+        self.assertEqual(traversals,[])
+
+    def test_known_leader_or_target_never_uses_provisional_child_rebinding(self):
+        _,_,identify,children,_,_=self.startup_child_fixture()
+        with self.assertRaisesRegex(D.SelectionError,'identity changed') as rejected:
+            D.owned_target(100,200,identify,children,expected_wrapper=self.identities[100],
+                           expected_leader=self.identities[200])
+        self.assertEqual(rejected.exception.census['initialChildObservations'],[])
+        failure=rejected.exception.census['identityRecheckFailure']
+        self.assertEqual(failure['before']['pid'],202)
+        self.assertEqual(set(failure['differences']),{'groupID','executable'})
+        count=[0]
+        def changed_target(pid):
+            value=self.identities[pid].copy()
+            if pid==201:
+                count[0]+=1
+                if count[0]>1:value['executable']='/tmp/replacement'
+            return value
+        with self.assertRaises(D.SelectionError) as rejected:
+            D.owned_target(100,200,changed_target,self.children,expected_wrapper=self.identities[100])
+        self.assertEqual(rejected.exception.census['initialChildObservations'],[])
+        self.assertEqual(rejected.exception.census['identityRecheckFailure']['after']['executable'],'/tmp/replacement')
+
+    def test_unbound_wrapper_and_unapproved_xcode_executables_cannot_admit_a_child(self):
+        _,_,identify,children,_,_=self.startup_child_fixture()
+        with self.assertRaises(D.SelectionError) as rejected:
+            D.owned_target(100,200,identify,children)
+        self.assertEqual(rejected.exception.census['initialChildObservations'],[])
+        initial,settled,*_=self.startup_child_fixture()
+        for path in (settled['executable'].replace('Xcode.app','OtherXcode.app'),
+                     settled['executable'].replace('swift-driver','clang')):
+            _,_,identify,children,_,traversals=self.startup_child_fixture([dict(settled,executable=path)])
+            with self.assertRaisesRegex(D.SelectionError,'allowlist'):
+                D.owned_target(100,200,identify,children,expected_wrapper=self.identities[100])
+            self.assertEqual(traversals,[])
+
+    def test_stabilized_child_does_not_hide_new_or_newly_execed_ambiguous_xctest(self):
+        self.identities[203]=self.identity(203,200,203,self.identities[201]['executable'])
+        _,_,identify,children,_,_=self.startup_child_fixture()
+        calls=[0]
+        def added(pid):
+            if pid==200:
+                calls[0]+=1
+                if calls[0]>1:return [202,201,203]
+            return children(pid)
+        with self.assertRaises(D.SelectionError) as rejected:
+            D.owned_target(100,200,identify,added,expected_wrapper=self.identities[100])
+        self.assertTrue(rejected.exception.census['complete'])
+        self.assertEqual(rejected.exception.census['candidatePIDs'],[201,203])
+        del self.identities[203]
+        initial,settled,*_=self.startup_child_fixture()
+        xctest=dict(settled,executable=self.identities[201]['executable'])
+        _,_,identify,children,_,_=self.startup_child_fixture([xctest]*4)
+        with self.assertRaises(D.SelectionError) as rejected:
+            D.owned_target(100,200,identify,children,expected_wrapper=self.identities[100])
+        census=rejected.exception.census
+        self.assertTrue(census['complete'])
+        self.assertEqual(census['candidatePIDs'],[202,201])
+        self.assertFalse(census['initialChildObservations'][0]['acceptedAsOwnedTarget'])
+
+    def test_stabilized_child_requires_unchanged_anchors_edge_and_final_identity(self):
+        for changed_pid in (100,200):
+            _,_,identify,children,_,traversals=self.startup_child_fixture()
+            original=identify;counts={}
+            def changed(pid):
+                value=original(pid);counts[pid]=counts.get(pid,0)+1
+                if pid==changed_pid and counts[pid]==2:value['birthMicroseconds']+=1
+                return value
+            with self.assertRaisesRegex(D.SelectionError,'wrapper or leader'):
+                D.owned_target(100,200,changed,children,expected_wrapper=self.identities[100])
+            self.assertEqual(traversals,[])
+        _,settled,identify,children,_,traversals=self.startup_child_fixture()
+        enum_count=[0]
+        def detached(pid):
+            if pid==200:
+                enum_count[0]+=1
+                if enum_count[0]>1:return [201]
+            return children(pid)
+        with self.assertRaisesRegex(D.SelectionError,'parent edge'):
+            D.owned_target(100,200,identify,detached,expected_wrapper=self.identities[100])
+        self.assertEqual(traversals,[])
+        _,_,identify,children,_,_=self.startup_child_fixture([settled,settled,settled,dict(settled,birthMicroseconds=999)])
+        with self.assertRaisesRegex(D.SelectionError,'identity changed') as rejected:
+            D.owned_target(100,200,identify,children,expected_wrapper=self.identities[100])
+        self.assertEqual(rejected.exception.census['identityRecheckFailure']['after']['birthMicroseconds'],999)
+
+    def test_147_adjacent_snapshots_replay_with_bound_parent_and_no_accepted_candidate(self):
+        # These are adjacent archived observations, NOT the missing failed147 recheck value.
+        root='/Applications/Xcode_16.4.app/Contents/Developer/'
+        wrapper=dict(pid=3091,parentPID=2514,groupID=2514,uid=501,birthSeconds=1791544534,
+            birthMicroseconds=588834,executable='/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python')
+        leader=dict(pid=3092,parentPID=3091,groupID=3092,uid=501,birthSeconds=1791544534,
+            birthMicroseconds=694226,executable=root+'Toolchains/XcodeDefault.xctoolchain/usr/bin/swift-package')
+        before=dict(pid=3101,parentPID=3092,groupID=3092,uid=501,birthSeconds=1791544535,
+            birthMicroseconds=353542,executable=leader['executable'])
+        after=dict(before,groupID=3101,executable=root+'Toolchains/XcodeDefault.xctoolchain/usr/bin/swift-driver')
+        target=dict(pid=3124,parentPID=3092,groupID=3124,uid=501,birthSeconds=1791544536,
+            birthMicroseconds=534983,executable=root+'Platforms/MacOSX.platform/Developer/Library/Xcode/Agents/xctest')
+        phase=[0];reads=[0]
+        def identify(pid):
+            if pid==3101:
+                reads[0]+=1
+                return (before if reads[0]==1 else after).copy()
+            return {3091:wrapper,3092:leader,3124:target}[pid].copy()
+        identify.children=lambda pid:([3101] if phase[0]==0 else [3124]) if pid==3092 else []
+        report=self.root/'147-running.json';command=['swift','test','--skip-build']
+        report.write_text(json.dumps(dict(status='running',pid=3092,timeout_seconds=420,command=command)))
+        native=SimpleNamespace(pid=3091,poll=lambda:None)
+        ownership=D.Ownership(wrapper.copy())
+        with mock.patch.object(D.os,'getuid',return_value=501):
+            ownership.observe(native,report,command,identify)
+            self.assertIsNone(ownership.leader)
+            self.assertEqual(ownership.targets,[])
+            self.assertFalse(ownership.record['uncertainCensus'])
+            self.assertEqual(ownership.record['initialChildEvidence']['first']['before'],before)
+            self.assertEqual(ownership.record['initialChildEvidence']['first']['after'],after)
+            phase[0]=1
+            ownership.observe(native,report,command,identify)
+        self.assertEqual(ownership.leader,leader)
+        self.assertEqual(ownership.targets,[target])
+        self.assertFalse(ownership.record['uncertainCensus'])
+
     def test_wrong_wrapper_or_leader_birth_rejects_before_traversal(self):
         for keyword, pid in (('expected_wrapper', 100), ('expected_leader', 200)):
             expected = {**self.identities[pid], 'birthMicroseconds': 11}

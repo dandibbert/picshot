@@ -2240,8 +2240,8 @@ jobs:
           observer = workspace/'observer-source'
           product_source = 'f991c23aaa60469db0e2dc77cb94198d0dc74c08'
           product_tree = '2347fb7fe45cf809e4cd6aa43fc2426a1fbff7b1'
-          observer_base = 'fec1ed83ee9c7546eabfdd0c53a6b6f227410d21'
-          observer_base_tree = '1af9fa64802b29cf46a1ee9dd41b131ce58dd646'
+          observer_base = '2d3977ede7a4dce1ef66db85726e66f0aa9d6c73'
+          observer_base_tree = 'f532709b73cc12edbd0788330781f09c935f6629'
           observer_source = os.environ['GITHUB_SHA']
           def git(root, *args):
               return subprocess.check_output(['git', '-C', str(root), *args], timeout=20)
@@ -2256,7 +2256,7 @@ jobs:
               raise SystemExit('Native product checkout differs from immutable source145')
           if (revision(observer, 'HEAD') != observer_source or revision(observer, 'HEAD^') != observer_base
                   or revision(observer, observer_base + '^{tree}') != observer_base_tree):
-              raise SystemExit('Observer must directly preserve the reviewed installed-only source146 branch')
+              raise SystemExit('Observer must directly preserve the reviewed source147 observer branch')
           if platform.machine() != 'arm64' or platform.system() != 'Darwin':
               raise SystemExit('Expected the native ARM macOS runner')
           def entries(root, ref):
@@ -2297,7 +2297,7 @@ jobs:
               if actual != expected or (observer/name).read_bytes() != (product/name).read_bytes():
                   raise SystemExit('Observer runner/planner differs from immutable145 bytes')
               tooling[name] = actual
-          reviewed_census_files = {'scripts/native-observer-self-test.py': 'e591d7c960499c2c34bbefb7d424df4337fdbcc4adac4863ee50c268e9c44f30', 'scripts/native-test-diagnostics.py': 'e17dd1c233303ba4a72078b4d0aa4abd29aaba3f93cf34fa82f8589c1917f33b', 'scripts/tests/test_native_observer_self_test.py': '78a9dac9480be670435f522cf1c0c73362340323ca55fbe743bb01c890db2441', 'scripts/tests/test_native_test_diagnostics.py': '5228b64c101b55dbad2472bd9d114d2b2843e148bdf3942c8fb68c1175ddf8d5'}
+          reviewed_census_files = {'scripts/native-observer-self-test.py': '7293f5bf469cb3035b71902e4ee9084bb681f672fd39ef14631b6f52b989cba5', 'scripts/native-test-diagnostics.py': '8439c941e72e0382ce4530f0c0ffc01fc03b6d672c93ec5c7cf55691cd3f49e5', 'scripts/tests/test_native_observer_self_test.py': '9c4fde969af4c8ac75598825113c3a267f94dd9f9574ab7791ec2d4462f131ed', 'scripts/tests/test_native_test_diagnostics.py': '30ce4e268ae6ce67dfd0e36b188b74122e4799db0af0f5785f231ffae79b3b59'}
           for name, expected in reviewed_census_files.items():
               if hashlib.sha256((observer/name).read_bytes()).hexdigest() != expected:
                   raise SystemExit('Observer files differ from the reviewed bounded census correction')
@@ -2684,7 +2684,7 @@ jobs:
               except Exception as error:
                   validation_errors.append(dict(mode=mode, error=str(error)))
           record = dict(diagnosticOnly=True, installerAcceptance=False, sourceCommit='f991c23aaa60469db0e2dc77cb94198d0dc74c08', observerCommit=os.environ['GITHUB_SHA'],
-              sourceTree='2347fb7fe45cf809e4cd6aa43fc2426a1fbff7b1', observerReferenceCommit='fec1ed83ee9c7546eabfdd0c53a6b6f227410d21',
+              sourceTree='2347fb7fe45cf809e4cd6aa43fc2426a1fbff7b1', observerReferenceCommit='2d3977ede7a4dce1ef66db85726e66f0aa9d6c73',
               observerTree=source_identity['observerTree'] if source_identity else None,
               sourceIdentity=source_identity, evidenceSHA256=artifacts, productTrackedCheckoutClean=product_clean,
               steps=step_outcomes, observations=observations,

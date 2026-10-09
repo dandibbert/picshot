@@ -44,6 +44,8 @@ METADATA_CAP = 1024 * 1024
 MAX_DIAGNOSTIC_MEMBERS = 64
 MAX_DIAGNOSTIC_DEPTH = 8
 TARGET_CLEANUP_SECONDS = 2
+INITIAL_CHILD_SECONDS = 0.2
+INITIAL_CHILD_READS = 6
 
 
 def need(condition, message):
@@ -278,6 +280,107 @@ def is_xctest(value, developer_directory):
             tuple(developer_directory + '/' + relative for relative in XCTEST_RELATIVE_EXECUTABLES))
 
 
+def swift_child_images(developer_directory, names):
+    if developer_directory is None:
+        return set()
+    return {developer_directory + '/' + directory + name
+            for directory in ('usr/bin/', 'Toolchains/XcodeDefault.xctoolchain/usr/bin/') for name in names}
+
+
+def inherited_swift_child(member, parent, developer_directory):
+    launchers = swift_child_images(developer_directory, ('swift-package',))
+    return (parent['executable'] in launchers and member['executable'] == parent['executable']
+            and member['groupID'] == parent['groupID'])
+
+
+def stabilize_initial_child(member, parent, identify, children, census, deadline):
+    """Admit a provisional fork/exec child before traversal, never rebind a target."""
+    record = dict(status='pending', before=copy.deepcopy(member), parent=copy.deepcopy(parent),
+        phase='initial-child-before-traversal', pollReads=0, maximumPollReads=INITIAL_CHILD_READS,
+        identityReads=0, maximumIdentityReads=INITIAL_CHILD_READS + 1, observations=[],
+        budgetSeconds=INITIAL_CHILD_SECONDS, totalCensusBudgetSeconds=INITIAL_CHILD_SECONDS,
+        acceptedAsOwnedTarget=False)
+    census['initialChildObservations'].append(record)
+    allowed = swift_child_images(census['xcodeDeveloperDirectory'],
+        ('swift', 'swift-package', 'swift-test', 'swift-driver', 'swift-frontend', 'swiftpm-xctest-helper'))
+    previous = None
+    own_group_seen = member['groupID'] == member['pid']
+    started = time.monotonic()
+    def observe():
+        need(time.monotonic() < deadline, 'Initial child stabilization deadline exhausted')
+        record['identityReads'] += 1
+        observation = dict(elapsedSeconds=round(time.monotonic() - started, 6), identity=None)
+        record['observations'].append(observation)
+        try:
+            current = identify(member['pid'])
+        except Exception as error:
+            observation['error'] = str(error)
+            record['after'] = None
+            raise
+        observation['identity'] = copy.deepcopy(current)
+        observation['differences'] = identity_differences(member, current)
+        record['after'] = copy.deepcopy(current)
+        record['differences'] = identity_differences(member, current)
+        need(all(current[key] == member[key] for key in
+                 ('pid', 'parentPID', 'uid', 'birthSeconds', 'birthMicroseconds')),
+             'Provisional child lifetime or parent changed')
+        return current
+    def anchors():
+        observed = {key: identify(census[key]['pid']) for key in ('wrapper', 'leader')}
+        record['anchorsAfter'] = observed
+        need(all(observed[key] == census[key] for key in observed), 'Initial-child wrapper or leader identity changed')
+    try:
+        anchors()
+        for _ in range(INITIAL_CHILD_READS):
+            record['pollReads'] += 1
+            current = observe()
+            need(current['groupID'] in (parent['groupID'], member['pid'])
+                 and (not own_group_seen or current['groupID'] == member['pid']),
+                 'Provisional child group transition is not allowed')
+            own_group_seen = own_group_seen or current['groupID'] == member['pid']
+            need(current['executable'] in allowed or is_xctest(current, census['xcodeDeveloperDirectory']),
+                 'Provisional child executable is outside the selected Xcode allowlist')
+            record['parentAfter'] = identify(parent['pid'])
+            need(record['parentAfter'] == parent, 'Provisional child parent identity changed')
+            settled = current['groupID'] == member['pid'] and current['executable'] != member['executable']
+            if settled and current == previous:
+                child_pids = list(children(parent['pid']))
+                need(len(child_pids) <= MAX_DIAGNOSTIC_MEMBERS
+                     and all(type(pid) is int and 0 < pid <= 2147483647 for pid in child_pids)
+                     and len(set(child_pids)) == len(child_pids), 'Invalid initial-child parent re-enumeration')
+                record['parentChildPIDsAfter'] = child_pids
+                need(member['pid'] in child_pids, 'Provisional child left its owned parent edge')
+                need(observe() == current, 'Provisional child changed after stabilization')
+                record['parentAfter'] = identify(parent['pid'])
+                need(record['parentAfter'] == parent, 'Provisional child parent changed after stabilization')
+                anchors()
+                need(time.monotonic() < deadline, 'Initial child stabilization deadline exhausted')
+                record['status'] = 'stabilized'
+                record['durationSeconds'] = round(time.monotonic() - started, 6)
+                return current, child_pids
+            previous = current
+            time.sleep(min(0.005, max(0, deadline - time.monotonic())))
+        raise ValueError('Initial child stabilization read bound exhausted')
+    except Exception as error:
+        record.update(status='unresolved', error=str(error), durationSeconds=round(time.monotonic() - started, 6))
+        raise
+
+
+def remember_initial_children(record, census):
+    for observation in census.get('initialChildObservations', []):
+        evidence = record.setdefault('initialChildEvidence', dict(totalCount=0, stabilizedCount=0,
+            unresolvedCount=0, retainedCount=0, omittedCount=0, first=None, latest=None,
+            scope='Initial child admission only; not target rebinding or cleanup evidence'))
+        evidence['totalCount'] += 1
+        evidence['stabilizedCount' if observation.get('status') == 'stabilized' else 'unresolvedCount'] += 1
+        evidence['retainedCount'] = min(2, evidence['totalCount'])
+        evidence['omittedCount'] = max(0, evidence['totalCount'] - 2)
+        value = copy.deepcopy(observation)
+        if evidence['first'] is None:
+            evidence['first'] = value
+        evidence['latest'] = value
+
+
 def owned_target(wrapper_pid, leader_pid, identify, children=None,
                  expected_wrapper=None, expected_leader=None):
     """Follow rechecked parent edges, including descendants in different groups.
@@ -290,6 +393,7 @@ def owned_target(wrapper_pid, leader_pid, identify, children=None,
     census = {'members': [], 'candidatePIDs': [], 'atomicSnapshot': False,
               'anchorValidated': False, 'complete': False,
               'vanishedChildObservations': [],
+              'initialChildObservations': [],
               'scope': 'Non-atomic live parent-chain census; not global descendant cleanup',
               'memberCap': MAX_DIAGNOSTIC_MEMBERS, 'depthCap': MAX_DIAGNOSTIC_DEPTH}
     started = time.monotonic()
@@ -365,11 +469,28 @@ def owned_target(wrapper_pid, leader_pid, identify, children=None,
                     continue
                 need(member['parentPID'] == parent['pid'] and member['uid'] == wrapper['uid'],
                      'Child identity no longer matches its owned parent')
+                if (expected_wrapper is not None and expected_leader is None
+                        and inherited_swift_child(member, parent, census['xcodeDeveloperDirectory'])):
+                    member, current_children = stabilize_initial_child(member, parent, identify, children,
+                        census, started + INITIAL_CHILD_SECONDS)
+                    for new_pid in current_children:
+                        if new_pid not in child_pids:
+                            need(len(child_pids) < MAX_DIAGNOSTIC_MEMBERS,
+                                 'Initial-child census churn exceeds observation bound')
+                            child_pids.append(new_pid)
                 queue.append((member, depth + 1))
         census['candidatePIDs'] = [member['pid'] for member in census['members']
                                   if is_xctest(member, census['xcodeDeveloperDirectory'])]
         for member in [wrapper] + census['members']:
-            need(identify(member['pid']) == member, 'Process identity changed during observation')
+            try:
+                current = identify(member['pid'])
+            except Exception as error:
+                census['identityRecheckFailure'] = dict(before=copy.deepcopy(member), after=None, error=str(error))
+                raise
+            if current != member:
+                census['identityRecheckFailure'] = dict(before=copy.deepcopy(member), after=copy.deepcopy(current),
+                    differences=identity_differences(member, current))
+                raise ValueError('Process identity changed during observation')
         census['complete'] = True
         need(len(census['candidatePIDs']) == 1, 'Expected exactly one owned Xcode XCTest process')
         census['target'] = next(member for member in census['members']
@@ -556,6 +677,7 @@ class Ownership:
         census['observedAtSeconds'] = round(time.monotonic() - self.started, 6)
         self.record['lastCensus'] = census
         remember_vanished_children(self.record, census)
+        remember_initial_children(self.record, census)
         if census.get('pending'):
             return
         if census.get('complete'):
