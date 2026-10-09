@@ -4,7 +4,7 @@ Original, local-first macOS screenshot, annotation, pinning and recording utilit
 
 **Development preview. Not full PixPin parity yet.** This project is not affiliated with PixPin and uses no proprietary source, assets, subscription bypasses, or hosted recognition credentials. See [feature ledger](docs/PARITY.md) for actual scope and [verification](docs/VERIFICATION.md) for the test boundary.
 
-The latest accepted packages are ARM 0.16.0/build154 and Intel 0.11.0/build69. This branch's 0.17 candidate adds [opt-in recording input effects](docs/RecordingInputEffects.md); its native validation is pending.
+ARM 0.17.0/build159 is accepted within the bounded [verification scope](docs/VERIFICATION.md#build-159-recording-input-acceptance-record), adding [opt-in recording input effects](docs/RecordingInputEffects.md). Intel159 remains separately pending; accepted Intel stays 0.11.0/build69. ARM159 ZIP Library v16 and guide v24 were delivered on 9 October 2026 at 18:48:27 UTC; DMG v16 is saved only.
 
 ## Build
 

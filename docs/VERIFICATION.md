@@ -2,6 +2,136 @@
 
 ## Current release decision
 
+**ARM 0.17.0/build 159 is accepted within the bounded tested scope. Intel 159 remains separately pending; accepted Intel stays 0.11.0/build 69.** Exact ARM source `7d9297482ce59749d8b5807803f60c4fc8a71986`, tree `42fb8f35666153f15c58f7d25b716087f11ca071`, [run37967976029/job113947734754](https://github.com/dandibbert/picshot/actions/runs/37967976029/job/113947734754), native/model/both-format/default evidence and exact installer bytes are bound by independent final verdict SHA-256 `0870501db82d30cb385f44c82b232094ea9143e8e00a75cd3db32f8636d949c2`. The independent verdict was written at **2026-10-09T18:43:36Z**. The supported jobs collection records ARM job start at **2026-10-09T17:42:42Z** and successful completion at **2026-10-09T18:38:42Z**. Terminal success was separately observed at **2026-10-09T18:39:45Z**. These exact job, observation and review times are distinct.
+
+Only ARM **REC-11 Missing→Code** and **REC-12 Missing→Partial** are promoted, making **63 Code / 54 Partial / 7 Missing** across 124 behavior rows. All 133 original ordered IDs, nine context rows, requirements, acceptance checks and references remain. The 154 crop/hide corrections remain without further promotion. Intel remains **50/61/13**. Code status records bounded implementation evidence; it does not establish full PixPin feature/accuracy parity.
+
+**ARM 159 Library persistence and format-specific delivery are confirmed.** The existing ARM ZIP and DMG identities are version 16; the existing guide is version 24, 19,209 bytes, SHA-256 `d9114451c48394b04d64cc2637a6045998d39f1d238458c09efd4ce464f4d80f`. ZIP v16 and guide v24 were sent successfully on **2026-10-09 at 18:48:27 UTC**; **DMG v16 is saved only**. Acceptance, persistence and actual format-specific delivery are separate receipts. [The154 record](#build-154-production-default-acceptance-record) remains historical with its exact package bytes and 15:19:44 UTC ZIP/guide delivery.
+
+## Build 159 recording-input acceptance record
+
+### Native discovery, extended regression and actual models
+
+The exact-source discovered inventory is **1,836 methods / 208 classes**, digest `1b5d454926a5ad3d3408ad8827e5fcec619755d284d208d9c13b0e144627cf9b`. The ordinary selection finishes **1,833 passed + 3 allowed pre-model skips**, zero failures. The focused selection finishes **1,296/1,296**, zero skips. All 37 new recording-input methods and the extended existing permission-revocation method pass in both selections. The three ordinary skips retain their exact IDs:
+
+- `PicShotEraseHelperTests.SmartEraseEngineTests/testRealCoreMLRemovesMarkedObjectAndPreservesOutsidePixels`
+- `PicShotMLHelperTests.FormulaEngineTests/testActualWeightsRecognizeFormulaFixtures`
+- `PicShotTableEngineTests.RecordedModelOutputTests/testNativeHelperWithRealWeightsWhenConfigured`
+
+The subsequent actual source-pinned-model stage passes **12/12, zero skips**, including all three weight-dependent cases. These selections, the earlier 1-method/4-method pin reproductions, and installed model jobs overlap; counts are not additive coverage. Each full/focused selected ID executes once across its disjoint native processes, rather than one shared-process suite. No product limit changes with this subdivision.
+
+| Selection/process | Selected | Passed | Allowed pre-model skips | Seconds | Exit / fixed cap |
+| --- | --- | --- | --- | --- | --- |
+| full 0 | 481 | 481 | 0 | 168.736 | 0 / 420 s |
+| full 1 | 422 | 421 | 1 | 125.703 | 0 / 420 s |
+| full 2 | 469 | 468 | 1 | 161.162 | 0 / 420 s |
+| full 3 | 464 | 463 | 1 | 121.655 | 0 / 420 s |
+| focused 0 | 702 | 702 | 0 | 281.812 | 0 / 420 s |
+| focused 1 | 594 | 594 | 0 | 219.361 | 0 / 420 s |
+
+`RecordingInputMonitorTests/testPermissionRevocationAtCallbackAndHealthCheckRemovesMonitor` passes at 159 with the explicit AX-refresh and option-driven reinstall cases. Both clear an old shortcut while permitted pointer monitoring continues; retired/current disallowed key callbacks cannot recreate it, and a fresh permitted click still works. The test source hashes to `3714297febd497d037ca9214aaeb7abb8d7a95f207c28b870654ae37dc701f46` and production monitor source to `9cfb21f4fe9ed82f88c2b56ca15eee8703f13efed47553602ecb5156da174848`. This extends the existing method without changing inventory. It uses injected permissions, not a physical TCC revocation. Observed changes do not guarantee instantaneous OS revocation detection; encoded frames are unchanged.
+
+The native control audit passes 48 checkbox actions,16 help actions and 8 explicit refresh actions across light/dark isolated controls and complete panels, including target/action/hit-test and decoded PNG checks. Light/dark owner observations are 50.31520833324521/51.33116666672777 ms under the unchanged 3,000 ms deadline, with 34 weak probes and 0 retained objects per appearance. Each appearance's same observation appears in two contexts and is not added as independent lifecycle evidence.
+
+All 11 downloaded-model receipt values match source-pinned manifests. The Linux review does not download, bundle or independently rehash the weights. Both actual installed formats run formula, table and native CoreML CPU+GPU Smart Erase helpers successfully, with owned child exit and temporary-directory cleanup:
+
+| Installed format | Actual model helper | Child seconds | Sampled child RSS peak bytes | Exit | Owned temp cleanup |
+| --- | --- | --- | --- | --- | --- |
+| ZIP | formula | 1.788222667 | 369,426,432 | 0 | confirmed |
+| ZIP | table | 2.144601167 | 205,258,752 | 0 | confirmed |
+| ZIP | smartErase | 20.729423417 | 1,636,057,088 | 0 | confirmed |
+| DMG | formula | 1.052487458 | 308,527,104 | 0 | confirmed |
+| DMG | table | 1.540723250 | 235,552,768 | 0 | confirmed |
+| DMG | smartErase | 20.327186833 | 1,802,092,544 | 0 | confirmed |
+
+The installed fixture recognizes `E = m c ^ { 2 }`, a 4-row/3-column table, and removes 12,302 masked pixels with zero outside-mask byte/alpha mismatches; masked MAE changes 98.88022691240586→1.5883125247720966. These authored-fixture results do not establish arbitrary recognition/erase accuracy, forced timeout/crash cleanup or broader model-license rights. Existing optional-model rights and full parity limits remain.
+
+### Exact installer bytes and both installed formats
+
+| Exact accepted ARM 159 file | Bytes | SHA-256 |
+| --- | --- | --- |
+| PicShot-0.17.0-macos-arm64.zip | 19,699,814 | `e1d1153d11cef7c3796d77dd4bb2f2d66738c32413f9c07023218e9e40964513` |
+| PicShot-0.17.0-macos-arm64.dmg | 22,649,295 | `d2912701343d7b0bf0ebd37938d4348e79b6321d6f233a51f3ec5003ac4cac2f` |
+
+The actual ZIP contains 70 CRC-safe entries and a 22,102,784-byte main executable SHA-256 `03ec52abdc7ef94e876525de04775be53541d1c0c514dd7145423bae1e7cae44`. Its Info.plist SHA-256 is `6cee24c76a760c47120774383af52dde503d27cec537fbc4a02ee874aea0a720`; embedded/external build-info is `b3793f5145827a6d6d99966dc2d8e7ae687ac7171ef3343dd421821dbe3b3287`. Exact source/version/build/arm64 identities agree with both relocated installed-format reports. The downloaded DMG's whole-file bytes/hash are independently checked; its mounting, strict codesign and installed contents are established by successful source-bound native CI, not a Linux DMG-mount rerun. Signing remains **ad-hoc, not notarized**; macOS 15.7.9 hosted CI does not establish physical macOS 14, publisher identity or Gatekeeper acceptance.
+
+Both actual ZIP and DMG pass their complete applicable broad/prior-feature, model, recording, editable/crop/hide, reported-effect-failure and ownership/cleanup gates. The original portable checkers run with assertions enabled and exact report/launcher/binary bindings. Main owned app exits are confirmed at 351.763924003 s ZIP and 218.287445068 s DMG. ZIP-only full GIF stress, repeated editable/default resources, manual-scroll and multi-window scopes are not copied to DMG. Linux replay preserves the source checker assertions and maps only verified archived bytes; original remote canonical-path existence, native pixel decoder execution, codesign and DMG mounting remain native-CI attestations.
+
+### Independently decoded recording input output
+
+Each actual installed format produces a separate archived H.264 MP4 with **22 decoded 320×180 frames at 10 FPS,2.2 seconds duration**,22 adjacent packets of positive duration ending at 2.2 seconds. Independent Linux FFmpeg RGB24 decoding passes click/scroll/shortcut pixels, timed expiry, resume clearing and preserved camera/annotation content. The 13 native input assertions all pass, including disabled-source identity, stale-session rejection, frozen writer Stop time/values and export/cancellation ownership. A4,096-event injected burst retains at most 48 scalar values; input events and writer-retained frames are zero at checked cleanup. Cleared weak-object probe values represent no retained writer/compositor/state/input-effect object, not zero native/private backing.
+
+| Installed format | MP4 bytes | MP4 SHA-256 | Native input-report SHA-256 | PNG witness SHA-256 |
+| --- | --- | --- | --- | --- |
+| ZIP | 19432 | `b3fe5a5e778ce799df803d1157212e3abce1e0c1df87f4fd6d459ea79f9faae2` | `61ee4acd082a2d784cb3883ac9ac775aa29089813367456e861349b22c241744` | `ea1e7c980e8e8e222b4b7bcc48101d3da90e252caaef72bba75171c1c336daab` |
+| DMG | 19524 | `dc2006341058953dd0a509ecdc7a802dd2d2b318db49293a75e392e3059a6247` | `e18040f389fe2b57cf8d24a5d0cb808a2bd87b05925980e3ecbefe7584cb1f11` | `ea1e7c980e8e8e222b4b7bcc48101d3da90e252caaef72bba75171c1c336daab` |
+
+The source uses fixed physical-key whitelist Command/Control chords, optionally with Shift/Option. Ordinary typing, Option-only/Shift-only input, modifier-only labels, repeat/category completeness and arbitrary text capture remain absent. No event character strings, AX text values or persistent keystroke history are read/stored. Unavailable/unknown/secure focus and secure input suppress shortcuts, but custom foreign password-field semantics remain unverified. Effects default off after restart; choices persist within one app session. Click/scroll/shortcut lifetimes are 0.7/0.85/1.2 seconds. These scalar/frame/encoder bounds are not a whole-process memory ceiling.
+
+The fixture manually invokes the production compositor timer handler against an injected monotonic clock; actual timer scheduling is unverified. Its frozen writer Stop barrier is distinct from actual service Stop, which removes monitoring and clears future state. This is synthetic state/event metadata and owned UI evidence, not global event delivery, real Input Monitoring/Accessibility/secure-field acceptance, screen/camera/microphone capture or long sessions on a physical Mac. **Effect-specific endpoint-trim MP4, GIF and animated-WebP pixel/timing validation remains unestablished**; older generic export passes do not fill this gap.
+
+Separately, current-source synthetic abrupt-recovery evidence kills only its owned child with signal 9, confirms exit, recovers 5 fragments/50 video frames/239,552 audio frames over 5 seconds, preserves source data and removes the temporary directory. It is not real capture or device-failure acceptance.
+
+### Actual installed ZIP production-default resources
+
+The actual installed ZIP, same verified binary as DMG, runs the existing **owned-sRGB8 production drawing default with no diagnostic override**, in a fresh dedicated process 99709. The bounded 3840×2160 editable/history/pin lifecycle completes **2 warmups + 8 measured cycles,170 actions,130 checkpoints,70 phase timings and 40 output stages**. Native work takes45.530011833 s under 300 s, owned launcher46.706174016 s under 600 s, outer command70.247 s under 3,300 s. No fixture raster-reference work, memory pressure, manual cache purge, real screen capture, network, general pasteboard or standard-default writes occur in the measured process.
+
+Every output/metadata plan and ownership check passes. The separate post-exit decoder verifies 4 unique PNGs and 96,752,288 full RGBA bytes, with exact archived golden/output/source/plan hashes. The evidence-copy workload has 200 source files,23,608,567 streamed bytes,55 unique files/985,425 unique bytes, taking 0.2820501666665223 seconds; it remains part of the measured workload. Original unsupported-format paths and original/model images are preserved; this default is only for eligible 8-bit sRGB.
+
+| Exact ZIP default endpoint | RSS bytes | Physical footprint bytes | Volatile-resident bytes | Volatile-virtual bytes |
+| --- | --- | --- | --- | --- |
+| ENTRY | 70,811,648 | 20,924,608 | 0 | 0 |
+| BEFORE_WARMUPS | 94,339,072 | 43,419,840 | 0 | 0 |
+| COLD | 431,292,416 | 90,590,144 | 215,416,832 | 215,613,440 |
+| WARM | 433,733,632 | 92,851,264 | 215,449,600 | 215,646,208 |
+| MEASURED | 437,583,872 | 95,587,392 | 215,400,448 | 215,597,056 |
+| FINAL | 437,796,864 | 93,064,256 | 215,400,448 | 215,597,056 |
+
+RSS/footprint from before the first cold cycle to its released endpoint grow **+336,936,960/+47,153,920 bytes** over 5.508990625000024 seconds. First-cold entry-to-release growth is+360,480,768/+69,665,536 bytes. Post-warmup through eight measured cycles adds **+3,850,240/+2,736,128 bytes** (3.671875/2.609375 MiB). Measured→final cleanup adds+212,992 RSS bytes while footprint falls 2,523,136 bytes; entry→final remains **+366,985,216 RSS/+72,139,648 footprint bytes**. Warmup→final remains+4,063,232/+212,992 bytes. None of these endpoints can be substituted for another.
+
+| Late measured interval | RSS bytes | Physical footprint bytes | Volatile-resident bytes | Volatile-pmap bytes |
+| --- | --- | --- | --- | --- |
+| 1 | +409,600 | +311,232 | -32,768 | -1,835,008 |
+| 2 | +327,680 | +278,592 | +0 | +1,802,240 |
+| 3 | +622,592 | +212,992 | +0 | +0 |
+
+The 50 ms samples reach **700,809,216 RSS/317,017,408 footprint bytes** (668.34375/302.33136 MiB). Kernel-reported final lifetime peaks are **727,498,752 RSS/325,832,000 footprint bytes** (693.796875/310.73761 MiB). At final cleanup, volatile-resident/virtual/pmap remain **215,400,448/215,597,056/134,529,024 bytes**, volatile ledger 204,488,704 bytes; returned compressed and volatile-compressed counters are 0. After warmup, volatile resident/virtual decrease 49,152 bytes while pmap increases 81,920 bytes. The eight counters overlap, must not be summed, and come from non-atomic task-info flavors; zero returned accounting is not proof of released private backing.
+
+Known drawing allocation/release accounting balances **40 allocations/40 callbacks/40 deallocations,607,941,760 bytes each,0 active bytes**, with 30,397,088 peak active bytes. The 31 provider-retirement observations were all already balanced (0 polls/0 elapsed) when sampled; they establish **no delayed-retirement latency**. Known app/editor/pin/run owners, descriptor, temp and reservation checks pass, but weak owner retirement does not prove graphics/cache release. Cold/final/sample/kernel costs and positive late RSS increments remain. There is **no sustained plateau, overall memory stability, zero-leak, total-app/GPU/WindowServer ceiling or general preview/decoder-backing remedy claim**.
+
+[ARM159DefaultResourceFacts.json](ARM159DefaultResourceFacts.json) preserves all eight raw endpoint/cycle counters, backing-flavor values, late increments, phase/action timings, sampled phase peaks, kernel peaks, provider observations, source/report hashes and scope. The sample interval can miss transients, and self-process values exclude WindowServer/GPU/other processes. [ARM159AcceptanceFacts.json](ARM159AcceptanceFacts.json) preserves the final audit and the separate installed workload/resource receipts; measurements from separate scopes are not additive.
+
+### Other scoped resource observations and remaining backing issue
+
+The combined prior-feature processes each finish 10 warmup + 40 measured editor/pin lifecycle cycles,0 tracked retained app/content/cycle-window objects and 7→7 windows. Their post-warmup RSS deltas are **+65,536 bytes ZIP /−32,768 bytes DMG**, last-ten-cycle growth0. Those baselines follow broad fixture work and are not cold startup or input-effects resource measurements.
+
+Actual ZIP manual scrolling completes 8 warmups + 16 measured cycles at 4 accepted frames/cycle in 134.188676292 s under the unchanged 240 s limit. Post-warmup RSS/footprint adds **+21,217,280/+606,272 bytes**, cleanup deltas0/0. Fresh ZIP multi-window completes 4 warmups + 12 measured production-default cycles in 3.912993917 s, with post-warmup→cleanup counters `{"compressed": 0, "ledger_purgeable_volatile_compressed": 0, "phys_footprint": 507904, "purgeable_volatile_resident": 0, "purgeable_volatile_virtual": 0, "resident_size": 1310720}`. These workload/process-specific results do not establish that unrelated export/preview backing is fixed.
+
+| Installed image-export 1+4×4 | Final post-warmup RSS growth bytes | Final post-warmup footprint growth bytes | Last RSS interval bytes | Last footprint interval bytes |
+| --- | --- | --- | --- | --- |
+| ZIP | +20,512,768 | -1,966,080 | 3899392 | -5013504 |
+| DMG | +20,529,152 | -12,189,696 | 10829824 | 0 |
+
+Image export is 1 warmup+4measured1440×900cycles×4serial formats per installed format, with all 20 controllers released and 0 active sessions/queued jobs/owned temp files. Positive RSS/tail observations remain even where footprint declines. Separate signed-codec/preview child and parent observations remain scoped in the facts record. Old source-qualified export/preview and decoder observations are also preserved below; no universal allocator, preview-backing, leak or plateau conclusion follows.
+
+### Superseded157 and independent Intel boundaries
+
+Source 157 `6e0ee5eb1362477b9dbc84e95f2fc49b9c0aa849`, tree `78b71e48e4b0303d96f385052ef37f4ae397206d`, [run37964482268](https://github.com/dandibbert/picshot/actions/runs/37964482268), remains superseded and cancelled, not accepted. Both early native-control UI audits pass within injected-permission scope (48 checkbox/16 help/8 refresh actions each). ARM 1,296/1,296 focused cases pass with no skips across two disjoint processes, including 37 new methods; overlapping 1/4 pin regression counts are not added. ARM full native is cancelled incomplete with no final aggregate/return code or terminal cleanup proof. ARM job 113935274341 is cancelled 17:41:54 UTC; Intel job 113935274679 is cancelled 17:42:34 UTC during compilation, before discovery/focused/full execution. Model, final installed and default gates are unrun. No archived new-input MP4 witness remains for independent decoding. These are 157 history only, never 159 pass evidence.
+
+The low-severity157 stale-shortcut edge involved a previously permitted fixed badge persisting at most its normal 1.2 second lifetime after explicit AX refresh or option-driven reinstall while pointer monitoring continued; new shortcuts were blocked and ordinary typing/secret text was not read. The 159 correction and actual extended regression above close the observed-change boundary. The input feature is absent from previously delivered ARM 154.
+
+Intel 159 has its own unfinished final architecture decision; no native, model, package, resource or parity result transfers from ARM. [Intel154InstalledFailure.md](Intel154InstalledFailure.md) preserves its original installed Smart Erase failure and the separate fresh154 diagnostic. The latter's unchanged 600 s owned-app timeout and subsequent owned-app exit do not reveal model outcome or cause; its sole 36,676,472 byte archive exceeded the 32 MiB materialization limit and remains uninspected. No rerun or Intel promotion follows.
+
+### Persistence, delivery and remaining acceptance fields
+
+All three Library replacements and the successful **18:48:27 UTC** send are confirmed: ZIP version 16 and guide version 24 were delivered; DMG version 16 is saved only. The 19,209-byte guide SHA-256 is `d9114451c48394b04d64cc2637a6045998d39f1d238458c09efd4ce464f4d80f`. The file hashes, sizes, saved versions and format-specific delivery disposition are recorded in [ARM159AcceptanceFacts.json](ARM159AcceptanceFacts.json), separately from the native acceptance verdict. The earlier ARM 154 receipt stays intact below. Intel 159's final verdict, effect-specific derived export checks, physical TCC/global input/Retina/mixed-display/Spaces/minimum-OS and sustained use remain separate open work; full PixPin feature and recognition accuracy acceptance is incomplete.
+
+## Historical pre159 current-release text
+
+The following text was current before 159 acceptance. All subsequent older source/version decisions, exact package bytes, memory observations, failures and delivery receipts retain their original historical scope. No historical154/157 or earlier result supplies a 159 result.
+
+### Release decision before159 acceptance
+
 Candidate157 at source `6e0ee5eb1362477b9dbc84e95f2fc49b9c0aa849` passes the early native input-control UI audit on both architectures, but is not eligible for delivery. Read-only code review identifies a narrow permission-refresh edge: with pointer effects still permitted, explicit Accessibility revocation refresh or an option-driven reinstall can retain a previously permitted fixed shortcut badge for its remaining maximum 1.2 seconds. New shortcuts remain blocked; this does not read ordinary typing or secret-field contents. Candidate159 clears effect state at both missing permission-change boundaries and extends the existing revocation test without changing the 1,836-method inventory. Native execution and all final gates for the corrected source remain pending. This new candidate feature is absent from delivered ARM0.16/build154, which remains the accepted version below.
 
 **ARM 0.16.0/build154 is accepted for bounded delivery; Intel remains the accepted 0.11/build69.** Exact ARM source2ca03e348255a9af6adb7341752bae8c0170d452, tree 9e36250c79e41fa99a42536d2460907c266f4def, [run 37941852372/job 113857963653](https://github.com/dandibbert/picshot/actions/runs/37941852372/job/113857963653), complete native/model/both-format/default evidence and exact installer bytes are bound by final verdict SHA-256 d789f21ac1b458ef541f9de4b57ccccd068c91bc4614782b7dcc85fec9ce3503, reviewed 2026-10-09T15:11:49.054941+00:00. Library now holds ARM ZIP v15, guide v23 and ARM DMG v15. ZIP and guide were sent on 2026-10-09 at 15:19:44 UTC; DMG is saved only. Exact artifact identities, delivery scope and fixed guide hash are recorded below.
