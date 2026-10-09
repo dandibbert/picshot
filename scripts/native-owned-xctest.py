@@ -262,6 +262,124 @@ def verify_source_inputs(directory, expected):
         need(resolved_pin(data) == lock['resolved'], 'Parsed Package.resolved evidence differs')
 
 
+def bundle_inputs(source, bundle, bin_path, evidence, deadline):
+    """Bind SwiftPM's fixed Darwin product path; Info.plist is optional.
+
+    SwiftPM 6.1.2 BuildParameters.swift:304-307 defines this executable path.
+    LLBuildManifestBuilder+Product.swift:24-38 only generates an Info.plist for
+    experimentalTestOutput; its generator contains NSPrincipalClass alone.
+    """
+    binary_relative = 'Contents/MacOS/PicShotPackageTests'
+    record = dict(schemaVersion=1, status='checking', bundlePath=str(bundle),
+        expectedBundlePath=str(bin_path / 'PicShotPackageTests.xctest'),
+        executableRelativePath=binary_relative, inventory={}, inventoryComplete=False,
+        executable=None, infoPlist=dict(status='not-read'))
+    try:
+        if bundle.is_dir():
+            for path in bundle.rglob('*'):
+                need(time.monotonic() < deadline, 'Launch setup deadline exceeded')
+                need(len(record['inventory']) < 10000, 'Compiled bundle inventory exceeded bound')
+                name = str(path.relative_to(bundle))
+                info = path.lstat()
+                row = dict(mode=stat.S_IMODE(info.st_mode))
+                record['inventory'][name] = row
+                if stat.S_ISLNK(info.st_mode):
+                    row['kind'] = 'symlink'
+                elif stat.S_ISREG(info.st_mode):
+                    row.update(kind='file', **file_identity(path, deadline))
+                elif stat.S_ISDIR(info.st_mode):
+                    row['kind'] = 'directory'
+                else:
+                    row['kind'] = 'other'
+            record['inventoryComplete'] = True
+        binary = bundle / binary_relative
+        binary_row = record['inventory'].get(binary_relative)
+        if binary_row is not None and binary_row['kind'] == 'file':
+            with binary.open('rb') as stream:
+                header = stream.read(16)
+            record['executable'] = dict(path=str(binary), **binary_row, headerHex=header.hex())
+        plist_path = bundle / 'Contents/Info.plist'
+        plist_row = record['inventory'].get('Contents/Info.plist')
+        plist_data = None
+        if plist_row is None:
+            record['infoPlist'] = dict(status='absent')
+        elif plist_row['kind'] == 'file':
+            with plist_path.open('rb') as stream:
+                plist_data = stream.read(64 * 1024 + 1)
+            truncated = plist_row['bytes'] > 64 * 1024 or len(plist_data) > 64 * 1024
+            artifact = 'bundle-Info.plist.prefix' if truncated else 'bundle-Info.plist'
+            if evidence is not None:
+                (evidence / artifact).write_bytes(plist_data)
+            record['infoPlist'] = dict(status='captured', artifact=artifact, truncated=truncated,
+                capturedBytes=len(plist_data), sha256=sha(plist_data))
+        else:
+            record['infoPlist'] = dict(status='non-regular-rejected', kind=plist_row['kind'])
+        if evidence is not None:
+            save(evidence / 'bundle-inputs.json', record)
+        need(bundle == bin_path / 'PicShotPackageTests.xctest' and bundle.is_dir()
+             and (source / '.build').resolve() in bundle.parents, 'Unexpected compiled XCTest bundle')
+        need(record['inventoryComplete'] and record['inventory']
+             and all(row['kind'] in ('file', 'directory') for row in record['inventory'].values()),
+             'Compiled bundle has unsupported non-regular entries')
+        need(record['executable'] is not None, 'Missing fixed compiled XCTest bundle executable')
+        if plist_data is not None:
+            need(record['infoPlist']['truncated'] is False, 'Oversized compiled XCTest Info.plist')
+            info = plistlib.loads(plist_data)
+            need(isinstance(info, dict), 'Compiled XCTest Info.plist is not a dictionary')
+            need('CFBundleExecutable' not in info or info['CFBundleExecutable'] == 'PicShotPackageTests',
+                 'Unexpected compiled XCTest bundle executable metadata')
+            record['infoPlist'].update(status='verified', executableKeyPresent='CFBundleExecutable' in info)
+        else:
+            need(record['infoPlist']['status'] == 'absent', 'Non-regular compiled XCTest Info.plist')
+        record['status'] = 'verified'
+        return record
+    except Exception as error:
+        record.update(status='rejected', error=str(error))
+        raise
+    finally:
+        if evidence is not None:
+            save(evidence / 'bundle-inputs.json', record)
+
+
+def verify_bundle_inputs(directory, identity):
+    evidence = directory.with_name(directory.name + '-inputs')
+    record = json.loads(N.bounded_text(evidence / 'bundle-inputs.json', D.METADATA_CAP))
+    need(record == identity['bundleLayoutEvidence'] and record['status'] == 'verified'
+         and record['inventoryComplete'] is True and record['bundlePath'] == identity['bundlePath']
+         and record['expectedBundlePath'] == record['bundlePath']
+         and record['executableRelativePath'] == 'Contents/MacOS/PicShotPackageTests'
+         and all(row['kind'] in ('file', 'directory') for row in record['inventory'].values()),
+         'Compiled bundle layout evidence differs')
+    entries = {name: {key: row[key] for key in ('bytes', 'sha256')}
+               for name, row in record['inventory'].items() if row['kind'] == 'file'}
+    need(entries == identity['bundleFiles']
+         and sha(json.dumps(entries, sort_keys=True).encode()) == identity['bundleManifestSHA256']
+         and entries['Contents/MacOS/PicShotPackageTests'] == identity['bundleExecutable']
+         and {key: record['executable'][key] for key in ('bytes', 'sha256')} == identity['bundleExecutable']
+         and record['executable']['path'] == str(Path(identity['bundlePath']) / record['executableRelativePath']),
+         'Compiled bundle binary/inventory identity differs')
+    plist = record['infoPlist']
+    if plist['status'] == 'absent':
+        need('Contents/Info.plist' not in entries and not (evidence / 'bundle-Info.plist').exists(),
+             'Absent bundle metadata evidence differs')
+    else:
+        path = evidence / 'bundle-Info.plist'
+        need(plist['status'] == 'verified' and plist['truncated'] is False
+             and path.is_file() and not path.is_symlink() and path.stat().st_size <= 64 * 1024,
+             'Compiled bundle metadata evidence is invalid or oversized')
+        with path.open('rb') as stream:
+            data = stream.read(64 * 1024 + 1)
+        need(len(data) <= 64 * 1024 and len(data) == plist['capturedBytes']
+             and sha(data) == plist['sha256']
+             and entries['Contents/Info.plist'] == dict(bytes=len(data), sha256=sha(data)),
+             'Raw bundle metadata bytes differ')
+        info = plistlib.loads(data)
+        need(isinstance(info, dict)
+             and ('CFBundleExecutable' not in info or info['CFBundleExecutable'] == 'PicShotPackageTests')
+             and plist['executableKeyPresent'] is ('CFBundleExecutable' in info),
+             'Raw bundle executable metadata differs')
+
+
 def launch_inputs(args):
     need(sys.platform == 'darwin', 'Native applicability must be verified on macOS')
     deadline = time.monotonic() + SETUP_SECONDS
@@ -290,20 +408,11 @@ def launch_inputs(args):
                                b'\xfe\xed\xfa\xcf', b'\xca\xfe\xba\xbe', b'\xbe\xba\xfe\xca'),
              'Direct XCTest agent is not a Mach-O executable')
     bin_path = Path(query(['/usr/bin/xcrun', 'swift', 'build', '--show-bin-path'], source)).resolve(strict=True)
-    bundle = args.bundle.resolve(strict=True)
-    need(bundle == bin_path / 'PicShotPackageTests.xctest' and bundle.is_dir()
-         and (source / '.build').resolve() in bundle.parents, 'Unexpected compiled XCTest bundle')
-    info_path = bundle / 'Contents/Info.plist'
-    info = plistlib.loads(info_path.read_bytes())
-    name = info.get('CFBundleExecutable')
-    need(name == 'PicShotPackageTests', 'Unexpected compiled XCTest bundle executable')
-    executable_in_bundle = bundle / 'Contents/MacOS' / name
-    entries = {}
-    for path in sorted(bundle.rglob('*')):
-        need(not path.is_symlink(), 'Symlink inside compiled XCTest bundle')
-        if path.is_file():
-            entries[str(path.relative_to(bundle))] = file_identity(path, deadline)
-    need(0 < len(entries) < 10000, 'Invalid compiled bundle file inventory')
+    bundle = args.bundle.resolve()
+    bundle_evidence = bundle_inputs(source, bundle, bin_path, evidence, deadline)
+    executable_in_bundle = bundle / 'Contents/MacOS/PicShotPackageTests'
+    entries = {name: {key: row[key] for key in ('bytes', 'sha256')}
+               for name, row in bundle_evidence['inventory'].items() if row['kind'] == 'file'}
     env = test_environment(os.environ, platform, args.output_mode)
     env_keys = ('DYLD_FRAMEWORK_PATH', 'DYLD_LIBRARY_PATH', 'SWIFT_TESTING_ENABLED', 'NO_COLOR', 'NSUnbufferedIO')
     identity = dict(sourceCommit=SOURCE, sourceTree=TREE, sourceRoot=str(source),
@@ -313,7 +422,8 @@ def launch_inputs(args):
         xcrunEntryPath=str(xcrun_entry), xcrunResolvedPath=str(resolved_entry),
         xcrunEntryIsSymlink=xcrun_entry.is_symlink(), xcrunEntry=file_identity(resolved_entry, deadline),
         xctestPath=str(executable), xctest=file_identity(executable, deadline),
-        bundlePath=str(bundle), bundleExecutable=file_identity(executable_in_bundle, deadline), bundleFiles=entries,
+        bundlePath=str(bundle), bundleLayoutEvidence=bundle_evidence,
+        bundleExecutable=file_identity(executable_in_bundle, deadline), bundleFiles=entries,
         bundleManifestSHA256=sha(json.dumps(entries, sort_keys=True).encode()),
         xcodeVersion=query(['/usr/bin/xcodebuild', '-version']),
         swiftVersion=query(['/usr/bin/xcrun', 'swift', '--version']),
@@ -719,6 +829,7 @@ def verify_result(directory, identity, expected, phase, output_mode='baseline'):
              samplerSeconds=SAMPLER_SECONDS, sampleCollectionSeconds=D.SAMPLE_SECONDS,
              sampleIntervalMilliseconds=D.SAMPLE_INTERVAL_MS), 'Prior launch identity/mode differs')
     verify_source_inputs(directory, identity['sourceInputEvidence'])
+    verify_bundle_inputs(directory, identity)
     need(prior['schemaVersion'] == 1 and prior['scope'] == SCOPE
          and prior['diagnosticOnly'] is True and prior['installerAcceptance'] is False
          and prior['fullInventorySHA256'] == INVENTORY_SHA

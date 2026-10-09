@@ -240,6 +240,88 @@ class OwnedXCTestTests(unittest.TestCase):
         result = M.source_inputs(clean, None, self.source_query(status=''))
         self.assertEqual(result['packageResolved'], {'status': 'absent'})
 
+    def bundle_identity(self, record):
+        files = {name: {key: row[key] for key in ('bytes', 'sha256')}
+                 for name, row in record['inventory'].items() if row['kind'] == 'file'}
+        return dict(bundlePath=record['bundlePath'], bundleLayoutEvidence=record, bundleFiles=files,
+            bundleExecutable=files['Contents/MacOS/PicShotPackageTests'],
+            bundleManifestSHA256=M.sha(json.dumps(files, sort_keys=True).encode()))
+
+    def test_documented_bundle_without_plist_and_optional_principal_only_plist_are_valid(self):
+        args, _ = self.native_fixture()
+        plist = args.bundle / 'Contents/Info.plist'
+        binary = args.bundle / 'Contents/MacOS/PicShotPackageTests'
+        binary.chmod(0o644)  # Loadable test bundle is not directly exec'd.
+        for index, metadata in enumerate((None, {'NSPrincipalClass': 'Runner.SwiftPMXCTestObserver'},
+                                          {'CFBundleExecutable': 'PicShotPackageTests'})):
+            if metadata is None: plist.unlink()
+            else: plist.write_bytes(plistlib.dumps(metadata))
+            run = self.path / f'run-{index}'; evidence = self.path / f'run-{index}-inputs'; evidence.mkdir()
+            record = M.bundle_inputs(args.source_root, args.bundle, args.bundle.parent, evidence, time.monotonic() + 60)
+            self.assertEqual(record['status'], 'verified')
+            self.assertEqual(record['executable']['mode'], 0o644)
+            self.assertEqual(record['executable']['sha256'], M.file_identity(binary)['sha256'])
+            self.assertEqual(record['executable']['headerHex'], binary.read_bytes()[:16].hex())
+            self.assertFalse(run.exists())
+            self.assertEqual(record, M.bundle_inputs(args.source_root, args.bundle, args.bundle.parent, None, time.monotonic() + 60))
+            M.verify_bundle_inputs(run, self.bundle_identity(record))
+            if metadata is None:
+                self.assertEqual(record['infoPlist'], {'status': 'absent'})
+                self.assertFalse((evidence / 'bundle-Info.plist').exists())
+            else:
+                self.assertEqual((evidence / 'bundle-Info.plist').read_bytes(), plist.read_bytes())
+                self.assertEqual(record['infoPlist']['executableKeyPresent'], 'CFBundleExecutable' in metadata)
+
+    def test_present_metadata_conflicts_malformed_and_oversize_archive_before_rejection(self):
+        args, _ = self.native_fixture()
+        plist = args.bundle / 'Contents/Info.plist'
+        bad_values = (plistlib.dumps({'CFBundleExecutable': 'Other'}), plistlib.dumps(['not', 'a', 'dictionary']),
+                      b'invalid plist', b'x' * (64 * 1024 + 2))
+        for index, raw in enumerate(bad_values):
+            plist.write_bytes(raw)
+            evidence = self.path / f'evidence-{index}'; evidence.mkdir()
+            with self.assertRaises(ValueError):
+                M.bundle_inputs(args.source_root, args.bundle, args.bundle.parent, evidence, time.monotonic() + 60)
+            record = json.loads((evidence / 'bundle-inputs.json').read_text())
+            self.assertEqual(record['status'], 'rejected')
+            self.assertTrue(record['inventoryComplete'])
+            self.assertIsNotNone(record['executable'])
+            self.assertEqual(record['inventory']['Contents/Info.plist']['sha256'], M.sha(raw))
+            captured = evidence / record['infoPlist']['artifact']
+            self.assertEqual(captured.read_bytes(), raw[:64 * 1024 + 1])
+
+    def test_missing_fixed_binary_or_symlink_is_rejected_with_observed_inventory(self):
+        args, _ = self.native_fixture()
+        binary = args.bundle / 'Contents/MacOS/PicShotPackageTests'
+        original = binary.read_bytes(); binary.unlink()
+        other = binary.with_name('Other'); other.write_bytes(original)
+        for index, symbolic in enumerate((False, True)):
+            if symbolic: binary.symlink_to(other)
+            evidence = self.path / f'evidence-{index}'; evidence.mkdir()
+            with self.assertRaises(ValueError):
+                M.bundle_inputs(args.source_root, args.bundle, args.bundle.parent, evidence, time.monotonic() + 60)
+            record = json.loads((evidence / 'bundle-inputs.json').read_text())
+            self.assertEqual(record['status'], 'rejected')
+            self.assertIn('Contents/MacOS/Other', record['inventory'])
+            self.assertIsNone(record['executable'])
+            if symbolic: self.assertEqual(record['inventory']['Contents/MacOS/PicShotPackageTests']['kind'], 'symlink')
+
+    def test_bundle_replay_rejects_raw_metadata_and_inventory_mutations(self):
+        args, _ = self.native_fixture()
+        run = self.path / 'run'; evidence = self.path / 'run-inputs'; evidence.mkdir()
+        record = M.bundle_inputs(args.source_root, args.bundle, args.bundle.parent, evidence, time.monotonic() + 60)
+        expected = self.bundle_identity(record)
+        M.verify_bundle_inputs(run, expected)
+        raw = (evidence / 'bundle-Info.plist').read_bytes()
+        (evidence / 'bundle-Info.plist').write_bytes(raw + b' ')
+        with self.assertRaises(ValueError): M.verify_bundle_inputs(run, expected)
+        (evidence / 'bundle-Info.plist').write_bytes(b'x' * (64 * 1024 + 1))
+        with self.assertRaisesRegex(ValueError, 'oversized'): M.verify_bundle_inputs(run, expected)
+        (evidence / 'bundle-Info.plist').write_bytes(raw)
+        bad = copy.deepcopy(record); bad['inventory']['Contents/MacOS/PicShotPackageTests']['sha256'] = '0' * 64
+        M.save(evidence / 'bundle-inputs.json', bad)
+        with self.assertRaises(ValueError): M.verify_bundle_inputs(run, expected)
+
     def child(self, changed=None):
         process = SimpleNamespace(pid=123, wait=mock.Mock(return_value=0))
         watch = mock.Mock()
@@ -538,9 +620,12 @@ class OwnedXCTestTests(unittest.TestCase):
         self.addCleanup(lambda: __import__('shutil').rmtree(evidence, ignore_errors=True))
         inputs['sourceInputEvidence'] = M.source_inputs(self.path, evidence, lambda argv, cwd=None, raw=False:
             M.SOURCE if argv[-1] == 'HEAD' else M.TREE if argv[-1] == 'HEAD^{tree}' else '')
+        fixture, _ = self.native_fixture()
+        layout = M.bundle_inputs(fixture.source_root, fixture.bundle, fixture.bundle.parent, evidence, time.monotonic() + 60)
+        inputs.update(self.bundle_identity(layout))
         root = dict(identity=identity(), pid=123, ownerPID=os.getpid(), bindingError=None,
                     cleanupConfirmed=True, returnCode=0)
-        process = {**self.good_report(), 'root': root, 'command': M.command('/test/xctest', '/b.xctest', names),
+        process = {**self.good_report(), 'root': root, 'command': M.command('/test/xctest', inputs['bundlePath'], names),
                    'timeoutSeconds': 420, 'samplerTimeoutSeconds': 40, 'expectedCaptureSlots': [180, 360],
                    'logIdentity': M.file_identity(self.path / 'xctest.log')}
         result = dict(phase='run', outputMode='baseline', inputs=inputs, schemaVersion=1, scope=M.SCOPE,
