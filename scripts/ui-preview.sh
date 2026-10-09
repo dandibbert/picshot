@@ -1,7 +1,12 @@
 #!/bin/bash
 set -euo pipefail
-cd "$(dirname "$0")/.."
-work=$(mktemp -d)
+cd -P "$(dirname "$0")/.."
+# Keep the installed app on a physical workspace path. Foundation may remove
+# /private from temporary URLs while POSIX realpath preserves it; evidence
+# must identify the same literal installed bundle in every producer/checker.
+mkdir -p dist
+test "$(cd dist && pwd -P)" = "$PWD/dist"
+work=$(mktemp -d "$PWD/dist/ui-preview.XXXXXXXX")
 trap 'rm -rf "$work"' EXIT
 ditto -x -k "dist/PicShot-0.16.0-macos-$(uname -m).zip" "$work"
 app="$work/PicShot.app"

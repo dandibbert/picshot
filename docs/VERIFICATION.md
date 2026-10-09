@@ -1,5 +1,7 @@
 # Verification evidence and release boundary
 
+Build 134 is not accepted: the early installed editable evidence checker refused a Foundation/POSIX temporary bundle-path spelling mismatch. [The exact failure and narrow extraction-root correction](EditableObservation134.md) preserve strict identity checks and all subsequent gates; the full installed-default result remains unrun.
+
 ## Held 0.16 component results
 
 [Build 133 actual-product evidence](EditableObservation133.md) now qualifies exact pixels/metadata and public ownership in the bounded 2+8 workflow. Candidate post-warmup RSS grows +0.594 MiB versus +166.672 MiB, while final physical footprint rises from 60.691 to 89.128 MiB. The current source is a production-default candidate for eligible sRGB8 drawing; original and model-source formats remain preserved, unsupported profiles retain reference drawing, and final storage/effects are unchanged. No-override actual ZIP execution, full prior/model/failure gates and both installer startup paths are still required before delivery. No 0.16 package or feature acceptance is transferred from the diagnostic.

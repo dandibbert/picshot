@@ -1,7 +1,10 @@
 #!/bin/bash
 set -euo pipefail
-cd "$(dirname "$0")/.."
-work=$(mktemp -d)
+cd -P "$(dirname "$0")/.."
+# Give native reports and POSIX evidence checks the same physical bundle path.
+mkdir -p dist
+test "$(cd dist && pwd -P)" = "$PWD/dist"
+work=$(mktemp -d "$PWD/dist/recording-recovery-smoke.XXXXXXXX")
 trap 'rm -rf "$work"' EXIT
 ditto -x -k "dist/PicShot-0.16.0-macos-$(uname -m).zip" "$work"
 app="$work/PicShot.app"

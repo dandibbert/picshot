@@ -1,5 +1,9 @@
 """Exact source-scope tests; no native execution or memory verdict."""
 import hashlib
+import os
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 import re
 import unittest
@@ -84,6 +88,91 @@ class ProductSourceBindingTests(unittest.TestCase):
         core=source[source.index('    private static func measure('):source.index('    private static func loadInput(')]
         self.assertEqual(hashlib.sha256(core.encode()).hexdigest(),
             '8c27512aff4ee6ab7772ff5bfd16c1456a671f23e9ef5cd94b7553470e4d2844')
+
+
+class InstalledExtractionDirectoryTests(unittest.TestCase):
+    """Exercise the real shell preflight/cleanup, stopping before app extraction."""
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="picshot-preview-path-")
+        self.root = Path(self.temporary.name).resolve()
+        self.repo = self.root / "physical-repository"
+        (self.repo / "scripts").mkdir(parents=True)
+        self.scripts = ('ui-preview', 'codec-attribution', 'image-backing-attribution',
+                        'recording-recovery-smoke', 'gif-attribution', 'smoke')
+        for script in self.scripts:
+            shutil.copyfile(ROOT / f'scripts/{script}.sh', self.repo / f'scripts/{script}.sh')
+        self.tools = self.root / "tools"
+        self.tools.mkdir()
+        stub = self.tools / "ditto"
+        stub.write_text("""#!/bin/sh
+printf '%s\\n' "$@" > "$PICSHOT_TEST_DITTO_ARGUMENTS"
+exit 97
+""")
+        stub.chmod(0o755)
+        self.arguments = self.root / "ditto-arguments"
+        self.environment = dict(os.environ, PATH=str(self.tools) + os.pathsep + os.environ['PATH'],
+                                PICSHOT_TEST_DITTO_ARGUMENTS=str(self.arguments))
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def run_preflight(self, script, root=None):
+        self.arguments.unlink(missing_ok=True)
+        return subprocess.run(['bash', str((root or self.repo) / f'scripts/{script}.sh')],
+            cwd=self.root, env=self.environment, capture_output=True, text=True, timeout=10)
+
+    def extraction_root(self, script):
+        arguments = self.arguments.read_text().splitlines()
+        self.assertEqual(arguments[:3], ['-x', '-k', 'dist/PicShot-0.16.0-macos-' + os.uname().machine + '.zip'])
+        destination = Path(arguments[3])
+        return destination.parent if script == 'smoke' else destination
+
+    def test_installed_extraction_uses_fresh_owned_workspace_and_cleans_on_failure(self):
+        for script in self.scripts:
+            with self.subTest(script=script):
+                destinations = []
+                for _ in range(2):
+                    result = self.run_preflight(script)
+                    self.assertEqual(result.returncode, 97, result.stderr)
+                    destination = self.extraction_root(script)
+                    self.assertEqual(destination.parent, self.repo / 'dist')
+                    prefix = 'installer-smoke' if script == 'smoke' else script
+                    self.assertTrue(destination.name.startswith(prefix + '.'))
+                    self.assertFalse(destination.exists(), 'Owned extraction directory survived failing extraction')
+                    destinations.append(destination)
+                self.assertNotEqual(destinations[0], destinations[1])
+
+    def test_linked_repository_invocation_uses_physical_workspace_path(self):
+        alias = self.root / 'repository-alias'
+        alias.symlink_to(self.repo, target_is_directory=True)
+        for script in self.scripts:
+            with self.subTest(script=script):
+                result = self.run_preflight(script, alias)
+                self.assertEqual(result.returncode, 97, result.stderr)
+                destination = self.extraction_root(script)
+                self.assertEqual(destination.parent, self.repo / 'dist')
+                self.assertNotIn(str(alias), str(destination))
+                self.assertFalse(destination.exists())
+
+    def test_redirected_dist_refuses_extraction_without_touching_other_directory(self):
+        outside = self.root / 'other-owned-directory'
+        outside.mkdir()
+        marker = outside / 'keep.txt'
+        marker.write_text('preserve')
+        (self.repo / 'dist').symlink_to(outside, target_is_directory=True)
+        for script in self.scripts:
+            with self.subTest(script=script):
+                result = self.run_preflight(script)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotEqual(result.returncode, 97)
+                self.assertFalse(self.arguments.exists(), 'Extraction invoked through redirected dist')
+                self.assertEqual(marker.read_text(), 'preserve')
+                self.assertEqual(list(outside.iterdir()), [marker])
+
+    def test_every_installer_extractor_is_covered(self):
+        extractors = {p.stem for p in (ROOT / 'scripts').glob('*.sh')
+                      if 'ditto -x -k ' in p.read_text()}
+        self.assertEqual(extractors, set(self.scripts))
 
 
 if __name__=='__main__':unittest.main()

@@ -12,8 +12,9 @@ export PICSHOT_SMOKE_TABLE_INPUT="$PWD/Tests/PicShotTableEngineTests/Fixtures/me
 base="PicShot-0.16.0-macos-$(uname -m)"
 # Keep the actual installed bundle and all evidence on physical workspace paths.
 # /var-style temporary aliases are rejected by the strict product protocol.
-mkdir -p dist/evidence
+mkdir -p dist
 test "$(cd dist && pwd -P)" = "$PWD/dist"
+mkdir -p dist/evidence
 test "$(cd dist/evidence && pwd -P)" = "$PWD/dist/evidence"
 work=$(mktemp -d "$PWD/dist/installer-smoke.XXXXXXXX")
 mounted=false
