@@ -137,11 +137,10 @@ enum ImageEditorRenderingError: LocalizedError {
 /// Produces only raster pixels. Exports never contain editable annotations or source-image layers.
 enum ImageEditorRenderer {
     static let maximumRasterPixels = 100_000_000
-    private static let filterContext = CIContext(options: [.cacheIntermediates: false])
     /// Per-call injection keeps renderer failures deterministic without global mutable state.
     typealias EffectPatchRenderer = (CIImage, CGRect) -> CGImage?
     static func renderEffectPatch(_ image: CIImage, _ region: CGRect) -> CGImage? {
-        filterContext.createCGImage(image, from: region)
+        EffectContextConfiguration.process.renderEffectPatch(image, region)
     }
 
     static func allowsRasterSize(width: Int, height: Int) -> Bool {

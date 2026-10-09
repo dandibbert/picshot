@@ -2,7 +2,9 @@
 
 ## Held 0.16 component results
 
-[Build 124](EditableObservation124.md) passes all 340 focused cases on both architectures, 41 dedicated cases and exact full paired pixels/documents/guards. Its combined owned-storage/draw-pool candidate retains more cold/final RSS (+585.6875 MiB from native entry) and worse footprint than native storage. It is rejected for production promotion; matched-pool controls are required before storage attribution.
+[Build 126](EditableObservation126.md) independently completes both matched-scope comparisons, all 345 focused cases on each architecture, 46 overlapping dedicated cases and both pooled output guards. Pool-only entry→final RSS is +546.40625 MiB versus +526.390625 MiB control; matched owned storage is +597.171875 MiB versus +544.9375 MiB. Cold and complete-lifetime costs remain adverse. Both candidates are rejected for promotion; production defaults and accepted packages remain unchanged. The next diagnostic changes only the Core Image context memory target, with no memory claim before native evidence.
+
+[Build 124](EditableObservation124.md) passes all 340 focused cases on both architectures, 41 dedicated cases and exact full paired pixels/documents/guards. Its combined owned-storage/draw-pool candidate retains more cold/final RSS (+585.6875 MiB from native entry) and worse footprint than native storage. It is rejected for production promotion; the matched-pool controls were subsequently completed in build 126 without demonstrating a remedy.
 
 [Build 121](EditableObservation121.md) completes the four-process full native drawing comparison with exact pixels/documents and both-architecture 320/320 focused coverage. Repeated RSS growth improves, but candidate native-entry→final RSS remains +530.875 MiB, volatile backing +267.96875 MiB and footprint +92.563904 MiB; footprint peaks worsen. Production remains reference and 0.16 stays held. The next final-renderer-storage experiment changes one separate boundary.
 

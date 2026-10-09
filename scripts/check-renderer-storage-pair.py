@@ -18,7 +18,7 @@ C = module('renderer_drawing_pair', 'check-editable-drawing-pair.py')
 N = C.N
 KIND = 'renderer-final-storage'
 STRATEGIES, CELLS, _ = C.comparison_contract(KIND)
-COMPARISON_KINDS = tuple(kind for kind in C.COMPARISON_KINDS if kind != 'drawing-input')
+COMPARISON_KINDS = ('renderer-final-storage', 'renderer-autorelease-scope', 'renderer-final-storage-scoped')
 POLICIES = tuple(C.RENDERER_POLICIES)
 NATIVE_POLICIES = ('native', 'native-pooled')
 OWNED_POLICIES = ('owned-srgb8', 'owned-pooled')

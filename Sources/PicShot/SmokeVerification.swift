@@ -13,6 +13,7 @@ import PicShotFormulaRenderCore
                 defer { try? FileManager.default.removeItem(at: history.directory) }
                 var payload = try await EffectOutputFailureNativeFixture.verify(evidenceDirectory: directory)
                 try DrawingRasterOutputGuardEvidence.writeIfRequested(evidenceDirectory: directory)
+                try EffectContextOutputGuardEvidence.writeIfRequested(evidenceDirectory: directory)
                 payload["arguments"] = CommandLine.arguments
                 try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]).write(to: url, options: .atomic)
                 try? FileManager.default.removeItem(at: history.directory)

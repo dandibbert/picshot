@@ -27,7 +27,8 @@ CELLS = [('baseline-certification', 'reference', 'certify'),
          ('candidate-certification', 'owned-srgb8', 'certify'),
          ('baseline', 'reference', 'resources'), ('candidate', 'owned-srgb8', 'resources')]
 COMPARISON_KINDS = ('drawing-input', 'renderer-final-storage',
-                    'renderer-autorelease-scope', 'renderer-final-storage-scoped')
+                    'renderer-autorelease-scope', 'renderer-final-storage-scoped',
+                    'effect-context-memory-target')
 RENDERER_POLICIES = {'native': 'caller', 'owned-srgb8': 'draw-only',
                      'native-pooled': 'whole-render', 'owned-pooled': 'whole-render'}
 
@@ -41,13 +42,15 @@ def comparison_contract(kind):
         'renderer-final-storage': ('native', 'owned-srgb8'),
         'renderer-autorelease-scope': ('native', 'native-pooled'),
         'renderer-final-storage-scoped': ('native-pooled', 'owned-pooled'),
+        'effect-context-memory-target': ('reference', 'memory32'),
     }[kind]
     baseline, candidate = strategies
     return strategies, [
         ('baseline-certification', baseline, 'certify'),
         ('candidate-certification', candidate, 'certify'),
         ('baseline', baseline, 'resources'), ('candidate', candidate, 'resources')
-    ], 'scripts/launch-renderer-storage-pair.swift'
+    ], ('scripts/launch-effect-context-pair.swift' if kind == 'effect-context-memory-target'
+        else 'scripts/launch-renderer-storage-pair.swift')
 
 
 def renderer_autorelease_scope(strategy):
@@ -326,6 +329,8 @@ def validate_launch(launcher, wrapper, envelope, native, identity, directory, st
     _, _, launch_script = comparison_contract(comparison_kind)
     expected_drawing = drawing_strategy(strategy, comparison_kind)
     extra_fields = {'rendererStorageStrategy', 'comparisonKind', 'rendererAutoreleaseScope'} if comparison_kind != 'drawing-input' else set()
+    if comparison_kind == 'effect-context-memory-target':
+        extra_fields |= {'effectContextPolicy'}
     N.keys(launcher, {'schemaVersion', 'status', 'launcherExitCode', 'drawingStrategy', 'drawingMode',
         'hashObservation', 'selectedAppPath', 'createsNewApplicationInstance', 'timeoutSeconds', 'elapsedSeconds',
         'launchBeganUptimeSeconds', 'finishUptimeSeconds', 'callbackReceived', 'ownedExitConfirmed',
@@ -336,7 +341,12 @@ def validate_launch(launcher, wrapper, envelope, native, identity, directory, st
            and launcher['ownedExitConfirmed'] is True and launcher['createsNewApplicationInstance'] is True,
            'fresh owned application exit unverified')
     N.need(launcher['processStartMemoryCaptured'] is False, 'launcher incorrectly claims birth memory')
-    if comparison_kind != 'drawing-input':
+    if comparison_kind == 'effect-context-memory-target':
+        N.need(launcher['effectContextPolicy'] == strategy and launcher['comparisonKind'] == comparison_kind,
+               'launcher effect context selection differs')
+        N.need(launcher['rendererStorageStrategy'] == 'native' and launcher['rendererAutoreleaseScope'] == 'caller',
+               'launcher fixed renderer selection differs')
+    elif comparison_kind != 'drawing-input':
         N.need(launcher['rendererStorageStrategy'] == strategy and launcher['comparisonKind'] == comparison_kind,
                'launcher renderer storage selection differs')
         N.need(launcher['rendererAutoreleaseScope'] == renderer_autorelease_scope(strategy),
@@ -490,7 +500,12 @@ def compare(arms, stage, comparison_kind='drawing-input'):
             N.need(arm['native'][field] == first['native'][field], 'paired installed binary identity differs: ' + field)
         N.need(arm['drawing']['drawingStrategy'] == drawing_strategy(strategy, comparison_kind)
                and arm['native']['resourcesRequested'] is (mode == 'resources'), 'arm selection differs')
-        if comparison_kind != 'drawing-input':
+        if comparison_kind == 'effect-context-memory-target':
+            N.need(arm['effectContext']['effectContextPolicy'] == strategy
+                   and arm['effectContext']['comparisonKind'] == comparison_kind, 'effect arm selection differs')
+            N.need(arm['effectContext']['rendererStorageStrategy'] == 'native'
+                   and arm['effectContext']['rendererAutoreleaseScope'] == 'caller', 'effect fixed renderer selection differs')
+        elif comparison_kind != 'drawing-input':
             N.need(arm['rendererStorage']['rendererStorageStrategy'] == strategy
                    and arm['rendererStorage']['comparisonKind'] == comparison_kind, 'renderer arm selection differs')
             N.need(arm['rendererStorage']['rendererAutoreleaseScope'] == renderer_autorelease_scope(strategy),

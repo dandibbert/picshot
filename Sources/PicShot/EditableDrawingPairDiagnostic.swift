@@ -25,6 +25,7 @@ import CryptoKit
         try O.require(observer == "vimage" || (observer == "certify" && !includeResources),
                       "Drawing pair requires common vImage observation or isolated byte certification")
         try RendererStoragePairDiagnostic.begin(includeResources: includeResources, observer: observer)
+        try EffectContextPairDiagnostic.begin(includeResources: includeResources, observer: observer)
         process = EditableDrawingPairDiagnostic(strategy: selected, resources: includeResources, observer: observer)
         try process?.checkpoint(workload: "entry", label: "native-entry")
     }
@@ -34,6 +35,7 @@ import CryptoKit
         let tracker = try JSONSerialization.jsonObject(with: JSONEncoder().encode(DrawingRasterConfiguration.process.tracker.snapshot()))
         checkpoints.append(["workload": workload, "label": label, "memory": try O.memory(), "drawing": tracker])
         try RendererStoragePairDiagnostic.process?.checkpoint(drawingCheckpoint: checkpoints[checkpoints.count - 1])
+        try EffectContextPairDiagnostic.process?.checkpoint(drawingCheckpoint: checkpoints[checkpoints.count - 1])
     }
     func documents(original: Data, applied: Data) throws {
         try O.require(documentRows.count < 12 && original.count <= 131_072 && applied.count <= 131_072,
@@ -57,5 +59,6 @@ import CryptoKit
         try O.require(data.count <= 2 * 1_024 * 1_024, "Drawing evidence exceeds sidecar byte bound")
         try data.write(to: directory.appendingPathComponent("editable-drawing-pair.json"), options: .atomic)
         try RendererStoragePairDiagnostic.process?.write(native: native, nativeData: nativeData, drawingData: data, directory: directory)
+        try EffectContextPairDiagnostic.process?.write(native: native, nativeData: nativeData, drawingData: data, directory: directory)
     }
 }

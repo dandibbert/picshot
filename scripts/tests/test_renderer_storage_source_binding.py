@@ -15,6 +15,13 @@ class RendererStorageSourceBindingTests(unittest.TestCase):
     def test_exact_existing_drawing_hooks_preserve_prior_diagnostics(self):
         source = read('Sources/PicShot/EditableDrawingPairDiagnostic.swift')
         for hook in [
+            '        try EffectContextPairDiagnostic.begin(includeResources: includeResources, observer: observer)\n',
+            '        try EffectContextPairDiagnostic.process?.checkpoint(drawingCheckpoint: checkpoints[checkpoints.count - 1])\n',
+            '        try EffectContextPairDiagnostic.process?.write(native: native, nativeData: nativeData, drawingData: data, directory: directory)\n',
+        ]:
+            self.assertEqual(source.count(hook), 1)
+            source = source.replace(hook, '', 1)
+        for hook in [
             '        try RendererStoragePairDiagnostic.begin(includeResources: includeResources, observer: observer)\n',
             '        try RendererStoragePairDiagnostic.process?.checkpoint(drawingCheckpoint: checkpoints[checkpoints.count - 1])\n',
             '        try RendererStoragePairDiagnostic.process?.write(native: native, nativeData: nativeData, drawingData: data, directory: directory)\n',
