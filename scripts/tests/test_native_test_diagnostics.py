@@ -296,6 +296,9 @@ class NativeDiagnosticTests(unittest.TestCase):
         self.assertIn('retirement unproven', result['targets'][0]['error'])
         kill.assert_not_called()
         reader.library.proc_pidinfo = missing
+        with self.assertRaises(D.PIDInfoAbsent) as absent:
+            reader(201)
+        self.assertEqual(absent.exception.filename,201)
         self.assertEqual(D.target_state(self.identities[201], reader)['state'], 'retired')
 
     def test_baseline_keeps_environment_exact_and_unbuffered_is_separate(self):
@@ -433,6 +436,156 @@ class NativeDiagnosticTests(unittest.TestCase):
             result = D.retire_targets([], self.identities.__getitem__)
         self.assertFalse(result['confirmed'])
         kill.assert_not_called()
+
+    def disappearing_child(self, second_read, reenumeration=None):
+        missing=mock.Mock(side_effect=[D.PIDInfoAbsent(202),second_read])
+        def identify(pid):
+            return missing() if pid==202 else self.identities[pid].copy()
+        lists=mock.Mock(side_effect=[[202,201], [201] if reenumeration is None else reenumeration])
+        def children(pid):
+            return lists() if pid==200 else []
+        return mock.Mock(side_effect=identify),mock.Mock(side_effect=children),missing
+
+    def test_twice_absent_enumerated_child_is_recorded_but_never_owned_or_signalled(self):
+        identify,children,missing=self.disappearing_child(D.PIDInfoAbsent(202))
+        with mock.patch.object(D.os,'kill') as signal_pid:
+            census=D.owned_target(100,200,identify,children)
+            ownership=D.Ownership(self.identities[100]);ownership.accept(census)
+        signal_pid.assert_not_called()
+        self.assertEqual(missing.call_count,2)
+        self.assertTrue(census['complete'])
+        self.assertFalse(census['atomicSnapshot'])
+        self.assertEqual([member['pid'] for member in census['members']],[200,201])
+        self.assertEqual(census['candidatePIDs'],[201])
+        row=census['vanishedChildObservations'][0]
+        self.assertEqual(row['pid'],202)
+        self.assertTrue(row['confirmedAbsent'])
+        self.assertEqual(row['parent'],row['parentAfter'])
+        self.assertEqual(row['parentChildPIDsAfter'],[201])
+        self.assertEqual(row['firstAbsence']['origin'],'proc_pidinfo')
+        self.assertEqual(row['secondAbsence']['origin'],'proc_pidinfo')
+        self.assertGreaterEqual(row['secondAbsence']['elapsedSecondsSinceCensusStart'],
+                                row['firstAbsence']['elapsedSecondsSinceCensusStart'])
+        self.assertEqual(ownership.targets,[self.identities[201]])
+        self.assertFalse(ownership.record['uncertainCensus'])
+        self.assertIn('not global descendant cleanup',census['scope'])
+        ownership.accept(self.snapshot())
+        self.assertEqual(ownership.record['vanishedChildEvidence']['first'],row)
+
+    def test_only_second_typed_pid_info_absence_can_resolve_the_edge(self):
+        live=self.identity(202,200,202,'/usr/bin/helper')
+        for second in (live,dict(live,uid=os.getuid()+1),dict(live,birthSeconds=99999),
+                       OSError(errno.EACCES,'denied'),OSError(errno.ESRCH,'unspecified source'),
+                       ValueError('Cannot read executable identity (errno 3)'),D.PIDInfoAbsent(999)):
+            with self.subTest(second=second):
+                identify,children,_=self.disappearing_child(second)
+                with self.assertRaises(D.SelectionError) as rejected:
+                    D.owned_target(100,200,identify,children)
+                census=rejected.exception.census
+                self.assertFalse(census['complete'])
+                self.assertFalse(census['vanishedChildObservations'][0]['confirmedAbsent'])
+                ownership=D.Ownership(self.identities[100]);ownership.accept(census)
+                ownership.accept(self.snapshot())
+                self.assertTrue(ownership.record['uncertainCensus'])
+                self.assertEqual(ownership.targets,[self.identities[201]])
+                self.assertEqual(children.call_count,1)
+
+    def test_first_path_or_untyped_absence_remains_an_unknown_child(self):
+        for first in (ValueError('Cannot read executable identity (errno 3)'),
+                      OSError(errno.ESRCH,'unproven origin'),D.PIDInfoAbsent(999)):
+            with self.subTest(first=first):
+                identify,children,missing=self.disappearing_child(D.PIDInfoAbsent(202))
+                missing.side_effect=[first]
+                with self.assertRaises(D.SelectionError) as rejected:
+                    D.owned_target(100,200,identify,children)
+                self.assertFalse(rejected.exception.census['complete'])
+                self.assertEqual(missing.call_count,1)
+
+    def test_parent_identity_change_or_child_reappearance_keeps_uncertainty(self):
+        for field in ('pid','parentPID','groupID','uid','birthSeconds','birthMicroseconds','executable'):
+            with self.subTest(field=field):
+                identify,children,_=self.disappearing_child(D.PIDInfoAbsent(202))
+                original=identify.side_effect;count=0
+                def changed(pid):
+                    nonlocal count
+                    value=original(pid)
+                    if pid==200:
+                        count+=1
+                        if count==2:value[field]=value[field]+1 if type(value[field]) is int else value[field]+'.changed'
+                    return value
+                identify.side_effect=changed
+                with self.assertRaisesRegex(D.SelectionError,'Parent identity changed'):
+                    D.owned_target(100,200,identify,children)
+        for current in ([202,201],[201,201],[0],[True],list(range(1000,1065))):
+            with self.subTest(children=current):
+                identify,children,_=self.disappearing_child(D.PIDInfoAbsent(202),current)
+                with self.assertRaises(D.SelectionError) as rejected:
+                    D.owned_target(100,200,identify,children)
+                self.assertFalse(rejected.exception.census['complete'])
+                self.assertFalse(rejected.exception.census['vanishedChildObservations'][0]['confirmedAbsent'])
+
+    def test_new_children_seen_during_absence_recheck_are_traversed_and_remain_ambiguous(self):
+        for executable in ('/usr/bin/helper',self.identities[201]['executable']):
+            with self.subTest(executable=executable):
+                self.identities[203]=self.identity(203,200,203,executable)
+                identify,children,_=self.disappearing_child(D.PIDInfoAbsent(202),[201,203])
+                if executable=='/usr/bin/helper':
+                    census=D.owned_target(100,200,identify,children)
+                    self.assertEqual([m['pid'] for m in census['members']],[200,201,203])
+                    self.assertEqual(census['candidatePIDs'],[201])
+                else:
+                    with self.assertRaises(D.SelectionError) as rejected:
+                        D.owned_target(100,200,identify,children)
+                    self.assertEqual(rejected.exception.census['candidatePIDs'],[201,203])
+
+    def test_final_identity_recheck_absence_and_birth_change_are_never_reconciled(self):
+        for pid,at in ((100,2),(200,3),(201,2)):
+            for failure in ('absent','birth-changed'):
+                with self.subTest(pid=pid,failure=failure):
+                    identify,children,_=self.disappearing_child(D.PIDInfoAbsent(202))
+                    original=identify.side_effect;count=0
+                    def changed(current_pid):
+                        nonlocal count
+                        value=original(current_pid)
+                        if current_pid==pid:
+                            count+=1
+                            if count==at:
+                                if failure=='absent':raise D.PIDInfoAbsent(pid)
+                                value['birthMicroseconds']+=1
+                        return value
+                    identify.side_effect=changed
+                    with self.assertRaises(D.SelectionError) as rejected:
+                        D.owned_target(100,200,identify,children)
+                    census=rejected.exception.census
+                    self.assertFalse(census['complete'])
+                    self.assertTrue(census['vanishedChildObservations'][0]['confirmedAbsent'])
+                    ownership=D.Ownership(self.identities[100]);ownership.accept(census)
+                    self.assertTrue(ownership.record['uncertainCensus'])
+
+    def test_vanished_children_consume_the_existing_member_bound(self):
+        def identify(pid):
+            if pid in (202,203):raise D.PIDInfoAbsent(pid)
+            return self.identities[pid].copy()
+        lists=iter([[202,203,201],[203,201],[201]])
+        children=lambda pid: next(lists) if pid==200 else []
+        with mock.patch.object(D,'MAX_DIAGNOSTIC_MEMBERS',3), \
+             self.assertRaisesRegex(D.SelectionError,'member bound') as rejected:
+            D.owned_target(100,200,identify,children)
+        self.assertEqual(len(rejected.exception.census['vanishedChildObservations']),2)
+        self.assertFalse(rejected.exception.census['complete'])
+
+    def test_vanished_evidence_first_latest_copies_and_counts_are_bounded(self):
+        record={}
+        observations=[dict(pid=i,confirmedAbsent=i!=2,parent=dict(pid=200)) for i in range(4)]
+        for observation in observations:
+            D.remember_vanished_children(record,{'vanishedChildObservations':[observation]})
+        observations[0]['parent']['pid']=999
+        evidence=record['vanishedChildEvidence']
+        self.assertEqual((evidence['totalCount'],evidence['confirmedAbsentCount'],evidence['unresolvedCount']),(4,3,1))
+        self.assertEqual((evidence['retainedCount'],evidence['omittedCount']),(2,2))
+        self.assertEqual(evidence['first']['pid'],0)
+        self.assertEqual(evidence['first']['parent']['pid'],200)
+        self.assertEqual(evidence['latest']['pid'],3)
 
     def test_wrong_wrapper_or_leader_birth_rejects_before_traversal(self):
         for keyword, pid in (('expected_wrapper', 100), ('expected_leader', 200)):
@@ -641,6 +794,50 @@ class NativeDiagnosticTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'target changed'):
                 D.sample_exec(request, output)
             execute.assert_not_called()
+
+    def test_sampler_final_census_is_archived_before_exec_including_rejected_edges(self):
+        request=self.root/'last-census.request.json';output=self.root/'last-census.txt'
+        original=self.snapshot();request.write_text(json.dumps(original))
+        late=dict(pid=202,confirmedAbsent=True,phase='initial-enumerated-child-identity')
+        current=dict(original,vanishedChildObservations=[late])
+        def inspect_before_exec(*_):
+            saved=json.loads(output.with_suffix('.identity.json').read_text())
+            self.assertEqual(saved['status'],'validated')
+            self.assertEqual(saved['census']['vanishedChildObservations'],[late])
+            self.assertEqual(saved['phase'],'sampler-pre-exec-census')
+        with mock.patch.object(D,'ProcessIdentity'),mock.patch.object(D,'owned_target',return_value=current), \
+             mock.patch.object(D.resource,'setrlimit'),mock.patch.object(D.os,'execv',side_effect=inspect_before_exec) as execute:
+            D.sample_exec(request,output)
+        execute.assert_called_once()
+        failed=dict(current,complete=False,error='second read denied')
+        failed_output=self.root/'rejected-census.txt'
+        with mock.patch.object(D,'ProcessIdentity'), \
+             mock.patch.object(D,'owned_target',side_effect=D.SelectionError('second read denied',failed)), \
+             mock.patch.object(D.os,'execv') as execute:
+            with self.assertRaises(D.SelectionError):
+                D.sample_exec(request,failed_output)
+        execute.assert_not_called()
+        saved=json.loads(failed_output.with_suffix('.identity.json').read_text())
+        self.assertEqual(saved['status'],'rejected')
+        self.assertEqual(saved['error'],'second read denied')
+        self.assertEqual(saved['census'],failed)
+
+    def test_sampler_cannot_exec_if_final_census_save_fails_or_exceeds_cap(self):
+        request=self.root/'save-failure.request.json';output=self.root/'save-failure.txt'
+        original=self.snapshot();request.write_text(json.dumps(original))
+        with mock.patch.object(D,'ProcessIdentity'),mock.patch.object(D,'owned_target',return_value=original), \
+             mock.patch.object(D,'save',side_effect=OSError('metadata write denied')), \
+             mock.patch.object(D.os,'execv') as execute:
+            with self.assertRaisesRegex(OSError,'metadata write denied'):
+                D.sample_exec(request,output)
+        execute.assert_not_called()
+        with mock.patch.object(D,'ProcessIdentity'), \
+             mock.patch.object(D,'owned_target',return_value=dict(original,padding='x'*(D.METADATA_CAP+1))), \
+             mock.patch.object(D.os,'execv') as execute:
+            with self.assertRaisesRegex(ValueError,'metadata exceeded'):
+                D.sample_exec(request,output)
+        execute.assert_not_called()
+        self.assertFalse(output.with_suffix('.identity.json').exists())
 
     def test_capture_uses_original_native_command_and_independent_short_wrapper(self):
         self.args.directory.mkdir()

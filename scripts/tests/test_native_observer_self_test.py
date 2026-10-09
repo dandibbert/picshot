@@ -108,6 +108,23 @@ class ObserverSelfTestContracts(unittest.TestCase):
         self.assertTrue(self.harness.census_uncertain)
         self.assertEqual(self.harness.targets,[self.target])
 
+    def test_confirmed_vanished_edge_is_archived_without_becoming_an_owned_target(self):
+        vanished=dict(pid=999,confirmedAbsent=True,parent=dict(self.leader),
+            firstAbsence={'origin':'proc_pidinfo'},secondAbsence={'origin':'proc_pidinfo'},
+            parentAfter=dict(self.leader),parentChildPIDsAfter=[300])
+        census=dict(self.snapshot,vanishedChildObservations=[vanished])
+        self.harness.remember_census(census)
+        self.harness.remember_census(self.snapshot)
+        self.assertFalse(self.harness.census_uncertain)
+        self.assertEqual(self.harness.targets,[self.target])
+        self.assertEqual(self.harness.report['vanishedChildEvidence']['first'],vanished)
+        unknown=dict(vanished,confirmedAbsent=False,recheckError='permission denied')
+        self.harness.remember_census(dict(complete=False,anchorValidated=True,
+            vanishedChildObservations=[unknown]))
+        self.harness.remember_census(self.snapshot)
+        self.assertTrue(self.harness.census_uncertain)
+        self.assertEqual(self.harness.report['vanishedChildEvidence']['unresolvedCount'],1)
+
     def test_ambiguous_verified_candidates_are_retained_but_not_success(self):
         other=self.identity(301,200,301,self.target['executable'])
         self.harness.remember_census(dict(self.snapshot,members=[self.leader,self.target,other],candidatePIDs=[300,301]))

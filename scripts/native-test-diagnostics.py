@@ -7,6 +7,7 @@ native timeouts, product defaults, or the native aggregate success requirements.
 """
 
 import argparse
+import copy
 import ctypes
 import errno
 import hashlib
@@ -69,6 +70,12 @@ class BSDInfo(ctypes.Structure):
                  ('start_microseconds', ctypes.c_uint64)]
 
 
+class PIDInfoAbsent(ProcessLookupError):
+    """Absence established by proc_pidinfo, never by executable-path lookup."""
+    def __init__(self, pid):
+        super().__init__(errno.ESRCH, 'Cannot read process identity', pid)
+
+
 class ProcessIdentity:
     def __init__(self):
         need(sys.platform == 'darwin', 'Native diagnostics require macOS')
@@ -89,6 +96,8 @@ class ProcessIdentity:
         ctypes.set_errno(0)
         count = self.library.proc_pidinfo(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info))
         if count == 0 and ctypes.get_errno():
+            if ctypes.get_errno() == errno.ESRCH:
+                raise PIDInfoAbsent(pid)
             raise OSError(ctypes.get_errno(), 'Cannot read process identity', pid)
         need(count == ctypes.sizeof(info) and info.pid == pid, 'Missing or changed process identity')
         path = ctypes.create_string_buffer(4096)
@@ -274,11 +283,16 @@ def owned_target(wrapper_pid, leader_pid, identify, children=None,
     """Follow rechecked parent edges, including descendants in different groups.
 
     The census is deliberately non-atomic. Every identity and parent edge is
-    rechecked before selection; any ambiguity fails closed and retains scalars.
+    rechecked before selection. Only a newly enumerated child with repeated
+    PID-info absence and a stable parent may be omitted; this cannot establish
+    global descendant cleanup. Any live/unknown identity still fails closed.
     """
     census = {'members': [], 'candidatePIDs': [], 'atomicSnapshot': False,
               'anchorValidated': False, 'complete': False,
+              'vanishedChildObservations': [],
+              'scope': 'Non-atomic live parent-chain census; not global descendant cleanup',
               'memberCap': MAX_DIAGNOSTIC_MEMBERS, 'depthCap': MAX_DIAGNOSTIC_DEPTH}
+    started = time.monotonic()
     try:
         children = children or identify.children
         wrapper = identify(wrapper_pid)
@@ -302,16 +316,55 @@ def owned_target(wrapper_pid, leader_pid, identify, children=None,
         while queue:
             parent, depth = queue.pop(0)
             census['members'].append(parent)
-            child_pids = children(parent['pid'])
+            child_pids = list(children(parent['pid']))
             need(len(child_pids) <= MAX_DIAGNOSTIC_MEMBERS, 'Child census exceeds observation bound')
             need(not child_pids or depth < MAX_DIAGNOSTIC_DEPTH, 'Owned tree exceeds depth bound')
             for pid in child_pids:
                 need(pid not in seen and len(seen) <= MAX_DIAGNOSTIC_MEMBERS,
                      'Owned tree exceeds member bound or has duplicate edges')
-                member = identify(pid)
+                seen.add(pid)  # Vanished edges also consume the existing census bound.
+                try:
+                    member = identify(pid)
+                except PIDInfoAbsent as first_absence:
+                    need(first_absence.filename == pid, 'PID-info absence refers to another child')
+                    observation = dict(pid=pid, parent=copy.deepcopy(parent), confirmedAbsent=False,
+                        phase='initial-enumerated-child-identity',
+                        scope='No child ownership established; omission is not global descendant cleanup',
+                        firstAbsence=dict(origin='proc_pidinfo', error=str(first_absence),
+                            elapsedSecondsSinceCensusStart=round(time.monotonic() - started, 6)))
+                    census['vanishedChildObservations'].append(observation)
+                    try:
+                        observation['unexpectedIdentity'] = identify(pid)
+                    except PIDInfoAbsent as second_absence:
+                        need(second_absence.filename == pid, 'Repeated PID-info absence refers to another child')
+                        observation['secondAbsence'] = dict(origin='proc_pidinfo', error=str(second_absence),
+                            elapsedSecondsSinceCensusStart=round(time.monotonic() - started, 6))
+                    except Exception as error:
+                        observation['recheckError'] = str(error)
+                        raise
+                    else:
+                        raise ValueError('Enumerated child reappeared during absence reconciliation')
+                    observation['parentAfter'] = identify(parent['pid'])
+                    need(observation['parentAfter'] == parent,
+                         'Parent identity changed during child absence reconciliation')
+                    current_children = list(children(parent['pid']))
+                    need(len(current_children) <= MAX_DIAGNOSTIC_MEMBERS,
+                         'Child re-enumeration exceeds observation bound')
+                    need(all(type(child) is int and 0 < child <= 2147483647 for child in current_children)
+                         and len(set(current_children)) == len(current_children), 'Invalid child re-enumeration')
+                    observation['parentChildPIDsAfter'] = current_children
+                    need(pid not in current_children, 'Absent child reappeared in parent re-enumeration')
+                    # Do not ignore newly observed live edges in the re-enumeration.
+                    for new_pid in current_children:
+                        if new_pid not in child_pids:
+                            need(len(child_pids) < MAX_DIAGNOSTIC_MEMBERS,
+                                 'Child census churn exceeds observation bound')
+                            child_pids.append(new_pid)
+                    observation['confirmedAbsent'] = True
+                    observation['completedElapsedSecondsSinceCensusStart'] = round(time.monotonic() - started, 6)
+                    continue
                 need(member['parentPID'] == parent['pid'] and member['uid'] == wrapper['uid'],
                      'Child identity no longer matches its owned parent')
-                seen.add(pid)
                 queue.append((member, depth + 1))
         census['candidatePIDs'] = [member['pid'] for member in census['members']
                                   if is_xctest(member, census['xcodeDeveloperDirectory'])]
@@ -325,6 +378,23 @@ def owned_target(wrapper_pid, leader_pid, identify, children=None,
     except Exception as error:
         census['error'] = str(error)
         raise SelectionError(str(error), census) from error
+
+
+def remember_vanished_children(record, census):
+    """Retain bounded first/latest reconciliation evidence across later censuses."""
+    for observation in census.get('vanishedChildObservations', []):
+        evidence = record.setdefault('vanishedChildEvidence', dict(totalCount=0, confirmedAbsentCount=0,
+            unresolvedCount=0, retainedCount=0, omittedCount=0, first=None, latest=None,
+            scope='Enumerated PIDs absent at two PID-info reads; not ownership or global descendant cleanup'))
+        evidence['totalCount'] += 1
+        key = 'confirmedAbsentCount' if observation.get('confirmedAbsent') is True else 'unresolvedCount'
+        evidence[key] += 1
+        evidence['retainedCount'] = min(2, evidence['totalCount'])
+        evidence['omittedCount'] = max(0, evidence['totalCount'] - 2)
+        preserved = copy.deepcopy(observation)
+        if evidence['first'] is None:
+            evidence['first'] = preserved
+        evidence['latest'] = preserved
 
 
 def target_state(target, identify):
@@ -416,12 +486,23 @@ def cleanup_evidence(path, returncode, timeout):
 def sample_exec(request, destination):
     """Invoked only inside the existing short bounded-command wrapper."""
     record = json.loads(NATIVE.bounded_text(request, METADATA_CAP))
-    identify = ProcessIdentity()
-    current = owned_target(record['wrapper']['pid'], record['leader']['pid'], identify,
-                           expected_wrapper=record['wrapper'], expected_leader=record['leader'])
-    need(all(current[key] == record[key] for key in ('wrapper', 'leader', 'target')),
-         'Sampling target changed after the request was recorded')
     need(destination.parent == request.parent and not destination.exists(), 'Invalid sample output')
+    identify = ProcessIdentity()
+    evidence = dict(schemaVersion=1, phase='sampler-pre-exec-census', status='checking', census=None)
+    try:
+        current = owned_target(record['wrapper']['pid'], record['leader']['pid'], identify,
+                               expected_wrapper=record['wrapper'], expected_leader=record['leader'])
+        evidence['census'] = current
+        need(all(current[key] == record[key] for key in ('wrapper', 'leader', 'target')),
+             'Sampling target changed after the request was recorded')
+        evidence['status'] = 'validated'
+    except Exception as error:
+        evidence.update(status='rejected', error=str(error), census=getattr(error, 'census', evidence['census']))
+        raise
+    finally:
+        # A failed or resolved last-moment census must survive exec as evidence.
+        # Failure to archive it prevents sampling, under the same short wrapper.
+        save(destination.with_suffix('.identity.json'), evidence)
     resource.setrlimit(resource.RLIMIT_FSIZE, (SAMPLE_FILE_CAP, SAMPLE_FILE_CAP))
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     os.execv('/usr/bin/sample', ['/usr/bin/sample', str(current['target']['pid']),
@@ -474,6 +555,7 @@ class Ownership:
     def accept(self, census):
         census['observedAtSeconds'] = round(time.monotonic() - self.started, 6)
         self.record['lastCensus'] = census
+        remember_vanished_children(self.record, census)
         if census.get('pending'):
             return
         if census.get('complete'):

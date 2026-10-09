@@ -166,6 +166,7 @@ class Harness:
     def remember_census(self, census, error=None, context=None):
         if not isinstance(census, dict):
             return
+        D.remember_vanished_children(self.report, census)
         self.census_evidence['totalCensusCount'] += 1
         reasons = []
         if census.get('complete') is not True or census.get('anchorValidated') is not True:
