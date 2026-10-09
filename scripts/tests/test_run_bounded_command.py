@@ -254,20 +254,28 @@ class BoundedCommandTests(unittest.TestCase):
 
     def child_tree(self, *, parent_exits=False, close_child_output=False):
         marker = self.root / "grandchild.pid"
-        child_code = (
-            "import os, signal, time; from pathlib import Path; "
-            "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-            f"Path({str(marker)!r}).write_text(str(os.getpid())); time.sleep(30)"
-        )
+        # Fork a real descendant without a second interpreter startup consuming
+        # the 0.4s deadline. It inherits SIGTERM-ignore and the owned group.
+        # Only the descendant writes its PID; readiness follows the closed file.
         code = (
-            "import signal, subprocess, sys, time; from pathlib import Path; "
-            "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-            f"subprocess.Popen([sys.executable, '-c', {child_code!r}]"
-            + (", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL" if close_child_output else "")
-            + "); "
-            f"marker = Path({str(marker)!r})\n"
-            "while not marker.exists(): time.sleep(0.01)\n"
-            + ("sys.exit(0)\n" if parent_exits else "time.sleep(30)\n")
+            "import os, signal, time\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "ready_read, ready_write = os.pipe()\n"
+            "if os.fork() == 0:\n"
+            "    os.close(ready_read)\n"
+            + ("    sink = os.open(os.devnull, os.O_WRONLY)\n"
+               "    os.dup2(sink, 1); os.dup2(sink, 2); os.close(sink)\n"
+               if close_child_output else "")
+            + f"    with open({str(marker)!r}, 'w') as marker:\n"
+            "        marker.write(str(os.getpid()))\n"
+            "    os.write(ready_write, b'1')\n"
+            "    os.close(ready_write)\n"
+            "    time.sleep(30)\n"
+            "    os._exit(0)\n"
+            "os.close(ready_write)\n"
+            "if os.read(ready_read, 1) != b'1': raise RuntimeError('grandchild was not ready')\n"
+            "os.close(ready_read)\n"
+            + ("os._exit(0)\n" if parent_exits else "time.sleep(30)\n")
         )
         return code, marker
 

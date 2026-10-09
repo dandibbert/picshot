@@ -65,24 +65,23 @@ enum RecordingInputExportOracle {
 
     /// CoreMedia may deliver a zero-sample control marker in addition to media
     /// samples. Never turn it into a frame or infer/fix a media sample duration.
-    /// A real empty playback interval, payload, or unrecognized empty buffer is
-    /// not a harmless marker. Callers separately cap all returned buffers.
+    /// The source reader can emit an unmarked, zero-duration empty control at
+    /// PTS zero. Present flags must still be well typed; a payload or positive
+    /// empty interval is rejected. Callers separately cap all returned buffers.
     static func isControlMarker(_ sample: CMSampleBuffer, context: String) throws -> Bool {
         guard CMSampleBufferGetNumSamples(sample) == 0 else { return false }
-        var known = false
         for key in [kCMSampleBufferAttachmentKey_EmptyMedia,
                     kCMSampleBufferAttachmentKey_EndsPreviousSampleDuration,
                     kCMSampleBufferAttachmentKey_PermanentEmptyMedia] {
             guard let value = CMGetAttachment(sample, key: key, attachmentModeOut: nil) else { continue }
             try require(CFGetTypeID(value) == CFBooleanGetTypeID(), "Malformed control-marker flag: \(context)")
-            known = known || (value as? NSNumber)?.boolValue == true
         }
         let dataBytes = CMSampleBufferGetDataBuffer(sample).map { CMBlockBufferGetDataLength($0) } ?? 0
         let entry = sampleTimingEntry(sample)
         let boundedTiming = (entry.status == noErr && (0...1).contains(entry.count))
             || (entry.status == kCMSampleBufferError_BufferHasNoSampleTimingInfo && entry.count == 0)
         let durations = [CMSampleBufferGetDuration(sample), CMSampleBufferGetOutputDuration(sample), entry.timing.duration]
-        try require(CMSampleBufferIsValid(sample) && CMSampleBufferDataIsReady(sample) && known
+        try require(CMSampleBufferIsValid(sample) && CMSampleBufferDataIsReady(sample)
             && CMSampleBufferGetTotalSampleSize(sample) == 0 && dataBytes == 0
             && CMSampleBufferGetImageBuffer(sample) == nil
             && boundedTiming
@@ -125,6 +124,7 @@ enum RecordingInputExportOracle {
         return "route=\(route) phase=\(phase) buffer=\(buffer) media=\(media)/\(expected)"
             + " valid=\(CMSampleBufferIsValid(sample)) ready=\(CMSampleBufferDataIsReady(sample))"
             + " samples=\(CMSampleBufferGetNumSamples(sample)) sampleBytes=\(CMSampleBufferGetTotalSampleSize(sample)) dataBytes=\(bytes)"
+            + " imagePresent=\(CMSampleBufferGetImageBuffer(sample) != nil)"
             + " pts=\(time(CMSampleBufferGetPresentationTimeStamp(sample)))"
             + " dts=\(time(CMSampleBufferGetDecodeTimeStamp(sample))) duration=\(time(CMSampleBufferGetDuration(sample)))"
             + " outputPTS=\(time(CMSampleBufferGetOutputPresentationTimeStamp(sample)))"

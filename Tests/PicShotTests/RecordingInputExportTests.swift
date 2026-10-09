@@ -54,10 +54,11 @@ final class RecordingInputExportTests: XCTestCase {
     func testScalarTimelineRejectsFirstFrameOnlyWrongBoundaryAndMissingResume() throws {
         // Marker-only CMSampleBuffers are control messages, not media frames.
         // Exercise actual CoreMedia buffers without changing this test's ID.
-        func marker(duration: CMTime = .invalid, withTiming: Bool = true) throws -> CMSampleBuffer {
+        func marker(duration: CMTime = .invalid, withTiming: Bool = true,
+                    pts: CMTime = CMTime(value: 22, timescale: 10)) throws -> CMSampleBuffer {
             var result: CMSampleBuffer?
             var timing = CMSampleTimingInfo(duration: duration,
-                presentationTimeStamp: CMTime(value: 22, timescale: 10), decodeTimeStamp: .invalid)
+                presentationTimeStamp: pts, decodeTimeStamp: .invalid)
             let status = withUnsafePointer(to: &timing) { pointer in
                 CMSampleBufferCreate(allocator: kCFAllocatorDefault, dataBuffer: nil,
                     dataReady: true, makeDataReadyCallback: nil, refcon: nil, formatDescription: nil,
@@ -68,8 +69,16 @@ final class RecordingInputExportTests: XCTestCase {
             XCTAssertEqual(status, noErr)
             return try XCTUnwrap(result)
         }
+        // ARM162's source reader emits this unmarked empty buffer before frame 0.
+        let initial = try marker(duration: .zero, pts: CMTime(value: 0, timescale: 600))
+        XCTAssertTrue(try Oracle.isControlMarker(initial, context: "unmarked-initial-control"))
+        let initialDiagnostic = Oracle.sampleTimingDescription(initial, route: "source", phase: "compressed",
+            buffer: 0, media: 0, expected: 22)
+        XCTAssertTrue(initialDiagnostic.contains("samples=0 sampleBytes=0 dataBytes=0 imagePresent=false"))
+        XCTAssertTrue(initialDiagnostic.contains("sampleDuration=0/1:flags=1"))
+        XCTAssertTrue(initialDiagnostic.contains("empty=absent endsPrevious=absent permanentEmpty=absent"))
         let empty = try marker()
-        XCTAssertThrowsError(try Oracle.isControlMarker(empty, context: "unmarked"))
+        XCTAssertTrue(try Oracle.isControlMarker(empty, context: "unmarked"))
         CMSetAttachment(empty, key: kCMSampleBufferAttachmentKey_EndsPreviousSampleDuration,
                         value: kCFBooleanTrue, attachmentMode: kCMAttachmentMode_ShouldPropagate)
         XCTAssertTrue(try Oracle.isControlMarker(empty, context: "end-duration-marker"))
@@ -87,6 +96,7 @@ final class RecordingInputExportTests: XCTestCase {
                         value: kCFBooleanTrue, attachmentMode: kCMAttachmentMode_ShouldPropagate)
         XCTAssertThrowsError(try Oracle.isControlMarker(empty, context: "mixed-malformed-marker"))
         let gap = try marker(duration: CMTime(value: 1, timescale: 10))
+        XCTAssertThrowsError(try Oracle.isControlMarker(gap, context: "unmarked-playback-gap"))
         CMSetAttachment(gap, key: kCMSampleBufferAttachmentKey_EmptyMedia,
                         value: kCFBooleanTrue, attachmentMode: kCMAttachmentMode_ShouldPropagate)
         XCTAssertThrowsError(try Oracle.isControlMarker(gap, context: "actual-playback-gap"),
