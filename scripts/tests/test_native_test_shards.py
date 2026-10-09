@@ -379,7 +379,9 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
         self.assertEqual([self.scalar(full, arch) for arch in ['arm64', 'x86_64']], [30, 30])
         self.assertEqual([self.scalar(focused, arch) for arch in ['arm64', 'x86_64']], [16, 30])
         budgets = self.checked_serial_budgets()
-        self.assertEqual([budgets[arch]['jobMinutes'] for arch in ['arm64', 'x86_64']], [160, 188])
+        self.assertEqual([budgets[arch]['jobMinutes'] for arch in ['arm64', 'x86_64']], [176, 204])
+        self.assertEqual([budgets[arch]['regressionMinutes'] for arch in ['arm64', 'x86_64']], [16, 16])
+        self.assertEqual(budgets['arm64']['regressionRequiredSeconds'], 920)
         self.assertEqual(budgets['arm64']['focusedRequiredSeconds'], 920)
         self.assertEqual(budgets['x86_64']['focusedRequiredSeconds'], 1780)
         self.assertEqual(budgets['x86_64']['fullRequiredSeconds'], 1780)
@@ -394,6 +396,8 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
         focused_name = 'Check annotation, GIF, recording durability and inference boundaries'
         focused = re.search(r'^        timeout-minutes: (.+)$', self.step(focused_name), re.M)[1]
         full = re.search(r'^        timeout-minutes: (.+)$', self.step('Test native modules'), re.M)[1]
+        regression = re.search(r'^        timeout-minutes: (.+)$', self.step(
+            'Reproduce the exact pin Apply regression before broader native gates'), re.M)[1]
         job = re.search(r'^    timeout-minutes: (.+)$', self.build, re.M)[1]
         discovery = self.step('Plan exhaustive and focused native test processes')
         discovery_minutes = re.search(r'^        timeout-minutes: (.+)$', discovery, re.M)[1]
@@ -403,16 +407,21 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
             env = self.environment(arch)
             focused_count, full_count = int(env['FOCUSED_TEST_PROCESS_COUNT']), int(env['NATIVE_TEST_PROCESS_COUNT'])
             focused_minutes, full_minutes, job_minutes = (self.scalar(value, arch) for value in [focused, full, job])
+            regression_minutes = self.scalar(regression, arch)
+            regression_required = 2 * (shards.PROCESS_SECONDS + cleanup_seconds) + stage_overhead_seconds
             focused_required = focused_count * (shards.PROCESS_SECONDS + cleanup_seconds) + stage_overhead_seconds
             full_required = full_count * (shards.PROCESS_SECONDS + cleanup_seconds) + stage_overhead_seconds
             if 60 * focused_minutes < focused_required:
                 raise ValueError(f'{arch} focused serial process envelope exceeds its stage')
             if 60 * full_minutes < full_required:
                 raise ValueError(f'{arch} full serial process envelope exceeds its stage')
-            # Keep the original job allowance for all other work. Only Intel's
-            # two formerly 16-minute stages require added allowance.
+            if 60 * regression_minutes < regression_required:
+                raise ValueError(f'{arch} pin regression process envelope exceeds its stage')
+            # Retain all original work plus Intel's two native-stage increases
+            # and the separate method-then-class pin regression stage.
             previous_full = 30 if arch == 'arm64' else 16
-            required_job = 160 + max(0, focused_minutes - 16) + max(0, full_minutes - previous_full)
+            required_job = (160 + max(0, focused_minutes - 16)
+                            + max(0, full_minutes - previous_full) + regression_minutes)
             if job_minutes < required_job:
                 raise ValueError(f'{arch} job does not preserve the prior allowance plus native stage increases')
             # Discovery is outside both execution stages. Its 2-minute stage
@@ -420,14 +429,17 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
             if discovery_seconds != 60 or 60 * self.scalar(discovery_minutes, arch) < discovery_seconds + cleanup_seconds + 50:
                 raise ValueError(f'{arch} discovery/planning stage is under-budgeted or changed')
             budgets[arch] = dict(focusedRequiredSeconds=focused_required, fullRequiredSeconds=full_required,
-                                 focusedMinutes=focused_minutes, fullMinutes=full_minutes, jobMinutes=job_minutes)
+                                 focusedMinutes=focused_minutes, fullMinutes=full_minutes, jobMinutes=job_minutes,
+                                 regressionMinutes=regression_minutes, regressionRequiredSeconds=regression_required)
         return budgets
 
     def replace_stage_budget(self, name, minutes):
         stage = self.step(name)
         revised, count = re.subn(r'^        timeout-minutes: .+$', f'        timeout-minutes: {minutes}', stage, count=1, flags=re.M)
         self.assertEqual(count, 1)
-        return self.build.replace(stage, revised, 1)
+        changed = self.build.replace(stage, revised, 1)
+        self.assertNotEqual(changed, self.build)
+        return changed
 
     def test_each_intel_stage_rejects_the_old_budget_and_insufficient_cleanup_margin(self):
         for name in ['Check annotation, GIF, recording durability and inference boundaries', 'Test native modules']:
@@ -440,17 +452,30 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
 
     def test_stage_budget_tracks_process_count_and_rejects_native_deadline_changes(self):
         enlarged = self.build.replace("NATIVE_TEST_PROCESS_COUNT: '4'", "NATIVE_TEST_PROCESS_COUNT: '8'")
+        self.assertNotEqual(enlarged, self.build)
         with mock.patch.object(self, 'build', enlarged), self.assertRaisesRegex(ValueError, 'full serial process envelope'):
             self.checked_serial_budgets()
         with mock.patch.object(shards, 'PROCESS_SECONDS', 421), self.assertRaisesRegex(ValueError, 'deadline changed'):
             self.checked_serial_budgets()
 
     def test_intel_job_preserves_allowance_for_both_stage_increases(self):
-        for minutes in [160, 174, 187]:
-            changed = self.build.replace("matrix.arch == 'x86_64' && 188 || 160", f"matrix.arch == 'x86_64' && {minutes} || 160", 1)
-            with self.subTest(minutes=minutes), mock.patch.object(self, 'build', changed):
-                with self.assertRaisesRegex(ValueError, 'job does not preserve'):
-                    self.checked_serial_budgets()
+        for arch, values in [('x86_64', [160, 174, 187, 188, 203]), ('arm64', [160, 175])]:
+            for minutes in values:
+                intel, arm = (minutes, 176) if arch == 'x86_64' else (204, minutes)
+                changed, count = re.subn(r'^    timeout-minutes: .+$',
+                    f"    timeout-minutes: ${{{{ matrix.arch == 'x86_64' && {intel} || {arm} }}}}",
+                    self.build, count=1, flags=re.M)
+                self.assertEqual(count, 1)
+                self.assertNotEqual(changed, self.build)
+                with self.subTest(arch=arch, minutes=minutes), mock.patch.object(self, 'build', changed):
+                    with self.assertRaisesRegex(ValueError, 'job does not preserve'):
+                        self.checked_serial_budgets()
+
+    def test_pin_regression_stage_preserves_both_process_cleanup_allowances(self):
+        changed = self.replace_stage_budget(
+            'Reproduce the exact pin Apply regression before broader native gates', 15)
+        with mock.patch.object(self, 'build', changed), self.assertRaisesRegex(ValueError, 'pin regression process envelope'):
+            self.checked_serial_budgets()
 
     def test_discovery_budget_is_separate_from_serial_execution(self):
         changed = self.replace_stage_budget('Plan exhaustive and focused native test processes', 1)
