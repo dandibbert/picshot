@@ -17,6 +17,7 @@ import re
 import resource
 import selectors
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -44,6 +45,10 @@ PREFLIGHT_IDS = [
     'PicShotCodecCoreTests.CodecExportProtocolTests/testOptionsRejectInvalidAndOverflowingDimensions',
     'PicShotCodecCoreTests.ImageDecodeTimingTraceTests/testAllTimesMustBeFiniteNonnegativeAndMonotone',
 ]
+RESOLVED_LIMIT = 64 * 1024
+ONNX_PIN = dict(identity='onnxruntime-swift-package-manager', kind='remoteSourceControl',
+    location='https://github.com/microsoft/onnxruntime-swift-package-manager')
+ONNX_REVISION = 'b7fb7f7dea8a2469e6335d95a61b8f36d0dc83b2'
 SETUP_SECONDS = 60
 SAMPLER_SECONDS = 40  # Observer-only headroom; old observer remains at 20s.
 UNRETIRED_CHILDREN = []  # Prevent Popen.__del__ from reaping before failed evidence is saved.
@@ -97,7 +102,7 @@ def ordered_selection(plan_path, expected):
     return ordered
 
 
-def bounded_read(command, cwd=None, timeout=20):
+def bounded_read(command, cwd=None, timeout=20, strip=True):
     # Read-only toolchain queries, never the test workload. File-backed output is
     # capped by RLIMIT_FSIZE as well as read size; stdout/stderr remain separate.
     import tempfile
@@ -110,7 +115,8 @@ def bounded_read(command, cwd=None, timeout=20):
         data, errors = out.read(64 * 1024 + 1), err.read(64 * 1024 + 1)
     need(result.returncode == 0 and len(data) <= 64 * 1024 and len(errors) <= 64 * 1024,
          'Toolchain/source query failed: ' + repr(command))
-    return data.decode('utf-8').strip()
+    text = data.decode('utf-8')
+    return text.strip() if strip else text
 
 
 def test_environment(inherited, platform, output_mode):
@@ -128,22 +134,145 @@ def test_environment(inherited, platform, output_mode):
     return env
 
 
+def resolved_pin(data):
+    """Validate generated lock data against immutable145's sole dependency.
+
+    SwiftPM 6.1.2 ResolvedPackagesStore chooses schema 2 for tools-version 5.9.
+    Optional branch/version metadata cannot relax this exact revision check.
+    """
+    need(0 < len(data) <= RESOLVED_LIMIT, 'Package.resolved exceeds bounded file size')
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            need(key not in result, 'Duplicate Package.resolved key: ' + key)
+            result[key] = value
+        return result
+    value = json.loads(data.decode('utf-8'), object_pairs_hook=unique)
+    need(isinstance(value, dict) and set(value) == {'version', 'pins'}
+         and type(value['version']) is int and value['version'] == 2,
+         'Unexpected Package.resolved schema for immutable145 tools-version 5.9')
+    pins = value['pins']
+    need(isinstance(pins, list) and len(pins) == 1 and isinstance(pins[0], dict),
+         'Package.resolved must contain exactly the frozen ONNX dependency')
+    pin = pins[0]
+    need(set(pin) == {'identity', 'kind', 'location', 'state'}
+         and all(pin[key] == expected for key, expected in ONNX_PIN.items()),
+         'Package.resolved dependency identity/kind/location differs')
+    state = pin['state']
+    need(isinstance(state, dict) and set(state) <= {'revision', 'branch', 'version'}
+         and state.get('revision') == ONNX_REVISION, 'Package.resolved revision or state differs')
+    for key in ('branch', 'version'):
+        metadata = state.get(key)
+        need(metadata is None or (isinstance(metadata, str) and 0 < len(metadata) <= 256
+             and all(32 <= ord(character) < 127 for character in metadata)),
+             'Invalid Package.resolved optional ' + key + ' metadata')
+    return value
+
+
+def source_inputs(source, evidence, query):
+    """Save bounded source/lock evidence before any source guard can reject it."""
+    if evidence is not None:
+        evidence.mkdir(parents=True, exist_ok=False)
+    def archive(name, data):
+        if evidence is not None:
+            (evidence / name).write_bytes(data)
+    def persist():
+        if evidence is not None:
+            save(evidence / 'source-inputs.json', record)
+    record = dict(schemaVersion=1, status='checking', packageResolved=dict(status='not-read'))
+    try:
+        record['sourceCommit'] = query(['git', 'rev-parse', 'HEAD'], source)
+        record['sourceTree'] = query(['git', 'rev-parse', 'HEAD^{tree}'], source)
+        record['trackedStatus'] = query(['git', 'status', '--porcelain', '--untracked-files=no'], source, raw=True)
+        record['buildInputStatus'] = query(['git', 'status', '--porcelain', '--untracked-files=all', '--',
+            'Package.swift', 'Package.resolved', 'Sources', 'Tests'], source, raw=True)
+        archive('tracked-status.txt', record['trackedStatus'].encode())
+        archive('build-input-status.txt', record['buildInputStatus'].encode())
+        lock = source / 'Package.resolved'
+        data = None
+        if lock.is_symlink():
+            record['packageResolved'] = dict(status='symlink-rejected')
+        elif lock.exists() and not lock.is_file():
+            record['packageResolved'] = dict(status='non-regular-rejected')
+        elif lock.exists():
+            descriptor = os.open(lock, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(descriptor, 'rb') as stream:
+                info = os.fstat(stream.fileno())
+                need(stat.S_ISREG(info.st_mode), 'Package.resolved is not a regular file')
+                data = stream.read(RESOLVED_LIMIT + 1)
+            truncated = info.st_size > RESOLVED_LIMIT or len(data) > RESOLVED_LIMIT
+            filename = 'Package.resolved.prefix' if truncated else 'Package.resolved'
+            archive(filename, data)
+            record['packageResolved'] = dict(status='captured', bytes=info.st_size,
+                capturedBytes=len(data), sha256=sha(data), truncated=truncated, artifact=filename)
+        else:
+            record['packageResolved'] = dict(status='absent')
+        persist()
+        need(record['sourceCommit'] == SOURCE and record['sourceTree'] == TREE,
+             'Product checkout differs from immutable145')
+        need(record['trackedStatus'] == '', 'Product tracked source is modified')
+        need(record['buildInputStatus'] in ('', '?? Package.resolved\n'),
+             'Product source contains untracked or modified build inputs beyond Package.resolved')
+        if data is not None:
+            need(record['buildInputStatus'] == '?? Package.resolved\n'
+                 and record['packageResolved']['truncated'] is False,
+                 'Package.resolved status or bounded capture differs')
+            record['packageResolved']['resolved'] = resolved_pin(data)
+            record['packageResolved']['status'] = 'verified-generated'
+        else:
+            need(record['packageResolved']['status'] == 'absent' and record['buildInputStatus'] == '',
+                 'Package.resolved is missing, a symlink or not an ordinary generated file')
+        record['status'] = 'verified'
+        return record
+    except Exception as error:
+        record.update(status='rejected', error=str(error))
+        raise
+    finally:
+        persist()
+
+
+def verify_source_inputs(directory, expected):
+    evidence = directory.with_name(directory.name + '-inputs')
+    def artifact_bytes(name, limit):
+        path = evidence / name
+        need(path.is_file() and not path.is_symlink() and path.stat().st_size <= limit,
+             'Source-input artifact is missing, non-regular or oversized: ' + name)
+        with path.open('rb') as stream:
+            data = stream.read(limit + 1)
+        need(len(data) <= limit, 'Source-input artifact exceeds bounded replay size: ' + name)
+        return data
+    record = json.loads(N.bounded_text(evidence / 'source-inputs.json', D.METADATA_CAP))
+    need(record == expected and record['status'] == 'verified'
+         and record['sourceCommit'] == SOURCE and record['sourceTree'] == TREE
+         and record['trackedStatus'] == '', 'Source-input evidence differs')
+    for name, field in (('tracked-status.txt', 'trackedStatus'), ('build-input-status.txt', 'buildInputStatus')):
+        need(artifact_bytes(name, 64 * 1024) == record[field].encode(),
+             'Raw source-status evidence differs')
+    lock = record['packageResolved']
+    if lock['status'] == 'absent':
+        need(record['buildInputStatus'] == '' and not (evidence / 'Package.resolved').exists(),
+             'Absent Package.resolved evidence differs')
+    else:
+        need(lock['status'] == 'verified-generated' and record['buildInputStatus'] == '?? Package.resolved\n'
+             and lock['truncated'] is False and lock['artifact'] == 'Package.resolved'
+             and lock['bytes'] == lock['capturedBytes'], 'Generated Package.resolved evidence differs')
+        data = artifact_bytes('Package.resolved', RESOLVED_LIMIT)
+        need(len(data) == lock['bytes'] and sha(data) == lock['sha256'],
+             'Raw Package.resolved evidence differs')
+        need(resolved_pin(data) == lock['resolved'], 'Parsed Package.resolved evidence differs')
+
+
 def launch_inputs(args):
     need(sys.platform == 'darwin', 'Native applicability must be verified on macOS')
     deadline = time.monotonic() + SETUP_SECONDS
-    def query(argv, cwd=None):
+    def query(argv, cwd=None, raw=False):
         remaining = deadline - time.monotonic()
         need(remaining > 0, 'Launch setup deadline exceeded')
-        return bounded_read(argv, cwd, timeout=min(20, remaining))
+        return bounded_read(argv, cwd, timeout=min(20, remaining), strip=not raw)
     source = args.source_root.resolve(strict=True)
-    need(query(['git', 'rev-parse', 'HEAD'], source) == SOURCE
-         and query(['git', 'rev-parse', 'HEAD^{tree}'], source) == TREE,
-         'Product checkout differs from immutable145')
-    need(not query(['git', 'status', '--porcelain', '--untracked-files=no'], source),
-         'Product tracked source is modified')
-    need(not query(['git', 'status', '--porcelain', '--untracked-files=all', '--',
-                    'Package.swift', 'Package.resolved', 'Sources', 'Tests'], source),
-         'Product source contains untracked or modified build inputs')
+    directory = getattr(args, 'directory', None)
+    evidence = directory.with_name(directory.name + '-inputs') if directory is not None else None
+    source_evidence = source_inputs(source, evidence, query)
     selected_developer = query(['/usr/bin/xcode-select', '-p'])
     developer = Path(os.environ.get('DEVELOPER_DIR') or selected_developer).resolve(strict=True)
     if developer.suffix == '.app':
@@ -178,6 +307,7 @@ def launch_inputs(args):
     env = test_environment(os.environ, platform, args.output_mode)
     env_keys = ('DYLD_FRAMEWORK_PATH', 'DYLD_LIBRARY_PATH', 'SWIFT_TESTING_ENABLED', 'NO_COLOR', 'NSUnbufferedIO')
     identity = dict(sourceCommit=SOURCE, sourceTree=TREE, sourceRoot=str(source),
+        sourceInputEvidence=source_evidence,
         xcodeDeveloperDirectory=str(developer), xcodeSelectDirectory=selected_developer,
         developerDirectoryOverride=os.environ.get('DEVELOPER_DIR'),
         xcrunEntryPath=str(xcrun_entry), xcrunResolvedPath=str(resolved_entry),
@@ -588,6 +718,7 @@ def verify_result(directory, identity, expected, phase, output_mode='baseline'):
          and identity['limits'] == dict(setupSeconds=SETUP_SECONDS, nativeSeconds=420,
              samplerSeconds=SAMPLER_SECONDS, sampleCollectionSeconds=D.SAMPLE_SECONDS,
              sampleIntervalMilliseconds=D.SAMPLE_INTERVAL_MS), 'Prior launch identity/mode differs')
+    verify_source_inputs(directory, identity['sourceInputEvidence'])
     need(prior['schemaVersion'] == 1 and prior['scope'] == SCOPE
          and prior['diagnosticOnly'] is True and prior['installerAcceptance'] is False
          and prior['fullInventorySHA256'] == INVENTORY_SHA

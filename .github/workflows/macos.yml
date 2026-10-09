@@ -2240,8 +2240,8 @@ jobs:
           observer = workspace/'observer-source'
           product_source = 'f991c23aaa60469db0e2dc77cb94198d0dc74c08'
           product_tree = '2347fb7fe45cf809e4cd6aa43fc2426a1fbff7b1'
-          observer_base = '73b49fbb2d0de2f26e95ce95fdd15b7241a5b134'
-          observer_base_tree = '09fae11b0e99b0b5712b9e7c5dd96dcd7b9fcde2'
+          observer_base = '87fed3f903ea88a2eff4ffdb19518c79519a9f1f'
+          observer_base_tree = 'a1dff58f3dfdad5b9db0454d52aeb84ea0a66f12'
           observer_source = os.environ['GITHUB_SHA']
           def git(root, *args):
               return subprocess.check_output(['git', '-C', str(root), *args], timeout=20)
@@ -2256,7 +2256,7 @@ jobs:
               raise SystemExit('Native product checkout differs from immutable source145')
           if (revision(observer, 'HEAD') != observer_source or revision(observer, 'HEAD^') != observer_base
                   or revision(observer, observer_base + '^{tree}') != observer_base_tree):
-              raise SystemExit('Observer must directly preserve the reviewed source148 observer branch')
+              raise SystemExit('Observer must directly preserve the reviewed source149 observer branch')
           if platform.machine() != 'arm64' or platform.system() != 'Darwin':
               raise SystemExit('Expected the native ARM macOS runner')
           def entries(root, ref):
@@ -2267,11 +2267,10 @@ jobs:
           allowed = {b'.github/workflows/macos.yml', b'scripts/native-owned-xctest.py',
                      b'scripts/tests/test_native_owned_xctest.py'}
           if set(changed) != allowed:
-              raise SystemExit('Current branch changes differ from the exact workflow and two new owned-launcher files')
-          if (any(not after[path].startswith(b'100644 blob ') for path in changed)
-                  or not before[b'.github/workflows/macos.yml'].startswith(b'100644 blob ')
-                  or any(path in before for path in allowed if path != b'.github/workflows/macos.yml')):
-              raise SystemExit('Expected one existing workflow and two new regular non-executable files')
+              raise SystemExit('Current branch changes differ from the exact workflow and two existing owned-launcher files')
+          if any(not after.get(path, b'').startswith(b'100644 blob ')
+                 or not before.get(path, b'').startswith(b'100644 blob ') for path in changed):
+              raise SystemExit('Expected exactly three existing regular non-executable files')
           workflow = '.github/workflows/macos.yml'
           original = git(observer, 'show', observer_base + ':' + workflow).decode()
           current = (observer/workflow).read_text()
@@ -2297,8 +2296,8 @@ jobs:
               if actual != expected or (observer/name).read_bytes() != (product/name).read_bytes():
                   raise SystemExit('Observer runner/planner differs from immutable145 bytes')
               tooling[name] = actual
-          reviewed_owned_files = {'scripts/native-owned-xctest.py': '03321d447ae02570060c2211b53d910a94d60cafa10f067a5e59d92aeb68ab0a',
-              'scripts/tests/test_native_owned_xctest.py': '0806706321a3cd3127cefe372db73ebf468a4f0afd3bc3fbabc71278b45c7a09'}
+          reviewed_owned_files = {'scripts/native-owned-xctest.py': 'a7847e6bc4cee6adb5c7c062a114e4a3ee4be7b29a618ea4c8b87ce146418e4f',
+              'scripts/tests/test_native_owned_xctest.py': 'b752019ea53c04a442b724df5442cad477cf4316a7553539b3b5efcfcef326c2'}
           for name, expected in reviewed_owned_files.items():
               if hashlib.sha256((observer/name).read_bytes()).hexdigest() != expected:
                   raise SystemExit('Direct launcher files differ from the reviewed source')
@@ -2642,7 +2641,7 @@ jobs:
                        for path in root.rglob('*') if path.is_file() and not path.is_symlink() and path.name != 'outcomes.json'}
           record = dict(diagnosticOnly=True, installerAcceptance=False, fullSuiteAcceptance=False,
               sourceCommit='f991c23aaa60469db0e2dc77cb94198d0dc74c08', sourceTree='2347fb7fe45cf809e4cd6aa43fc2426a1fbff7b1',
-              observerCommit=os.environ['GITHUB_SHA'], observerReferenceCommit='73b49fbb2d0de2f26e95ce95fdd15b7241a5b134',
+              observerCommit=os.environ['GITHUB_SHA'], observerReferenceCommit='87fed3f903ea88a2eff4ffdb19518c79519a9f1f',
               observerTree=source_identity['observerTree'] if source_identity else None,
               sourceIdentity=source_identity, steps=steps, observations=observations, launchStates=launch_states, verificationErrors=errors,
               currentToolBundleHelperInputsReverified=current_inputs is not None,
@@ -2653,7 +2652,7 @@ jobs:
               nativeSetupSeconds=60, directApplicabilitySeconds=30, directSamplerSeconds=40,
               previousObserverSamplerSeconds=20, sampleCollectionSeconds=2, sampleIntervalMilliseconds=10,
               baselineFailurePreserved=True, originalProduction145FailureUnchanged=True,
-              previousObserver148FailureUnchanged=True, noInstallerArtifacts=True,
+              previousObserver148FailureUnchanged=True, previousObserver149FailureUnchanged=True, noInstallerArtifacts=True,
               rootCleanupScope='Only directly owned unreaped XCTest root and sampler children; no descendant census or ownership inference from leftover veto',
               environmentScope='Selected-Xcode SwiftPM-compatible XCTest bootstrap; baseline preserves inherited NSUnbufferedIO. Explicit control changes only NSUnbufferedIO to YES.',
               comparisonCaveat='If inherited NSUnbufferedIO was already YES, the control does not change buffering conditions.',

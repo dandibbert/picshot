@@ -67,7 +67,7 @@ class OwnedXCTestTests(unittest.TestCase):
 
     def test_source_tool_bundle_bytes_and_budget_are_bound_before_launch(self):
         args, answers = self.native_fixture()
-        def query(argv, cwd=None, timeout=20):
+        def query(argv, cwd=None, timeout=20, strip=True):
             self.assertGreater(timeout, 0)
             self.assertLessEqual(timeout, 20)
             return answers[tuple(argv)]
@@ -94,6 +94,151 @@ class OwnedXCTestTests(unittest.TestCase):
             (args.bundle / 'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleExecutable': 'Other'}))
             with self.assertRaisesRegex(ValueError, 'bundle executable'):
                 M.launch_inputs(args)
+
+    def test_launch_inputs_with_generated_lock_matches_archived_and_read_only_calls(self):
+        args, answers = self.native_fixture()
+        raw = self.lock_data(version='1.24.2')
+        (args.source_root / 'Package.resolved').write_bytes(raw)
+        key = ('git', 'status', '--porcelain', '--untracked-files=all', '--', 'Package.swift', 'Package.resolved', 'Sources', 'Tests')
+        answers[key] = '?? Package.resolved\n'
+        def query(argv, cwd=None, timeout=20, strip=True):
+            value = answers[tuple(argv)]
+            return value.strip() if strip else value
+        with mock.patch.object(M.sys, 'platform', 'darwin'), mock.patch.dict(M.os.environ, {}, clear=True), \
+                mock.patch.object(M, 'bounded_read', side_effect=query):
+            args.directory = self.path / 'owned-preflight'
+            archived, _ = M.launch_inputs(args)
+            self.assertFalse(args.directory.exists())
+            M.verify_source_inputs(args.directory, archived['sourceInputEvidence'])
+            del args.directory
+            live, _ = M.launch_inputs(args)
+            self.assertEqual(archived, live)
+            args.directory = self.path / 'owned-baseline'
+            baseline, _ = M.launch_inputs(args)
+            self.assertEqual(archived, baseline)
+
+    def test_bounded_query_can_preserve_exact_status_spacing_and_newlines(self):
+        text = ' M Sources/Changed.swift\n?? Package.resolved\n'
+        argv = [sys.executable, '-c', 'import sys; sys.stdout.write(' + repr(text) + ')']
+        self.assertEqual(M.bounded_read(argv, strip=False), text)
+        self.assertEqual(M.bounded_read(argv), text.strip())
+
+    def lock_data(self, **state):
+        return json.dumps(dict(version=2, pins=[{**M.ONNX_PIN, 'state': {'revision': M.ONNX_REVISION, **state}}]), indent=2).encode() + b'\n'
+
+    def source_query(self, tracked='', status='?? Package.resolved\n'):
+        def query(argv, cwd=None, raw=False):
+            if argv[-1] == 'HEAD': return M.SOURCE
+            if argv[-1] == 'HEAD^{tree}': return M.TREE
+            return tracked if '--untracked-files=no' in argv else status
+        return query
+
+    def test_exact_generated_lock_preserves_raw_bytes_and_untracked_status_before_launch(self):
+        source = self.path / 'source'; source.mkdir()
+        raw = self.lock_data(branch=None, version='1.24.2').replace(b'\n', b'\r\n')
+        (source / 'Package.resolved').write_bytes(raw)
+        run = self.path / 'owned-preflight'
+        evidence = self.path / 'owned-preflight-inputs'
+        record = M.source_inputs(source, evidence, self.source_query())
+        self.assertFalse(run.exists(), 'Source evidence must not pre-create the exclusive run directory')
+        self.assertEqual((evidence / 'Package.resolved').read_bytes(), raw)
+        self.assertEqual((evidence / 'build-input-status.txt').read_bytes(), b'?? Package.resolved\n')
+        self.assertEqual(record['packageResolved']['sha256'], M.sha(raw))
+        self.assertEqual(record['packageResolved']['status'], 'verified-generated')
+        M.verify_source_inputs(run, record)
+        self.assertEqual(M.source_inputs(source, None, self.source_query()), record,
+                         'Final read-only provenance call must preserve identity without writing artifacts')
+        (evidence / 'Package.resolved').write_bytes(raw + b' ')
+        with self.assertRaisesRegex(ValueError, 'Raw Package.resolved'):
+            M.verify_source_inputs(run, record)
+        (evidence / 'Package.resolved').write_bytes(b' ' * (M.RESOLVED_LIMIT + 1))
+        with self.assertRaisesRegex(ValueError, 'oversized'):
+            M.verify_source_inputs(run, record)
+        (evidence / 'Package.resolved').write_bytes(raw)
+        (evidence / 'build-input-status.txt').write_bytes(b'')
+        with self.assertRaisesRegex(ValueError, 'Raw source-status'):
+            M.verify_source_inputs(run, record)
+
+    def test_lock_parser_rejects_dependency_mutations_duplicate_keys_and_unknown_schema(self):
+        good = json.loads(self.lock_data())
+        mutations = (
+            lambda p: p.update(version=3),
+            lambda p: p.update(version=True),
+            lambda p: p.update(originHash='0' * 64),
+            lambda p: p['pins'].append(copy.deepcopy(p['pins'][0])),
+            lambda p: p['pins'].clear(),
+            lambda p: p['pins'][0].update(identity='other'),
+            lambda p: p['pins'][0].update(kind='localSourceControl'),
+            lambda p: p['pins'][0].update(location=M.ONNX_PIN['location'] + '.git'),
+            lambda p: p['pins'][0]['state'].update(revision='0' * 40),
+            lambda p: p['pins'][0]['state'].update(unexpected=True),
+            lambda p: p['pins'][0]['state'].update(branch=['invalid']),
+            lambda p: p['pins'][0]['state'].update(version='x' * 257),
+        )
+        for mutation in mutations:
+            bad = copy.deepcopy(good); mutation(bad)
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                M.resolved_pin(json.dumps(bad).encode())
+        for bad in (b'{"version":2,"version":2,"pins":[]}', self.lock_data().replace(b'"revision":', b'"revision":"duplicate","revision":'),
+                    b'not json', b'\xff', b' ' * (M.RESOLVED_LIMIT + 1)):
+            with self.assertRaises(ValueError):
+                M.resolved_pin(bad)
+        for metadata in ({}, {'branch': None, 'version': None}, {'branch': 'release', 'version': '1.24.2'}):
+            self.assertEqual(M.resolved_pin(self.lock_data(**metadata))['pins'][0]['state']['revision'], M.ONNX_REVISION)
+
+    def test_unknown_source_and_tracked_changes_still_reject_with_raw_evidence(self):
+        for index, (tracked, status) in enumerate((
+            (' M Sources/Changed.swift\n', '?? Package.resolved\n'),
+            ('', '?? Package.resolved\n?? Sources/Injected.swift\n'),
+            ('', '?? Tests/Injected.swift\n'),
+            ('', '?? Package.swift\n'),
+            ('', ' M Package.resolved\n'),
+        )):
+            source = self.path / f'source-{index}'; source.mkdir()
+            raw = self.lock_data(); (source / 'Package.resolved').write_bytes(raw)
+            evidence = self.path / f'evidence-{index}'
+            with self.assertRaises(ValueError):
+                M.source_inputs(source, evidence, self.source_query(tracked, status))
+            record = json.loads((evidence / 'source-inputs.json').read_text())
+            self.assertEqual(record['status'], 'rejected')
+            self.assertEqual(record['trackedStatus'], tracked)
+            self.assertEqual(record['buildInputStatus'], status)
+            self.assertEqual((evidence / 'Package.resolved').read_bytes(), raw)
+            self.assertEqual(record['packageResolved']['sha256'], M.sha(raw))
+
+    def test_rejected_lock_bytes_are_archived_before_pin_validation(self):
+        source = self.path / 'source'; source.mkdir()
+        raw = self.lock_data().replace(M.ONNX_REVISION.encode(), b'0' * 40)
+        (source / 'Package.resolved').write_bytes(raw)
+        evidence = self.path / 'evidence'
+        with self.assertRaisesRegex(ValueError, 'revision'):
+            M.source_inputs(source, evidence, self.source_query())
+        record = json.loads((evidence / 'source-inputs.json').read_text())
+        self.assertEqual(record['status'], 'rejected')
+        self.assertEqual((evidence / 'Package.resolved').read_bytes(), raw)
+        self.assertEqual(record['packageResolved']['sha256'], M.sha(raw))
+
+    def test_lock_symlink_fifo_oversize_and_missing_status_are_rejected_boundedly(self):
+        for index, mode in enumerate(('symlink', 'fifo', 'oversize', 'missing')):
+            source = self.path / f'source-{index}'; source.mkdir()
+            lock = source / 'Package.resolved'; evidence = self.path / f'evidence-{index}'
+            if mode == 'symlink':
+                target = self.path / 'actual-lock'; target.write_bytes(self.lock_data()); lock.symlink_to(target)
+            elif mode == 'fifo': os.mkfifo(lock)
+            elif mode == 'oversize': lock.write_bytes(b' ' * (M.RESOLVED_LIMIT + 2))
+            started = time.monotonic()
+            with self.subTest(mode=mode), self.assertRaises(ValueError):
+                M.source_inputs(source, evidence, self.source_query())
+            self.assertLess(time.monotonic() - started, 1)
+            record = json.loads((evidence / 'source-inputs.json').read_text())
+            self.assertEqual(record['status'], 'rejected')
+            self.assertFalse((evidence / 'Package.resolved').exists())
+            if mode == 'oversize':
+                self.assertTrue(record['packageResolved']['truncated'])
+                self.assertEqual((evidence / 'Package.resolved.prefix').stat().st_size, M.RESOLVED_LIMIT + 1)
+        clean = self.path / 'clean'; clean.mkdir()
+        result = M.source_inputs(clean, None, self.source_query(status=''))
+        self.assertEqual(result['packageResolved'], {'status': 'absent'})
 
     def child(self, changed=None):
         process = SimpleNamespace(pid=123, wait=mock.Mock(return_value=0))
@@ -389,6 +534,10 @@ class OwnedXCTestTests(unittest.TestCase):
         (self.path / 'xctest.log').write_text(log)
         inputs = dict(sourceCommit=M.SOURCE, sourceTree=M.TREE, xctestPath='/test/xctest', bundlePath='/b.xctest',
             limits=dict(setupSeconds=60, nativeSeconds=420, samplerSeconds=40, sampleCollectionSeconds=2, sampleIntervalMilliseconds=10))
+        evidence = self.path.with_name(self.path.name + '-inputs')
+        self.addCleanup(lambda: __import__('shutil').rmtree(evidence, ignore_errors=True))
+        inputs['sourceInputEvidence'] = M.source_inputs(self.path, evidence, lambda argv, cwd=None, raw=False:
+            M.SOURCE if argv[-1] == 'HEAD' else M.TREE if argv[-1] == 'HEAD^{tree}' else '')
         root = dict(identity=identity(), pid=123, ownerPID=os.getpid(), bindingError=None,
                     cleanupConfirmed=True, returnCode=0)
         process = {**self.good_report(), 'root': root, 'command': M.command('/test/xctest', '/b.xctest', names),
