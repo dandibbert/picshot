@@ -93,6 +93,75 @@ def timeline(frames, route):
     need({1, 2, 4, 6, 9, 13, 18, 19, 20, 21} <= indices, f"{route}: missing effect/expiry/pause/Stop witness")
 
 
+def packet_timing(value, selected):
+    need(isinstance(value, dict), "Missing separate raw/presentation packet evidence")
+    frames, duration, final = (21, 2.05, 0.05) if selected else (22, 2.2, 0.1)
+    tick = 1 / 600
+    counts = [value.get(key) for key in ("storedCount", "presentedCount", "nonPresentedCount")]
+    need(all(type(n) is int for n in counts), "Invalid packet count types")
+    stored, presented, hidden = counts
+    need(presented == frames and frames <= stored <= 22 and hidden == stored - frames
+         and hidden <= (1 if selected else 0), "Raw/presented packet counts differ")
+    need(value.get("rawTimeline") == "untrimmed sample PTS/duration"
+         and value.get("presentationTimeline") == "CoreMedia output PTS/duration after track edits and trims",
+         "Packet timeline meaning missing")
+    for key in ("rawStart", "rawEnd", "presentationEnd", "finalPresentedDuration"):
+        need(finite(value.get(key)), "Invalid packet timeline endpoint")
+    need(0 <= value["rawStart"] <= (0.1 if selected else 0) + tick
+         and duration - tick <= value["rawEnd"] <= 2.2 + tick
+         and abs(value["presentationEnd"] - duration) <= tick
+         and abs(value["finalPresentedDuration"] - final) <= tick,
+         "Raw/presentation endpoint or final interval differs")
+    packets = value.get("packets")
+    need(isinstance(packets, list) and len(packets) == stored, "Missing bounded per-packet proof")
+    fields = {"rawPTS", "rawDuration", "outputPTS", "outputDuration", "trimStart", "trimEnd"}
+    for packet in packets:
+        need(isinstance(packet, dict) and set(packet) == fields | {"doNotDisplay"}
+             and all(finite(packet[key]) for key in fields) and type(packet["doNotDisplay"]) is bool,
+             "Invalid packet fields or DoNotDisplay type")
+        need(packet["rawPTS"] >= 0 and packet["rawPTS"] + packet["rawDuration"] <= 2.2 + tick
+             and 0 < packet["rawDuration"] <= 0.1 + tick
+             and -0.1 - tick <= packet["outputPTS"] <= 2.2
+             and 0 <= packet["outputDuration"] <= 0.1 + tick
+             and packet["trimStart"] >= 0 and packet["trimEnd"] >= 0
+             and packet["trimStart"] + packet["trimEnd"] <= packet["rawDuration"] + tick
+             and abs(packet["outputDuration"] - (packet["rawDuration"] - packet["trimStart"] - packet["trimEnd"])) <= tick,
+             "Invalid packet duration or trim accounting")
+    ordered = sorted(packets, key=lambda p: p["rawPTS"])
+    raw_end = ordered[0]["rawPTS"]
+    need(abs(value["rawStart"] - raw_end) <= 1e-12, "Raw start summary differs")
+    for packet in ordered:
+        need(abs(packet["rawPTS"] - raw_end) <= tick, "Raw packets are not contiguous")
+        raw_end = packet["rawPTS"] + packet["rawDuration"]
+    need(abs(value["rawEnd"] - raw_end) <= 1e-12, "Raw end summary differs")
+    visible = sorted((p for p in packets if not p["doNotDisplay"] and p["outputDuration"] != 0),
+                     key=lambda p: p["outputPTS"])
+    preroll = [p for p in packets if p["doNotDisplay"] or p["outputDuration"] == 0]
+    need(len(visible) == presented and len(preroll) == hidden, "Packet presentation classification differs")
+    first_raw = min(p["rawPTS"] for p in visible)
+    for packet in preroll:
+        need(selected and packet["rawPTS"] + packet["rawDuration"] <= first_raw + tick,
+             "Hidden packet is not leading preroll")
+        if not packet["doNotDisplay"]:
+            need(packet["outputDuration"] == 0 and abs(packet["outputPTS"]) <= tick
+                 and abs(packet["trimStart"] + packet["trimEnd"] - packet["rawDuration"]) <= tick,
+                 "Zero-output packet lacks explicit full-trim proof")
+    output_end = 0.0
+    offset = visible[0]["outputPTS"] - visible[0]["rawPTS"] - visible[0]["trimStart"]
+    for index, packet in enumerate(visible):
+        expected_length = final if index == frames - 1 else 0.1
+        need(abs(packet["outputPTS"] - index / 10) <= tick
+             and abs(packet["outputPTS"] - output_end) <= tick
+             and abs(packet["outputDuration"] - expected_length) <= tick
+             and abs(packet["outputPTS"] - packet["rawPTS"] - packet["trimStart"] - offset) <= tick,
+             "Presented packet timeline differs")
+        output_end = packet["outputPTS"] + packet["outputDuration"]
+    need(abs(output_end - duration) <= tick
+         and abs(value["presentationEnd"] - output_end) <= 1e-12
+         and abs(value["finalPresentedDuration"] - visible[-1]["outputDuration"]) <= 1e-12,
+         "Presentation endpoint summary differs")
+
+
 def validate(root, commit):
     need(re.fullmatch(r"[0-9a-f]{40}", commit) is not None, "Expected full source commit required")
     fixture_path = root / "recording-input-export.json"
@@ -122,8 +191,27 @@ def validate(root, commit):
     need(native.get("sourceFrames") == 22 and native.get("selectedFrames") == 21
          and finite(native.get("selectedDurationSeconds"))
          and abs(native["selectedDurationSeconds"] - 2.05) <= 1 / 600, "Independent MP4 decode/selected duration differs")
+    for selected, fixture_key, native_key in ((False, "sourceDecode", "sourcePacketTiming"),
+                                               (True, "selectedMP4", "selectedPacketTiming")):
+        timing = native.get(native_key)
+        packet_timing(timing, selected)
+        entry = fixture.get(fixture_key)
+        need(isinstance(entry, dict), "Missing installed packet evidence")
+        packet_timing(entry.get("packetTiming"), selected)
+        need(entry.get("packetTiming") == timing
+             and entry.get("rawPacketEnd") == timing["rawEnd"]
+             and type(entry.get("frames")) is int and entry["frames"] == (21 if selected else 22)
+             and finite(entry.get("duration")) and abs(entry["duration"] - (2.05 if selected else 2.2)) <= 1 / 600,
+             "Installed/independent packet evidence differs")
+    need(native.get("selectedRawPacketEndSeconds") == native["selectedPacketTiming"]["rawEnd"],
+         "Raw packet endpoint differs")
+    for indices in (fixture["selectedMP4"].get("sourceFrameIndices"), native.get("selectedSourceFrameIndices")):
+        need(isinstance(indices, list) and all(type(i) is int for i in indices)
+             and indices == list(range(1, 22)), "Selected decoded source-frame mapping differs")
     need(fixture.get("maximumMediaBytes") == native.get("maximumMediaBytes") == MEDIA_CAP
          and fixture.get("maximumReportBytes") == native.get("maximumReportBytes") == REPORT_CAP
+         and fixture.get("maximumStoredPacketTimingsPerMovie") == native.get("maximumStoredPacketTimingsPerMovie") == 22
+         and fixture.get("maximumStoredFrameObservations") == 84
          and native.get("maximumFramesPerAnimation") == 41
          and native.get("maximumRGBABytesPerFrame") == 320 * 180 * 4, "Evidence decode bounds changed")
     exports = fixture.get("exports")

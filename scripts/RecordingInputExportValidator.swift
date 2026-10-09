@@ -24,6 +24,7 @@ struct RecordingInputExportValidator {
             "libwebpVersion": String(cString: PSCodecVersion(UInt32(PS_CODEC_WEBP))),
             "maximumRGBABytesPerFrame": Oracle.width * Oracle.height * 4,
             "maximumMediaBytes": Oracle.maximumFileBytes, "maximumReportBytes": Oracle.maximumReportBytes,
+            "maximumStoredPacketTimingsPerMovie": Oracle.sourceFrames,
             "maximumFramesPerAnimation": Oracle.animationFrames, "cooperativeDeadlineSeconds": 60,
             "frameStorage": "sequential current decoder raster plus one selected-MP4 reference; scalar comparisons only",
             "scope": "synthetic baked input effects, orientation, selected timing and anchors; no physical capture/global-input/region-relocation claim"]
@@ -54,7 +55,10 @@ struct RecordingInputExportValidator {
             let selected = try await Oracle.movie(selectedURL, selected: true, source: source, deadline: deadline)
             report["sourceSHA256"] = sourceHash
             report["sourceFrames"] = source.frameCount; report["selectedFrames"] = selected.frameCount
-            report["selectedDurationSeconds"] = selected.duration; report["selectedPacketEndSeconds"] = selected.packetEnd
+            report["selectedDurationSeconds"] = selected.duration; report["selectedRawPacketEndSeconds"] = selected.rawPacketEnd
+            report["sourcePacketTiming"] = try Oracle.object(source.packetTiming)
+            report["selectedPacketTiming"] = try Oracle.object(selected.packetTiming)
+            report["selectedSourceFrameIndices"] = selected.observations.map(\.index)
             report["gif"] = try Oracle.object(Oracle.gif(root.appendingPathComponent(Oracle.mediaNames[1]),
                 selectedURL: selectedURL, selected: selected, deadline: deadline))
             report["webpLossless"] = try Oracle.object(webp(root.appendingPathComponent(Oracle.mediaNames[2]),

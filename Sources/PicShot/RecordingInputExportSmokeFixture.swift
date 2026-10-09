@@ -47,7 +47,8 @@ enum RecordingInputExportSmokeFixture {
             "regionRelocationTested": false, "typedTextCaptured": false,
             "maximumMediaBytes": Oracle.maximumFileBytes, "maximumReportBytes": Oracle.maximumReportBytes,
             "maximumDecodedRGBABytesPerFrame": Oracle.width * Oracle.height * 4,
-            "maximumStoredScalarObservations": Oracle.sourceFrames + Oracle.selectedFrames + Oracle.animationFrames,
+            "maximumStoredFrameObservations": Oracle.sourceFrames + Oracle.selectedFrames + Oracle.animationFrames,
+            "maximumStoredPacketTimingsPerMovie": Oracle.sourceFrames,
             "cooperativeDeadlineSeconds": cooperativeDeadlineSeconds,
             "independentValidationRequired": true, "independentReport": Oracle.independentReportName,
             "webPPixelValidation": "pending separate PSCodecAnimationNext reader; ImageIO is not an all-frame WebP oracle",
@@ -61,7 +62,8 @@ enum RecordingInputExportSmokeFixture {
         do {
             try Oracle.check(deadline)
             let original = try await Oracle.movie(source, selected: false, deadline: deadline)
-            report["sourceDecode"] = ["frames": original.frameCount, "duration": original.duration, "packetEnd": original.packetEnd]
+            report["sourceDecode"] = ["frames": original.frameCount, "duration": original.duration, "rawPacketEnd": original.rawPacketEnd,
+                "packetTiming": try Oracle.object(original.packetTiming)]
             var exports: [[String: Any]] = []
             for (route, name) in zip(Route.allCases, Oracle.mediaNames) {
                 try Oracle.check(deadline)
@@ -82,7 +84,7 @@ enum RecordingInputExportSmokeFixture {
             let selectedURL = evidenceDirectory.appendingPathComponent(Oracle.mediaNames[0])
             let selected = try await Oracle.movie(selectedURL, selected: true, source: original, deadline: deadline)
             report["selectedMP4"] = ["frames": selected.frameCount, "duration": selected.duration,
-                                      "packetEnd": selected.packetEnd, "sourceFrameIndices": selected.observations.map(\.index)]
+                                      "rawPacketEnd": selected.rawPacketEnd, "packetTiming": try Oracle.object(selected.packetTiming), "sourceFrameIndices": selected.observations.map(\.index)]
             report["gifFrames"] = try Oracle.object(Oracle.gif(evidenceDirectory.appendingPathComponent(Oracle.mediaNames[1]),
                 selectedURL: selectedURL, selected: selected, deadline: deadline))
             report["destinationSentinels"] = try await sentinels(source: source, root: root, range: range, deadline: deadline)

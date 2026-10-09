@@ -116,6 +116,8 @@ enum RecordingInputControlsPreviewFixture {
         var files: [String] = []
         var geometryFiles: [String] = []
         var roundTrips: [[String: Any]] = []
+        var helpDismissals: [[String: Any]] = []
+        var helpDismissalFiles: [String] = []
         var phase = "default-off"
         var completed = false
         defer {
@@ -130,6 +132,7 @@ enum RecordingInputControlsPreviewFixture {
                     "options": ["clicks": monitor.options.clicks, "scrolls": monitor.options.scrolls,
                                 "shortcuts": monitor.options.shortcuts],
                     "savedSnapshots": files, "savedGeometry": geometryFiles,
+                    "helpDismissals": helpDismissals, "helpDismissalFiles": helpDismissalFiles,
                     "permissionChecks": probe.permissionChecks, "nativeMonitorRegistrations": probe.installCalls]
                 try? JSONSerialization.data(withJSONObject: partial, options: [.prettyPrinted, .sortedKeys])
                     .write(to: directory.appendingPathComponent("\(prefix)-failed-\(name)-progress.json"), options: .atomic)
@@ -195,9 +198,11 @@ enum RecordingInputControlsPreviewFixture {
         try save("help-allowed", window: help)
         try require(probe.permissionChecks == checksBeforeRefresh + 1 && monitor.permissions == probe.permissions,
                     "Native refresh did not read the injected granted permission exactly once")
-        try press("recording-input-help", in: window)
-        try await settle(window)
-        try require(!help.isVisible, "Native help toggle did not dismiss its popover")
+        phase = "dismiss-help-after-grant"
+        let grantedDismissalFile = "\(prefix)-\(phase)-\(name).json"
+        helpDismissalFiles.append(grantedDismissalFile)
+        helpDismissals.append(try await dismissHelp(help, in: window, phase: phase,
+            to: directory.appendingPathComponent(grantedDismissalFile)))
         try save("allowed")
         result["allowedGeometry"] = try geometry(identifiers + ["recording-input-status"], in: window, hitTest: true)
         try require(try status(in: window).contains("开始 / 继续录制"), "Allowed idle controls omitted recording-lifecycle guidance")
@@ -215,9 +220,11 @@ enum RecordingInputControlsPreviewFixture {
         try require(probe.permissionChecks == checksBeforeDeniedRefresh + 1 && monitor.permissions == .unknown,
                     "Reopened native refresh did not read the injected denial exactly once")
         try require(try status(in: window).contains("输入监控"), "Revoked permission did not update the native status")
-        try press("recording-input-help", in: window)
-        try await settle(window)
-        try require(!reopenedHelp.isVisible, "Reopened help did not dismiss")
+        phase = "dismiss-help-after-revocation"
+        let revokedDismissalFile = "\(prefix)-\(phase)-\(name).json"
+        helpDismissalFiles.append(revokedDismissalFile)
+        helpDismissals.append(try await dismissHelp(reopenedHelp, in: window, phase: phase,
+            to: directory.appendingPathComponent(revokedDismissalFile)))
         for (suffix, keyPath) in toggles { try await toggle(suffix, keyPath: keyPath, enabled: false) }
         try require(monitor.options == initialOptions && nativeViews("recording-input-status", in: window).isEmpty,
                     "Native option round trip failed to restore the default-off controls")
@@ -230,12 +237,84 @@ enum RecordingInputControlsPreviewFixture {
         result["nativeTogglePresses"] = roundTrips.count; result["optionRoundTrips"] = roundTrips
         result["finalOptionsMatchInitial"] = true
         result["helpAndRefreshVerified"] = true; result["nativeHelpPresses"] = 4; result["nativeRefreshPresses"] = 2
+        result["helpDismissals"] = helpDismissals; result["helpDismissalFiles"] = helpDismissalFiles
         result["files"] = files; result["geometryFiles"] = geometryFiles
         result["injectedPermissionChecks"] = probe.permissionChecks
         result["nativeMonitorRegistrations"] = 0
         if !panelSectionGeometry.isEmpty { result["panelSectionGeometry"] = panelSectionGeometry }
         completed = true
         return result
+    }
+
+    /// Explicit fixture contract: first observe the same owned help hidden by
+    /// one second from this native dismissal request. Preserve the original
+    /// post-150-ms-settle sample; a later hide is identified in the evidence.
+    /// Task.sleep is a minimum delay. A sample first observed after the cap
+    /// fails even if hidden, and unsampled transition times remain unknown.
+    private static func dismissHelp(_ help: NSWindow, in window: NSWindow, phase: String,
+                                    to url: URL) async throws -> [String: Any] {
+        try require(help.isVisible, "Owned help was hidden before its native dismissal click")
+        let actionStarted = ProcessInfo.processInfo.systemUptime
+        try press("recording-input-help", in: window)
+        let actionReturned = ProcessInfo.processInfo.systemUptime
+        let deadline = actionStarted + 1
+        var observations: [[String: Any]] = []
+        func observe(_ checkpoint: String, scheduled: Double) -> (visible: Bool, time: Double) {
+            let visible = help.isVisible
+            let time = ProcessInfo.processInfo.systemUptime
+            observations.append(["checkpoint": checkpoint, "isVisible": visible,
+                "scheduledUptimeSeconds": scheduled, "observedUptimeSeconds": time,
+                "scheduledMilliseconds": (scheduled - actionStarted) * 1_000,
+                "observedMilliseconds": (time - actionStarted) * 1_000,
+                "schedulingDelayMilliseconds": (time - scheduled) * 1_000])
+            return (visible, time)
+        }
+        let settleStarted = ProcessInfo.processInfo.systemUptime
+        try await settle(window)
+        let original = observe("original-post-settle", scheduled: settleStarted + 0.150)
+        var last = original
+        // Only inspect the very same window returned by the owned open action.
+        // No close/orderOut, second click, binding write or replacement lookup
+        // is allowed to make the visibility assertion pass.
+        while last.visible && last.time < deadline {
+            let now = ProcessInfo.processInfo.systemUptime
+            guard now < deadline else { break }
+            let scheduled = min(now + 0.025, deadline)
+            try await Task.sleep(nanoseconds: UInt64((scheduled - now) * 1_000_000_000))
+            last = observe("visibility-poll", scheduled: scheduled)
+        }
+        let outcome: String
+        if !last.visible && last.time > deadline { outcome = "hidden-first-observed-after-deadline" }
+        else if !original.visible { outcome = "hidden-at-original-post-settle" }
+        else if !last.visible { outcome = "hidden-after-original-post-settle" }
+        else { outcome = "still-visible-at-observation-end" }
+        let accepted = !last.visible && last.time <= deadline
+        let report: [String: Any] = ["schema": "recording-help-dismissal-v1", "phase": phase,
+            "status": accepted ? "passed" : "failed", "outcome": outcome,
+            "interactionRoute": "NSButton.performClick", "visibilityRoute": "NSWindow.isVisible",
+            "acceptanceContract": "owned-help-first-hidden-observed-within-1000ms-v1",
+            "timingOrigin": "before-native-dismissal-request-hit-test-and-performClick",
+            "originalSettleMilliseconds": 150, "deadlineMilliseconds": 1_000, "pollMilliseconds": 25,
+            "strict150MillisecondLatencyEstablished": false,
+            "windowVisibleBeforeClick": true, "ownedWindowNumber": help.windowNumber,
+            "ownedWindowIdentity": String(describing: ObjectIdentifier(help)),
+            "ownerWindowNumber": window.windowNumber,
+            "actionStartedUptimeSeconds": actionStarted, "actionReturnedUptimeSeconds": actionReturned,
+            "settleStartedUptimeSeconds": settleStarted,
+            "deadlineUptimeSeconds": deadline,
+            "firstHiddenObservedMilliseconds": last.visible ? NSNull() : (last.time - actionStarted) * 1_000 as Any,
+            "visibleAtOriginalCheckpoint": original.visible, "finalVisible": help.isVisible,
+            "observations": observations]
+        // Persist even failed/late observations before cleanup disposes help.
+        try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+            .write(to: url, options: .atomic)
+        if !accepted {
+            try? snapshot(help, to: url.deletingPathExtension().appendingPathExtension("png"))
+        }
+        try require(accepted,
+            "Native help was not observed hidden within 1000 ms of its dismissal request: \(phase); \(outcome)")
+        try require(!help.isVisible, "Native help became visible again after its dismissal checkpoint")
+        return report
     }
 
     private static func openHelp(in window: NSWindow, previouslyOwned: NSWindow? = nil) async throws -> NSWindow {

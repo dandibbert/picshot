@@ -69,6 +69,47 @@ for appearance in inputs['appearances']:
         assert context['nativeMonitorRegistrations']==0,context
         assert context['nativeTogglePresses']==12 and context['finalOptionsMatchInitial'] is True,context
         assert context['helpAndRefreshVerified'] is True and context['nativeHelpPresses']==4 and context['nativeRefreshPresses']==2,context
+        dismissals=context['helpDismissals']
+        phases=['dismiss-help-after-grant','dismiss-help-after-revocation']
+        assert len(dismissals)==2 and [x['phase'] for x in dismissals]==phases,dismissals
+        dismissal_files=[f'{prefix}-{phase}-{appearance["appearance"]}.json' for phase in phases]
+        assert context['helpDismissalFiles']==dismissal_files,context
+        for dismissal,filename in zip(dismissals,dismissal_files):
+            assert dismissal==json.loads((pathlib.Path(sys.argv[1]).parent/filename).read_text()),dismissal
+            assert dismissal['schema']=='recording-help-dismissal-v1' and dismissal['status']=='passed',dismissal
+            assert dismissal['acceptanceContract']=='owned-help-first-hidden-observed-within-1000ms-v1',dismissal
+            assert dismissal['timingOrigin']=='before-native-dismissal-request-hit-test-and-performClick',dismissal
+            assert dismissal['interactionRoute']=='NSButton.performClick' and dismissal['visibilityRoute']=='NSWindow.isVisible',dismissal
+            assert (dismissal['originalSettleMilliseconds'],dismissal['deadlineMilliseconds'],dismissal['pollMilliseconds'])==(150,1000,25),dismissal
+            assert dismissal['strict150MillisecondLatencyEstablished'] is False,dismissal
+            assert dismissal['windowVisibleBeforeClick'] is True and dismissal['finalVisible'] is False,dismissal
+            assert type(dismissal['ownedWindowNumber']) is int and type(dismissal['ownerWindowNumber']) is int,dismissal
+            assert dismissal['ownedWindowNumber']!=dismissal['ownerWindowNumber'],dismissal
+            assert isinstance(dismissal['ownedWindowIdentity'],str) and dismissal['ownedWindowIdentity'],dismissal
+            import math
+            times=['actionStartedUptimeSeconds','actionReturnedUptimeSeconds','settleStartedUptimeSeconds','deadlineUptimeSeconds','firstHiddenObservedMilliseconds']
+            assert all(type(dismissal[key]) in (int,float) and math.isfinite(dismissal[key]) for key in times),dismissal
+            start=dismissal['actionStartedUptimeSeconds'];deadline=dismissal['deadlineUptimeSeconds']
+            assert 0<start<=dismissal['actionReturnedUptimeSeconds']<=dismissal['settleStartedUptimeSeconds'],dismissal
+            assert abs(deadline-start-1)<0.000001,dismissal
+            samples=dismissal['observations']
+            assert samples and samples[0]['checkpoint']=='original-post-settle',dismissal
+            assert abs(samples[0]['scheduledUptimeSeconds']-dismissal['settleStartedUptimeSeconds']-0.150)<0.000001,dismissal
+            assert dismissal['visibleAtOriginalCheckpoint'] is samples[0]['isVisible'],dismissal
+            previous=dismissal['settleStartedUptimeSeconds']
+            for index,sample in enumerate(samples):
+                assert sample['checkpoint']==('original-post-settle' if index==0 else 'visibility-poll'),sample
+                keys=['scheduledUptimeSeconds','observedUptimeSeconds','scheduledMilliseconds','observedMilliseconds','schedulingDelayMilliseconds']
+                assert all(type(sample[key]) in (int,float) and math.isfinite(sample[key]) for key in keys),sample
+                scheduled=sample['scheduledUptimeSeconds'];observed=sample['observedUptimeSeconds']
+                assert previous<=scheduled<=observed<=deadline,sample
+                for key,expected in [('scheduledMilliseconds',(scheduled-start)*1000),('observedMilliseconds',(observed-start)*1000),('schedulingDelayMilliseconds',(observed-scheduled)*1000)]:
+                    assert abs(sample[key]-expected)<0.000001,sample
+                assert sample['isVisible'] is (index<len(samples)-1),sample
+                previous=observed
+            assert dismissal['firstHiddenObservedMilliseconds']==samples[-1]['observedMilliseconds']<=1000,dismissal
+            expected_outcome='hidden-after-original-post-settle' if samples[0]['isVisible'] else 'hidden-at-original-post-settle'
+            assert dismissal['outcome']==expected_outcome,dismissal
         expected={'clicks':False,'scrolls':False,'shortcuts':False}
         actions=[(control,enabled) for control in ['clicks','scrolls','shortcuts'] for enabled in [True,False,True]]
         actions += [(control,False) for control in ['clicks','scrolls','shortcuts']]

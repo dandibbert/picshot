@@ -48,8 +48,22 @@ enum RecordingInputExportOracle {
     }
     struct Movie: Codable {
         let url: URL
-        let frameCount: Int, duration: Double, packetEnd: Double
+        let frameCount: Int, duration: Double
+        var rawPacketEnd: Double { packetTiming.rawEnd }
+        let packetTiming: PacketSummary
         let observations: [Observation]
+    }
+    struct PacketTiming: Codable {
+        let rawPTS: Double, rawDuration: Double, outputPTS: Double, outputDuration: Double
+        let trimStart: Double, trimEnd: Double, doNotDisplay: Bool
+        var nonPresented: Bool { doNotDisplay || outputDuration == 0 }
+    }
+    struct PacketSummary: Codable {
+        let storedCount: Int, presentedCount: Int, nonPresentedCount: Int
+        let rawStart: Double, rawEnd: Double, presentationEnd: Double, finalPresentedDuration: Double
+        let packets: [PacketTiming]
+        let rawTimeline = "untrimmed sample PTS/duration"
+        let presentationTimeline = "CoreMedia output PTS/duration after track edits and trims"
     }
     struct Comparison: Codable {
         let index: Int, requestedSeconds: Double, actualSeconds: Double
@@ -121,7 +135,7 @@ enum RecordingInputExportOracle {
         }
         let bytes = CMSampleBufferGetDataBuffer(sample).map { CMBlockBufferGetDataLength($0) } ?? 0
         let entry = sampleTimingEntry(sample)
-        return "route=\(route) phase=\(phase) buffer=\(buffer) media=\(media)/\(expected)"
+        return "route=\(route) phase=\(phase) buffer=\(buffer) mediaSeen=\(media) expectedPresented=\(expected)"
             + " valid=\(CMSampleBufferIsValid(sample)) ready=\(CMSampleBufferDataIsReady(sample))"
             + " samples=\(CMSampleBufferGetNumSamples(sample)) sampleBytes=\(CMSampleBufferGetTotalSampleSize(sample)) dataBytes=\(bytes)"
             + " imagePresent=\(CMSampleBufferGetImageBuffer(sample) != nil)"
@@ -136,6 +150,119 @@ enum RecordingInputExportOracle {
             + " permanentEmpty=\(flag(kCMSampleBufferAttachmentKey_PermanentEmptyMedia))"
             + " trimStart=\(trim(kCMSampleBufferAttachmentKey_TrimDurationAtStart))"
             + " trimEnd=\(trim(kCMSampleBufferAttachmentKey_TrimDurationAtEnd))"
+            + " doNotDisplay=\((try? doNotDisplay(sample)).map(String.init) ?? "invalid-array-or-type")"
+    }
+    private static func doNotDisplay(_ sample: CMSampleBuffer) throws -> Bool {
+        guard let values = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false) else { return false }
+        guard let array = values as? [NSDictionary], array.count == 1 else {
+            throw NSError(domain: "Malformed sample attachment array", code: 1)
+        }
+        guard let value = array[0][kCMSampleAttachmentKey_DoNotDisplay] else { return false }
+        try require(CFGetTypeID(value as CFTypeRef) == CFBooleanGetTypeID(), "Malformed DoNotDisplay flag")
+        return (value as? NSNumber)?.boolValue == true
+    }
+    private static func trimDuration(_ sample: CMSampleBuffer, key: CFString) throws -> Double {
+        guard let value = CMGetAttachment(sample, key: key, attachmentModeOut: nil) else { return 0 }
+        guard let dictionary = value as? [String: Any] else {
+            throw NSError(domain: "Malformed packet trim attachment", code: 1)
+        }
+        let time = CMTimeMakeFromDictionary(dictionary as CFDictionary)
+        try require(time.isNumeric && time.seconds >= 0, "Invalid packet trim duration")
+        return time.seconds
+    }
+    static func packetTiming(_ sample: CMSampleBuffer, detail: String) throws -> PacketTiming {
+        do {
+            try require(CMSampleBufferIsValid(sample) && CMSampleBufferDataIsReady(sample)
+                && CMSampleBufferGetNumSamples(sample) == 1, "Invalid media sample")
+            let result = PacketTiming(rawPTS: CMSampleBufferGetPresentationTimeStamp(sample).seconds,
+                rawDuration: CMSampleBufferGetDuration(sample).seconds,
+                outputPTS: CMSampleBufferGetOutputPresentationTimeStamp(sample).seconds,
+                outputDuration: CMSampleBufferGetOutputDuration(sample).seconds,
+                trimStart: try trimDuration(sample, key: kCMSampleBufferAttachmentKey_TrimDurationAtStart),
+                trimEnd: try trimDuration(sample, key: kCMSampleBufferAttachmentKey_TrimDurationAtEnd),
+                doNotDisplay: try doNotDisplay(sample))
+            try validatePacketTiming(result)
+            return result
+        } catch {
+            throw NSError(domain: "PicShot.RecordingInputExport", code: 9,
+                          userInfo: [NSLocalizedDescriptionKey: "\(error.localizedDescription): \(detail)"])
+        }
+    }
+    /// Run for both real buffers and scalar regression cases, before sorting
+    /// or classifying a sample. A zero output duration needs explicit full trim;
+    /// DoNotDisplay is accepted only when its attachment is an actual Boolean.
+    static func validatePacketTiming(_ packet: PacketTiming) throws {
+        try require([packet.rawPTS, packet.rawDuration, packet.outputPTS, packet.outputDuration,
+                     packet.trimStart, packet.trimEnd].allSatisfy(\.isFinite)
+            && packet.rawPTS >= 0 && packet.rawPTS + packet.rawDuration <= 2.2 + 1.0 / 600
+            && packet.rawDuration > 0 && packet.rawDuration <= 0.1 + 1.0 / 600
+            && packet.outputPTS >= -0.1 - 1.0 / 600 && packet.outputPTS <= 2.2
+            && packet.outputDuration >= 0 && packet.outputDuration <= 0.1 + 1.0 / 600
+            && packet.trimStart >= 0 && packet.trimEnd >= 0
+            && packet.trimStart + packet.trimEnd <= packet.rawDuration + 1.0 / 600
+            && abs(packet.outputDuration - (packet.rawDuration - packet.trimStart - packet.trimEnd)) <= 1.0 / 600,
+                    "Invalid raw/output packet duration or trim accounting")
+    }
+    static func verifyPacketTimeline(_ packets: [PacketTiming], selected: Bool) throws -> PacketSummary {
+        let count = selected ? selectedFrames : sourceFrames
+        let expectedEnd = selected ? duration : 2.2
+        try require(packets.count >= count && packets.count <= sourceFrames, "Stored packet count exceeds authored source bound")
+        for packet in packets { try validatePacketTiming(packet) }
+        let ordered = packets.sorted { $0.rawPTS < $1.rawPTS }
+        var rawEnd = ordered[0].rawPTS
+        try require(rawEnd >= 0 && rawEnd <= (selected ? start : 0) + 1.0 / 600, "Unexpected raw storage start")
+        for packet in ordered {
+            try require(packet.rawPTS.isFinite && packet.rawDuration.isFinite && packet.rawDuration > 0
+                && packet.rawDuration <= 0.1 + 1.0 / 600 && abs(packet.rawPTS - rawEnd) <= 1.0 / 600,
+                        "Raw stored packets are not adjacent and bounded")
+            rawEnd = packet.rawPTS + packet.rawDuration
+        }
+        try require(rawEnd >= expectedEnd - 1.0 / 600 && rawEnd <= 2.2 + 1.0 / 600,
+                    "Raw stored endpoint exceeds authored source or is truncated")
+        let presented = packets.filter { !$0.nonPresented }.sorted { $0.outputPTS < $1.outputPTS }
+        try require(presented.count == count, "Presented packet count differs from exact selected frame count")
+        let hidden = packets.filter(\.nonPresented)
+        try require(hidden.count <= (selected ? 1 : 0), "Unexpected non-presented packet count")
+        let firstRaw = presented.map(\.rawPTS).min()!
+        for packet in hidden {
+            try validateNonPresented(packet, selected: selected)
+            try require(packet.rawPTS + packet.rawDuration <= firstRaw + 1.0 / 600,
+                        "Non-presented packet is not bounded leading preroll")
+        }
+        var presentationEnd = 0.0
+        let offset = presented[0].outputPTS - presented[0].rawPTS - presented[0].trimStart
+        for (index, packet) in presented.enumerated() {
+            try verifyPresented(packet, index: index, selected: selected)
+            try require(abs(packet.outputPTS - presentationEnd) <= 1.0 / 600
+                && abs((packet.outputPTS - packet.rawPTS - packet.trimStart) - offset) <= 1.0 / 600,
+                        "Output packet timeline is not adjacent or edit offset changes")
+            presentationEnd = packet.outputPTS + packet.outputDuration
+        }
+        try require(abs(presentationEnd - expectedEnd) <= 1.0 / 600, "Output packet endpoint differs")
+        return PacketSummary(storedCount: packets.count, presentedCount: presented.count, nonPresentedCount: hidden.count,
+            rawStart: ordered[0].rawPTS, rawEnd: rawEnd, presentationEnd: presentationEnd,
+            finalPresentedDuration: presented.last!.outputDuration, packets: ordered)
+    }
+    static func validateNonPresented(_ packet: PacketTiming, selected: Bool) throws {
+        try validatePacketTiming(packet)
+        try require(selected && packet.nonPresented && packet.rawPTS.isFinite && packet.rawDuration.isFinite
+            && packet.rawDuration > 0 && packet.rawDuration <= 0.1 + 1.0 / 600,
+                    "Unexpected non-presented packet")
+        if !packet.doNotDisplay {
+            try require(packet.outputDuration == 0 && packet.outputPTS.isFinite && abs(packet.outputPTS) <= 1.0 / 600
+                && packet.trimStart.isFinite && packet.trimEnd.isFinite && packet.trimStart >= 0 && packet.trimEnd >= 0
+                && abs(packet.trimStart + packet.trimEnd - packet.rawDuration) <= 1.0 / 600,
+                        "Zero-output packet is not explicitly fully trimmed leading preroll")
+        }
+    }
+    static func verifyPresented(_ packet: PacketTiming, index: Int, selected: Bool) throws {
+        let count = selected ? selectedFrames : sourceFrames
+        let expectedLength = selected && index == count - 1 ? 0.05 : 0.1
+        try require((0..<count).contains(index) && !packet.nonPresented
+            && packet.outputPTS.isFinite && packet.outputDuration.isFinite
+            && abs(packet.outputPTS - Double(index) / 10) <= 1.0 / 600
+            && abs(packet.outputDuration - expectedLength) <= 1.0 / 600,
+                    "Presented interval differs at frame \(index): pts=\(packet.outputPTS) duration=\(packet.outputDuration)")
     }
     static func check(_ deadline: Double) throws {
         try Task.checkCancellation()
@@ -294,7 +421,7 @@ enum RecordingInputExportOracle {
         let count = selected ? selectedFrames : sourceFrames, expectedDuration = selected ? duration : 2.2
         try require(abs(measuredDuration - expectedDuration) <= 1.0 / 600,
                     "Selected interval duration differs: route=\(route) actual=\(measuredDuration) expected=\(expectedDuration)")
-        let packetEnd = try packets(asset, track: tracks[0], route: route, count: count, duration: expectedDuration, deadline: deadline)
+        let packetSummary = try packets(asset, track: tracks[0], route: route, selected: selected, deadline: deadline)
         let reader = try AVAssetReader(asset: asset)
         defer { if reader.status == .reading { reader.cancelReading() } }
         let output = AVAssetReaderTrackOutput(track: tracks[0], outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
@@ -305,7 +432,8 @@ enum RecordingInputExportOracle {
         let sourceGenerator = selected ? source.map { generator($0.url) } : nil
         defer { sourceGenerator?.cancelAllCGImageGeneration() }
         var frames: [Observation] = []
-        var buffers = 0
+        var buffers = 0, decodedSamples = 0
+        var decodedPreroll: PacketTiming?
         while let sample = output.copyNextSampleBuffer() {
             try check(deadline)
             let detail = sampleTimingDescription(sample, route: route, phase: "decoded", buffer: buffers, media: frames.count, expected: count)
@@ -315,13 +443,30 @@ enum RecordingInputExportOracle {
                 print("[recording-input-timing] control-marker \(detail)")
                 continue
             }
+            print("[recording-input-timing] media-sample \(detail)")
+            try require(decodedSamples < sourceFrames, "Decoded sample cap exceeded: \(detail)")
+            decodedSamples += 1
+            let timing = try packetTiming(sample, detail: detail)
+            guard let decodedPixels = CMSampleBufferGetImageBuffer(sample) else {
+                throw NSError(domain: "PicShot.RecordingInputExport", code: 4,
+                              userInfo: [NSLocalizedDescriptionKey: "Decoded MP4 has no image buffer: \(detail)"])
+            }
+            try require(CVPixelBufferGetWidth(decodedPixels) == width && CVPixelBufferGetHeight(decodedPixels) == height,
+                        "Decoded MP4 canvas differs: \(detail)")
+            if timing.nonPresented {
+                try validateNonPresented(timing, selected: selected)
+                try require(decodedPreroll == nil && frames.isEmpty, "Decoded preroll is not a single leading sample: \(detail)")
+                decodedPreroll = timing
+                continue
+            }
             try autoreleasepool {
                 try require(frames.count < count, "Derived decoder exceeded frame cap: \(detail)")
-                try require(CMSampleBufferIsValid(sample) && CMSampleBufferDataIsReady(sample)
-                    && CMSampleBufferGetNumSamples(sample) == 1, "Invalid decoded MP4 sample: \(detail)")
-                let pts = CMSampleBufferGetPresentationTimeStamp(sample).seconds
-                try require(pts.isFinite && abs(pts - Double(frames.count) / 10) <= 1.0 / 600,
-                            "Decoded MP4 PTS/start selection differs: \(detail)")
+                try verifyPresented(timing, index: frames.count, selected: selected)
+                if frames.isEmpty, let preroll = decodedPreroll {
+                    try require(preroll.rawPTS + preroll.rawDuration <= timing.rawPTS + 1.0 / 600,
+                                "Decoded non-presented sample is not leading preroll: \(detail)")
+                }
+                let pts = timing.outputPTS
                 guard let pixels = CMSampleBufferGetImageBuffer(sample),
                       let image = context.createCGImage(CIImage(cvPixelBuffer: pixels), from: CGRect(x: 0, y: 0, width: width, height: height))
                 else { throw NSError(domain: "PicShot.RecordingInputExport", code: 4,
@@ -349,53 +494,43 @@ enum RecordingInputExportOracle {
         }
         try require(reader.status == .completed && frames.count == count,
                     "Derived movie decode did not finish: route=\(route) status=\(reader.status.rawValue) buffers=\(buffers) media=\(frames.count)/\(count)")
-        print("[recording-input-timing] route=\(route) phase=decoded buffers=\(buffers) media=\(frames.count) duration=\(measuredDuration) packetEnd=\(packetEnd)")
-        return Movie(url: url, frameCount: count, duration: measuredDuration, packetEnd: packetEnd, observations: frames)
+        print("[recording-input-timing] route=\(route) phase=decoded buffers=\(buffers) returnedMedia=\(decodedSamples) presented=\(frames.count) duration=\(measuredDuration) storedRawEnd=\(packetSummary.rawEnd) presentationEnd=\(packetSummary.presentationEnd)")
+        return Movie(url: url, frameCount: count, duration: measuredDuration, packetTiming: packetSummary, observations: frames)
     }
-    private static func packets(_ asset: AVAsset, track: AVAssetTrack, route: String, count: Int, duration: Double, deadline: Double) throws -> Double {
+    private static func packets(_ asset: AVAsset, track: AVAssetTrack, route: String,
+                                selected: Bool, deadline: Double) throws -> PacketSummary {
+        let count = selected ? selectedFrames : sourceFrames
         let reader = try AVAssetReader(asset: asset)
         defer { if reader.status == .reading { reader.cancelReading() } }
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
         try require(reader.canAdd(output), "Derived packet reader unavailable")
         reader.add(output); try require(reader.startReading(), "Derived packet reader did not start")
-        // Compressed packets may arrive in decode order after HighestQuality
-        // reencoding. Retain only <=22 scalar intervals, then check PTS order.
-        var intervals: [(Double, Double)] = []
+        // Raw storage is capped by all 22 authored source packets. A selected
+        // edit may retain one leading decoder-preroll packet, but must present
+        // exactly 21 positive output intervals, ending with [2.0, 2.05).
+        var timings: [PacketTiming] = []
         var buffers = 0
         while let sample = output.copyNextSampleBuffer() {
             try check(deadline)
-            let detail = sampleTimingDescription(sample, route: route, phase: "compressed", buffer: buffers, media: intervals.count, expected: count)
-            // Extra control markers are bounded in total by the media count.
-            // The <=22/21 stored and decoded media-frame caps remain unchanged.
+            let detail = sampleTimingDescription(sample, route: route, phase: "compressed", buffer: buffers, media: timings.count, expected: count)
             try require(buffers < count * 2, "Compressed buffer cap exceeded: \(detail)")
             buffers += 1
             if try isControlMarker(sample, context: detail) {
                 print("[recording-input-timing] control-marker \(detail)")
                 continue
             }
-            let pts = CMSampleBufferGetPresentationTimeStamp(sample).seconds
-            let length = CMSampleBufferGetDuration(sample).seconds
-            try require(intervals.count < count && CMSampleBufferGetNumSamples(sample) == 1
-                && CMSampleBufferIsValid(sample) && CMSampleBufferDataIsReady(sample)
-                && pts.isFinite && length.isFinite && length > 0, "Invalid/beyond-cap stored MP4 packets: \(detail)")
-            intervals.append((pts, length))
+            print("[recording-input-timing] media-sample \(detail)")
+            let dataBytes = CMSampleBufferGetDataBuffer(sample).map { CMBlockBufferGetDataLength($0) } ?? 0
+            try require(timings.count < sourceFrames && CMSampleBufferGetImageBuffer(sample) == nil
+                && CMSampleBufferGetTotalSampleSize(sample) > 0 && dataBytes > 0
+                && CMSampleBufferGetTotalSampleSize(sample) <= maximumFileBytes && dataBytes <= maximumFileBytes,
+                        "Invalid/beyond-cap stored packet payload: \(detail)")
+            timings.append(try packetTiming(sample, detail: detail))
         }
-        intervals.sort { $0.0 < $1.0 }
-        var end = 0.0
-        for (index, interval) in intervals.enumerated() {
-            try require(abs(interval.0 - Double(index) / 10) <= 1.0 / 600 && abs(interval.0 - end) <= 1.0 / 600,
-                        "Stored MP4 packets are not adjacent in presentation order: route=\(route) index=\(index) pts=\(interval.0) duration=\(interval.1) previousEnd=\(end)")
-            end = interval.0 + interval.1
-        }
-        // A track edit may clip playback halfway through its last nominal
-        // packet. Check playback duration separately, and allow only that last
-        // packet's bounded tail; no extra presented frame may start after end.
-        try require(reader.status == .completed && intervals.count == count
-            && end >= duration - 1.0 / 600 && end <= duration + 0.1 + 1.0 / 600
-            && (intervals.last?.0 ?? duration) < duration,
-                    "Stored MP4 endpoint exceeds its final presented packet: route=\(route) status=\(reader.status.rawValue) buffers=\(buffers) media=\(intervals.count)/\(count) packetEnd=\(end) playbackEnd=\(duration) lastPTS=\(intervals.last?.0 ?? .nan)")
-        print("[recording-input-timing] route=\(route) phase=compressed buffers=\(buffers) media=\(intervals.count) playbackEnd=\(duration) intervals=\(intervals)")
-        return end
+        try require(reader.status == .completed, "Compressed reader incomplete: route=\(route) status=\(reader.status.rawValue)")
+        let result = try verifyPacketTimeline(timings, selected: selected)
+        print("[recording-input-timing] route=\(route) phase=compressed buffers=\(buffers) stored=\(result.storedCount) presented=\(result.presentedCount) nonPresented=\(result.nonPresentedCount) rawEnd=\(result.rawEnd) presentationEnd=\(result.presentationEnd)")
+        return result
     }
 
     static func sampleTime(_ index: Int) -> CMTime {

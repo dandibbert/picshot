@@ -24,6 +24,20 @@ def frames():
                  regionMeanAbsoluteError={key: 0 for key in GATE.REGIONS}) for i in range(41)]
 
 
+def packets(selected):
+    items = [dict(rawPTS=i / 10, rawDuration=0.1,
+                  outputPTS=(i - 1) / 10 if selected else i / 10,
+                  outputDuration=0.05 if selected and i == 21 else 0.1,
+                  trimStart=0, trimEnd=0.05 if selected and i == 21 else 0,
+                  doNotDisplay=selected and i == 0) for i in range(22)]
+    return dict(storedCount=22, presentedCount=21 if selected else 22,
+                nonPresentedCount=1 if selected else 0, rawStart=0, rawEnd=2.2,
+                presentationEnd=2.05 if selected else 2.2,
+                finalPresentedDuration=0.05 if selected else 0.1, packets=items,
+                rawTimeline="untrimmed sample PTS/duration",
+                presentationTimeline="CoreMedia output PTS/duration after track edits and trims")
+
+
 class RecordingInputExportEvidenceTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -37,12 +51,20 @@ class RecordingInputExportEvidenceTests(unittest.TestCase):
             captureStarted=False, permissionRequested=False, globalInputPosted=False, regionRelocationTested=False,
             typedTextCaptured=False, selectedStartSeconds=0.1, selectedEndSeconds=2.15, selectedDurationSeconds=2.05,
             expectedAnimationFrames=41, animationFrameRate=20, maximumMediaBytes=GATE.MEDIA_CAP,
-            maximumReportBytes=GATE.REPORT_CAP, exports=[], destinationSentinels=[], cancellations=[])
+            maximumReportBytes=GATE.REPORT_CAP, maximumStoredFrameObservations=84,
+            maximumStoredPacketTimingsPerMovie=22, exports=[], destinationSentinels=[], cancellations=[])
         self.native = dict(schemaVersion=1, status="passed", sourceCommit=COMMIT,
             sourceSHA256=self.fixture["sourceSHA256"], sourcePreserved=True, webPDecoder="PSCodecAnimationNext",
             imageIOUsedForWebP=False, sourceFrames=22, selectedFrames=21, selectedDurationSeconds=2.05,
             maximumMediaBytes=GATE.MEDIA_CAP, maximumReportBytes=GATE.REPORT_CAP,
-            maximumFramesPerAnimation=41, maximumRGBABytesPerFrame=320 * 180 * 4, mediaHashes={})
+            maximumStoredPacketTimingsPerMovie=22, maximumFramesPerAnimation=41, maximumRGBABytesPerFrame=320 * 180 * 4, mediaHashes={})
+        self.native["sourcePacketTiming"] = packets(False)
+        self.native["selectedPacketTiming"] = packets(True)
+        self.native["selectedRawPacketEndSeconds"] = 2.2
+        self.fixture["sourceDecode"] = dict(frames=22, duration=2.2, rawPacketEnd=2.2, packetTiming=packets(False))
+        self.fixture["selectedMP4"] = dict(frames=21, duration=2.05, rawPacketEnd=2.2, packetTiming=packets(True),
+                                           sourceFrameIndices=list(range(1, 22)))
+        self.native["selectedSourceFrameIndices"] = list(range(1, 22))
         self.native["verifiedLoopCounts"] = {"gif": 0, "webpLossless": 0, "webpLossy": 0}
         for route, name in GATE.MEDIA:
             (self.root / name).write_bytes(b"unit output, not decoded pixels: " + route.encode())
@@ -71,6 +93,25 @@ class RecordingInputExportEvidenceTests(unittest.TestCase):
 
     def test_complete_contract_passes_without_claiming_media_decode(self):
         self.assertEqual(self.validate()["status"], "passed")
+        for variant in ("fully-trimmed", "no-preroll", "rebased", "decode-order"):
+            timing = packets(True)
+            if variant == "fully-trimmed":
+                timing["packets"][0].update(doNotDisplay=False, outputPTS=0, outputDuration=0, trimStart=0.1)
+            elif variant in ("no-preroll", "rebased"):
+                timing.update(storedCount=21, nonPresentedCount=0, rawStart=0.1)
+                timing["packets"] = timing["packets"][1:]
+                if variant == "rebased":
+                    timing.update(rawStart=0, rawEnd=2.05)
+                    for packet in timing["packets"]:
+                        packet.update(rawPTS=packet["outputPTS"], rawDuration=packet["outputDuration"], trimEnd=0)
+            else:
+                timing["packets"].reverse()
+            with self.subTest(variant=variant):
+                GATE.packet_timing(timing, True)
+        self.save()
+        # Match Swift's pretty-printed evidence and leave headroom under 128 KiB.
+        self.assertLess(len(json.dumps(self.native, sort_keys=True, indent=2).encode()), GATE.REPORT_CAP)
+
 
     def test_first_frame_only_or_imageio_webp_cannot_pass(self):
         self.native["webpLossless"] = self.native["webpLossless"][:1]
@@ -94,6 +135,49 @@ class RecordingInputExportEvidenceTests(unittest.TestCase):
                     self.validate()
 
     def test_wrong_timing_loop_evidence_and_pixel_scope_rejected(self):
+        for key, value in (("storedCount", 23), ("presentedCount", 22), ("nonPresentedCount", 0),
+                           ("presentationEnd", 2.2), ("finalPresentedDuration", 0.1),
+                           ("rawTimeline", "playback")):
+            timing = packets(True)
+            timing[key] = value
+            self.native["selectedPacketTiming"] = timing
+            self.fixture["selectedMP4"]["packetTiming"] = copy.deepcopy(timing)
+            with self.assertRaises(ValueError):
+                self.validate()
+        mutations = [lambda t: t.pop("packets"),
+                     lambda t: t["packets"].pop(),
+                     lambda t: t["packets"].append(copy.deepcopy(t["packets"][-1])),
+                     lambda t: t["packets"][0].update(doNotDisplay=False),
+                     lambda t: t["packets"][0].update(doNotDisplay="true"),
+                     lambda t: t["packets"][0].update(outputPTS=float("nan")),
+                     lambda t: t["packets"][0].update(trimStart=-0.1, trimEnd=0.1),
+                     lambda t: t["packets"][0].update(outputDuration=0, doNotDisplay=False, outputPTS=0),
+                     lambda t: t["packets"][4].update(rawPTS=0.42),
+                     lambda t: t["packets"][4].update(rawPTS=0.38),
+                     lambda t: t["packets"][4].update(outputPTS=0.32),
+                     lambda t: t["packets"][4].update(outputPTS=0.28),
+                     lambda t: t["packets"][-1].update(outputDuration=0.1, trimEnd=0),
+                     lambda t: t.update(rawEnd=2.1),
+                     lambda t: t.update(storedCount=True)]
+        for index, mutate in enumerate(mutations):
+            timing = packets(True)
+            mutate(timing)
+            with self.subTest(packetMutation=index), self.assertRaises(ValueError):
+                GATE.packet_timing(timing, True)
+        source = packets(False)
+        source["packets"][0]["doNotDisplay"] = True
+        with self.assertRaises(ValueError):
+            GATE.packet_timing(source, False)
+        self.native["selectedPacketTiming"] = packets(True)
+        self.fixture["selectedMP4"]["packetTiming"] = packets(True)
+        self.native["selectedSourceFrameIndices"][-1] = 20
+        with self.assertRaisesRegex(ValueError, "source-frame mapping"):
+            self.validate()
+        self.native["selectedSourceFrameIndices"] = list(range(1, 22))
+        self.fixture["selectedMP4"]["rawPacketEnd"] = 2.05
+        with self.assertRaisesRegex(ValueError, "packet evidence"):
+            self.validate()
+        self.fixture["selectedMP4"]["rawPacketEnd"] = 2.2
         changes = [lambda f: f[2].update(delayMS=100),
                    lambda f: f[4].update(actualSeconds=-1),
                    lambda f: f[6].update(requestedSeconds=0.301),

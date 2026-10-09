@@ -84,7 +84,7 @@ final class RecordingInputExportTests: XCTestCase {
         XCTAssertTrue(try Oracle.isControlMarker(empty, context: "end-duration-marker"))
         let diagnostic = Oracle.sampleTimingDescription(empty, route: "source", phase: "compressed",
             buffer: 22, media: 22, expected: 22)
-        XCTAssertTrue(diagnostic.contains("route=source phase=compressed buffer=22 media=22/22"))
+        XCTAssertTrue(diagnostic.contains("route=source phase=compressed buffer=22 mediaSeen=22 expectedPresented=22"))
         XCTAssertTrue(diagnostic.contains("samples=0 sampleBytes=0 dataBytes=0"))
         XCTAssertTrue(diagnostic.contains("endsPrevious=true"))
         XCTAssertTrue(diagnostic.contains("timingEntries=1 timingStatus=0"))
@@ -107,6 +107,110 @@ final class RecordingInputExportTests: XCTestCase {
         XCTAssertTrue(try Oracle.isControlMarker(timingFree, context: "timing-free-end-marker"))
         XCTAssertEqual(CMSampleBufferInvalidate(timingFree), noErr)
         XCTAssertThrowsError(try Oracle.isControlMarker(timingFree, context: "invalidated-marker"))
+
+        // Exercise CoreMedia's real attachment bridges and output-time APIs,
+        // in the existing test method so the native inventory stays unchanged.
+        func media(rawPTS: CMTime = CMTime(value: 21, timescale: 10)) throws -> CMSampleBuffer {
+            var block: CMBlockBuffer?
+            XCTAssertEqual(CMBlockBufferCreateWithMemoryBlock(allocator: kCFAllocatorDefault,
+                memoryBlock: nil, blockLength: 1, blockAllocator: kCFAllocatorDefault,
+                customBlockSource: nil, offsetToData: 0, dataLength: 1, flags: 0,
+                blockBufferOut: &block), noErr)
+            var timing = CMSampleTimingInfo(duration: CMTime(value: 1, timescale: 10),
+                presentationTimeStamp: rawPTS, decodeTimeStamp: rawPTS)
+            var size = 1
+            var sample: CMSampleBuffer?
+            XCTAssertEqual(CMSampleBufferCreateReady(allocator: kCFAllocatorDefault,
+                dataBuffer: try XCTUnwrap(block), formatDescription: nil, sampleCount: 1,
+                sampleTimingEntryCount: 1, sampleTimingArray: &timing,
+                sampleSizeEntryCount: 1, sampleSizeArray: &size, sampleBufferOut: &sample), noErr)
+            return try XCTUnwrap(sample)
+        }
+        let lastPacket = try media()
+        CMSetAttachment(lastPacket, key: kCMSampleBufferAttachmentKey_TrimDurationAtEnd,
+            value: CMTimeCopyAsDictionary(CMTime(value: 30, timescale: 600), allocator: kCFAllocatorDefault)!,
+            attachmentMode: kCMAttachmentMode_ShouldPropagate)
+        XCTAssertEqual(CMSampleBufferSetOutputPresentationTimeStamp(lastPacket, newValue: CMTime(value: 2, timescale: 1)), noErr)
+        let lastTiming = try Oracle.packetTiming(lastPacket, detail: "synthetic-last-packet")
+        XCTAssertEqual(lastTiming.rawPTS, 2.1, accuracy: 1.0 / 600)
+        XCTAssertEqual(lastTiming.rawDuration, 0.1, accuracy: 1.0 / 600)
+        XCTAssertEqual(lastTiming.outputPTS, 2, accuracy: 1.0 / 600)
+        XCTAssertEqual(lastTiming.outputDuration, 0.05, accuracy: 1.0 / 600)
+        XCTAssertEqual(lastTiming.trimEnd, 0.05, accuracy: 1.0 / 600)
+        XCTAssertFalse(lastTiming.doNotDisplay)
+        let hiddenPacket = try media(rawPTS: .zero)
+        XCTAssertEqual(CMSampleBufferSetOutputPresentationTimeStamp(hiddenPacket, newValue: CMTime(value: -1, timescale: 10)), noErr)
+        let attachments = try XCTUnwrap(CMSampleBufferGetSampleAttachmentsArray(hiddenPacket, createIfNecessary: true) as? [NSMutableDictionary])
+        XCTAssertEqual(attachments.count, 1)
+        let sampleFlags = try XCTUnwrap(attachments.first)
+        sampleFlags[kCMSampleAttachmentKey_DoNotDisplay] = kCFBooleanTrue
+        XCTAssertTrue(try Oracle.packetTiming(hiddenPacket, detail: "synthetic-preroll").doNotDisplay)
+        sampleFlags[kCMSampleAttachmentKey_DoNotDisplay] = kCFBooleanFalse
+        XCTAssertFalse(try Oracle.packetTiming(hiddenPacket, detail: "synthetic-visible").doNotDisplay)
+        sampleFlags[kCMSampleAttachmentKey_DoNotDisplay] = NSNumber(value: 2)
+        XCTAssertThrowsError(try Oracle.packetTiming(hiddenPacket, detail: "synthetic-malformed-flag"))
+        sampleFlags.removeObject(forKey: kCMSampleAttachmentKey_DoNotDisplay)
+        CMSetAttachment(hiddenPacket, key: kCMSampleBufferAttachmentKey_TrimDurationAtStart,
+            value: CMTimeCopyAsDictionary(CMTime(value: 1, timescale: 10), allocator: kCFAllocatorDefault)!,
+            attachmentMode: kCMAttachmentMode_ShouldPropagate)
+        XCTAssertEqual(CMSampleBufferSetOutputPresentationTimeStamp(hiddenPacket, newValue: .zero), noErr)
+        let fullyTrimmed = try Oracle.packetTiming(hiddenPacket, detail: "synthetic-fully-trimmed")
+        XCTAssertEqual(fullyTrimmed.outputDuration, 0)
+        XCTAssertNoThrow(try Oracle.validateNonPresented(fullyTrimmed, selected: true))
+        CMSetAttachment(hiddenPacket, key: kCMSampleBufferAttachmentKey_TrimDurationAtStart,
+            value: kCFBooleanTrue, attachmentMode: kCMAttachmentMode_ShouldPropagate)
+        XCTAssertThrowsError(try Oracle.packetTiming(hiddenPacket, detail: "synthetic-malformed-trim"))
+
+        func presented(_ index: Int) -> Oracle.PacketTiming {
+            .init(rawPTS: Double(index + 1) / 10, rawDuration: 0.1,
+                  outputPTS: Double(index) / 10, outputDuration: index == 20 ? 0.05 : 0.1,
+                  trimStart: 0, trimEnd: index == 20 ? 0.05 : 0, doNotDisplay: false)
+        }
+        let visible = (0..<21).map(presented)
+        let preroll = Oracle.PacketTiming(rawPTS: 0, rawDuration: 0.1, outputPTS: -0.1,
+            outputDuration: 0.1, trimStart: 0, trimEnd: 0, doNotDisplay: true)
+        let packetSummary = try Oracle.verifyPacketTimeline([preroll] + visible, selected: true)
+        XCTAssertEqual(packetSummary.storedCount, 22)
+        XCTAssertEqual(packetSummary.presentedCount, 21)
+        XCTAssertEqual(packetSummary.nonPresentedCount, 1)
+        XCTAssertEqual(packetSummary.rawEnd, 2.2, accuracy: 1.0 / 600)
+        XCTAssertEqual(packetSummary.presentationEnd, 2.05, accuracy: 1.0 / 600)
+        XCTAssertEqual(packetSummary.finalPresentedDuration, 0.05, accuracy: 1.0 / 600)
+        XCTAssertNoThrow(try Oracle.verifyPacketTimeline(visible, selected: true))
+        let trimmedPreroll = Oracle.PacketTiming(rawPTS: 0, rawDuration: 0.1, outputPTS: 0,
+            outputDuration: 0, trimStart: 0.1, trimEnd: 0, doNotDisplay: false)
+        XCTAssertNoThrow(try Oracle.verifyPacketTimeline([trimmedPreroll] + visible, selected: true))
+        let unflagged = Oracle.PacketTiming(rawPTS: 0, rawDuration: 0.1, outputPTS: -0.1,
+            outputDuration: 0.1, trimStart: 0, trimEnd: 0, doNotDisplay: false)
+        XCTAssertThrowsError(try Oracle.verifyPacketTimeline([unflagged] + visible, selected: true))
+        let unexplainedZero = Oracle.PacketTiming(rawPTS: 0, rawDuration: 0.1, outputPTS: 0,
+            outputDuration: 0, trimStart: 0, trimEnd: 0, doNotDisplay: false)
+        XCTAssertThrowsError(try Oracle.verifyPacketTimeline([unexplainedZero] + visible, selected: true))
+        XCTAssertThrowsError(try Oracle.verifyPacketTimeline([preroll, preroll] + visible, selected: true))
+        var wrongEnd = visible
+        wrongEnd[20] = .init(rawPTS: 2.1, rawDuration: 0.1, outputPTS: 2, outputDuration: 0.1,
+            trimStart: 0, trimEnd: 0, doNotDisplay: false)
+        XCTAssertThrowsError(try Oracle.verifyPacketTimeline([preroll] + wrongEnd, selected: true))
+
+        for invalid in [
+            Oracle.PacketTiming(rawPTS: 0, rawDuration: 0.1, outputPTS: .nan,
+                outputDuration: 0.1, trimStart: 0, trimEnd: 0, doNotDisplay: true),
+            Oracle.PacketTiming(rawPTS: 0, rawDuration: 0.1, outputPTS: -0.1,
+                outputDuration: 0.1, trimStart: -.infinity, trimEnd: 0, doNotDisplay: true),
+            Oracle.PacketTiming(rawPTS: 0, rawDuration: 0.1, outputPTS: -0.1,
+                outputDuration: 0.1, trimStart: -0.1, trimEnd: 0.1, doNotDisplay: true),
+            Oracle.PacketTiming(rawPTS: 0, rawDuration: 0.1, outputPTS: -0.1,
+                outputDuration: 0.05, trimStart: 0, trimEnd: 0, doNotDisplay: true)
+        ] {
+            XCTAssertThrowsError(try Oracle.verifyPacketTimeline([invalid] + visible, selected: true))
+        }
+        var outputGap = visible
+        outputGap[10] = .init(rawPTS: 1.1, rawDuration: 0.1, outputPTS: 1.02, outputDuration: 0.1,
+            trimStart: 0, trimEnd: 0, doNotDisplay: false)
+        XCTAssertThrowsError(try Oracle.verifyPacketTimeline([preroll] + outputGap, selected: true))
+        XCTAssertThrowsError(try Oracle.verifyPacketTimeline(Array(visible.dropLast()), selected: true))
+        XCTAssertNoThrow(try Oracle.verifyPacketTimeline(Array(([preroll] + visible).reversed()), selected: true),
+                         "Compressed buffers may arrive in decode order")
 
         var frames = (0..<41).map { index in
             Oracle.Comparison(index: index, requestedSeconds: Double(index) / 20,
@@ -183,20 +287,58 @@ final class RecordingInputExportTests: XCTestCase {
     func testAuthoredInputTrimPreservesAllSelectedPixelsAndPacketBoundaries() async throws {
         let directory = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        _ = try await RecordingInputSmokeFixture.verify(evidenceDirectory: directory)
-        let sourceURL = directory.appendingPathComponent("recording-input.mp4")
-        let originalHash = try Oracle.hash(sourceURL)
-        let deadline = ProcessInfo.processInfo.systemUptime + 60
-        let original = try await Oracle.movie(sourceURL, selected: false, deadline: deadline)
-        let output = directory.appendingPathComponent(Oracle.mediaNames[0])
-        let range = try VideoTrimRange(start: Oracle.start, end: Oracle.end, sourceDuration: 2.2)
-        _ = try await VideoTrimExporter.export(sourceURL: sourceURL, destinationURL: output, range: range)
-        let selected = try await Oracle.movie(output, selected: true, source: original, deadline: deadline)
-        XCTAssertEqual(selected.frameCount, 21)
-        XCTAssertEqual(selected.observations.map(\.index), Array(1...21))
-        XCTAssertEqual(selected.duration, 2.05, accuracy: 1.0 / 600)
-        XCTAssertEqual(try Oracle.hash(sourceURL), originalHash)
-        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: directory.path).contains { $0.hasPrefix(".picshot-") })
+        do {
+            _ = try await RecordingInputSmokeFixture.verify(evidenceDirectory: directory)
+            let sourceURL = directory.appendingPathComponent("recording-input.mp4")
+            let originalHash = try Oracle.hash(sourceURL)
+            let deadline = ProcessInfo.processInfo.systemUptime + 60
+            let original = try await Oracle.movie(sourceURL, selected: false, deadline: deadline)
+            let output = directory.appendingPathComponent(Oracle.mediaNames[0])
+            let range = try VideoTrimRange(start: Oracle.start, end: Oracle.end, sourceDuration: 2.2)
+            _ = try await VideoTrimExporter.export(sourceURL: sourceURL, destinationURL: output, range: range)
+            let selected = try await Oracle.movie(output, selected: true, source: original, deadline: deadline)
+            XCTAssertEqual(selected.frameCount, 21)
+            XCTAssertEqual(selected.observations.map(\.index), Array(1...21))
+            XCTAssertEqual(selected.duration, 2.05, accuracy: 1.0 / 600)
+            XCTAssertEqual(selected.packetTiming.presentedCount, 21)
+            XCTAssertEqual(selected.packetTiming.nonPresentedCount, selected.packetTiming.storedCount - 21)
+            XCTAssertLessThanOrEqual(selected.packetTiming.storedCount, 22)
+            XCTAssertEqual(selected.packetTiming.presentationEnd, 2.05, accuracy: 1.0 / 600)
+            XCTAssertEqual(selected.packetTiming.finalPresentedDuration, 0.05, accuracy: 1.0 / 600)
+            XCTAssertEqual(try Oracle.hash(sourceURL), originalHash)
+            XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: directory.path).contains { $0.hasPrefix(".picshot-") })
+        } catch {
+            let failure = error
+            do { try preserveFailedMovies(directory, error: failure) }
+            catch { print("[recording-input-failure] Could not retain bounded evidence: \(error.localizedDescription)") }
+            throw failure
+        }
+    }
+
+    /// Fixed destination, two <=4 MiB synthetic movies and one <=128 KiB
+    /// report. Existing evidence is never replaced and temporary cleanup stays.
+    private func preserveFailedMovies(_ directory: URL, error: Error) throws {
+        let repository = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let parent = repository.appendingPathComponent("dist/evidence", isDirectory: true)
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        let destination = parent.appendingPathComponent("recording-input-export-failure", isDirectory: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
+        var files: [[String: Any]] = []
+        var bytes = 0
+        for name in ["recording-input.mp4", Oracle.mediaNames[0]] {
+            let source = directory.appendingPathComponent(name)
+            guard FileManager.default.fileExists(atPath: source.path) else { continue }
+            let data = try Oracle.boundedData(source)
+            bytes += data.count
+            try Oracle.require(bytes <= 2 * Oracle.maximumFileBytes, "Failure media exceeded its fixed total cap")
+            try data.write(to: destination.appendingPathComponent(name), options: .withoutOverwriting)
+            files.append(["file": name, "bytes": data.count, "sha256": try Oracle.hash(source)])
+        }
+        try Oracle.write(["status": "failed", "purpose": "synthetic native test diagnostic, not acceptance",
+            "error": String(error.localizedDescription.prefix(8_192)), "maximumMediaBytes": 2 * Oracle.maximumFileBytes,
+            "files": files], to: destination.appendingPathComponent("failure.json"))
+        print("[recording-input-failure] Retained \(files.count) synthetic movies / \(bytes) bytes at \(destination.path)")
     }
 
     private func makeDirectory() throws -> URL {

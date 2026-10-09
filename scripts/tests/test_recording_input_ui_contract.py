@@ -24,11 +24,39 @@ def geometry(identifier):
                 nativeHitTargetVerified=identifier != 'recording-input-status')
 
 
+def dismissal(phase, observed=(0.155,)):
+    # Synthetic monotonic values for checker tests, never native observations.
+    start=100.0
+    samples=[]
+    for index,elapsed in enumerate(observed):
+        scheduled=start+0.151 if index==0 else min(start+observed[index-1]+0.025,start+1)
+        actual=start+elapsed
+        samples.append(dict(checkpoint='original-post-settle' if index==0 else 'visibility-poll',
+            isVisible=index<len(observed)-1, scheduledUptimeSeconds=scheduled, observedUptimeSeconds=actual,
+            scheduledMilliseconds=(scheduled-start)*1000, observedMilliseconds=(actual-start)*1000,
+            schedulingDelayMilliseconds=(actual-scheduled)*1000))
+    return dict(schema='recording-help-dismissal-v1', phase=phase, status='passed',
+        outcome='hidden-after-original-post-settle' if len(samples)>1 else 'hidden-at-original-post-settle',
+        acceptanceContract='owned-help-first-hidden-observed-within-1000ms-v1',
+        timingOrigin='before-native-dismissal-request-hit-test-and-performClick',
+        interactionRoute='NSButton.performClick', visibilityRoute='NSWindow.isVisible',
+        originalSettleMilliseconds=150, deadlineMilliseconds=1000, pollMilliseconds=25,
+        strict150MillisecondLatencyEstablished=False, windowVisibleBeforeClick=True,
+        ownedWindowNumber=12, ownerWindowNumber=11, ownedWindowIdentity='synthetic-unit-window',
+        actionStartedUptimeSeconds=start, actionReturnedUptimeSeconds=start+0.001,
+        settleStartedUptimeSeconds=start+0.001, deadlineUptimeSeconds=start+1,
+        firstHiddenObservedMilliseconds=samples[-1]['observedMilliseconds'],
+        visibleAtOriginalCheckpoint=samples[0]['isVisible'], finalVisible=False, observations=samples)
+
+
 def context(theme, prefix):
     value = dict(appearance=theme, status='passed', interactionStatus='passed', layoutStatus='passed',
                  defaultOff=True, initialPermissionChecks=0, nativeMonitorRegistrations=0,
                  nativeTogglePresses=12, finalOptionsMatchInitial=True, helpAndRefreshVerified=True,
                  nativeHelpPresses=4, nativeRefreshPresses=2)
+    phases=['dismiss-help-after-grant','dismiss-help-after-revocation']
+    value['helpDismissals']=[dismissal(phase) for phase in phases]
+    value['helpDismissalFiles']=[f'{prefix}-{phase}-{theme}.json' for phase in phases]
     state = dict(clicks=False, scrolls=False, shortcuts=False)
     actions = [(control, enabled) for control in state for enabled in [True, False, True]]
     actions += [(control, False) for control in state]
@@ -89,7 +117,12 @@ class RecordingInputUIGateTests(unittest.TestCase):
                             alignmentFrame=frame, alignmentInsets=dict(top=0, left=0, bottom=0, right=0))])], intersections=[])
                     (self.root / filename).write_text(json.dumps(measurement))
 
-    def check(self, value):
+    def check(self, value, write_dismissals=True):
+        if write_dismissals:
+            for appearance in value['appearances']:
+                for node in [appearance]+([appearance['fullPanel']] if 'fullPanel' in appearance else []):
+                    for filename,row in zip(node.get('helpDismissalFiles',[]),node.get('helpDismissals',[])):
+                        (self.root/filename).write_text(json.dumps(row))
         exec(CHECK, dict(inputs=value, pathlib=pathlib, json=json,
                          sys=types.SimpleNamespace(argv=['checker', str(self.root / 'preview.json')])))
 
@@ -131,6 +164,49 @@ class RecordingInputUIGateTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(AssertionError):
                 self.check(self.valid)
         path.write_text(json.dumps(original))
+
+    def testConditionBasedDismissalPreservesOriginalVisibleObservation(self):
+        row=dismissal('dismiss-help-after-revocation',(0.155,0.185,0.250))
+        self.valid['appearances'][0]['fullPanel']['helpDismissals'][1]=row
+        self.check(self.valid)
+        self.assertTrue(row['visibleAtOriginalCheckpoint'])
+        self.assertEqual(row['outcome'],'hidden-after-original-post-settle')
+
+    def testLateHiddenAndStalledOriginalSampleCannotPass(self):
+        for observations in [(1.010,), (0.155,1.010)]:
+            value=copy.deepcopy(self.valid)
+            value['appearances'][0]['fullPanel']['helpDismissals'][1]=dismissal('dismiss-help-after-revocation',observations)
+            with self.subTest(observations=observations), self.assertRaises(AssertionError):
+                self.check(value)
+
+    def testMissingVisibilityFalseTimingAndUnownedWindowAreRejected(self):
+        changes=['missing-reopen','visible','binding-only','wrong-clock','false-elapsed','missing-original',
+                 'wrong-original-time','owner-window','latency-claim','nonfinite','after-deadline','wrong-outcome']
+        for change in changes:
+            value=copy.deepcopy(self.valid)
+            node=value['appearances'][0]['fullPanel']; row=node['helpDismissals'][1]
+            if change=='missing-reopen': node['helpDismissals'].pop()
+            elif change=='visible': row['finalVisible']=True
+            elif change=='binding-only': row['visibilityRoute']='showsHelp=false'
+            elif change=='wrong-clock': row['deadlineUptimeSeconds']+=10
+            elif change=='false-elapsed': row['observations'][0]['observedMilliseconds']=100
+            elif change=='missing-original': row['observations'][0]['checkpoint']='visibility-poll'
+            elif change=='wrong-original-time': row['observations'][0]['scheduledUptimeSeconds']-=0.050
+            elif change=='owner-window': row['ownedWindowNumber']=row['ownerWindowNumber']
+            elif change=='latency-claim': row['strict150MillisecondLatencyEstablished']=True
+            elif change=='nonfinite': row['observations'][0]['observedUptimeSeconds']=float('nan')
+            elif change=='after-deadline': row['firstHiddenObservedMilliseconds']=1001
+            else: row['outcome']='hidden-after-original-post-settle'
+            with self.subTest(change=change), self.assertRaises((AssertionError,KeyError)):
+                self.check(value)
+
+    def testDismissalReportMustMatchPersistedObservation(self):
+        self.check(self.valid)
+        path=self.root/self.valid['appearances'][0]['helpDismissalFiles'][0]
+        row=json.loads(path.read_text()); row['finalVisible']=True
+        path.write_text(json.dumps(row))
+        with self.assertRaises(AssertionError):
+            self.check(self.valid,write_dismissals=False)
 
 
 if __name__ == '__main__':
