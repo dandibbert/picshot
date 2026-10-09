@@ -289,13 +289,53 @@ final class EffectContextConfigurationTests: XCTestCase {
     private func annotation(_ tool: ImageEditorTool, _ rect: CGRect) -> ImageAnnotation {
         ImageAnnotation(tool: tool, points: [rect.origin, CGPoint(x: rect.maxX, y: rect.maxY)], lineWidth: 3)
     }
+    func testMeaningfulRowsAcceptExactVisibleExtentWithoutFinalPadding() throws {
+        let expected = Data((Array(0..<8) + Array(16..<24) + Array(32..<40)).map { UInt8($0) })
+        let minimal = Data((0..<40).map { UInt8($0) })
+        XCTAssertEqual(try meaningfulRows(minimal, width: 2, height: 3, bitsPerPixel: 32, bytesPerRow: 16), expected)
+        var padded = minimal
+        padded.append(Data(repeating: 0xEF, count: 8))
+        XCTAssertEqual(try meaningfulRows(padded, width: 2, height: 3, bitsPerPixel: 32, bytesPerRow: 16), expected)
+        XCTAssertEqual(try meaningfulRows(Data([1, 2, 3, 4]), width: 1, height: 1, bitsPerPixel: 32, bytesPerRow: 32), Data([1, 2, 3, 4]))
+    }
+
+    func testMeaningfulRowsRejectMissingPixelBytesInvalidStrideAndOverflow() {
+        XCTAssertThrowsError(try meaningfulRows(Data(repeating: 0, count: 39), width: 2, height: 3, bitsPerPixel: 32, bytesPerRow: 16))
+        XCTAssertThrowsError(try meaningfulRows(Data(repeating: 0, count: 48), width: 2, height: 3, bitsPerPixel: 32, bytesPerRow: 7))
+        XCTAssertThrowsError(try meaningfulRows(Data(), width: 0, height: 3, bitsPerPixel: 32, bytesPerRow: 16))
+        XCTAssertThrowsError(try meaningfulRows(Data(), width: 1, height: 0, bitsPerPixel: 32, bytesPerRow: 16))
+        XCTAssertThrowsError(try meaningfulRows(Data(), width: 1, height: 1, bitsPerPixel: 0, bytesPerRow: 16))
+        XCTAssertThrowsError(try meaningfulRows(Data(), width: Int.max, height: 1, bitsPerPixel: 32, bytesPerRow: 16))
+        XCTAssertThrowsError(try meaningfulRows(Data(), width: 1, height: 3, bitsPerPixel: 32, bytesPerRow: Int.max))
+        XCTAssertThrowsError(try meaningfulRows(Data(), width: 1, height: 2, bitsPerPixel: 32, bytesPerRow: Int.max - 2))
+    }
+
     private func rows(_ image: CGImage) throws -> Data {
         let bytes = try XCTUnwrap(XCTUnwrap(image.dataProvider).data) as Data
-        let count = (image.width * image.bitsPerPixel + 7) / 8
-        XCTAssertGreaterThanOrEqual(bytes.count, image.bytesPerRow * image.height)
-        guard bytes.count >= image.bytesPerRow * image.height else { throw EffectContextConfiguration.Failure.renderFailed }
+        return try meaningfulRows(bytes, width: image.width, height: image.height,
+                                  bitsPerPixel: image.bitsPerPixel, bytesPerRow: image.bytesPerRow)
+    }
+
+    /// A CGImage subimage can end immediately after its final meaningful pixel.
+    /// Validate every byte that will be read, without requiring unused tail padding.
+    private func meaningfulRows(_ bytes: Data, width: Int, height: Int,
+                                bitsPerPixel: Int, bytesPerRow: Int) throws -> Data {
+        guard width > 0, height > 0, bitsPerPixel > 0 else { throw EffectContextConfiguration.Failure.renderFailed }
+        let (bits, bitsOverflow) = width.multipliedReportingOverflow(by: bitsPerPixel)
+        let (roundedBits, roundedOverflow) = bits.addingReportingOverflow(7)
+        guard !bitsOverflow, !roundedOverflow else { throw EffectContextConfiguration.Failure.renderFailed }
+        let count = roundedBits / 8
+        guard bytesPerRow >= count else { throw EffectContextConfiguration.Failure.renderFailed }
+        let (lastOffset, offsetOverflow) = (height - 1).multipliedReportingOverflow(by: bytesPerRow)
+        let (required, sizeOverflow) = lastOffset.addingReportingOverflow(count)
+        guard !offsetOverflow, !sizeOverflow, bytes.count >= required else {
+            throw EffectContextConfiguration.Failure.renderFailed
+        }
         var meaningful = Data()
-        for y in 0..<image.height { meaningful.append(bytes[(y * image.bytesPerRow)..<(y * image.bytesPerRow + count)]) }
+        for y in 0..<height {
+            let start = bytes.index(bytes.startIndex, offsetBy: y * bytesPerRow)
+            meaningful.append(bytes[start..<bytes.index(start, offsetBy: count)])
+        }
         return meaningful
     }
     private func assertSame(_ actual: CGImage, _ expected: CGImage, file: StaticString = #filePath, line: UInt = #line) throws {
