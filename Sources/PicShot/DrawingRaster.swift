@@ -3,12 +3,12 @@ import CoreGraphics
 import Darwin
 import Foundation
 
-/// A drawing-only experiment. This never changes decoding, model images, their
+/// A drawing-only representation. This never changes decoding, model images, their
 /// metadata, persistence, copying, reset, annotation geometry or effect inputs.
 enum DrawingRasterStrategy: String, CaseIterable, Sendable {
     case reference
     case ownedSRGB8 = "owned-srgb8"
-    static let productionDefault: Self = .reference
+    static let productionDefault: Self = .ownedSRGB8
 }
 
 /// Selected once per process. Invalid diagnostic settings remain an error; they

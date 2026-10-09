@@ -10,6 +10,7 @@ import XCTest
     private let prefix = "PICSHOT_EDITABLE_PRODUCT_"
     private func environment(_ mode: String = "measure") -> [String: String] {
         ["PICSHOT_SMOKE_TEST": "1", prefix + "MODE": mode,
+            "PICSHOT_SMOKE_REPORT": "/tmp/report.json", "PICSHOT_DRAWING_RASTER_STRATEGY": "reference",
             prefix + "INPUT": "/tmp/product-input", prefix + "CERTIFICATE": "/tmp/product-certificate.json"]
     }
     func testOrdinarySmokeDoesNotSelectProductMeasurement() throws {
@@ -56,6 +57,28 @@ import XCTest
         }
         var unknown = environment(); unknown["PICSHOT_DRAWING_RASTER_FALLBACK"] = "1"
         XCTAssertThrowsError(try EditableProductResourceFixture.request(unknown))
+    }
+    func testInstalledDefaultRequiresCompiledOwnedStrategyWithoutAnyOverride() throws {
+        var values = environment("installed-default")
+        values["PICSHOT_DRAWING_RASTER_STRATEGY"] = nil
+        XCTAssertEqual(DrawingRasterStrategy.productionDefault, .ownedSRGB8)
+        XCTAssertEqual(try XCTUnwrap(EditableProductResourceFixture.request(values)).mode, .installedDefault)
+        for strategy in ["reference", "owned-srgb8", "", "unknown"] {
+            var overridden = values; overridden["PICSHOT_DRAWING_RASTER_STRATEGY"] = strategy
+            XCTAssertThrowsError(try EditableProductResourceFixture.request(overridden))
+        }
+        for key in ["PICSHOT_DRAWING_RASTER_FALLBACK", "PICSHOT_RENDERER_STORAGE_STRATEGY",
+                    "PICSHOT_EFFECT_CONTEXT_POLICY", "PICSHOT_EDITABLE_COMPONENT_MODE"] {
+            var competing = values; competing[key] = "reference"
+            XCTAssertThrowsError(try EditableProductResourceFixture.request(competing))
+        }
+    }
+    func testReferenceCertificationAndPairedMeasurementRequireExplicitSelection() throws {
+        for mode in ["certify", "measure"] {
+            var values = environment(mode); values["PICSHOT_DRAWING_RASTER_STRATEGY"] = nil
+            XCTAssertThrowsError(try EditableProductResourceFixture.request(values))
+        }
+        XCTAssertEqual(try XCTUnwrap(EditableProductResourceFixture.request(environment("certify"))).mode, .certify)
     }
     func testPathsRequireAbsoluteNulFreeValues() {
         for suffix in ["INPUT", "CERTIFICATE"] {

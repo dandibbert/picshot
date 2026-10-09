@@ -4,10 +4,11 @@ import Darwin
 import PicShotCore
 
 /// Complementary product-lifecycle observation. The full fidelity/failure fixture
-/// stays separate. Only `certify` draws reference pixels; `measure` never does.
+/// stays separate. Only `certify` draws reference pixels; measured modes never do.
 @MainActor enum EditableProductResourceFixture {
     typealias O = EditableAnnotationFixtureObservation
-    static let protocolID = "editable-product-resource-v1"
+    static let protocolID = "editable-product-resource-v2"
+    static let installedDefaultProtocolID = "editable-product-installed-default-v1"
     static let warmups = 2, measured = 8, width = 3840, height = 2160
     static let deadlineSeconds = 300.0, copyBufferBytes = 65_536
     static let maximumPNGBytes = 40 * 1_024 * 1_024
@@ -21,7 +22,7 @@ import PicShotCore
         "base": "b41f79800dd04476e3381aa6fa9da0a2e4f61034729dce3551909a383be83fc9",
         "seven": "b8362e485bb0bfc04471d4a9de1eaf01be470fb66f419193fa41966cdcaaaff5",
         "eight": "901d625dd2b57188f0d6228ab9ecfbdc1ceee7d2e297d85d42a03bcdf751f621"]
-    enum Mode: String { case certify, measure }
+    enum Mode: String { case certify, measure, installedDefault = "installed-default" }
     struct Request { let mode: Mode; let input: URL; let certificate: URL }
     private static var claimed = false
 
@@ -42,7 +43,15 @@ import PicShotCore
         }
         try O.require(conflicts.isEmpty, "Product resources require an otherwise unselected default-strategy process")
         let drawing = try DrawingRasterConfiguration.selection(environment: environment)
-        try O.require(mode != .certify || drawing == .reference, "Golden certification must use reference drawing")
+        if mode == .installedDefault {
+            try O.require(environment["PICSHOT_DRAWING_RASTER_STRATEGY"] == nil
+                && DrawingRasterStrategy.productionDefault == .ownedSRGB8 && drawing == .ownedSRGB8,
+                "Installed-default measurement requires the compiled owned-srgb8 default without a drawing override")
+        } else {
+            try O.require(environment["PICSHOT_DRAWING_RASTER_STRATEGY"] != nil,
+                "Certification and paired measurement require explicit drawing selection")
+            try O.require(mode != .certify || drawing == .reference, "Golden certification must use explicit reference drawing")
+        }
         func path(_ name: String) throws -> URL {
             let value = try O.required(environment[prefix + name], "Missing product resource path")
             try O.require(value.hasPrefix("/") && !value.contains("\0"), "Product resource paths must be absolute")
@@ -71,9 +80,10 @@ import PicShotCore
         let entry = try O.memory(), sampler = EditableAnnotationMemorySampler()
         defer { sampler.stop() }
         var report = try identity()
-        report.merge(["schemaVersion": 1, "protocol": protocolID, "mode": request.mode.rawValue,
+        report.merge(["schemaVersion": 1,
+            "protocol": request.mode == .installedDefault ? installedDefaultProtocolID : protocolID, "mode": request.mode.rawValue,
             "runIdentifier": UUID().uuidString, "status": "running", "deadlineSeconds": deadlineSeconds,
-            "requestedDrawingStrategy": ProcessInfo.processInfo.environment["PICSHOT_DRAWING_RASTER_STRATEGY"] ?? "reference",
+            "requestedDrawingStrategy": ProcessInfo.processInfo.environment["PICSHOT_DRAWING_RASTER_STRATEGY"] ?? DrawingRasterStrategy.productionDefault.rawValue,
             "drawingOverridePresent": ProcessInfo.processInfo.environment["PICSHOT_DRAWING_RASTER_STRATEGY"] != nil,
             "entryMemory": entry, "memoryStabilityAssessed": false, "zeroRSSClaim": false,
             "privateBackingReleaseProved": false, "fullCorrectnessFixtureReplaced": false,
@@ -698,7 +708,11 @@ import PicShotCore
             }
             let selected = try O.required(certificate["configuration"] as? [String: Any], "Certificate configuration absent")
             try O.require(selected["drawingStrategy"] as? String == "reference" && selected["rendererStorageStrategy"] as? String == "native"
-                && selected["effectContextPolicy"] as? String == "reference", "Golden certification must use reference defaults")
+                && selected["effectContextPolicy"] as? String == "reference"
+                && selected["drawingProductionDefault"] as? String == DrawingRasterStrategy.productionDefault.rawValue
+                && certificate["requestedDrawingStrategy"] as? String == "reference"
+                && certificate["drawingOverridePresent"] as? Bool == true,
+                "Golden certification must explicitly select reference drawing in the same compiled default")
         }
         try O.require(try O.ownedFileDescriptors(request.input, identities: []).isEmpty, "Certified input descriptor remained open")
         return Input(directory: request.input, document: document, manifestSHA256: manifestHash,
@@ -879,10 +893,10 @@ import PicShotCore
         let drawing = try DrawingRasterConfiguration.process.selectedStrategy()
         let storage = try RendererStorageConfiguration.process.selectedStrategy()
         let effect = try EffectContextConfiguration.process.selectedPolicy()
-        let requested = ProcessInfo.processInfo.environment["PICSHOT_DRAWING_RASTER_STRATEGY"] ?? "reference"
+        let requested = ProcessInfo.processInfo.environment["PICSHOT_DRAWING_RASTER_STRATEGY"] ?? DrawingRasterStrategy.productionDefault.rawValue
         try O.require(drawing.rawValue == requested && storage == .native && effect == .reference, "Product fixture strategy changed")
         return ["drawingStrategy": drawing.rawValue, "rendererStorageStrategy": storage.rawValue,
-            "effectContextPolicy": effect.rawValue, "productionDefaultsChanged": false,
+            "effectContextPolicy": effect.rawValue, "fixtureMutatedProductionDefaults": false,
             "drawing": try scalar(DrawingRasterConfiguration.process.tracker.snapshot()),
             "rendererStorage": try scalar(RendererStorageConfiguration.process.tracker.snapshot()),
             "effects": try scalar(EffectContextConfiguration.process.tracker.snapshot()),

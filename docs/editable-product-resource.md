@@ -1,18 +1,28 @@
-# Actual product lifecycle memory observation
+# Actual product lifecycle and installed-default observation
 
-Run on macOS with a fresh installed, signed bundle and an unused absolute evidence directory:
+Run on macOS with the signed app extracted from the actual release ZIP and an unused absolute evidence directory. The packaging gate separately binds the extracted ZIP app to the packaged binary, plist and build metadata:
+
+```sh
+bash scripts/editable-product-installed-default.sh /absolute/zip-installed/PicShot.app /absolute/fresh-default-evidence EXPECTED_40_HEX_SOURCE
+```
+
+The closed `editable-product-installed-default-v1` protocol runs exactly one measured app with `PICSHOT_DRAWING_RASTER_STRATEGY` absent. Both the native parser and checker require the compiled `owned-srgb8` production default. The independent product golden process explicitly selects `reference`; absent override is never interpreted as reference certification. Its current certificate uses `editable-product-resource-v2`. A selected candidate process, an old certificate, or paired evidence cannot be relabeled as installed-default evidence.
+
+For a fresh paired diagnostic on the same current binary, use:
 
 ```sh
 bash scripts/editable-product-resource.sh /Applications/PicShot.app /absolute/fresh-evidence EXPECTED_40_HEX_SOURCE
 ```
 
-This opt-in fixture complements the complete editable correctness and failure fixtures. It does not replace either fixture, change production defaults, or provide a universal memory acceptance threshold.
+These fixtures complement the complete editable correctness and failure fixtures. They do not replace either fixture or provide a universal memory acceptance threshold. The compiled product default has been promoted to `owned-srgb8`; `fixtureMutatedProductionDefaults: false` states only that these observations do not mutate that compiled choice. Unsupported layouts, 16-bit images and non-sRGB profiles retain the existing reference fallback. No normalization or algorithm changes are made here.
 
 ## Fixed process and workload contract
 
-The runner launches separate preparation, input certification and product golden certification processes. It then compiles an independent ImageIO decoder, launches one reference-drawing process and one `owned-srgb8` drawing process sequentially, and confirms each exact LaunchServices-owned PID has exited. Both measured apps exit before either output decoder runs. Final renderer storage stays `native`, effects stay `reference`, and no other diagnostic axis is selected.
+Both runners launch separate preparation, input certification and explicit reference product golden certification processes, then compile an independent ImageIO decoder outside measured processes. The installed-default runner launches one unselected app and confirms its exact LaunchServices-owned PID has exited before output decoding. The paired runner explicitly selects one reference-drawing process and one `owned-srgb8` process sequentially; both exit before either output decoder runs. Final renderer storage stays `native`, effects stay `reference`, and no other diagnostic axis is selected.
 
 Each measured process executes exactly two warmups and eight measured cycles at 3840×2160. Every cycle uses the actual editor/history/pin product path: open, native rectangle edit/undo, native crop, history save/close, AppDelegate history reopen, native edit/undo, pin/close editor, annotations hide/show, group hide/reload, Space editor, an eighth rectangle, Apply, and native pin close. History and pin retention quotas are one item. The same run-scoped app, history and session owners survive all cycles and retire only at final cleanup.
+
+Installed-default acceptance requires actual owned work, not just a reported selector: additional owned presentations and seeded contexts in every cycle, monotonic cumulative counters, exact bytes for each observed decorated presentation and full/cropped context shape, balanced provider callbacks/deallocations, no unsupported/failure fallback in this sRGB8 workload, and a final tracker equal to the tenth released cycle. Native redraw scheduling can vary, so counts are observed rather than fixed to experiment133. That historical candidate observed forty providers and 607,941,760 allocated/released bytes, with one hundred seeded contexts. These are workload accounting totals, not process memory estimates. All five fixed run owners, controller graphs, known rasters, jobs, reservations and owned descriptors must also retire/drain through the unchanged lifecycle gate.
 
 The seven-layer document is seeded programmatically from the certified input. History reopening and group hide/show use product entry points programmatically; canvas gestures and buttons/menus use owned native event handlers. This is not a physical-input latency test, history-grid double-click test, thumbnail-grid test, or general model of every user workflow. “Cold cycle” means the first cycle of a new process, not cold filesystem or system graphics caches. Action times end at semantic completion, and configured native settle intervals remain included.
 
@@ -35,9 +45,11 @@ The full metadata recipe is pinned in `scripts/fixtures/editable-product-recipe.
 
 ## Reading the result
 
-`checked-product-resource.json` reports independently derived entry, new-process cold, sampled peak, kernel peak, per-cycle released endpoints, measured growth, late increments and action/checkpoint latency. All eight counters and full standard/purgeable task backing dictionaries remain in the raw reports. Scalar owner, raster stride/identity, undo, preview, job, queue, reservation, cache and descriptor accounting accompany checkpoints. Native ImageIO private allocations and WindowServer/GPU memory are not directly owned/accounted by these probes. The history cache's observed byte cost is explicitly unavailable; its limit and zero requested thumbnails are recorded.
+`checked-product-installed-default.json` reports the unselected installed app; `checked-product-resource.json` reports the explicit pair. Both retain independently derived entry, new-process cold, sampled peak, kernel peak, per-cycle released endpoints, measured growth, late increments and action/checkpoint latency. All eight counters and full standard/purgeable task backing dictionaries remain in the raw reports. Scalar owner, raster stride/identity, undo, preview, job, queue, reservation, cache and descriptor accounting accompany checkpoints. Native ImageIO private allocations and WindowServer/GPU memory are not directly owned/accounted by these probes. The history cache's observed byte cost is explicitly unavailable; its limit and zero requested thumbnails are recorded.
 
-The two task-info calls are not atomic, counters overlap, and 50 ms sampling can miss transients. Retired Swift/AppKit owners and balanced owned providers do not prove that private framework backing has been returned. A single reference-then-candidate pair is preliminary for close performance differences; a reversed-order replication is needed before drawing a stronger conclusion. No RSS cap, stabilization verdict, cache purge, normalization promotion, pool intervention, or product default change is made by this fixture.
+The two task-info calls are not atomic, counters overlap, and 50 ms sampling can miss transients. Retired Swift/AppKit owners and balanced owned providers do not prove that private framework backing has been returned. A single reference-then-candidate pair is preliminary for close performance differences; a reversed-order replication is needed before drawing a stronger conclusion. The installed-default observation makes no paired comparison. Neither fixture applies an RSS cap, auto-claims memory stability, requests cache purges, normalizes unsupported inputs or changes pool behavior.
+
+Frozen experiment133 remains immutable historical `editable-product-resource-v1` evidence and must be replayed with its frozen source/checker. Current v2 and installed-default checks intentionally reject its old compiled-default/certification contract rather than accepting multiple production defaults or rewriting old reports.
 
 ## Bounds and verification
 
@@ -48,6 +60,8 @@ Portable tests are contract and mutation tests, not evidence that macOS executio
 ```sh
 python3 -m unittest discover -s scripts/tests -p test_check_editable_product_resource.py
 python3 -O -m unittest discover -s scripts/tests -p test_check_editable_product_resource.py
+python3 -m unittest discover -s scripts/tests -p test_editable_product_source_binding.py
+python3 -O -m unittest discover -s scripts/tests -p test_editable_product_source_binding.py
 python3 -m unittest discover -s scripts/tests -p '*source_binding.py'
 ```
 

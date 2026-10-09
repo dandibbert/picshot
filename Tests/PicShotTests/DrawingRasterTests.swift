@@ -90,9 +90,12 @@ final class DrawingRasterTests: XCTestCase {
         }
     }
 
-    func testProcessSelectionDefaultsToReferenceAndOnlyExplicitSmokeOptInEnablesOwned() throws {
-        XCTAssertEqual(try DrawingRasterConfiguration.selection(environment: [:]), .reference)
-        XCTAssertEqual(try DrawingRasterConfiguration.selection(environment: ["PICSHOT_SMOKE_TEST": "1"]), .reference)
+    func testProcessSelectionDefaultsToOwnedAndExplicitOverridesRequireSmokeReport() throws {
+        XCTAssertEqual(DrawingRasterStrategy.productionDefault, .ownedSRGB8)
+        for environment in [[:], ["PICSHOT_SMOKE_TEST": "1"], ["UNRELATED_SETTING": "anything"]] {
+            XCTAssertEqual(try DrawingRasterConfiguration.selection(environment: environment), .ownedSRGB8)
+            XCTAssertEqual(try DrawingRasterConfiguration(environment: environment).selectedStrategy(), .ownedSRGB8)
+        }
         for strategy in DrawingRasterStrategy.allCases {
             let environment = smoke(strategy.rawValue)
             XCTAssertEqual(try DrawingRasterConfiguration.selection(environment: environment), strategy)
@@ -111,15 +114,76 @@ final class DrawingRasterTests: XCTestCase {
         for key in ["PICSHOT_DRAWING_RASTER", "PICSHOT_DRAWING_RASTER_UNKNOWN", "PICSHOT_DRAWING_RASTER_STRATEGY_EXTRA"] {
             XCTAssertThrowsError(try DrawingRasterConfiguration.selection(environment: [key: "reference"]), key)
         }
-        for value in ["", "0", "true", " 1", "1 "] {
-            var invalid = smoke("owned-srgb8"); invalid["PICSHOT_SMOKE_TEST"] = value
-            XCTAssertThrowsError(try DrawingRasterConfiguration.selection(environment: invalid))
+        for strategy in DrawingRasterStrategy.allCases {
+            for value in ["", "0", "true", " 1", "1 "] {
+                var invalid = smoke(strategy.rawValue); invalid["PICSHOT_SMOKE_TEST"] = value
+                XCTAssertThrowsError(try DrawingRasterConfiguration.selection(environment: invalid))
+            }
+            for value in ["", "relative.json", "~/report.json", "file:///tmp/report.json", "/tmp/report\0.json"] {
+                var invalid = smoke(strategy.rawValue); invalid["PICSHOT_SMOKE_REPORT"] = value
+                XCTAssertThrowsError(try DrawingRasterConfiguration.selection(environment: invalid))
+            }
         }
-        for value in ["", "relative.json", "~/report.json", "file:///tmp/report.json", "/tmp/report\0.json"] {
-            var invalid = smoke("owned-srgb8"); invalid["PICSHOT_SMOKE_REPORT"] = value
-            XCTAssertThrowsError(try DrawingRasterConfiguration.selection(environment: invalid))
-        }
-        XCTAssertEqual(try DrawingRasterConfiguration.selection(environment: ["UNRELATED_SETTING": "anything"]), .reference)
+    }
+
+    func testDefaultProcessPreservesPixelsSourceFormatsAndProviderRetirementWithoutExplicitConfiguration() throws {
+        // This integration test must exercise the same unconfigured entry points
+        // as the installed app. Diagnostic overrides would invalidate that claim.
+        XCTAssertFalse(ProcessInfo.processInfo.environment.keys.contains { $0.hasPrefix("PICSHOT_DRAWING_RASTER") })
+        XCTAssertEqual(try DrawingRasterConfiguration.process.selectedStrategy(), .ownedSRGB8)
+        let tracker = DrawingRasterConfiguration.process.tracker
+        let colors = [try sRGB(), try XCTUnwrap(CGColorSpace(name: CGColorSpace.displayP3)),
+                      try XCTUnwrap(CGColorSpace(name: CGColorSpace.linearSRGB)), CGColorSpaceCreateDeviceRGB()]
+        for color in colors { for depth in [8, 16] {
+            let known = try fixture(depth: depth, alpha: .last,
+                order: depth == 8 ? .byteOrder32Big : .byteOrder16Big, color: color)
+            let expected = try referenceBytes(known.image)
+            let ownedBytes = known.image.width * known.image.height * 4
+            let eligible = depth == 8 && color.name == CGColorSpace.sRGB
+            let reason: DrawingRaster.UnsupportedReason = color.name == CGColorSpace.sRGB ? .componentDepth : .colorSpace
+            let before = tracker.snapshot()
+            try autoreleasepool {
+                let prepared = try DrawingRaster.prepare(known.image)
+                if eligible {
+                    XCTAssertEqual(prepared.outcome, .owned(bytes: ownedBytes))
+                    XCTAssertFalse(prepared.image === known.image)
+                    try assertSRGB8(prepared.image, equals: expected)
+                    XCTAssertEqual(prepared.image.shouldInterpolate, known.interpolate)
+                    XCTAssertEqual(prepared.image.renderingIntent, known.intent)
+                } else {
+                    XCTAssertEqual(prepared.outcome, .unchanged(reason))
+                    XCTAssertTrue(prepared.image === known.image)
+                }
+                let context = try bitmap(width: known.image.width, height: known.image.height)
+                let outcome = try DrawingRaster.seedFreshSRGB8Context(context, from: known.image)
+                XCTAssertEqual(outcome, eligible ? .seededContext(bytes: ownedBytes) : .unchanged(reason))
+                XCTAssertEqual(try bytes(context), expected)
+                let rendered = try XCTUnwrap(ImageEditorRenderer.render(image: known.image, annotations: []))
+                try assertSRGB8(rendered, equals: expected)
+                let snapshot = try ImageExportSnapshot(image: known.image)
+                try assertSRGB8(snapshot.image, equals: expected)
+                XCTAssertFalse(snapshot.image === known.image)
+                try assertSourceUnchanged(known)
+            }
+            let after = tracker.snapshot()
+            XCTAssertEqual(after.referenceCount, before.referenceCount)
+            XCTAssertEqual(after.failureCount, before.failureCount)
+            XCTAssertEqual(after.presentationFallbackCount, before.presentationFallbackCount)
+            XCTAssertEqual(after.eligibleCount - before.eligibleCount, eligible ? 4 : 0)
+            XCTAssertEqual(after.ownedCount - before.ownedCount, eligible ? 1 : 0)
+            XCTAssertEqual(after.seededContextCount - before.seededContextCount, eligible ? 3 : 0)
+            XCTAssertEqual(after.allocations - before.allocations, eligible ? 1 : 0)
+            XCTAssertEqual(after.deallocations - before.deallocations, eligible ? 1 : 0)
+            XCTAssertEqual(after.releaseCallbacks - before.releaseCallbacks, eligible ? 1 : 0)
+            XCTAssertEqual(after.allocatedBytes - before.allocatedBytes, eligible ? ownedBytes : 0)
+            XCTAssertEqual(after.deallocatedBytes - before.deallocatedBytes, eligible ? ownedBytes : 0)
+            XCTAssertEqual(after.callbackBytes - before.callbackBytes, eligible ? ownedBytes : 0)
+            XCTAssertEqual(after.activeBytes, before.activeBytes)
+            XCTAssertTrue(after.callbackSizesMatch)
+            var expectedUnsupported = before.unsupportedCounts
+            if !eligible { expectedUnsupported[reason.rawValue, default: 0] += 4 }
+            XCTAssertEqual(after.unsupportedCounts, expectedUnsupported)
+        } }
     }
 
     func testRequiredRenderingAndSnapshotFailClosedOnInvalidSettingsOrConversion() throws {

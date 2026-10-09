@@ -45,7 +45,7 @@ class DrawingGuardCheckerTests(unittest.TestCase):
             sourceCommit=self.source, version='0.16.0', buildVersion='113', bundlePath=str(self.app),
             executablePath=str(self.app / 'Contents/MacOS/PicShot'), processIdentifier=4321,
             nativeReportPath=str(self.native_path), nativeReportBytes=0, nativeReportSHA256='',
-            requestedStrategy='owned-srgb8', selectedStrategy='owned-srgb8', productionDefaultStrategy='reference',
+            requestedStrategy='owned-srgb8', selectedStrategy='owned-srgb8', productionDefaultStrategy='owned-srgb8',
             tracker=dict(referenceCount=0, eligibleCount=5, ownedCount=2, seededContextCount=3,
                 presentationReuseCount=4, presentationFallbackCount=0, failureCount=0,
                 unsupportedCounts={'colorSpace': 7}, allocations=2, deallocations=2, releaseCallbacks=2,
@@ -85,9 +85,10 @@ class DrawingGuardCheckerTests(unittest.TestCase):
         result = self.check()
         self.assertEqual((result['caseCount'], result['rejectedOutputAttempts'], result['controllerReleaseCount']),
                          (24, 432, 24))
+        self.assertEqual(sum(case['cacheFailureAttempts'] for case in self.native['cases']), 48)
         self.assertEqual(result['tracker'], self.sidecar['tracker'])
         self.assertEqual(result['tracker']['unsupportedCounts'], {'colorSpace': 7})
-        self.assertEqual(result['productionDefaultStrategy'], 'reference')
+        self.assertEqual(result['productionDefaultStrategy'], 'owned-srgb8')
         for optimized in (False, True):
             with self.subTest(optimized=optimized):
                 process = self.run_cli(optimized)
@@ -159,7 +160,7 @@ class DrawingGuardCheckerTests(unittest.TestCase):
             self.rebind_native()
             with self.subTest(key=key), self.assertRaises(ValueError):
                 self.check()
-        for key, value in [('failedRenderRequests', 17), ('retryPreservesEditableDocument', False),
+        for key, value in [('failedRenderRequests', 17), ('cacheFailureAttempts', 1), ('retryPreservesEditableDocument', False),
                            ('projectionJobsStartedDuringFailures', 1), ('sourcePixelsUnchanged', False)]:
             native = copy.deepcopy(self.native)
             native['cases'][-1][key] = value
@@ -180,16 +181,28 @@ class DrawingGuardCheckerTests(unittest.TestCase):
                 self.check()
         self.launcher_path.write_bytes(original)
 
-    def test_actual_and_requested_candidate_and_immutable_reference_are_required(self):
+    def test_actual_requested_and_production_default_strategies_are_exactly_owned_srgb8(self):
         for key in ('requestedStrategy', 'selectedStrategy'):
             for value in ('reference', 'ownedSRGB8', '', None, True, 1):
                 with self.subTest(key=key, value=value):
                     self.reject('root', key, value)
-        for value in ('owned-srgb8', '', None, True):
-            self.reject('root', 'productionDefaultStrategy', value)
+        for value in ('reference', 'ownedSRGB8', 'native', 'owned-pooled', '', None, True, 1, [], {}):
+            with self.subTest(productionDefaultStrategy=value):
+                self.reject('root', 'productionDefaultStrategy', value)
         for key, value in [('status', 'passed'), ('diagnosticOnly', 1), ('diagnosticOnly', False),
                            ('observationBoundary', 'before-fixture'), ('schemaVersion', True)]:
             self.reject('root', key, value)
+
+    def test_wrong_declared_default_is_rejected_by_normal_and_optimized_cli(self):
+        for value in ('reference', 'ownedSRGB8', 'native', 'owned-pooled', '', None, True, 1, [], {}):
+            self.sidecar['productionDefaultStrategy'] = value
+            self.write()
+            for optimized in (False, True):
+                with self.subTest(productionDefaultStrategy=value, optimized=optimized):
+                    result = self.run_cli(optimized)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(result.stdout, '')
+                    self.assertIn('Production default must be owned-srgb8', result.stderr)
 
     def test_candidate_requires_seeded_work_without_reference_fallback_or_failure(self):
         for key in ('referenceCount', 'presentationFallbackCount', 'failureCount', 'activeBytes'):

@@ -1,6 +1,6 @@
 #!/bin/bash
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd -P "$(dirname "$0")/.."
 # Keep the previously ambiguous installed recording wait observable in the
 # original broad ordering. This changes no recording work, limit or assertion.
 export PICSHOT_RECORDING_COMPOSITION_TRACE=1
@@ -10,10 +10,15 @@ export PICSHOT_SMOKE_FORMULA_INPUT="$PWD/Tests/PicShotMLHelperTests/Fixtures/ene
 export PICSHOT_SMOKE_TABLE_MODEL_DIR="$PWD/.build/model-fixtures/table"
 export PICSHOT_SMOKE_TABLE_INPUT="$PWD/Tests/PicShotTableEngineTests/Fixtures/merged-table.png"
 base="PicShot-0.16.0-macos-$(uname -m)"
-work=$(mktemp -d)
+# Keep the actual installed bundle and all evidence on physical workspace paths.
+# /var-style temporary aliases are rejected by the strict product protocol.
+mkdir -p dist/evidence
+test "$(cd dist && pwd -P)" = "$PWD/dist"
+test "$(cd dist/evidence && pwd -P)" = "$PWD/dist/evidence"
+work=$(mktemp -d "$PWD/dist/installer-smoke.XXXXXXXX")
 mounted=false
 trap 'if [[ "$mounted" == true ]];then hdiutil detach "$work/mount" || true;fi;rm -rf "$work"' EXIT
-mkdir -p dist/evidence "$work/zip" "$work/dmg" "$work/mount"
+mkdir -p "$work/zip" "$work/dmg" "$work/mount"
 ditto -x -k "dist/$base.zip" "$work/zip"
 hdiutil attach -nobrowse -readonly -mountpoint "$work/mount" "dist/$base.dmg"
 mounted=true
@@ -21,6 +26,41 @@ test "$(readlink "$work/mount/Applications")" = /Applications
 ditto "$work/mount/PicShot.app" "$work/dmg/PicShot.app"
 hdiutil detach "$work/mount"
 mounted=false
+# Both installer formats must contain exactly the same signed product and
+# provenance before the ZIP-only default resource gate can cover that binary.
+for relative in Contents/MacOS/PicShot Contents/Info.plist Contents/Resources/build-info.json; do
+  cmp "$work/zip/PicShot.app/$relative" "$work/dmg/PicShot.app/$relative"
+done
+python3 - "$work" "$PWD/dist/evidence/installed-format-identity.json" "$(git rev-parse HEAD)" "$(uname -m)" <<'PY_IDENTITY'
+import hashlib, json, pathlib, plistlib, sys
+work, output = map(pathlib.Path, sys.argv[1:3])
+expected_source, expected_arch = sys.argv[3:5]
+identities = {}
+for format in ('zip', 'dmg'):
+    app = work / format / 'PicShot.app'
+    if str(app.resolve()) != str(app):
+        raise ValueError('Installed bundle path is not canonical')
+    executable = (app / 'Contents/MacOS/PicShot').read_bytes()
+    plist_bytes = (app / 'Contents/Info.plist').read_bytes()
+    build_bytes = (app / 'Contents/Resources/build-info.json').read_bytes()
+    info, build = plistlib.loads(plist_bytes), json.loads(build_bytes)
+    if not (info['PicShotSourceCommit'] == build['sourceCommit'] == expected_source
+            and build['architecture'] == expected_arch
+            and info['CFBundleExecutable'] == 'PicShot'
+            and info['CFBundleShortVersionString'] == build['version']):
+        raise ValueError('Installed source, architecture or version differs')
+    identities[format] = dict(bundlePath=str(app), sourceCommit=expected_source,
+        architecture=expected_arch, version=info['CFBundleShortVersionString'],
+        buildVersion=info['CFBundleVersion'], executableBytes=len(executable),
+        executableSHA256=hashlib.sha256(executable).hexdigest(),
+        plistSHA256=hashlib.sha256(plist_bytes).hexdigest(),
+        buildInfoSHA256=hashlib.sha256(build_bytes).hexdigest())
+if any(identities['zip'][key] != identities['dmg'][key]
+       for key in identities['zip'] if key != 'bundlePath'):
+    raise ValueError('ZIP and DMG installed identities differ')
+output.write_text(json.dumps(dict(status='passed', exactInstalledBinaryIdentity=True,
+    formats=identities), indent=2) + '\n')
+PY_IDENTITY
 for format in zip dmg;do
   app="$work/$format/PicShot.app"
   if [[ "$format" == zip ]];then export PICSHOT_SMOKE_GIF_RESOURCES=1;else unset PICSHOT_SMOKE_GIF_RESOURCES;fi
@@ -143,3 +183,11 @@ PY
     bash scripts/editable-annotation-smoke.sh "$app" "$PWD/dist/evidence/$format/editable-annotations" "$(git rev-parse HEAD)" functional
   fi
 done
+# Preserve both complete installer smoke paths before the independent default
+# product gate. Four 620s application wrappers + 120s compilation + 300s decode
+# retain the existing 300s native / 600s launcher limits within a 3300s bound.
+python3 scripts/run-bounded-command.py --timeout-seconds 3300 \
+  --log "$PWD/dist/editable-product-installed-default.log" \
+  --report "$PWD/dist/editable-product-installed-default-report.json" \
+  -- bash scripts/editable-product-installed-default.sh "$work/zip/PicShot.app" \
+  "$PWD/dist/evidence/zip/editable-product-installed-default" "$(git rev-parse HEAD)"

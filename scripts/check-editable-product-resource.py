@@ -35,7 +35,8 @@ D = module('product_drawing_check', 'check-editable-drawing-pair.py')
 R = module('product_renderer_check', 'check-renderer-storage-pair.py')
 E = module('product_effect_check', 'check-effect-context-pair.py')
 need, keys, integer, number, sha = C.need, C.keys, C.integer, C.number, C.sha
-PROTOCOL = 'editable-product-resource-v1'
+PROTOCOL = 'editable-product-resource-v2'
+INSTALLED_DEFAULT_PROTOCOL = 'editable-product-installed-default-v1'
 PIXEL_PROTOCOL = 'editable-product-pixels-v1'
 MAX_JSON = 2 * 1024 * 1024
 MAX_RAW_REPORT = 8 * 1024 * 1024
@@ -257,6 +258,8 @@ CHECKPOINTS = ('editor-open', 'history-saved', 'seed-closed', 'history-reopened'
 STAGES = ('history-save', 'pin-before-apply', 'pin-after-apply', 'pin-closed')
 SAMPLE_PHASES = ('seed', 'reopen', 'annotations', 'group-hide', 'group-show', 'space-apply', 'release')
 CELL_STRATEGIES = {'baseline': 'reference', 'candidate': 'owned-srgb8'}
+INSTALLED_DEFAULT_CELLS = {'installed-default': 'owned-srgb8'}
+VALIDATION_MODES = ('paired', 'installed-default')
 LIVE_COUNTS = {'editor-open': (1, 0, 0), 'history-saved': (1, 0, 0), 'seed-closed': (0, 0, 0),
     'history-reopened': (1, 0, 0), 'pin-created': (1, 1, 0), 'history-editor-closed': (0, 1, 0),
     'annotations-hidden': (0, 1, 0), 'annotations-shown': (0, 1, 0), 'group-hidden-released': (0, 0, 0),
@@ -630,8 +633,63 @@ MEASURE_FIELDS = {'resourcePolicy', 'beforeWarmup', 'cycles', 'completedWarmupCy
     'ownedOpenDescriptorsAfterCleanup', 'afterCloseOwnership', 'fixedRunOwnershipAfterRelease', 'fixedRunOwnersReleased'}
 
 
+def drawing_selection(report, mode, strategy):
+    need(mode in ('certify', 'measure', 'installed-default'), 'invalid native product mode')
+    need(strategy in ('reference', 'owned-srgb8'), 'invalid drawing strategy')
+    if mode == 'certify':
+        equal(strategy, 'reference', 'golden reference strategy')
+    equal(report['protocol'], INSTALLED_DEFAULT_PROTOCOL if mode == 'installed-default' else PROTOCOL, 'report protocol')
+    equal(report['mode'], mode, 'report mode')
+    config = report['configuration']
+    fixed = {'drawingStrategy': strategy, 'rendererStorageStrategy': 'native', 'effectContextPolicy': 'reference',
+        'fixtureMutatedProductionDefaults': False, 'drawingProductionDefault': 'owned-srgb8', 'rendererStorageProductionDefault': 'native',
+        'effectContextProductionDefault': 'reference',
+        'drawingOriginalFormatFallback': 'Unsupported layouts and profiles retain the original native drawing path; no model/source normalization or fallback on conversion failure'}
+    keys(config, set(fixed) | {'drawing', 'rendererStorage', 'effects'}, 'finite drawing configuration')
+    equal({name: config[name] for name in fixed}, fixed, 'fixed configuration')
+    equal(report['requestedDrawingStrategy'], strategy, 'requested drawing strategy')
+    need(report['drawingOverridePresent'] is (mode != 'installed-default'), 'drawing selection source differs')
+    if mode == 'installed-default':
+        equal(strategy, 'owned-srgb8', 'installed production default selection')
+    D.drawing_snapshot(config['drawing'], strategy, released=True)
+    R.snapshot(config['rendererStorage'], 'native', released=True)
+    E.snapshot(config['effects'], 'reference', released=True)
+
+
+def installed_default_drawing_work(report):
+    """Require actual owned work without fixing AppKit's redraw schedule.
+
+    Pin presentations have the decorated extent; seeded renderer contexts have
+    full or cropped extents. Counts are observed, while byte shapes and release
+    balance stay exact. These are workload bytes, not RSS.
+    """
+    presentation_bytes = 2414 * 1574 * 4
+    full_bytes, cropped_bytes = 3840 * 2160 * 4, 2400 * 1560 * 4
+    need(len(report['cycles']) == 10, 'installed default cycle count differs')
+    previous = None
+    owned_before = seeded_before = seeded_bytes_before = 0
+    for row in report['cycles']:
+        drawing = row['afterReleaseState']['drawing']
+        D.drawing_snapshot(drawing, 'owned-srgb8', previous=previous, released=True)
+        equal(drawing['unsupportedCounts'], {}, 'installed sRGB8 workload used unsupported fallback')
+        owned, seeded, seeded_bytes = drawing['ownedCount'], drawing['seededContextCount'], drawing['seededContextBytes']
+        need(owned > owned_before and seeded > seeded_before, 'cycle omitted actual owned or seeded drawing work')
+        equal(drawing['allocatedBytes'], owned * presentation_bytes, 'owned presentation byte shape')
+        peak = drawing['peakActiveBytes']
+        need(presentation_bytes <= peak <= drawing['allocatedBytes'] and peak % presentation_bytes == 0,
+             'owned peak does not match presentation byte shape')
+        count, byte_count = seeded - seeded_before, seeded_bytes - seeded_bytes_before
+        full_count, remainder = divmod(byte_count - count * cropped_bytes, full_bytes - cropped_bytes)
+        need(remainder == 0 and 0 <= full_count <= count, 'seeded bytes do not match full/cropped renderer shapes')
+        previous = drawing
+        owned_before, seeded_before, seeded_bytes_before = owned, seeded, seeded_bytes
+    equal(report['configuration']['drawing'], report['cycles'][-1]['afterReleaseState']['drawing'],
+          'drawing work changed after final cycle release')
+
+
 def common(report, installed, manifest, component, mode, certificate_hash, certificate_pid, strategy='reference'):
-    measure = mode == 'measure'
+    need(mode in ('certify', 'measure', 'installed-default'), 'invalid native product mode')
+    measure = mode != 'certify'
     keys(report, COMMON_FIELDS | (MEASURE_FIELDS if measure else CERT_FIELDS), 'product report')
     equal(report['deadlineScope'], '300-second cooperative native deadline. AppDelegate.openRecord retains normal modal error '
         'presentation; a blocking native modal cannot be preempted by cooperative checks. The owned-process launcher must '
@@ -640,8 +698,8 @@ def common(report, installed, manifest, component, mode, certificate_hash, certi
     info = plistlib.loads(read(Path(installed['bundlePath']) / 'Contents/Info.plist', 1048576))
     equal(report['version'], info['CFBundleShortVersionString'], 'bundle version')
     equal(report['buildVersion'], info['CFBundleVersion'], 'bundle build')
-    equal(report['schemaVersion'], 1, 'report schema'); equal(report['protocol'], PROTOCOL, 'report protocol')
-    equal(report['mode'], mode, 'report mode'); uuid_value(report['runIdentifier'])
+    equal(report['schemaVersion'], 1, 'report schema')
+    uuid_value(report['runIdentifier'])
     equal(report['status'], 'observed-pending-output-validation' if measure else 'certified', 'report status')
     for name in ('memoryStabilityAssessed', 'zeroRSSClaim', 'privateBackingReleaseProved', 'fullCorrectnessFixtureReplaced'):
         need(report[name] is False, 'unsupported acceptance/release claim')
@@ -666,18 +724,7 @@ def common(report, installed, manifest, component, mode, certificate_hash, certi
         'maximumEvidenceFiles': 256, 'maximumEvidenceBytes': MAX_ARTIFACT_BYTES, 'maximumStages': 40,
         'maximumCheckpoints': 160, 'editorAdmissionBytes': 768 * 1024 * 1024,
         'projectionReservationBytes': 512 * 1024 * 1024}, 'workload resource bounds')
-    config = report['configuration']
-    fixed = {'drawingStrategy': strategy, 'rendererStorageStrategy': 'native', 'effectContextPolicy': 'reference',
-        'productionDefaultsChanged': False, 'drawingProductionDefault': 'reference', 'rendererStorageProductionDefault': 'native',
-        'effectContextProductionDefault': 'reference',
-        'drawingOriginalFormatFallback': 'Unsupported layouts and profiles retain the original native drawing path; no model/source normalization or fallback on conversion failure'}
-    keys(config, set(fixed) | {'drawing', 'rendererStorage', 'effects'}, 'finite drawing configuration')
-    equal({name: config[name] for name in fixed}, fixed, 'fixed configuration')
-    equal(report['requestedDrawingStrategy'], strategy, 'requested drawing strategy')
-    need(report['drawingOverridePresent'] is measure, 'drawing selection source differs')
-    D.drawing_snapshot(config['drawing'], strategy, released=True)
-    R.snapshot(config['rendererStorage'], 'native', released=True)
-    E.snapshot(config['effects'], 'reference', released=True)
+    drawing_selection(report, mode, strategy)
     equal(report['inputManifestSHA256'], component['inputManifestSHA256'], 'input manifest binding')
     equal(report['inputCertificateSHA256'], certificate_hash, 'input certificate binding')
     equal(report['inputPreparationProcessIdentifier'], manifest['processIdentifier'], 'preparation PID binding')
@@ -702,6 +749,8 @@ def common(report, installed, manifest, component, mode, certificate_hash, certi
         owner(report['fixedRunOwnershipAfterRelease'], released=True)
         equal(report['fixedRunOwnershipAfterRelease']['created'], 5, 'fixed owner creation count')
         cycles(report, strategy)
+        if mode == 'installed-default':
+            installed_default_drawing_work(report)
         C.ordered_observations([report['entryMemory'], report['beforeWarmup'],
             *[x for row in report['cycles'] for x in (row['beforeMemory'], row['afterMemory'])], report['finalMemory']])
 
@@ -815,11 +864,15 @@ def pixels(root, cell, expected_plan):
         'uniquePNGFilesVerified': len(rows), 'fullRGBABytesCompared': sum(row['comparedBytes'] for row in rows)}
 
 
-def check(app, source, root, stage='complete', cell=None):
+def check(app, source, root, stage='complete', cell=None, validation_mode='paired'):
+    need(validation_mode in VALIDATION_MODES, 'invalid product validation mode')
+    strategies = INSTALLED_DEFAULT_CELLS if validation_mode == 'installed-default' else CELL_STRATEGIES
     need(stage in ('certify', 'preflight', 'complete'), 'invalid checker stage')
-    need((stage == 'preflight' and cell in CELL_STRATEGIES) or (stage != 'preflight' and cell is None), 'invalid cell/stage selection')
+    need((stage == 'preflight' and cell in strategies) or (stage != 'preflight' and cell is None), 'invalid cell/stage selection')
     root = Path(root)
     need(root.is_absolute() and root.resolve(strict=True) == root and root.is_dir(), 'noncanonical evidence root')
+    for name in set(CELL_STRATEGIES) | set(INSTALLED_DEFAULT_CELLS):
+        need(name in strategies or not os.path.lexists(root / name), 'evidence contains a different validation mode')
     installed = installed_identity(app, source)
     # Revalidate upstream bytes and raw reports. A self-asserted checked summary
     # can never substitute for the preparation/certificate evidence.
@@ -838,21 +891,26 @@ def check(app, source, root, stage='complete', cell=None):
     pids.add(cert['processIdentifier'])
     run_ids = {uuid_value(cert['runIdentifier'])}
     result = {'status': 'certified' if stage == 'certify' else 'preflight' if stage == 'preflight' else 'observed-and-independently-verified',
-        'protocol': PROTOCOL, **installed, 'inputManifestSHA256': component['inputManifestSHA256'],
+        'protocol': INSTALLED_DEFAULT_PROTOCOL if validation_mode == 'installed-default' else PROTOCOL,
+        'validationMode': validation_mode, 'drawingProductionDefault': 'owned-srgb8',
+        **installed, 'inputManifestSHA256': component['inputManifestSHA256'],
         'inputComponentCertificateSHA256': component['certificateSHA256'], 'productCertificateSHA256': cert_bindings['rawReportSHA256'],
         'independentRecipeSHA256': RECIPE_SHA256, 'certificateBindings': cert_bindings,
         'observedProcessExitRequired': True, 'nativeExecutionAttestedByChecker': False,
-        'fullCorrectnessFixtureReplaced': False, 'memoryStabilityAssessed': False, 'productionDefaultsChanged': False,
+        'fullCorrectnessFixtureReplaced': False, 'memoryStabilityAssessed': False, 'fixtureMutatedProductionDefaults': False,
         'outputPixelsIndependentlyVerified': stage == 'complete', 'observations': {}, 'evidenceBindings': {},
         'interpretation': 'Fixed 2+8 actual product lifecycles with programmatically seeded certified seven-layer payloads and owned native controls. '
             'All persisted versions are decoded only after the exact measured app exits. Eight overlapping self-task counters and non-atomic '
             'backing observations do not prove private graphics release; 50ms peaks may miss transients. No universal RSS limit or remedy verdict. '
-            'Reference runs first, owned-srgb8 second; both exit before either output decoder runs. Cold means first cycle in a new process, '
-            'not cold filesystem/system caches. Close differences remain preliminary pending a reversed-order run. '
+            + ('The compiled owned-srgb8 production default runs with no drawing override; its exact owned app exits before output decoding. '
+               if validation_mode == 'installed-default' else
+               'Reference runs first, owned-srgb8 second; both exit before either output decoder runs. '
+               'Close differences remain preliminary pending a reversed-order run. ') +
+            'Cold means first cycle in a new process, not cold filesystem/system caches. '
             'Final renderer storage stays native and effects stay reference. This does not replace the full correctness/failure fixture.'}
     if stage == 'certify':
         return result
-    selected = list(CELL_STRATEGIES)
+    selected = list(strategies)
     loaded = {name: product_process(root / name, installed) for name in selected}
     all_exit = max(value[1]['finishUptimeSeconds'] for value in loaded.values())
     last_exit = cert_launcher['finishUptimeSeconds']
@@ -860,7 +918,8 @@ def check(app, source, root, stage='complete', cell=None):
     for name in selected:
         directory = root / name
         report, launcher, bindings = loaded[name]
-        common(report, installed, manifest, component, 'measure', cert_bindings['rawReportSHA256'], cert['processIdentifier'], CELL_STRATEGIES[name])
+        mode = 'installed-default' if validation_mode == 'installed-default' else 'measure'
+        common(report, installed, manifest, component, mode, cert_bindings['rawReportSHA256'], cert['processIdentifier'], strategies[name])
         need(report['processIdentifier'] not in pids, 'measured process reused an input/certificate/cell PID')
         pids.add(report['processIdentifier'])
         run_id = uuid_value(report['runIdentifier'])
@@ -882,10 +941,11 @@ def check(app, source, root, stage='complete', cell=None):
         last_exit = launcher['finishUptimeSeconds']
         result['evidenceBindings'][name] = bindings
         result['observations'][name] = observations(report, copied)
-        result['observations'][name]['drawingStrategy'] = CELL_STRATEGIES[name]
+        result['observations'][name]['drawingStrategy'] = strategies[name]
+        result['observations'][name]['drawingOverridePresent'] = report['drawingOverridePresent']
         result['observations'][name]['nativeProcessIdentifier'] = report['processIdentifier']
         all_raster_work.append([[{key: row[key] for key in ('role', 'expectedState', 'width', 'height')} for row in saved['rasters']] for saved in report['stages']])
-    if stage == 'complete':
+    if stage == 'complete' and validation_mode == 'paired':
         equal(all_raster_work[0], all_raster_work[1], 'paired output work')
         baseline, candidate = (result['observations'][name] for name in CELL_STRATEGIES)
         result['candidateMinusReference'] = {field: {key: candidate[field][key] - baseline[field][key] for key in C.MEMORY}
@@ -902,13 +962,14 @@ def main(argv=None):
     parser.add_argument('--expected-source', required=True)
     parser.add_argument('--root', type=Path, required=True)
     parser.add_argument('--stage', choices=('certify', 'preflight', 'complete'), default='complete')
-    parser.add_argument('--cell', choices=tuple(CELL_STRATEGIES))
+    parser.add_argument('--validation-mode', choices=VALIDATION_MODES, default='paired')
+    parser.add_argument('--cell', choices=tuple(CELL_STRATEGIES) + tuple(INSTALLED_DEFAULT_CELLS))
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args(argv)
     result = {'status': 'failed', 'memoryStabilityAssessed': False, 'outputPixelsIndependentlyVerified': False,
-        'productionDefaultsChanged': False, 'nativeExecutionAttestedByChecker': False}
+        'fixtureMutatedProductionDefaults': False, 'nativeExecutionAttestedByChecker': False}
     try:
-        result = check(args.app, args.expected_source, args.root, args.stage, args.cell)
+        result = check(args.app, args.expected_source, args.root, args.stage, args.cell, args.validation_mode)
     except (ValueError, OSError, KeyError, TypeError, OverflowError, RecursionError, plistlib.InvalidFileException, zlib.error) as error:
         result['error'] = str(error)[:4096]
     text = json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + '\n'

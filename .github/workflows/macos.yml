@@ -81,9 +81,11 @@ jobs:
       matrix:
         include: ${{ fromJSON(contains(github.event.head_commit.message || '', '[intel-only]') && '[{"runner":"macos-15-intel","arch":"x86_64"}]' || '[{"runner":"macos-15","arch":"arm64"},{"runner":"macos-15-intel","arch":"x86_64"}]') }}
     runs-on: ${{ matrix.runner }}
-    # Full Intel model/install validation exceeded the former aggregate budget.
+    # Retain the prior 90-minute full validation allowance plus the independent
+    # 55-minute installed-default gate, two 4-minute portable contract steps,
+    # and seven minutes for cleanup and evidence publication overhead.
     # Individual test, product, cancellation and smoke deadlines stay unchanged.
-    timeout-minutes: 90
+    timeout-minutes: 160
     env:
       NATIVE_TEST_PROCESS_COUNT: ${{ matrix.arch == 'x86_64' && '4' || '2' }}
     steps:
@@ -100,6 +102,21 @@ jobs:
           python3 -m unittest discover -s scripts/tests -p test_check_multiwindow_memory_comparison.py -v
           python3 -m unittest discover -s scripts/tests -p test_multiwindow_resource_smoke_selection.py -v
           python3 -m unittest discover -s scripts/tests -p test_check_editable_annotation_report.py -v
+      - name: Check installed drawing default product and source contracts
+        timeout-minutes: 4
+        run: |
+          set -o pipefail
+          mkdir -p dist
+          for picshot_contract_pattern in '*drawing*.py' test_check_editable_product_resource.py test_editable_product_source_binding.py; do
+            PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p "$picshot_contract_pattern" -v 2>&1 | tee -a dist/installed-default-contracts.log
+          done
+      - name: Check installed default contracts with Python assertions disabled
+        timeout-minutes: 4
+        run: |
+          set -o pipefail
+          for picshot_contract_pattern in '*drawing*.py' test_check_editable_product_resource.py test_editable_product_source_binding.py; do
+            PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p "$picshot_contract_pattern" -v 2>&1 | tee -a dist/installed-default-contracts-optimized.log
+          done
       - name: Package signed native app for early pixel review
         run: |
           mkdir -p dist
@@ -167,7 +184,7 @@ jobs:
           python3 -m unittest discover -s scripts/tests -p test_native_test_shards.py -v
           python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/native-test-discovery.log --report dist/native-test-discovery-report.json -- swift test list --skip-build
           python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$NATIVE_TEST_PROCESS_COUNT" --output dist/native-tests-plan.json
-          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$NATIVE_TEST_PROCESS_COUNT" --selection-regex 'EditableComponent|PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|AnnotationEditing|CaptureAspectRatio|CaptureRatio|MultiWindow|ImageOutputDecoration|EditorOutput|PinOriginalCurrent|ManualScroll|ScrollPreview|ScrollSequencePreview|AnnotationFreehand|AnnotationTextLine|NumberedCallout|AutomaticMosaic|RepeatedRegion|AutomaticPinOCR|PinOCR|TextResultSourceSelection|PinWorkflow|LaTeXPin|PinLaTeX|PinGroup|PinDesktop|EditorToolbarHierarchy|SaveWorkflow|OwnedVideoExportStage|ImageBacking|Codec|NativeExport|AnimatedWebP|WebPContainer|RecordingWebP|CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' --output dist/focused-tests-plan.json
+          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$NATIVE_TEST_PROCESS_COUNT" --selection-regex 'DrawingRaster|EditableProductResource|EditableComponent|PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|AnnotationEditing|CaptureAspectRatio|CaptureRatio|MultiWindow|ImageOutputDecoration|EditorOutput|PinOriginalCurrent|ManualScroll|ScrollPreview|ScrollSequencePreview|AnnotationFreehand|AnnotationTextLine|NumberedCallout|AutomaticMosaic|RepeatedRegion|AutomaticPinOCR|PinOCR|TextResultSourceSelection|PinWorkflow|LaTeXPin|PinLaTeX|PinGroup|PinDesktop|EditorToolbarHierarchy|SaveWorkflow|OwnedVideoExportStage|ImageBacking|Codec|NativeExport|AnimatedWebP|WebPContainer|RecordingWebP|CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' --output dist/focused-tests-plan.json
       - name: Upload test compilation evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -1349,7 +1366,7 @@ jobs:
         Path('dist/drawing-installed-identity.json').write_text(json.dumps({
             'sourceCommit': info['PicShotSourceCommit'], 'bundlePath': str(app), 'architecture': 'arm64',
             'executableSHA256': hashlib.sha256((app / 'Contents/MacOS/PicShot').read_bytes()).hexdigest(),
-            'oneBinaryForEveryCell': True, 'productionDefaultChanged': False, 'installerAcceptance': False
+            'oneBinaryForEveryCell': True, 'diagnosticSelectionChangesCompiledDefault': False, 'installerAcceptance': False
         }, indent=2) + '\n')
         PYTHON
     - name: Verify fail-closed outputs under the candidate drawing strategy
@@ -1456,7 +1473,7 @@ jobs:
         Path('dist/renderer-storage-installed-identity.json').write_text(json.dumps({
             'sourceCommit': info['PicShotSourceCommit'], 'bundlePath': str(app), 'architecture': 'arm64',
             'executableSHA256': hashlib.sha256((app / 'Contents/MacOS/PicShot').read_bytes()).hexdigest(),
-            'oneBinaryForEveryCell': True, 'productionDefaultChanged': False, 'installerAcceptance': False
+            'oneBinaryForEveryCell': True, 'diagnosticSelectionChangesCompiledDefault': False, 'installerAcceptance': False
         }, indent=2) + '\n')
         PYTHON
     - name: Verify fail-closed outputs under caller-owned renderer storage
@@ -1576,7 +1593,7 @@ jobs:
         Path('dist/renderer-scope-installed-identity.json').write_text(json.dumps({
             'sourceCommit': info['PicShotSourceCommit'], 'bundlePath': str(app), 'architecture': 'arm64',
             'executableSHA256': hashlib.sha256((app / 'Contents/MacOS/PicShot').read_bytes()).hexdigest(),
-            'oneBinaryForEveryCell': True, 'productionDefaultChanged': False, 'installerAcceptance': False
+            'oneBinaryForEveryCell': True, 'diagnosticSelectionChangesCompiledDefault': False, 'installerAcceptance': False
         }, indent=2) + '\n')
         PYTHON
     - name: Verify both whole-render policies refuse incomplete output
@@ -1712,7 +1729,7 @@ jobs:
         Path('dist/effect-context-installed-identity.json').write_text(json.dumps({
             'sourceCommit': info['PicShotSourceCommit'], 'bundlePath': str(app), 'architecture': 'arm64',
             'executableSHA256': hashlib.sha256((app / 'Contents/MacOS/PicShot').read_bytes()).hexdigest(),
-            'oneBinaryForEveryCell': True, 'productionDefaultChanged': False, 'installerAcceptance': False
+            'oneBinaryForEveryCell': True, 'diagnosticSelectionChangesCompiledDefault': False, 'installerAcceptance': False
         }, indent=2) + '\n')
         PYTHON
     - name: Verify both finite effect policies refuse incomplete output
@@ -1888,7 +1905,7 @@ jobs:
             'version': info['CFBundleShortVersionString'], 'buildVersion': info['CFBundleVersion'],
             'executableSHA256': hashlib.sha256(executable).hexdigest(), 'executableBytes': len(executable),
             'plistSHA256': hashlib.sha256(plist_bytes).hexdigest(), 'buildInfoSHA256': hashlib.sha256(build_bytes).hexdigest(),
-            'oneBinaryForEveryCell': True, 'productionDefaultChanged': False, 'installerAcceptance': False,
+            'oneBinaryForEveryCell': True, 'diagnosticSelectionChangesCompiledDefault': False, 'installerAcceptance': False,
             'productAcceptance': False
         }, indent=2) + '\n')
         PYTHON
@@ -2048,13 +2065,15 @@ jobs:
             'testOnlySeparateExplicitCertificationAndMeasurementAreAccepted',
             'testUnknownWorkloadOverridesAndCompetingRoutesFailClosed',
             'testOnlyFiniteExplicitDrawingOverrideIsAllowedForMeasurement',
+            'testInstalledDefaultRequiresCompiledOwnedStrategyWithoutAnyOverride',
+            'testReferenceCertificationAndPairedMeasurementRequireExplicitSelection',
             'testPathsRequireAbsoluteNulFreeValues',
             'testEncodedStreamingCopiesCompleteMultipleChunksAndClosesDescriptors',
             'testStreamingRejectsUnsafeOversizedAndPreexistingDestinations',
             'testDirectoryValidationDoesNotFollowSymlinkAncestors',
         }
         native.need({name.split('/')[1] for name in expected if name.split('/')[0] == 'PicShotTests.EditableProductResourceFixtureTests'}
-                    == product_methods, 'The eight dedicated product resource cases differ')
+                    == product_methods, 'The dedicated product resource cases differ')
         discovery = json.loads(Path('dist/editable-product-resource-test-discovery.json').read_text())
         runner = json.loads(Path('dist/editable-product-resource-native-tests.json').read_text())
         log = Path('dist/editable-product-resource-native-tests.log').read_text()
@@ -2111,7 +2130,7 @@ jobs:
             'version': info['CFBundleShortVersionString'], 'buildVersion': info['CFBundleVersion'],
             'executableSHA256': hashlib.sha256(executable).hexdigest(), 'executableBytes': len(executable),
             'plistSHA256': hashlib.sha256(plist_bytes).hexdigest(), 'buildInfoSHA256': hashlib.sha256(build_bytes).hexdigest(),
-            'oneBinaryForEveryCell': True, 'productionDefaultChanged': False, 'installerAcceptance': False,
+            'oneBinaryForEveryCell': True, 'diagnosticSelectionChangesCompiledDefault': False, 'installerAcceptance': False,
             'productAcceptance': False, 'memoryStabilityAssessed': False
         }, indent=2) + '\n')
         PYTHON

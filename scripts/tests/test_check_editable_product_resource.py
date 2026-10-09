@@ -1,5 +1,6 @@
 """Synthetic contract/adversarial tests. Never native product evidence."""
 import copy
+from contextlib import ExitStack
 import importlib.util
 import json
 import os
@@ -25,7 +26,27 @@ P = module('product_test_checker', SCRIPTS / 'check-editable-product-resource.py
 C = module('product_component_test_fixture', SCRIPTS / 'tests/test_check_editable_components.py')
 D = module('product_drawing_test_fixture', SCRIPTS / 'tests/test_check_editable_drawing_pair.py')
 R = module('product_renderer_test_fixture', SCRIPTS / 'tests/test_check_renderer_storage_pair.py')
+E = module('product_effect_test_fixture', SCRIPTS / 'tests/test_check_effect_context_pair.py')
 REJECTED = (ValueError, TypeError, KeyError, OSError)
+
+
+def drawing_selection(mode, strategy):
+    return dict(mode=mode, protocol=P.INSTALLED_DEFAULT_PROTOCOL if mode == 'installed-default' else P.PROTOCOL,
+        requestedDrawingStrategy=strategy, drawingOverridePresent=mode != 'installed-default',
+        configuration=dict(drawingStrategy=strategy, rendererStorageStrategy='native', effectContextPolicy='reference',
+            fixtureMutatedProductionDefaults=False, drawingProductionDefault='owned-srgb8',
+            rendererStorageProductionDefault='native', effectContextProductionDefault='reference',
+            drawingOriginalFormatFallback='Unsupported layouts and profiles retain the original native drawing path; no model/source normalization or fallback on conversion failure',
+            drawing=D.state(strategy, 1), rendererStorage=R.state('native', 1), effects=E.state('reference', 1)))
+
+
+def installed_drawing(ordinal):
+    value = D.state('owned-srgb8')
+    value.update(eligibleCount=14*ordinal, ownedCount=4*ordinal, seededContextCount=10*ordinal,
+        allocations=4*ordinal, deallocations=4*ordinal, releaseCallbacks=4*ordinal,
+        allocatedBytes=60794176*ordinal, deallocatedBytes=60794176*ordinal, callbackBytes=60794176*ordinal,
+        seededContextBytes=313574400*ordinal, peakActiveBytes=30397088, presentationReuseCount=ordinal)
+    return value
 
 
 def docs(date=800000001):
@@ -166,12 +187,151 @@ class ProductEvidenceTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
 
+    def test_closed_installed_default_and_explicit_pair_selection_protocols(self):
+        for mode, strategy in [('certify','reference'), ('measure','reference'),
+                               ('measure','owned-srgb8'), ('installed-default','owned-srgb8')]:
+            value = drawing_selection(mode, strategy)
+            P.drawing_selection(value, mode, strategy)
+            mutations = [
+                lambda v: v.update(drawingOverridePresent=not v['drawingOverridePresent']),
+                lambda v: v.update(drawingOverridePresent=int(v['drawingOverridePresent'])),
+                lambda v: v.update(protocol='editable-product-resource-v1'),
+                lambda v: v.update(mode='measure' if mode != 'measure' else 'installed-default'),
+                lambda v: v.update(requestedDrawingStrategy='reference' if strategy != 'reference' else 'owned-srgb8'),
+                lambda v: v['configuration'].update(drawingProductionDefault='reference'),
+                lambda v: v['configuration'].update(fixtureMutatedProductionDefaults=True),
+                lambda v: v['configuration'].update(productionDefaultsChanged=False),
+                lambda v: v['configuration'].update(rendererStorageStrategy='owned-srgb8'),
+                lambda v: v['configuration'].update(effectContextPolicy='memory32'),
+                lambda v: v['configuration']['drawing'].update(activeBytes=4),
+            ]
+            for mutation in mutations:
+                changed=copy.deepcopy(value);mutation(changed)
+                with self.subTest(mode=mode,strategy=strategy,mutation=mutation),self.assertRaises(REJECTED):
+                    P.drawing_selection(changed,mode,strategy)
+        for mode,strategy in [('certify','owned-srgb8'),('installed-default','reference'),('other','owned-srgb8')]:
+            with self.subTest(mode=mode,strategy=strategy),self.assertRaises(REJECTED):
+                P.drawing_selection(drawing_selection(mode,strategy),mode,strategy)
+
+    def test_installed_default_requires_actual_complete_owned_work_and_balanced_release(self):
+        value=cycles('owned-srgb8')
+        for ordinal,row in enumerate(value['cycles'],1):
+            row['afterReleaseState']['drawing']=installed_drawing(ordinal)
+        value['configuration']={'drawing':installed_drawing(10)}
+        P.installed_default_drawing_work(value)
+        # More view redraws/cache replacements are observed work, not a changed
+        # semantic workload. Byte shapes and provider release must still match.
+        additional=copy.deepcopy(value)
+        for ordinal,row in enumerate(additional['cycles'],1):
+            drawing=row['afterReleaseState']['drawing']
+            drawing.update(eligibleCount=18*ordinal,ownedCount=5*ordinal,seededContextCount=13*ordinal,
+                allocations=5*ordinal,deallocations=5*ordinal,releaseCallbacks=5*ordinal,
+                allocatedBytes=75992720*ordinal,deallocatedBytes=75992720*ordinal,callbackBytes=75992720*ordinal,
+                seededContextBytes=394905600*ordinal)
+        additional['configuration']['drawing']=copy.deepcopy(additional['cycles'][-1]['afterReleaseState']['drawing'])
+        P.installed_default_drawing_work(additional)
+        mutations=[lambda v:v['cycles'].pop(),
+            lambda v:v['configuration'].update(drawing=installed_drawing(9)),
+            lambda v:v['cycles'][5]['afterReleaseState'].update(drawing=installed_drawing(5)),
+            lambda v:v['cycles'][5]['afterReleaseState'].update(drawing=D.state('owned-srgb8')),
+            lambda v:v['cycles'][5]['afterReleaseState']['drawing'].update(unsupportedCounts={'colorSpace':1}),
+            lambda v:v['cycles'][5]['afterReleaseState']['drawing'].update(activeBytes=4),
+            lambda v:v['cycles'][5]['afterReleaseState']['drawing'].update(callbackBytes=1),
+            lambda v:v['cycles'][5]['afterReleaseState']['drawing'].update(seededContextCount=61),
+            lambda v:v['cycles'][5]['afterReleaseState']['drawing'].update(seededContextBytes=1)]
+        for mutation in mutations:
+            changed=copy.deepcopy(value);mutation(changed)
+            with self.subTest(mutation=mutation),self.assertRaises(REJECTED):P.installed_default_drawing_work(changed)
+
+    def test_validation_mode_cannot_mix_cells_or_relabel_pair_as_installed_default(self):
+        for mode,stage,cell in [('automatic','complete',None),('paired','preflight','installed-default'),
+                               ('installed-default','preflight','baseline'),('installed-default','complete','installed-default')]:
+            with self.subTest(mode=mode,stage=stage,cell=cell),self.assertRaises(ValueError):
+                P.check(self.root/'missing.app','a'*40,self.root,stage,cell,mode)
+        for mode,foreign in [('paired','installed-default'),('installed-default','baseline'),('installed-default','candidate')]:
+            path=self.root/foreign;path.mkdir()
+            with self.subTest(mode=mode,foreign=foreign),self.assertRaisesRegex(ValueError,'different validation mode'):
+                P.check(self.root/'missing.app','a'*40,self.root,validation_mode=mode)
+            path.rmdir()
+
+    def test_installed_default_route_keeps_certificate_exit_pid_and_postexit_pixel_bindings(self):
+        # The individual evidence validators have adversarial byte-level tests.
+        # This composition test supplies their outputs, exercises real strategy
+        # validation, and checks the new single-cell route and chronological gate.
+        installed={'bundlePath':str(self.root/'PicShot.app')}
+        component={'inputManifestSHA256':'a'*64,'certificateSHA256':'b'*64,
+            'processIdentifiers':{'prepare':11,'certify':12},
+            'evidenceBindings':{'certify':{'finishUptimeSeconds':10}}}
+        manifest={'assets':[{'pngFile':'original.png','rawFile':'original.rgba','rawBytes':4,
+            'canonical':{'colorSpaceICC_SHA256':'a'*64}}]}
+        cert=drawing_selection('certify','reference')
+        cert.update(processIdentifier=13,runIdentifier=str(uuid.UUID(int=13)))
+        measured=drawing_selection('installed-default','owned-srgb8')
+        measured.update(processIdentifier=14,runIdentifier=str(uuid.UUID(int=14)),stages=[])
+        cert_launch={'launchBeganUptimeSeconds':20,'finishUptimeSeconds':30}
+        measured_launch={'launchBeganUptimeSeconds':40,'finishUptimeSeconds':50}
+        cert_bindings={'rawReportSHA256':'c'*64};measured_bindings={'rawReportSHA256':'d'*64}
+        decode={'processIdentifier':15,'finishUptimeSeconds':60}
+        def process(directory,identity,*,certify=False):
+            self.assertEqual(identity,installed)
+            self.assertEqual(directory.name,'product-certify' if certify else 'installed-default')
+            return (cert,cert_launch,copy.deepcopy(cert_bindings)) if certify else (measured,measured_launch,copy.deepcopy(measured_bindings))
+        def common(report,identity,inputs,upstream,mode,certificate_hash,certificate_pid,strategy='reference'):
+            self.assertEqual((identity,inputs,upstream),(installed,manifest,component))
+            self.assertEqual((certificate_hash,certificate_pid),('b'*64,12) if mode=='certify' else ('c'*64,13))
+            P.drawing_selection(report,mode,strategy)
+        files=[{'path':'bound-persisted.png'}]
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch.object(P,'installed_identity',return_value=installed))
+            stack.enter_context(mock.patch.object(P.C,'check',return_value=component))
+            stack.enter_context(mock.patch.object(P,'load',side_effect=lambda path,*args: (manifest if path.name=='inputs.json' else {},'a'*64)))
+            stack.enter_context(mock.patch.object(P,'read',return_value=b'bounded input'))
+            launched=stack.enter_context(mock.patch.object(P,'product_process',side_effect=process))
+            stack.enter_context(mock.patch.object(P,'common',side_effect=common))
+            stack.enter_context(mock.patch.object(P,'certificate',return_value={'original':'golden.rgba'}))
+            stages=stack.enter_context(mock.patch.object(P,'stages',return_value=(files,{})))
+            stack.enter_context(mock.patch.object(P,'decoder_build',return_value={'decoderSourceSHA256':'e'*64}))
+            pixels=stack.enter_context(mock.patch.object(P,'pixels',return_value=decode))
+            stack.enter_context(mock.patch.object(P,'observations',return_value={}))
+            def check(stage='complete',cell=None):
+                return P.check(self.root/'PicShot.app','a'*40,self.root,stage,cell,'installed-default')
+            result=check()
+            self.assertEqual(result['protocol'],P.INSTALLED_DEFAULT_PROTOCOL)
+            self.assertEqual(result['validationMode'],'installed-default')
+            self.assertEqual(set(result['observations']),{'installed-default'})
+            self.assertFalse(result['observations']['installed-default']['drawingOverridePresent'])
+            self.assertFalse(result['memoryStabilityAssessed'])
+            self.assertNotIn('candidateMinusReference',result)
+            self.assertEqual(launched.call_count,2)
+            self.assertEqual(stages.call_count,1);self.assertEqual(pixels.call_count,1)
+            plan=pixels.call_args.args[2]
+            self.assertEqual(plan['measuredProcessIdentifier'],14)
+            self.assertEqual(plan['ownedExitUptimeSeconds'],50)
+            self.assertEqual(plan['allMeasuredAppsExitUptimeSeconds'],50)
+            self.assertEqual(plan['rawReportSHA256'],'d'*64)
+            self.assertEqual(plan['certificateSHA256'],'c'*64)
+            self.assertEqual(plan['files'],files)
+            for target,key,value in [(measured,'drawingOverridePresent',True),
+                                     (measured,'processIdentifier',13),(measured,'runIdentifier',cert['runIdentifier']),
+                                     (measured_launch,'launchBeganUptimeSeconds',29),
+                                     (cert_launch,'launchBeganUptimeSeconds',9),
+                                     (decode,'processIdentifier',14),(decode,'processIdentifier',11)]:
+                previous=target[key];target[key]=value
+                with self.subTest(key=key,value=value),self.assertRaises(ValueError):check()
+                target[key]=previous
+            verification=self.root/'installed-default/verification';verification.mkdir(parents=True)
+            pixels.reset_mock()
+            self.assertEqual(check('preflight','installed-default')['status'],'preflight')
+            self.assertTrue((verification/'pixel-plan.json').is_file())
+            pixels.assert_not_called()
+            with self.assertRaisesRegex(ValueError,'freshly created'):check('preflight','installed-default')
+
     def test_common_gate_validates_actual_native_deadline_scope_without_allowing_unknown_fields(self):
         source = (SCRIPTS.parent / 'Sources/PicShot/EditableProductResourceFixture.swift').read_text()
         emitted = re.findall(r'"(deadlineScope)": ("(?:[^"\\]|\\.)*")', source)
         self.assertEqual(len(emitted), 1, 'Expected exactly one actual native deadlineScope field')
         field, encoded = emitted[0]
-        for mode, extra in [('certify', P.CERT_FIELDS), ('measure', P.MEASURE_FIELDS)]:
+        for mode, extra in [('certify', P.CERT_FIELDS), ('measure', P.MEASURE_FIELDS), ('installed-default', P.MEASURE_FIELDS)]:
             report = dict.fromkeys(P.COMMON_FIELDS | extra)
             # Take both the key and value from the producer, not a synthetic
             # checker fixture that could repeat an omitted native field.

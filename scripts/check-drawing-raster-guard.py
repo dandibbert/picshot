@@ -97,7 +97,7 @@ def validate(sidecar, native, native_bytes, native_path):
          and digest == hashlib.sha256(native_bytes).hexdigest(), 'Native report SHA256 mismatch')
     for key in ('requestedStrategy', 'selectedStrategy'):
         need(sidecar[key] == 'owned-srgb8', 'Candidate strategy missing: ' + key)
-    need(sidecar['productionDefaultStrategy'] == 'reference', 'Production default changed')
+    need(sidecar['productionDefaultStrategy'] == 'owned-srgb8', 'Production default must be owned-srgb8')
 
     tracker = sidecar['tracker']
     need(type(tracker) is dict and set(tracker) == COUNTERS | {'unsupportedCounts', 'callbackSizesMatch'},
