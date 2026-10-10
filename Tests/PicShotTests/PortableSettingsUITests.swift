@@ -56,7 +56,7 @@ import XCTest
         }
         // A main-queue callback may already own XCTest's stack. Schedule on
         // the run loop so recursive main-queue draining is not required.
-        CFRunLoopPerformBlock(CFRunLoopGetMain(), kCFRunLoopDefaultMode) {
+        CFRunLoopPerformBlock(CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue) {
             MainActor.assumeIsolated {
                 guard state.acceptsCallbacks else { return }
                 let deadline = ProcessInfo.processInfo.systemUptime + 1
