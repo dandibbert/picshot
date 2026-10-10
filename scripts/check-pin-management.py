@@ -196,12 +196,16 @@ def validate_order(order, group):
     need(states == [[a,b,c], [b,a,c], [b,a,c], [a,b,c], [a,c,b], [a,c,b]], 'one-step native order/boundary transition')
     need(o['pickerOrder'] == states[-1], 'picker order detached from stored order')
     for row, (direction, boundary) in zip(array(o['menuEvents'], 5), [('earlier',False), ('earlier',True), ('later',False), ('later',False), ('later',True)]):
-        fields(row, 'itemID boundary enabled opened closed activated postedKeyCount timeoutSeconds windowNumber dispatchRoute disabledDismissedWithEscape')
+        fields(row, 'itemID boundary enabled opened closed activated postedKeyCount timeoutSeconds windowNumber dispatchRoute disabledDismissedWithEscape closeMenuIdentityVerified closedBeforeClickReturn clickReturnElapsedSeconds closedElapsedSeconds')
         need(row['itemID'] == 'pin-group-order-' + direction and row['boundary'] is boundary and row['enabled'] is (not boundary), 'order action/boundary state')
-        yes(row, 'opened closed')
+        yes(row, 'opened closed closeMenuIdentityVerified')
         need(row['activated'] is (not boundary) and row['disabledDismissedWithEscape'] is boundary, 'disabled native menu action fired')
         integer(row['postedKeyCount'], 1, 40); integer(row['windowNumber'], 1)
         need(integer(row['timeoutSeconds']) == 2 and row['dispatchRoute'] == 'owned-mouseDown/native-menu-tracking', 'native menu route/bound')
+        returned, closed = number(row['clickReturnElapsedSeconds']), number(row['closedElapsedSeconds'])
+        need(0 < returned <= 2 and 0 < closed <= 2, 'menu close/return exceeded original deadline')
+        before = row['closedBeforeClickReturn']
+        need(type(before) is bool and (closed <= returned if before else returned <= closed), 'menu close observation ordering')
     row = fields(o['rowSelection'], 'requestedRow selectedRowAfter windowNumber ownedWindowIsKey sameQuartzTimestamp expectedQuartzTimestamp dequeuedQuartzTimestamp eventType dispatchRoute targetPointVisible')
     yes(row, 'ownedWindowIsKey sameQuartzTimestamp targetPointVisible')
     need(integer(row['requestedRow']) == integer(row['selectedRowAfter']) == integer(row['eventType']) == 1, 'native row/type mismatch')

@@ -69,7 +69,9 @@ class PinManagementCheckerTests(unittest.TestCase):
             for direction,boundary in [('earlier',False),('earlier',True),('later',False),('later',False),('later',True)]:
                 order['menuEvents'].append(dict(itemID='pin-group-order-'+direction, boundary=boundary, enabled=not boundary,
                     opened=True, closed=True, activated=not boundary, postedKeyCount=1 if boundary else 3, timeoutSeconds=2,
-                    windowNumber=100, dispatchRoute='owned-mouseDown/native-menu-tracking', disabledDismissedWithEscape=boundary))
+                    windowNumber=100, dispatchRoute='owned-mouseDown/native-menu-tracking', disabledDismissedWithEscape=boundary,
+                    closeMenuIdentityVerified=True, closedBeforeClickReturn=not boundary,
+                    clickReturnElapsedSeconds=0.28, closedElapsedSeconds=0.30 if boundary else 0.25))
             self.r['flows'].append(dict(appearance=mode,text=text,renames=renames,order=order))
             for name,control in C.ACTION_PAIRS:
                 self.r['actions'].append(dict(appearance=mode,action=name,controlID=control,windowNumber=100,
@@ -160,6 +162,17 @@ class PinManagementCheckerTests(unittest.TestCase):
                          lambda r:r['flows'][0]['order']['menuEvents'][1].update(activated=True),
                          lambda r:r['flows'][0]['order']['menuEvents'][0].update(dispatchRoute='sendAction'),
                          lambda r:r['flows'][0]['order']['menuEvents'][0].update(postedKeyCount=41)]:self.reject(mutation)
+        for key in ['closeMenuIdentityVerified', 'closedBeforeClickReturn', 'clickReturnElapsedSeconds', 'closedElapsedSeconds']:
+            self.reject(lambda r,key=key:r['flows'][0]['order']['menuEvents'][0].pop(key))
+        for key in ['clickReturnElapsedSeconds', 'closedElapsedSeconds']:
+            for value in [None, True, False, '0.2', float('nan'), float('inf'), -0.1, 0, 2.000001]:
+                self.reject(lambda r,key=key,value=value:r['flows'][0]['order']['menuEvents'][0].update({key:value}))
+        for value in [False, None, 1, 'true']:
+            self.reject(lambda r,value=value:r['flows'][0]['order']['menuEvents'][0].update(closeMenuIdentityVerified=value))
+        for value in [None, 1, 'true']:
+            self.reject(lambda r,value=value:r['flows'][0]['order']['menuEvents'][0].update(closedBeforeClickReturn=value))
+        self.reject(lambda r:r['flows'][0]['order']['menuEvents'][0].update(closedBeforeClickReturn=False))
+        self.reject(lambda r:r['flows'][0]['order']['menuEvents'][1].update(closedBeforeClickReturn=True))
 
     def test_reject_group_order_selection_and_boundary_tampering(self):
         for mutation in [lambda r:r['flows'][0]['order']['states'][1].reverse(),lambda r:r['flows'][0]['order'].update(callbacks=4),

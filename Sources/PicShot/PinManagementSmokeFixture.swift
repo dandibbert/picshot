@@ -260,7 +260,7 @@ import PicShotCore
         let beforeEntries = try digest(store.entries), initialActive = store.index.activeGroupID
         for (item, boundary) in [("earlier", false), ("earlier", true), ("later", false), ("later", false), ("later", true)] {
             let orderBefore = store.groups.map { $0.id.uuidString }, callbacksBefore = callbackCount
-            do { menuEvents.append(try popup(order, id: "pin-group-order-" + item, boundary: boundary)) }
+            do { menuEvents.append(try await popup(order, id: "pin-group-order-" + item, boundary: boundary)) }
             catch {
                 let state: [String: Any] = ["requestedItem": "pin-group-order-" + item, "boundary": boundary,
                     "orderBefore": orderBefore, "orderAfter": store.groups.map { $0.id.uuidString },
@@ -421,7 +421,7 @@ import PicShotCore
             "fullVisibleFramesChecked": true, "controlsDoNotOverlap": true, "opaqueWindowBackgroundComposited": true, "text": textEvidence]
     }
 
-    private static func popup(_ button: NSPopUpButton, id: String, boundary: Bool) throws -> [String: Any] {
+    private static func popup(_ button: NSPopUpButton, id: String, boundary: Bool) async throws -> [String: Any] {
         let menu = try required(button.menu, "Order menu absent"), window = try required(button.window, "Order window absent")
         menu.delegate?.menuNeedsUpdate?(menu)
         let item = try required(menu.items.first { $0.identifier?.rawValue == id }, "Order item absent")
@@ -430,8 +430,13 @@ import PicShotCore
         probe.previous = previous; menu.delegate = probe
         let timer = Timer(timeInterval: 0.03, repeats: true) { [weak probe] _ in MainActor.assumeIsolated { probe?.tick() } }
         RunLoop.main.add(timer, forMode: .eventTracking)
-        defer { timer.invalidate(); menu.delegate = previous }
+        defer {
+            timer.invalidate()
+            if probe.opened && !probe.closed { menu.cancelTracking() }
+            menu.delegate = previous
+        }
         try PortableSettingsUIPreviewFixture.click(button)
+        try await probe.observeCloseAfterClick()
         let receipt = try JSONSerialization.data(withJSONObject: probe.evidence, options: [.sortedKeys])
         try require(receipt.count <= 32_768, "Order probe receipt byte budget exceeded")
         FileHandle.standardError.write(Data("Pin management menu probe: ".utf8))
@@ -440,7 +445,11 @@ import PicShotCore
                     "Native order tracking failed | probe=" + String(decoding: receipt, as: UTF8.self))
         return ["itemID": id, "boundary": boundary, "enabled": !boundary, "opened": probe.opened, "closed": probe.closed,
             "activated": probe.activated, "postedKeyCount": probe.posted, "timeoutSeconds": 2, "windowNumber": window.windowNumber,
-            "dispatchRoute": "owned-mouseDown/native-menu-tracking", "disabledDismissedWithEscape": boundary]
+            "dispatchRoute": "owned-mouseDown/native-menu-tracking", "disabledDismissedWithEscape": boundary,
+            "closeMenuIdentityVerified": probe.closeMenuIdentityVerified,
+            "closedBeforeClickReturn": probe.closedBeforeClickReturn,
+            "clickReturnElapsedSeconds": try required(probe.clickReturnElapsed, "Menu click return time absent"),
+            "closedElapsedSeconds": try required(probe.closedElapsed, "Menu close callback time absent")]
     }
 
     private static func click(_ button: NSButton, _ name: String, _ mode: String, _ actions: inout [[String: Any]]) throws {
@@ -503,9 +512,11 @@ import PicShotCore
     @MainActor private final class MenuProbe: NSObject, NSMenuDelegate {
         weak var menu: NSMenu?; weak var window: NSWindow?; weak var target: NSMenuItem?
         weak var previous: NSMenuDelegate?
-        let boundary: Bool; private let started = ProcessInfo.processInfo.systemUptime
-        private let deadline = ProcessInfo.processInfo.systemUptime + 2
+        let boundary: Bool; private let started: TimeInterval, deadline: TimeInterval
         var opened = false, closed = false, activated = false, timedOut = false, posted = 0
+        private(set) var closeMenuIdentityVerified = false
+        private(set) var closedBeforeClickReturn = false
+        private(set) var clickReturnElapsed: TimeInterval?, closedElapsed: TimeInterval?
         private var highlighted: NSMenuItem?, entered = false
         private var events: [[String: Any]] = [], omittedEvents = 0
         var evidence: [String: Any] {
@@ -516,7 +527,28 @@ import PicShotCore
              "elapsedSeconds": ProcessInfo.processInfo.systemUptime - started, "timeoutSeconds": 2,
              "maximumPostedEvents": 40, "maximumTraceEvents": 96, "omittedTraceEvents": omittedEvents,
              "windowNumber": window?.windowNumber ?? -1, "windowIsKey": window?.isKeyWindow ?? false,
+             "closedBeforeClickReturn": closedBeforeClickReturn, "closeMenuIdentityVerified": closeMenuIdentityVerified,
+             "clickReturnElapsedSeconds": clickReturnElapsed.map { $0 as Any } ?? NSNull(),
+             "closedElapsedSeconds": closedElapsed.map { $0 as Any } ?? NSNull(),
              "applicationIsActive": NSApp.isActive, "events": events]
+        }
+        // Escape can return from mouseDown before the owned menu's close
+        // callback. Observe that callback within the original deadline; never
+        // replace it with a flag or start a second timeout window.
+        func observeCloseAfterClick() async throws {
+            clickReturnElapsed = ProcessInfo.processInfo.systemUptime - started
+            closedBeforeClickReturn = closed; record("clickReturned")
+            while opened && !closed && !timedOut {
+                let remaining = deadline - ProcessInfo.processInfo.systemUptime
+                if remaining <= 0 { break }
+                try await Task.sleep(nanoseconds: max(1, UInt64(min(0.01, remaining) * 1_000_000_000)))
+            }
+            // Judge the observed callback clock, not a later task-resumption
+            // time. menuDidClose rejects a callback after the original deadline.
+            if !closed || (closedElapsed ?? TimeInterval.infinity) > 2 ||
+                (clickReturnElapsed ?? TimeInterval.infinity) > 2 {
+                timedOut = true; record("closeObservationFailed"); menu?.cancelTracking()
+            }
         }
         private func record(_ kind: String, code: UInt16? = nil) {
             guard events.count < 96 else { omittedEvents += 1; return }
@@ -526,12 +558,19 @@ import PicShotCore
         }
         init(menu: NSMenu, window: NSWindow, item: NSMenuItem, boundary: Bool) {
             self.menu = menu; self.window = window; target = item; self.boundary = boundary
+            let now = ProcessInfo.processInfo.systemUptime; started = now; deadline = now + 2
             super.init(); record("created")
         }
         func menuNeedsUpdate(_ menu: NSMenu) { record("needsUpdate"); previous?.menuNeedsUpdate?(menu) }
         func menuWillOpen(_ menu: NSMenu) { opened = true; record("willOpen"); previous?.menuWillOpen?(menu) }
         func menuDidClose(_ menu: NSMenu) {
-            closed = true; activated = !boundary && entered && highlighted === target
+            guard menu === self.menu && (menu.delegate as AnyObject?) === self else {
+                timedOut = true; record("foreignCloseRejected"); return
+            }
+            let now = ProcessInfo.processInfo.systemUptime
+            closeMenuIdentityVerified = true; closedElapsed = now - started; closed = true
+            if now > deadline { timedOut = true }
+            activated = !boundary && entered && highlighted === target
             record("didClose"); previous?.menuDidClose?(menu)
         }
         func menu(_ menu: NSMenu, willHighlight item: NSMenuItem?) {
