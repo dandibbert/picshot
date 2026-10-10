@@ -4,33 +4,16 @@ import PicShotCore
 import XCTest
 @testable import PicShot
 
+@MainActor private final class SettingsTestApplicationLoop {
+    var result: Result<Void, Error>?
+    var timer: Timer?
+    var acceptsCallbacks = true
+    var activationRequested = false
+}
+
 @MainActor final class PortableSettingsUITests: XCTestCase {
-    private static var preparedStandaloneApplication = false
-    private func isolated(_ body: (UserDefaults, String, Data) throws -> Void) throws {
+    private func isolated(_ body: @escaping @MainActor (UserDefaults, String, Data) throws -> Void) throws {
         _ = NSApplication.shared
-        let originalPolicy = NSApp.activationPolicy()
-        recordHostState("before-preparation")
-        if originalPolicy == .prohibited {
-            XCTAssertTrue(NSApp.setActivationPolicy(.accessory), "Native Settings interaction requires an activatable owned application")
-        }
-        defer {
-            if NSApp.activationPolicy() != originalPolicy { _ = NSApp.setActivationPolicy(originalPolicy) }
-            recordHostState("policy-restored")
-        }
-        if !Self.preparedStandaloneApplication {
-            if !NSApp.isRunning {
-                // XCTest creates NSApplication without running its launch
-                // lifecycle. Finish only this otherwise-empty owned host;
-                // never invoke an application delegate or file-open request.
-                _ = try XCTUnwrap(NSApp.delegate == nil ? true : nil,
-                    "Standalone UI test host unexpectedly has an application delegate")
-                _ = try XCTUnwrap(UserDefaults.standard.object(forKey: "NSOpen") == nil ? true : nil,
-                    "Standalone UI test host unexpectedly has a file-open request")
-                NSApp.finishLaunching()
-            }
-            Self.preparedStandaloneApplication = true
-        }
-        recordHostState("after-preparation")
         let suite = "PicShot-PortableSettingsUITests-" + UUID().uuidString, donorSuite = suite + "-donor"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite)), donor = try XCTUnwrap(UserDefaults(suiteName: donorSuite))
         let appearance = NSApp.appearance
@@ -39,12 +22,77 @@ import XCTest
         ScreenshotPreferences.save(.init(delay: .threeSeconds, showsCursor: true), to: donor)
         var keys = HotKeyConfiguration.defaults
         keys[.capture] = .init(keyCode: 6, modifiers: UInt32(cmdKey | controlKey)); try keys.save(to: donor)
-        try body(defaults, suite, PortableSettingsStore(defaults: donor, persistentDomainName: donorSuite).exportData())
+        let incoming = try PortableSettingsStore(defaults: donor, persistentDomainName: donorSuite).exportData()
+        try withApplicationLoop { try body(defaults, suite, incoming) }
+    }
+
+    private func withApplicationLoop(_ body: @escaping @MainActor () throws -> Void) throws {
+        // Never stop or reconfigure an application loop owned by another host.
+        if NSApp.isRunning { try body(); return }
+        _ = try XCTUnwrap(NSApp.modalWindow == nil && NSApp.delegate == nil ? true : nil,
+            "Standalone UI host unexpectedly has a modal window or application delegate")
+        _ = try XCTUnwrap(UserDefaults.standard.object(forKey: "NSOpen") == nil ? true : nil,
+            "Standalone UI host unexpectedly has a file-open request")
+        let originalPolicy = NSApp.activationPolicy()
+        recordHostState("before-preparation")
+        let state = SettingsTestApplicationLoop()
+        defer {
+            state.acceptsCallbacks = false; state.timer?.invalidate(); state.timer = nil
+            if NSApp.activationPolicy() != originalPolicy { _ = NSApp.setActivationPolicy(originalPolicy) }
+            XCTAssertEqual(NSApp.activationPolicy(), originalPolicy)
+            recordHostState("policy-restored")
+        }
+        if originalPolicy == .prohibited {
+            _ = try XCTUnwrap(NSApp.setActivationPolicy(.accessory) ? true : nil,
+                "Native Settings interaction requires an activatable owned application")
+        }
+        let wake = try XCTUnwrap(NSEvent.otherEvent(with: .applicationDefined, location: .zero,
+            modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: 0,
+            context: nil, subtype: 0, data1: 0, data2: 0))
+        func finish(_ result: Result<Void, Error>) {
+            guard state.acceptsCallbacks, state.result == nil else { return }
+            state.timer?.invalidate(); state.timer = nil; state.result = result
+            NSApp.stop(nil); NSApp.postEvent(wake, atStart: true)
+        }
+        // A main-queue callback may already own XCTest's stack. Schedule on
+        // the run loop so recursive main-queue draining is not required.
+        CFRunLoopPerformBlock(CFRunLoopGetMain(), kCFRunLoopDefaultMode) {
+            MainActor.assumeIsolated {
+                guard state.acceptsCallbacks else { return }
+                let deadline = ProcessInfo.processInfo.systemUptime + 1
+                let timer = Timer(timeInterval: 0.01, repeats: true) { _ in
+                    MainActor.assumeIsolated {
+                        guard state.acceptsCallbacks, state.result == nil else { return }
+                        if NSApp.isRunning && !state.activationRequested {
+                            state.activationRequested = true
+                            NSApp.activate(ignoringOtherApps: true)
+                            self.recordHostState("owned-loop-started")
+                        }
+                        if NSApp.isRunning && NSApp.isActive {
+                            state.timer?.invalidate(); state.timer = nil
+                            self.recordHostState("body-admitted")
+                            finish(Result { try body() })
+                        } else if ProcessInfo.processInfo.systemUptime >= deadline {
+                            self.recordHostState("host-readiness-failed")
+                            finish(.failure(NSError(domain: "PicShot.SettingsUITestHost", code: 1,
+                                userInfo: [NSLocalizedDescriptionKey: "Owned application loop did not become active within one second"])))
+                        }
+                    }
+                }
+                state.timer = timer; RunLoop.main.add(timer, forMode: .default)
+            }
+        }
+        CFRunLoopWakeUp(CFRunLoopGetMain())
+        NSApp.run()
+        state.acceptsCallbacks = false; state.timer?.invalidate(); state.timer = nil
+        recordHostState("owned-loop-returned")
+        XCTAssertFalse(NSApp.isRunning)
+        try XCTUnwrap(state.result, "Owned application loop exited before its test body completed").get()
     }
 
     private func recordHostState(_ phase: String, window: NSWindow? = nil) {
         let observation: [String: Any] = ["phase": phase, "test": name,
-            "launchPrepared": Self.preparedStandaloneApplication, "applicationIsActive": NSApp.isActive,
+            "applicationIsActive": NSApp.isActive,
             "applicationIsRunning": NSApp.isRunning, "activationPolicy": NSApp.activationPolicy().rawValue,
             "keyWindowNumber": NSApp.keyWindow?.windowNumber ?? -1,
             "ownedWindowNumber": window?.windowNumber ?? -1, "ownedWindowIsKey": window?.isKeyWindow ?? false]
@@ -65,7 +113,7 @@ import XCTest
             let controller = SettingsController(onChange: { changes += 1 }, defaults: defaults, isSmoke: false,
                 validateImportedHotkeys: { _ in validations += 1 }, defaultsDomainName: suite)
             defer { controller.close() }
-            let window = try readyWindow(controller, appearance: .aqua)
+            let window = try self.readyWindow(controller, appearance: .aqua)
             try PortableSettingsUIPreviewFixture.select(.annotations, in: controller)
             let evidence = ProcessInfo.processInfo.environment["CI"] == "true"
                 ? URL(fileURLWithPath: FileManager.default.currentDirectoryPath).resolvingSymlinksInPath()
@@ -95,7 +143,7 @@ import XCTest
             let controller = SettingsController(onChange: { changes += 1 }, defaults: defaults, isSmoke: false,
                 validateImportedHotkeys: { _ in validations += 1 }, defaultsDomainName: suite)
             defer { controller.close() }
-            let window = try readyWindow(controller, appearance: .aqua)
+            let window = try self.readyWindow(controller, appearance: .aqua)
             let review = try controller.reviewPortableSettingsImport(incoming)
             controller.portableSettingsStore.beforeWrite = { _ in writes += 1 }
             try PortableSettingsUIPreviewFixture.click(review.applyButton)
@@ -115,7 +163,7 @@ import XCTest
                 let controller = SettingsController(onChange: { changes += 1 }, defaults: defaults, isSmoke: false,
                     validateImportedHotkeys: { _ in if kind == "os" { throw PortableSettingsError.conflict } }, defaultsDomainName: suite)
                 defer { controller.close() }
-                let window = try readyWindow(controller, appearance: .aqua)
+                let window = try self.readyWindow(controller, appearance: .aqua)
                 let review = try controller.reviewPortableSettingsImport(incoming)
                 if kind == "stale" { defaults.set(5, forKey: ScreenshotPreferences.delayKey) }
                 let before = defaults.persistentDomain(forName: suite) ?? [:]
@@ -136,7 +184,7 @@ import XCTest
         try isolated { defaults, suite, incoming in
             let controller = SettingsController(onChange: { XCTFail("Closing must not apply") }, defaults: defaults, isSmoke: false, defaultsDomainName: suite)
             defer { controller.close() }
-            let window = try readyWindow(controller, appearance: .aqua)
+            let window = try self.readyWindow(controller, appearance: .aqua)
             XCTAssertThrowsError(try controller.reviewPortableSettingsImport(Data("{}".utf8)))
             XCTAssertNil(controller.portableImportReview); XCTAssertNil(window.attachedSheet)
             let review = try controller.reviewPortableSettingsImport(incoming)
@@ -170,7 +218,7 @@ import XCTest
             for appearance in [NSAppearance.Name.aqua, .darkAqua] {
                 let controller = SettingsController(onChange: {}, defaults: defaults, isSmoke: false, defaultsDomainName: suite)
                 defer { controller.close() }
-                let window = try readyWindow(controller, appearance: appearance)
+                let window = try self.readyWindow(controller, appearance: appearance)
                 for category in [SettingsCategory.annotations, .configuration] {
                     try PortableSettingsUIPreviewFixture.select(category, in: controller)
                     XCTAssertEqual(try PortableSettingsUIPreviewFixture.layout(window)["fullVisibleFramesChecked"] as? Bool, true)

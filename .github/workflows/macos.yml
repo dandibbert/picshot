@@ -135,6 +135,71 @@ jobs:
           for picshot_contract_pattern in '*drawing*.py' test_check_editable_product_resource.py test_editable_product_source_binding.py; do
             PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p "$picshot_contract_pattern" -v 2>&1 | tee -a dist/installed-default-contracts-optimized.log
           done
+      - name: Prepare verified codec dependencies before native tests
+        timeout-minutes: 15
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 840
+          --log dist/native-dependencies-preflight.log --report dist/native-dependencies-preflight-report.json
+          -- python3 scripts/build-native-codecs.py --arch ${{ matrix.arch }}
+      # Native test-host readiness is the current blocker. Run the same existing
+      # compilation, discovery and 17-method reproduction before release packaging.
+      # No command, selector, deadline or later installer gate is removed.
+      # Keep compilation outside the eight-minute execution gates. Inner
+      # deadlines leave time for process cleanup and report/log publication.
+      - name: Compile debug app
+        timeout-minutes: 8
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 420
+          --log dist/debug-build.log --report dist/debug-build-report.json
+          -- swift build --product PicShot
+      - name: Upload debug compilation evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Debug-Compile-${{ matrix.arch }}-${{ github.sha }}
+          path: |
+            dist/debug-build.log
+            dist/debug-build-report.json
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Compile native tests
+        timeout-minutes: 10
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 540
+          --log dist/test-build.log --report dist/test-build-report.json
+          -- swift build --build-tests
+      - name: Build dedicated native codec helper for actual lifecycle tests
+        run: swift build --product PicShotCodecHelper
+      - name: Plan exhaustive and focused native test processes
+        timeout-minutes: 2
+        run: |
+          python3 -m unittest discover -s scripts/tests -p test_native_test_shards.py -v
+          python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/native-test-discovery.log --report dist/native-test-discovery-report.json -- swift test list --skip-build
+          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$NATIVE_TEST_PROCESS_COUNT" --output dist/native-tests-plan.json
+          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$FOCUSED_TEST_PROCESS_COUNT" --selection-regex 'PortableSettings|AnnotationToolbarOrder|DrawingRaster|EditableProductResource|EditableProductRetirement|EditableComponent|PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|AnnotationEditing|CaptureAspectRatio|CaptureRatio|MultiWindow|ImageOutputDecoration|EditorOutput|PinOriginalCurrent|ManualScroll|ScrollPreview|ScrollSequencePreview|AnnotationFreehand|AnnotationTextLine|NumberedCallout|AutomaticMosaic|RepeatedRegion|AutomaticPinOCR|PinOCR|TextResultSourceSelection|PinWorkflow|LaTeXPin|PinLaTeX|PinGroup|PinDesktop|EditorToolbarHierarchy|SaveWorkflow|OwnedVideoExportStage|ImageBacking|Codec|NativeExport|AnimatedWebP|WebPContainer|RecordingWebP|CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingInput|RecordingHotKey|RecordingTransport|RecordingCommandCoordinator|SettingsAndMenuTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' --output dist/focused-tests-plan.json
+      - name: Reproduce settings interaction and recording regressions
+        # Additive early reproduction: the five recording IDs and twelve existing
+        # settings UI IDs still execute in focused/full gates. Keep 420s caps.
+        timeout-minutes: 16
+        run: |
+          set -o pipefail
+          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count 2 --selection-regex '^PicShotTests\.(RecordingInputExportTests/testAuthoredInputTrimPreservesAllSelectedPixelsAndPacketBoundaries|RecordingInputExportTests/testInteriorSelectionAndSamplingIncludeExpiryResumeAndFrozenStop|RecordingInputExportTests/testPixelOracleUsesTopDownRGBAAndDetectsEffectRelocationAndExpiry|RecordingInputExportTests/testFixtureRequiresAcceptedOriginalReportBeforeLaunchingHelpers|RecordingCommandCoordinatorTests/testExpandCollapseAndDisplayChangesRetainOneOwnerWithoutClosingSession|AnnotationToolbarOrderUITests/[^/]+|PortableSettingsUITests/[^/]+)$' --output dist/recording-regression-plan.json
+          execution_status=0
+          for shard in 0 1; do
+            python3 scripts/native-test-shards.py run --plan dist/recording-regression-plan.json --expected-source "$GITHUB_SHA" --index "$shard" --directory dist/evidence/recording-018-regression || execution_status=1
+          done
+          python3 scripts/native-test-shards.py check --plan dist/recording-regression-plan.json --expected-source "$GITHUB_SHA" --directory dist/evidence/recording-018-regression --output dist/recording-regression-report.json
+          test "$execution_status" -eq 0
+      - name: Upload test compilation evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Test-Compile-${{ matrix.arch }}-${{ github.sha }}
+          path: |
+            dist/test-build.log
+            dist/test-build-report.json
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Package signed native app for early pixel review
         run: |
           mkdir -p dist
@@ -188,39 +253,6 @@ jobs:
             dist/evidence/image-backing/
           if-no-files-found: ignore
           retention-days: 14
-      # Keep compilation outside the eight-minute execution gates. Inner
-      # deadlines leave time for process cleanup and report/log publication.
-      - name: Compile debug app
-        timeout-minutes: 8
-        run: >-
-          python3 scripts/run-bounded-command.py --timeout-seconds 420
-          --log dist/debug-build.log --report dist/debug-build-report.json
-          -- swift build --product PicShot
-      - name: Upload debug compilation evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: PicShot-Debug-Compile-${{ matrix.arch }}-${{ github.sha }}
-          path: |
-            dist/debug-build.log
-            dist/debug-build-report.json
-          if-no-files-found: ignore
-          retention-days: 14
-      - name: Compile native tests
-        timeout-minutes: 10
-        run: >-
-          python3 scripts/run-bounded-command.py --timeout-seconds 540
-          --log dist/test-build.log --report dist/test-build-report.json
-          -- swift build --build-tests
-      - name: Build dedicated native codec helper for actual lifecycle tests
-        run: swift build --product PicShotCodecHelper
-      - name: Plan exhaustive and focused native test processes
-        timeout-minutes: 2
-        run: |
-          python3 -m unittest discover -s scripts/tests -p test_native_test_shards.py -v
-          python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/native-test-discovery.log --report dist/native-test-discovery-report.json -- swift test list --skip-build
-          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$NATIVE_TEST_PROCESS_COUNT" --output dist/native-tests-plan.json
-          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$FOCUSED_TEST_PROCESS_COUNT" --selection-regex 'PortableSettings|AnnotationToolbarOrder|DrawingRaster|EditableProductResource|EditableProductRetirement|EditableComponent|PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|AnnotationEditing|CaptureAspectRatio|CaptureRatio|MultiWindow|ImageOutputDecoration|EditorOutput|PinOriginalCurrent|ManualScroll|ScrollPreview|ScrollSequencePreview|AnnotationFreehand|AnnotationTextLine|NumberedCallout|AutomaticMosaic|RepeatedRegion|AutomaticPinOCR|PinOCR|TextResultSourceSelection|PinWorkflow|LaTeXPin|PinLaTeX|PinGroup|PinDesktop|EditorToolbarHierarchy|SaveWorkflow|OwnedVideoExportStage|ImageBacking|Codec|NativeExport|AnimatedWebP|WebPContainer|RecordingWebP|CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingInput|RecordingHotKey|RecordingTransport|RecordingCommandCoordinator|SettingsAndMenuTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' --output dist/focused-tests-plan.json
       - name: Reproduce the exact pin Apply regression before broader native gates
         # Method first, then its four-method class. Each keeps 420s native,
         # 5s TERM grace and 8MiB log cap: 2 * (420s + 10s cleanup) + 60s = 920s.
@@ -336,29 +368,6 @@ jobs:
           finally:
               (root/'regression-report.json').write_text(json.dumps(record, indent=2)+'\n')
           PYTHON
-      - name: Reproduce settings interaction and recording regressions
-        # Additive early reproduction: the five recording IDs and twelve existing
-        # settings UI IDs still execute in focused/full gates. Keep 420s caps.
-        timeout-minutes: 16
-        run: |
-          set -o pipefail
-          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count 2 --selection-regex '^PicShotTests\.(RecordingInputExportTests/testAuthoredInputTrimPreservesAllSelectedPixelsAndPacketBoundaries|RecordingInputExportTests/testInteriorSelectionAndSamplingIncludeExpiryResumeAndFrozenStop|RecordingInputExportTests/testPixelOracleUsesTopDownRGBAAndDetectsEffectRelocationAndExpiry|RecordingInputExportTests/testFixtureRequiresAcceptedOriginalReportBeforeLaunchingHelpers|RecordingCommandCoordinatorTests/testExpandCollapseAndDisplayChangesRetainOneOwnerWithoutClosingSession|AnnotationToolbarOrderUITests/[^/]+|PortableSettingsUITests/[^/]+)$' --output dist/recording-regression-plan.json
-          execution_status=0
-          for shard in 0 1; do
-            python3 scripts/native-test-shards.py run --plan dist/recording-regression-plan.json --expected-source "$GITHUB_SHA" --index "$shard" --directory dist/evidence/recording-018-regression || execution_status=1
-          done
-          python3 scripts/native-test-shards.py check --plan dist/recording-regression-plan.json --expected-source "$GITHUB_SHA" --directory dist/evidence/recording-018-regression --output dist/recording-regression-report.json
-          test "$execution_status" -eq 0
-      - name: Upload test compilation evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: PicShot-Test-Compile-${{ matrix.arch }}-${{ github.sha }}
-          path: |
-            dist/test-build.log
-            dist/test-build-report.json
-          if-no-files-found: ignore
-          retention-days: 14
       - name: Check annotation, GIF, recording durability and inference boundaries
         # Intel: 4 * (420s command + 10s cleanup allowance) + 60s stage overhead
         # = 1780s within 30 minutes. ARM keeps two processes within 16 minutes.
