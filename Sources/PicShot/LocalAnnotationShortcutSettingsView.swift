@@ -32,7 +32,7 @@ import AppKit
         captureButton.onCapture = { [weak self] binding in
             guard let self, let tool = self.selectedTool else { return }
             self.draft = try self.draft.replacing(tool, with: binding)
-            self.tableView.reloadData(); self.refreshControls(updateCapture: false)
+            self.reloadTools(preserving: tool)
             self.showStatus("已设置 \(tool.title)：\(binding.displayName)；保存设置后，下次打开编辑器生效。", error: false)
             self.onChange?()
         }
@@ -53,13 +53,14 @@ import AppKit
             stack.topAnchor.constraint(equalTo: topAnchor), stack.bottomAnchor.constraint(equalTo: bottomAnchor),
             scroll.widthAnchor.constraint(equalTo: stack.widthAnchor), statusLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
             help.widthAnchor.constraint(equalTo: stack.widthAnchor)])
-        tableView.reloadData(); selectTool(.select)
+        reloadTools(preserving: .select)
         showStatus("选择工具后点击“设置快捷键”；Esc 取消录入，Delete 清除当前绑定。", error: false)
         captureButton.onClear = { [weak self] in self?.clearSelected() }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     func apply(settings: LocalAnnotationShortcutSettings) {
-        cancelRecording(); draft = settings; tableView.reloadData(); refreshControls()
+        let tool = selectedTool ?? .select
+        cancelRecording(); draft = settings; reloadTools(preserving: tool)
         showStatus("更改在保存设置后，下次打开编辑器生效。", error: false)
     }
     func cancelRecording() { captureButton.cancelRecording() }
@@ -67,6 +68,12 @@ import AppKit
         guard let row = ImageEditorTool.allCases.firstIndex(of: tool) else { return }
         cancelRecording(); tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         tableView.scrollRowToVisible(row); refreshControls()
+    }
+    /// With nonempty selection required, a native reload may select the first
+    /// row. Restore semantic tool identity before refreshing controls/callbacks,
+    /// so the next recorder or Clear action still addresses the chosen tool.
+    private func reloadTools(preserving tool: ImageEditorTool) {
+        tableView.reloadData(); selectTool(tool)
     }
     func numberOfRows(in tableView: NSTableView) -> Int { ImageEditorTool.allCases.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -78,10 +85,10 @@ import AppKit
         return label
     }
     func tableViewSelectionDidChange(_ notification: Notification) { cancelRecording(); refreshControls() }
-    private func refreshControls(updateCapture: Bool = true) {
+    private func refreshControls() {
         let binding = selectedTool.flatMap { draft[$0] }
         captureButton.isEnabled = selectedTool != nil
-        if updateCapture { captureButton.setBinding(binding) }
+        captureButton.setBinding(binding)
         captureButton.setAccessibilityLabel((selectedTool?.title ?? "标注工具") + "本地快捷键")
         clearButton.isEnabled = binding != nil
         restoreDefaultsButton.isEnabled = draft != .defaults
@@ -93,7 +100,7 @@ import AppKit
     @objc private func clearSelected() {
         cancelRecording()
         guard let tool = selectedTool, draft[tool] != nil, let next = try? draft.replacing(tool, with: nil) else { return }
-        draft = next; tableView.reloadData(); refreshControls()
+        draft = next; reloadTools(preserving: tool)
         showStatus("已清除 \(tool.title) 的草稿绑定；点击保存设置后生效。", error: false); onChange?()
     }
     @objc private func restoreDefaults() {
