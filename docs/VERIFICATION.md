@@ -1,5 +1,11 @@
 # Verification evidence and release boundary
 
+## Build 193 pin-management candidate: test callback compilation failure
+
+Source `d9c622ce50912e71be950a35420b1241b88e19ff`, tree `f9c04ccc29cf31f8952cbd2dc1816000b22646cc`, [run 38068429670](https://github.com/dandibbert/picshot/actions/runs/38068429670), clears both corrected pre-compile contracts and compiles the ARM application. Test compilation exits 1 after 85.314 seconds, without timeout or log truncation. Exactly two unique compiler errors occur at `PinGroupOrderNativeTests.swift:45:38` and `:262:40`: `XCTAssertNoThrow` around the throwing reconciliation call makes the assigned callback throwing, but `onSessionChange` requires a nonthrowing closure. Native execution, UI and installer checks do not run, so this candidate is unaccepted. Intel is still running independently at the correction checkpoint; no Intel acceptance is inferred.
+
+The narrow test correction uses explicit `do/catch` with `XCTFail`, rejects a missing required weak session, and installs the optional fixture callback only when a session exists. Original reconciliation, counts, rapid-action, selection and pixel assertions remain. Product source, native method IDs and all resource/time limits are unchanged. Accepted ARM remains 0.20.0/build191 pending fresh complete qualification.
+
 ## Build 192 pin-management candidate: pre-compile source guard failure
 
 The authored 0.21 candidate `fcafaf2afcca4e8c28ec0e78b53f36d24ea37fcf`, tree `5afb75d3c40606b473fdcd472bb29539c2b71448`, [run 38068022192](https://github.com/dandibbert/picshot/actions/runs/38068022192), is not accepted. ARM fails before compilation in `DrawingPairSourceBinding.test_existing_validators_public_routes_storage_and_component_work_are_unchanged`: the historical whole-file `PinSessionStore.swift` digest predates the intentional plain-text transaction and group-order additions. The source-contract group reports 62 tests and one failure; native, model and installed gates are unrun. Accepted ARM remains 0.20.0/build191. Intel outcome is independent.

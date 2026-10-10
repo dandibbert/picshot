@@ -44,7 +44,9 @@ import PicShotCore
         defer { subscription.cancel() }
         f.controller.onSessionChange = { [weak session = f.session] in
             reconciliations += 1
-            XCTAssertNoThrow(try session?.reconcileVisiblePins())
+            guard let session else { XCTFail("Group-order reconciliation lost its session"); return }
+            do { try session.reconcileVisiblePins() }
+            catch { XCTFail("Group-order reconciliation failed: \(error)") }
         }
         let earlier = try orderItem("earlier", in: f.controller), later = try orderItem("later", in: f.controller)
         for _ in 0..<20 {
@@ -259,7 +261,13 @@ import PicShotCore
                 ocrPreferences: PinOCRPreferences(defaults: nil)) : nil
             try session?.reconcileVisiblePins()
             let controller = PinGroupsController(store: store, transforms: session?.groupTransforms)
-            controller.onSessionChange = { [weak session] in XCTAssertNoThrow(try session?.reconcileVisiblePins()) }
+            if let session {
+                controller.onSessionChange = { [weak session] in
+                    guard let session else { XCTFail("Group-order fixture lost its session"); return }
+                    do { try session.reconcileVisiblePins() }
+                    catch { XCTFail("Group-order fixture reconciliation failed: \(error)") }
+                }
+            }
             return PinGroupOrderFixture(directory: directory, store: store, controller: controller, session: session,
                            groupIDs: [PinGroup.defaultID, first.id, selected.id, last.id], pinIDs: pins)
         } catch { try? FileManager.default.removeItem(at: directory); throw error }
