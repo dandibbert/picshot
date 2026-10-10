@@ -140,12 +140,21 @@ import PicShotCore
         connect(controller, id: entry.id); present(controller)
     }
     private func connect(_ controller: RichPinController, id: UUID) {
+        if let title = store.entry(id: id)?.title { controller.applySavedTitle(title) }
         controller.applyDesktopVisibility(desktopVisibility)
         controller.onDesktopVisibilityChange = { [weak self, weak controller] mode in
             guard let self, let controller, self.richControllers[id] === controller else { return }
             self.setDesktopVisibility(mode)
         }
         precondition(!livePinIDs.contains(id)); richControllers[id] = controller
+        controller.onRename = { [weak self, weak controller] title, expectedTitle in
+            guard let self, let controller, self.richControllers[id] === controller, !self.terminated else { throw CancellationError() }
+            try self.renamePin(id: id, title: title, expectedTitle: expectedTitle)
+        }
+        controller.onUpdateText = { [weak self, weak controller] content, expectedContent in
+            guard let self, let controller, self.richControllers[id] === controller, !self.terminated else { throw CancellationError() }
+            try self.store.updateText(id: id, content: content, expectedContent: expectedContent)
+        }
         controller.onToggleGroupSelection = { [weak self] in self?.groupTransforms.toggleSelection(id: id) }
         controller.onShowGroupTransform = { [weak self] in self?.groupTransforms.showEditor() }
         controller.onClose = { [weak self, weak controller] in
@@ -240,7 +249,19 @@ import PicShotCore
         for entry in entries where !livePinIDs.contains(entry.id) {
             do { try load(entry) } catch { firstError = firstError ?? error }
         }
+        for entry in entries {
+            liveControllers[entry.id]?.applySavedTitle(entry.title)
+            richControllers[entry.id]?.applySavedTitle(entry.title)
+        }
         if let firstError { throw firstError }
+    }
+
+    private func renamePin(id: UUID, title: String, expectedTitle: String) throws {
+        guard let entry = store.entry(id: id) else { throw PinSessionError.missingPin }
+        guard entry.title == expectedTitle else {
+            throw PicShotError.message("贴图名称已在别处改变。请取消后重新打开重命名。")
+        }
+        try store.renamePin(id: id, title: title)
     }
 
     /// Synchronous flush is also used on hide, switch and exit, so the debounce cannot
@@ -292,6 +313,11 @@ import PicShotCore
             globalProjection: EditorOutputProjection.shared.reservedBytes, work: workBytes)
     }
     private func connect(_ controller: PinController, id: UUID) {
+        if let title = store.entry(id: id)?.title { controller.applySavedTitle(title) }
+        controller.onRename = { [weak self, weak controller] title, expectedTitle in
+            guard let self, let controller, self.liveControllers[id] === controller, !self.terminated else { throw CancellationError() }
+            try self.renamePin(id: id, title: title, expectedTitle: expectedTitle)
+        }
         controller.configureEditableCapture(available: store.entry(id: id)?.editableCapture != nil,
             loadForWork: { [weak self, weak controller] work in
                 guard let self, let controller, self.liveControllers[id] === controller, !self.terminated else { throw CancellationError() }

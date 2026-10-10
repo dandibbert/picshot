@@ -208,7 +208,7 @@ exit "${PICSHOT_TEST_DITTO_EXIT:-97}"
     def extraction_root(self, script):
         arguments = self.arguments.read_text().splitlines()
         archive = str(self.archive) if script == 'codec-fidelity-installed' else (
-            'dist/PicShot-0.20.0-macos-' + os.uname().machine + '.zip')
+            'dist/PicShot-0.21.0-macos-' + os.uname().machine + '.zip')
         self.assertEqual(len(arguments), 4)
         self.assertEqual(arguments[:3], ['-x', '-k', archive])
         destination = Path(arguments[3])

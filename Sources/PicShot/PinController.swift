@@ -99,6 +99,10 @@ struct PinImageState {
     /// Original capture, kept compatible with the application's pin bookkeeping.
     let image: CGImage
     var onClose: (() -> Void)?
+    /// Metadata commits are checked by the session before changing the live title.
+    var onRename: ((String, String) throws -> Void)?
+    private(set) var pinTitle = "贴图"
+    private(set) var renameController: PinRenameController?
     /// Invoked before accepting an edit. A persistence failure leaves the live image unchanged.
     var onPixelChange: ((CGImage, Bool) throws -> Void)?
     var onEditablePixelChange: ((CGImage, EditableCapturePayload) throws -> Void)?
@@ -172,7 +176,7 @@ struct PinImageState {
     var onShowGroupTransform: (() -> Void)?
     private(set) var isGroupSelected = false
     var canParticipateInGroupTransform: Bool {
-        !closed && !temporarilyHidden && annotationEditor == nil && !exportInProgress && !locked && window?.ignoresMouseEvents != true
+        !closed && !temporarilyHidden && annotationEditor == nil && renameController == nil && !exportInProgress && !locked && window?.ignoresMouseEvents != true
     }
     func setGroupSelected(_ selected: Bool) {
         isGroupSelected = selected
@@ -182,6 +186,38 @@ struct PinImageState {
     }
     @objc private func toggleGroupSelection() { onToggleGroupSelection?() }
     @objc private func showGroupTransform() { onShowGroupTransform?() }
+
+    func applySavedTitle(_ title: String) {
+        guard PinSessionIndex.validName(title, limit: 120) else { return }
+        pinTitle = title; updateTitle()
+    }
+
+    @objc func renamePin() {
+        guard !closed, !temporarilyHidden, onRename != nil,
+              annotationEditor == nil, !exportInProgress, let window else { return }
+        if let renameController {
+            renameController.window?.makeKeyAndOrderFront(nil); return
+        }
+        let expectedTitle = pinTitle
+        let editor = PinRenameController(title: expectedTitle) { [weak self] title in
+            guard let self, !self.closed, !self.temporarilyHidden,
+                  let commit = self.onRename else { throw CancellationError() }
+            try commit(title, expectedTitle)
+            guard !self.closed, !self.temporarilyHidden else { return }
+            self.applySavedTitle(title.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        editor.onDismiss = { [weak self, weak editor] in
+            guard let self, self.renameController === editor else { return }
+            self.renameController = nil
+        }
+        renameController = editor
+        if !editor.presentSheet(for: window) { dismissRename() }
+    }
+
+    private func dismissRename() {
+        let editor = renameController; renameController = nil
+        editor?.onDismiss = nil; editor?.close()
+    }
     var onPresentationChange: ((PinPresentation) -> Void)?
     var onDesktopVisibilityChange: ((PinDesktopVisibility) -> Void)? {
         didSet { desktopVisibilityMenu.onSelect = onDesktopVisibilityChange }
@@ -313,6 +349,8 @@ struct PinImageState {
 
     private func makeActionMenu() -> NSMenu {
         let menu = NSMenu(); menu.delegate = self
+        let rename = addItem("重命名贴图…", action: #selector(renamePin), to: menu)
+        rename.identifier = NSUserInterfaceItemIdentifier("pin.rename")
         let select = menu.addItem(withTitle: "加入组合选择", action: #selector(toggleGroupSelection), keyEquivalent: "")
         select.target = self; select.identifier = NSUserInterfaceItemIdentifier("pin-group-select")
         select.toolTip = "组合移动 / 缩放请使用菜单；直接拖动或拉伸仍只改变当前贴图"
@@ -382,6 +420,9 @@ struct PinImageState {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         for item in menu.items {
+            if item.action == #selector(renamePin) {
+                item.isEnabled = !closed && onRename != nil && annotationEditor == nil && !exportInProgress
+            }
             if item.action == #selector(transformImage(_:)), PinTransform.allCases.indices.contains(item.tag) {
                 item.title = PinTransform.allCases[item.tag].title + (hasEditableCapture ? "（合并标注）" : "")
                 item.toolTip = hasEditableCapture ? "处理已保存的当前图像并合并已有标注；原始图片仍可单独复制或重置。" : nil
@@ -520,6 +561,7 @@ struct PinImageState {
     func hideTemporarily() {
         guard !closed else { return }
         temporarilyHidden = true
+        dismissRename()
         revealAnnotations(); suspendOCR()
         imageExportController?.cancelExport(); imageExportController = nil
         setBarcodeSelectionEnabled(false)
@@ -1043,12 +1085,13 @@ struct PinImageState {
         if locked { window?.styleMask.remove(.resizable) } else { window?.styleMask.insert(.resizable) }
         updateTitle(); presentationDidChange()
     }
-    @objc private func clickThrough() { window?.ignoresMouseEvents = true; suspendOCR(); setBarcodeSelectionEnabled(false); setCropping(false); annotationEditor?.close(); presentationDidChange() }
+    @objc private func clickThrough() { dismissRename(); window?.ignoresMouseEvents = true; suspendOCR(); setBarcodeSelectionEnabled(false); setCropping(false); annotationEditor?.close(); presentationDidChange() }
     @objc private func closePin() { close() }
 
     /// Metadata-only: never reconstruct a controller or decode/render content.
     func applyDesktopVisibility(_ mode: PinDesktopVisibility) {
         guard !closed else { return }
+        if desktopVisibility != mode { dismissRename() }
         desktopVisibility = mode; desktopVisibilityMenu.mode = mode
         PinDesktopVisibilityPolicy.apply(mode, to: window)
         PinDesktopVisibilityPolicy.apply(mode, to: annotationEditor?.window)
@@ -1070,6 +1113,7 @@ struct PinImageState {
         applyingPresentation = true
         defer { applyingPresentation = false }
         let value = value.normalized()
+        if value.clickThrough { dismissRename() }
         // Set the frame before locking; NSWindow may enforce its content minimum size.
         window?.setFrame(value.frame.rect, display: true)
         window?.alphaValue = value.opacity
@@ -1099,6 +1143,7 @@ struct PinImageState {
     func windowDidResize(_ notification: Notification) { updateLayout(); updateTitle(); presentationDidChange() }
     func windowWillClose(_ notification: Notification) {
         guard !closed else { return }; closed = true
+        dismissRename(); onRename = nil
         revealAnnotations(); transientEditableCapture = nil; loadEditableCapture = nil; editableWorkAdmission = nil; hasEditableCapture = false
         onEditablePixelChange = nil; onAnnotationError = nil
         if let exportCloseObserver { NotificationCenter.default.removeObserver(exportCloseObserver) }; exportCloseObserver = nil
@@ -1129,7 +1174,7 @@ struct PinImageState {
     private func updateTitle() {
         let suffix = canvas.isCropping ? " · 拖动选择，回车裁剪 / Esc 取消" : (locked ? " · 已锁定" : "")
         let edited = (state.isModified ? " · 已修改" : "") + (annotationsHidden ? " · 标注仅预览隐藏，复制/保存仍含标注" : "")
-        window?.title = "贴图 · \(state.current.width) × \(state.current.height) · \(Int((canvas.zoom * 100).rounded()))%\(edited)\(suffix)"
+        window?.title = "\(pinTitle) · \(state.current.width) × \(state.current.height) · \(Int((canvas.zoom * 100).rounded()))%\(edited)\(suffix)"
     }
     private func updateLayout() {
         guard !updatingLayout else { return }; updatingLayout = true; defer { updatingLayout = false }

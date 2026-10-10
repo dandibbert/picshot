@@ -175,7 +175,7 @@ public struct PinSessionEntry: Codable, Identifiable, Equatable, Sendable {
 
 public enum PinSessionError: LocalizedError, Equatable {
     case invalidManifest, unsupportedVersion, unsafePath, capacityExceeded, missingGroup, missingPin
-    case invalidName, tooManyGroups, cannotDeleteDefault, invalidImage
+    case invalidName, tooManyGroups, cannotDeleteDefault, invalidImage, stalePinContent, invalidGroupOffset
     public var errorDescription: String? {
         switch self {
         case .invalidManifest: return "贴图会话文件已损坏。原文件未被覆盖，请检查或备份后重新建立会话。"
@@ -188,6 +188,8 @@ public enum PinSessionError: LocalizedError, Equatable {
         case .tooManyGroups: return "最多可创建 32 个贴图组。"
         case .cannotDeleteDefault: return "默认组不能删除。"
         case .invalidImage: return "图片无法保存或读取。每张贴图最多支持 3200 万像素。"
+        case .stalePinContent: return "此文字贴图已更新，请重新打开编辑器后重试。"
+        case .invalidGroupOffset: return "贴图组每次只能向前或向后移动一位。"
         }
     }
 }
@@ -332,6 +334,18 @@ public struct PinSessionIndex: Codable, Equatable, Sendable {
         guard Self.validName(name, limit: 48) else { throw PinSessionError.invalidName }
         guard let i = groups.firstIndex(where: { $0.id == id }) else { throw PinSessionError.missingGroup }
         groups[i].name = name; if let color { groups[i].color = color }
+    }
+    /// Moves an existing group one slot in the persisted array. The default group
+    /// keeps its identity and deletion protection even when it is not the first row.
+    public mutating func moveGroup(id: UUID, offset: Int) throws {
+        // Validate without assigning the normalized copy: ordering must not alter any
+        // presentation, membership, active selection, or visibility metadata.
+        _ = try validated()
+        guard (-1...1).contains(offset) else { throw PinSessionError.invalidGroupOffset }
+        guard let position = groups.firstIndex(where: { $0.id == id }) else { throw PinSessionError.missingGroup }
+        let destination = position + offset
+        guard offset != 0, groups.indices.contains(destination) else { return }
+        groups.swapAt(position, destination)
     }
     /// Removing a group never removes its pins or images; entries move to the default group.
     public mutating func deleteGroup(id: UUID) throws {

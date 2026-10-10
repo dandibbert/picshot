@@ -400,7 +400,22 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
         inventory = self.current_source_inventory()
         plan = shards.make_plan(inventory, '', 'a' * 40, process_count=4)
         record = self.execute_pin_inventory_guard(plan)
-        self.assertEqual((record['discoveredCount'], record['discoveredClassCount']), (1998, 225))
+        self.assertEqual((record['discoveredCount'], record['discoveredClassCount']), (2047, 232))
+        pins = json.loads((Path(__file__).parents[1] / 'pin-management-native-additions.json').read_text())
+        self.assertEqual(len(pins), 49)
+        self.assertEqual(pins, sorted(set(pins)))
+        self.assertTrue(set(pins).issubset(inventory))
+        pin_inventory, pin_plan = inventory, plan
+        inventory = [name for name in pin_inventory if name not in pins]
+        self.assertEqual(len(inventory), 1998)
+        self.assertEqual(len({name.split('/')[0] for name in inventory}), 225)
+        self.assertEqual(hashlib.sha256(('\n'.join(inventory) + '\n').encode()).hexdigest(),
+                         '41d0a2f62bd2623b25d961212c8b8eeeec9b568719ff95a7bf0d33ab9d3dda20')
+        plan = shards.make_plan(inventory, '', 'a' * 40, process_count=4)
+        self.assertEqual(pin_inventory, sorted(inventory + pins))
+        self.assertEqual([len(shard['tests']) for shard in pin_plan['shards']], [579, 442, 522, 504])
+        for old_shard, current_shard in zip(plan['shards'], pin_plan['shards']):
+            self.assertEqual([name for name in current_shard['tests'] if name not in pins], old_shard['tests'])
         annotation = json.loads((Path(__file__).parents[1] / 'annotation-preferences-native-additions.json').read_text())
         self.assertEqual(len(annotation), 44)
         self.assertEqual(annotation, sorted(set(annotation)))
@@ -454,7 +469,11 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
         selection = re.search(r"--selection-regex '([^']+)'", self.step(
             'Plan exhaustive and focused native test processes'))[1]
         for count in [2, 4]:
+            pin_focused = shards.make_plan(pin_inventory, selection, 'a' * 40, process_count=count)
+            self.assertEqual(len(pin_focused['selectedTests']), 1515)
+            self.assertTrue(set(pins).issubset(pin_focused['selectedTests']))
             current_focused = shards.make_plan(current_inventory, selection, 'a' * 40, process_count=count)
+            self.assertEqual([name for name in pin_focused['selectedTests'] if name not in pins], current_focused['selectedTests'])
             self.assertEqual(len(current_focused['selectedTests']), 1466)
             self.assertTrue(set(annotation).issubset(current_focused['selectedTests']))
         for count, sizes in [(2, [774, 648]), (4, [432, 294, 342, 354])]:

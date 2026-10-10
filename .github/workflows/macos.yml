@@ -122,6 +122,8 @@ jobs:
         run: |
           python3 -m unittest discover -s scripts/tests -p test_check_portable_settings.py -v
           python3 -O -m unittest discover -s scripts/tests -p test_check_portable_settings.py -v
+          python3 -m unittest discover -s scripts/tests -p test_check_pin_management.py -v
+          python3 -O -m unittest discover -s scripts/tests -p test_check_pin_management.py -v
       - name: Check installed drawing default product and source contracts
         timeout-minutes: 4
         run: |
@@ -178,14 +180,14 @@ jobs:
           python3 -m unittest discover -s scripts/tests -p test_native_test_shards.py -v
           python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/native-test-discovery.log --report dist/native-test-discovery-report.json -- swift test list --skip-build
           python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$NATIVE_TEST_PROCESS_COUNT" --output dist/native-tests-plan.json
-          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$FOCUSED_TEST_PROCESS_COUNT" --selection-regex 'AnnotationStyle|LocalAnnotationShortcut|PortableAnnotationPreferences|PortableSettings|AnnotationToolbarOrder|DrawingRaster|EditableProductResource|EditableProductRetirement|EditableComponent|PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|AnnotationEditing|CaptureAspectRatio|CaptureRatio|MultiWindow|ImageOutputDecoration|EditorOutput|PinOriginalCurrent|ManualScroll|ScrollPreview|ScrollSequencePreview|AnnotationFreehand|AnnotationTextLine|NumberedCallout|AutomaticMosaic|RepeatedRegion|AutomaticPinOCR|PinOCR|TextResultSourceSelection|PinWorkflow|LaTeXPin|PinLaTeX|PinGroup|PinDesktop|EditorToolbarHierarchy|SaveWorkflow|OwnedVideoExportStage|ImageBacking|Codec|NativeExport|AnimatedWebP|WebPContainer|RecordingWebP|CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingInput|RecordingHotKey|RecordingTransport|RecordingCommandCoordinator|SettingsAndMenuTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' --output dist/focused-tests-plan.json
+          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$FOCUSED_TEST_PROCESS_COUNT" --selection-regex 'AnnotationStyle|LocalAnnotationShortcut|PortableAnnotationPreferences|PortableSettings|AnnotationToolbarOrder|DrawingRaster|EditableProductResource|EditableProductRetirement|EditableComponent|PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|AnnotationEditing|CaptureAspectRatio|CaptureRatio|MultiWindow|ImageOutputDecoration|EditorOutput|PinOriginalCurrent|ManualScroll|ScrollPreview|ScrollSequencePreview|AnnotationFreehand|AnnotationTextLine|NumberedCallout|AutomaticMosaic|RepeatedRegion|AutomaticPinOCR|PinOCR|TextResultSourceSelection|PinManagement|PinWorkflow|LaTeXPin|PinLaTeX|PinGroup|PinDesktop|EditorToolbarHierarchy|SaveWorkflow|OwnedVideoExportStage|ImageBacking|Codec|NativeExport|AnimatedWebP|WebPContainer|RecordingWebP|CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingInput|RecordingHotKey|RecordingTransport|RecordingCommandCoordinator|SettingsAndMenuTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' --output dist/focused-tests-plan.json
       - name: Reproduce settings interaction and recording regressions
         # Additive early reproduction preserves the five recording and twelve settings UI IDs,
         # adding current style/local-key/import regressions. Keep each 420s process cap.
         timeout-minutes: 16
         run: |
           set -o pipefail
-          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count 2 --selection-regex '^PicShotTests\.(RecordingInputExportTests/testAuthoredInputTrimPreservesAllSelectedPixelsAndPacketBoundaries|RecordingInputExportTests/testInteriorSelectionAndSamplingIncludeExpiryResumeAndFrozenStop|RecordingInputExportTests/testPixelOracleUsesTopDownRGBAAndDetectsEffectRelocationAndExpiry|RecordingInputExportTests/testFixtureRequiresAcceptedOriginalReportBeforeLaunchingHelpers|RecordingCommandCoordinatorTests/testExpandCollapseAndDisplayChangesRetainOneOwnerWithoutClosingSession|AnnotationToolbarOrderUITests/[^/]+|PortableSettingsUITests/[^/]+|AnnotationStylePresetTests/[^/]+|LocalAnnotationShortcutTests/[^/]+|LocalAnnotationShortcutNativeTests/[^/]+|PortableAnnotationPreferencesTests/[^/]+)$' --output dist/recording-regression-plan.json
+          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count 2 --selection-regex '^PicShotTests\.(RecordingInputExportTests/testAuthoredInputTrimPreservesAllSelectedPixelsAndPacketBoundaries|RecordingInputExportTests/testInteriorSelectionAndSamplingIncludeExpiryResumeAndFrozenStop|RecordingInputExportTests/testPixelOracleUsesTopDownRGBAAndDetectsEffectRelocationAndExpiry|RecordingInputExportTests/testFixtureRequiresAcceptedOriginalReportBeforeLaunchingHelpers|RecordingCommandCoordinatorTests/testExpandCollapseAndDisplayChangesRetainOneOwnerWithoutClosingSession|AnnotationToolbarOrderUITests/[^/]+|PortableSettingsUITests/[^/]+|AnnotationStylePresetTests/[^/]+|LocalAnnotationShortcutTests/[^/]+|LocalAnnotationShortcutNativeTests/[^/]+|PortableAnnotationPreferencesTests/[^/]+|PinManagementCoordinatorTests/[^/]+|PinTextEditNativeTests/[^/]+|PinTextDraftHistoryTests/[^/]+|PinTextUpdateStoreTests/[^/]+|PinGroupOrderStoreTests/[^/]+|PinGroupOrderNativeTests/[^/]+)$|^PicShotCoreTests\.PinGroupOrderTests/[^/]+$' --output dist/recording-regression-plan.json
           execution_status=0
           for shard in 0 1; do
             python3 scripts/native-test-shards.py run --plan dist/recording-regression-plan.json --expected-source "$GITHUB_SHA" --index "$shard" --directory dist/evidence/recording-018-regression || execution_status=1
@@ -267,7 +269,7 @@ jobs:
           python3 scripts/run-bounded-command.py --timeout-seconds 6240 --max-log-bytes 1048576
           --log dist/codec-fidelity-metadata/outer.log --report dist/codec-fidelity-metadata/outer.json
           -- bash scripts/codec-fidelity-installed.sh
-          "${{ github.workspace }}/dist/PicShot-0.20.0-macos-${{ matrix.arch }}.zip"
+          "${{ github.workspace }}/dist/PicShot-0.21.0-macos-${{ matrix.arch }}.zip"
           "${{ github.workspace }}/dist/codec-fidelity-standalone" "${{ github.sha }}"
       - name: Preserve standalone fidelity reports and actual default-route evidence
         if: always()
@@ -364,16 +366,16 @@ jobs:
               plan_path = Path('dist/native-tests-plan.json')
               plan = native.checked_plan(plan_path, source)
               inventory = plan['discoveredTests']
-              native.need(len(inventory) == 1998 and len({case.split('/')[0] for case in inventory}) == 225
+              native.need(len(inventory) == 2047 and len({case.split('/')[0] for case in inventory}) == 232
                   and hashlib.sha256(('\n'.join(inventory)+'\n').encode()).hexdigest() ==
-                      '41d0a2f62bd2623b25d961212c8b8eeeec9b568719ff95a7bf0d33ab9d3dda20'
+                      '926ac5674df90163b949fe461f0d4589ef72c8fc3215fa00b927564aae57cb44'
                   and plan['selectedTests'] == inventory and plan['selectionRegex'] == ''
                   and plan['processCount'] == 4 and plan['timeoutSecondsPerProcess'] == 420
-                  and [len(shard['tests']) for shard in plan['shards']] == [546, 440, 512, 500],
+                  and [len(shard['tests']) for shard in plan['shards']] == [579, 442, 522, 504],
                   'Complete native inventory or original process grouping changed')
               native.need([case for case in inventory if case.startswith('PicShotTests.PinAnchoredEditingTests/')] == class_ids,
                   'Pin class inventory differs from the four original methods')
-              record.update(planSHA256=digest(plan_path), discoveredCount=1998, discoveredClassCount=225,
+              record.update(planSHA256=digest(plan_path), discoveredCount=2047, discoveredClassCount=232,
                   discoverySHA256=digest(Path('dist/native-test-discovery.log')),
                   fixtureSHA256=digest(Path('Tests/PicShotTests/PinAnchoredEditingTests.swift')))
               for label, expected in (('method', [method]), ('class', class_ids)):

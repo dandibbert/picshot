@@ -9,7 +9,7 @@ export PICSHOT_SMOKE_FORMULA_MODEL_DIR="$PWD/.build/model-fixtures/formula"
 export PICSHOT_SMOKE_FORMULA_INPUT="$PWD/Tests/PicShotMLHelperTests/Fixtures/energy.png"
 export PICSHOT_SMOKE_TABLE_MODEL_DIR="$PWD/.build/model-fixtures/table"
 export PICSHOT_SMOKE_TABLE_INPUT="$PWD/Tests/PicShotTableEngineTests/Fixtures/merged-table.png"
-base="PicShot-0.20.0-macos-$(uname -m)"
+base="PicShot-0.21.0-macos-$(uname -m)"
 # Keep the actual installed bundle and all evidence on physical workspace paths.
 # /var-style temporary aliases are rejected by the strict product protocol.
 mkdir -p dist
@@ -195,12 +195,13 @@ PY
   python3 scripts/check-recording-transport-report.py "$PWD/dist/evidence/$format/recording-transport.json"
   python3 scripts/check-portable-settings.py "$PWD/dist/evidence/$format/portable-settings-ui.json" "$app" "$(git rev-parse HEAD)" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")"
   python3 scripts/check-annotation-preferences.py "$PWD/dist/evidence/$format/annotation-preferences.json" "$app" "$(git rev-parse HEAD)" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")"
+  python3 scripts/check-pin-management.py "$PWD/dist/evidence/$format/pin-management.json" "$app" "$(git rev-parse HEAD)" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")"
   python3 scripts/check-capture-output-report.py "$PWD/dist/evidence/$format/capture-output/capture-output-workflow.json" "$app" "$(git rev-parse HEAD)"
   python3 scripts/check-effect-output-failure-report.py "$PWD/dist/evidence/$format/capture-output/effect-output-failure.json" "$app" "$(git rev-parse HEAD)" "$PWD/dist/evidence/$format/launch.json.launcher.json"
   if [[ "$format" == zip ]];then
     bash scripts/multiwindow-resource-smoke.sh "$app" "$PWD/dist/evidence/$format/multiwindow-resources" "$(git rev-parse HEAD)"
   fi
-  python3 scripts/check-pin-ocr-report.py "$PWD/dist/evidence/$format/pin-ocr/pin-ocr-workflow.json" "$app" "$(git rev-parse HEAD)" 0.20.0 "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")" --full
+  python3 scripts/check-pin-ocr-report.py "$PWD/dist/evidence/$format/pin-ocr/pin-ocr-workflow.json" "$app" "$(git rev-parse HEAD)" 0.21.0 "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")" --full
   python3 scripts/check-automatic-mosaic-report.py "$PWD/dist/evidence/$format/automatic-mosaic/automatic-mosaic-workflow.json" "$app" "$(git rev-parse HEAD)" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")" --full
   python3 scripts/check-annotation-details-report.py "$PWD/dist/evidence/$format/annotation-details/annotation-details.json" "$app" "$(git rev-parse HEAD)" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")" --full
   bash scripts/pin-workflows-smoke.sh "$app" "$PWD/dist/evidence/$format/pin-workflows" "$(git rev-parse HEAD)"

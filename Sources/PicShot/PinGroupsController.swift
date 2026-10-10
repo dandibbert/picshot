@@ -5,9 +5,10 @@ import PicShotCore
 /// Compact native catalog for saved pins. The owner reconciles live windows through
 /// onSessionChange and opens/focuses a particular pin through onOpenPin.
 /// No screen-capture permission is needed to manage or restore saved images.
-@MainActor final class PinGroupsController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate {
+@MainActor final class PinGroupsController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate {
     var onOpenPin: ((UUID) -> Void)?
     var onSessionChange: (() -> Void)?
+    var presentError: @MainActor (Error) -> Void = { showError($0) }
     private let store: PinSessionStore
     private let transforms: PinGroupTransformController?
     private var transformSubscription: AnyCancellable?
@@ -16,18 +17,21 @@ import PicShotCore
     private let undoGroupButton = NSButton(title: "撤销组合", target: nil, action: nil)
     private let redoGroupButton = NSButton(title: "重做", target: nil, action: nil)
     private let selectionStatus = NSTextField(labelWithString: "⌘ / ⇧ 多选正在显示的贴图")
-    private var selectedPinIDs: Set<UUID> = []
+    private(set) var selectedPinIDs: Set<UUID> = []
     private var restoringSelection = false
     private var tableTracksTransformSelection = false
     private var selectionGroupID: UUID?
     private var selectionVisibility: Bool?
     private var subscription: AnyCancellable?
-    private let groupPicker = NSPopUpButton()
+    private let groupPicker = PinGroupHeaderPicker()
+    private let groupOrderPicker = PinGroupHeaderPicker(frame: .zero, pullsDown: true)
+    private let moveGroupEarlierItem = NSMenuItem(title: "向前移一位", action: nil, keyEquivalent: "")
+    private let moveGroupLaterItem = NSMenuItem(title: "向后移一位", action: nil, keyEquivalent: "")
     private let hiddenToggle = NSButton(checkboxWithTitle: "隐藏此组", target: nil, action: nil)
     private let protectedToggle = NSButton(checkboxWithTitle: "保护此组", target: nil, action: nil)
     private let restoreToggle = NSButton(checkboxWithTitle: "启动时恢复上次显示的贴图组", target: nil, action: nil)
-    private let renameGroupButton = NSButton(title: "改名 / 颜色…", target: nil, action: nil)
-    private let deleteGroupButton = NSButton(title: "删除组…", target: nil, action: nil)
+    private let renameGroupButton = PinGroupHeaderButton(title: "改名 / 颜色…", target: nil, action: nil)
+    private let deleteGroupButton = PinGroupHeaderButton(title: "删除组…", target: nil, action: nil)
     private let openButton = NSButton(title: "显示贴图", target: nil, action: nil)
     private let renamePinButton = NSButton(title: "重命名…", target: nil, action: nil)
     private let removePinButton = NSButton(title: "移除保存项…", target: nil, action: nil)
@@ -62,7 +66,20 @@ import PicShotCore
     private func buildInterface(in window: NSWindow) {
         groupPicker.target = self; groupPicker.action = #selector(changeGroup)
         groupPicker.setAccessibilityLabel("当前贴图组")
-        let addGroupButton = NSButton(title: "新建组…", target: self, action: #selector(addGroup))
+        groupPicker.identifier = NSUserInterfaceItemIdentifier("pin-group-picker")
+        groupOrderPicker.identifier = NSUserInterfaceItemIdentifier("pin-group-order")
+        groupOrderPicker.setAccessibilityLabel("调整当前贴图组顺序")
+        groupOrderPicker.toolTip = "将当前组向前或向后移动一位；组内贴图保持不变"
+        groupOrderPicker.addItem(withTitle: "排序")
+        groupOrderPicker.menu?.autoenablesItems = false
+        groupOrderPicker.menu?.delegate = self
+        moveGroupEarlierItem.target = self; moveGroupEarlierItem.action = #selector(moveGroupEarlier(_:))
+        moveGroupEarlierItem.identifier = NSUserInterfaceItemIdentifier("pin-group-order-earlier")
+        moveGroupLaterItem.target = self; moveGroupLaterItem.action = #selector(moveGroupLater(_:))
+        moveGroupLaterItem.identifier = NSUserInterfaceItemIdentifier("pin-group-order-later")
+        groupOrderPicker.menu?.addItem(moveGroupEarlierItem)
+        groupOrderPicker.menu?.addItem(moveGroupLaterItem)
+        let addGroupButton = PinGroupHeaderButton(title: "新建组…", target: self, action: #selector(addGroup))
         renameGroupButton.target = self; renameGroupButton.action = #selector(renameGroup)
         deleteGroupButton.target = self; deleteGroupButton.action = #selector(deleteGroup)
         hiddenToggle.target = self; hiddenToggle.action = #selector(toggleHidden)
@@ -72,11 +89,15 @@ import PicShotCore
         let showGroupButton = NSButton(title: "显示此组", target: self, action: #selector(showGroup))
         let hideAllButton = NSButton(title: "隐藏全部", target: self, action: #selector(hideAll))
 
-        let heading = NSStackView(views: [NSTextField(labelWithString: "贴图组"), groupPicker, addGroupButton, renameGroupButton, deleteGroupButton])
+        let heading = NSStackView(views: [NSTextField(labelWithString: "贴图组"), groupPicker, groupOrderPicker, addGroupButton, renameGroupButton, deleteGroupButton])
         heading.orientation = .horizontal; heading.spacing = 8
+        heading.identifier = NSUserInterfaceItemIdentifier("pin-group-heading")
         let visibility = NSStackView(views: [hiddenToggle, protectedToggle, NSView(), showGroupButton, hideAllButton])
         visibility.orientation = .horizontal; visibility.spacing = 12
         groupPicker.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        groupPicker.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        groupPicker.cell?.lineBreakMode = .byTruncatingTail
+        groupOrderPicker.widthAnchor.constraint(equalToConstant: 64).isActive = true
         groupPicker.widthAnchor.constraint(greaterThanOrEqualToConstant: 160).isActive = true
 
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("pin"))
@@ -86,6 +107,7 @@ import PicShotCore
         table.usesAlternatingRowBackgroundColors = true
         table.target = self; table.doubleAction = #selector(openSelected)
         table.setAccessibilityLabel("此组保存的贴图")
+        table.identifier = NSUserInterfaceItemIdentifier("pin-group-entries")
         let scroll = NSScrollView(); scroll.documentView = table
         scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true; scroll.borderType = .bezelBorder
 
@@ -111,6 +133,9 @@ import PicShotCore
         removePinButton.target = self; removePinButton.action = #selector(removeSelected)
         movePicker.target = self; movePicker.action = #selector(moveSelected)
         movePicker.setAccessibilityLabel("将所选贴图移动到组")
+        movePicker.identifier = NSUserInterfaceItemIdentifier("pin-group-move-pin")
+        movePicker.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        movePicker.cell?.lineBreakMode = .byTruncatingTail
         let actions = NSStackView(views: [openButton, renamePinButton, removePinButton, NSView(), NSTextField(labelWithString: "移动到"), movePicker])
         actions.orientation = .horizontal; actions.spacing = 8
         status.font = .systemFont(ofSize: 11); status.textColor = .secondaryLabelColor
@@ -157,16 +182,21 @@ import PicShotCore
         for group in store.groups {
             let count = store.entries.filter { $0.groupID == group.id }.count
             let title = "\(group.name) (\(count))" + (group.isProtected ? " · 保护" : "")
-            groupPicker.addItem(withTitle: title)
-            groupPicker.lastItem?.image = colorDot(group.color)
-            movePicker.addItem(withTitle: group.name)
-            movePicker.lastItem?.image = colorDot(group.color)
+            // NSMenu permits equal titles; NSPopUpButton.addItem(withTitle:)
+            // replaces an existing matching title and can lose a group's ID.
+            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            item.image = colorDot(group.color); item.representedObject = group.id
+            groupPicker.menu?.addItem(item)
+            let destination = NSMenuItem(title: group.name, action: nil, keyEquivalent: "")
+            destination.image = colorDot(group.color); destination.representedObject = group.id
+            movePicker.menu?.addItem(destination)
         }
         if let groupIndex = store.groups.firstIndex(where: { $0.id == store.index.activeGroupID }) {
             groupPicker.selectItem(at: groupIndex); movePicker.selectItem(at: groupIndex)
             hiddenToggle.state = store.groups[groupIndex].isHidden ? .on : .off
             protectedToggle.state = store.groups[groupIndex].isProtected ? .on : .off
         }
+        updateGroupOrderControls()
         deleteGroupButton.isEnabled = store.index.activeGroupID != PinGroup.defaultID
         restoreToggle.state = PinSessionStore.restoreOnLaunch ? .on : .off
         displayedEntries = store.entries.filter { $0.groupID == store.index.activeGroupID }.sorted {
@@ -261,12 +291,34 @@ import PicShotCore
 
     @discardableResult private func change(_ operation: () throws -> Void) -> Bool {
         do { try operation(); reload(); onSessionChange?(); return true }
-        catch { showError(error); return false }
+        catch { presentError(error); return false }
     }
 
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu === groupOrderPicker.menu { updateGroupOrderControls() }
+    }
+    private func updateGroupOrderControls() {
+        let id = store.index.activeGroupID
+        let position = store.groups.firstIndex(where: { $0.id == id })
+        moveGroupEarlierItem.representedObject = id
+        moveGroupLaterItem.representedObject = id
+        moveGroupEarlierItem.isEnabled = position.map { $0 > 0 } ?? false
+        moveGroupLaterItem.isEnabled = position.map { $0 + 1 < store.groups.count } ?? false
+        // Keep the menu reachable even when both directions are unavailable.
+        groupOrderPicker.isEnabled = position != nil
+    }
+    @objc private func moveGroupEarlier(_ sender: NSMenuItem) { moveGroup(sender, offset: -1) }
+    @objc private func moveGroupLater(_ sender: NSMenuItem) { moveGroup(sender, offset: 1) }
+    private func moveGroup(_ sender: NSMenuItem, offset: Int) {
+        // The menu owns an ID, never a row position. A stale menu must not move a
+        // different group if another action changed the active group while open.
+        guard let id = sender.representedObject as? UUID, id == store.index.activeGroupID,
+              let position = store.groups.firstIndex(where: { $0.id == id }) else { reload(); return }
+        guard store.groups.indices.contains(position + offset) else { updateGroupOrderControls(); return }
+        change { try store.moveGroup(id: id, offset: offset) }
+    }
     @objc private func changeGroup() {
-        guard store.groups.indices.contains(groupPicker.indexOfSelectedItem) else { return }
-        let id = store.groups[groupPicker.indexOfSelectedItem].id
+        guard let id = groupPicker.selectedItem?.representedObject as? UUID else { return }
         change { try store.setActiveGroup(id: id) }
     }
     @objc private func toggleHidden() {
@@ -304,8 +356,7 @@ import PicShotCore
         onOpenPin?(id)
     }
     @objc private func moveSelected() {
-        guard let id = selectedPinID, store.groups.indices.contains(movePicker.indexOfSelectedItem) else { return }
-        let destination = store.groups[movePicker.indexOfSelectedItem].id
+        guard let id = selectedPinID, let destination = movePicker.selectedItem?.representedObject as? UUID else { return }
         change { try store.movePin(id: id, to: destination) }
     }
     @objc private func renameSelected() {
@@ -355,6 +406,14 @@ import PicShotCore
             tint.setFill(); NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1)).fill(); return true
         }
     }
+}
+
+// Stack layout and hit testing must use the complete native control bounds.
+@MainActor private final class PinGroupHeaderButton: NSButton {
+    override var alignmentRectInsets: NSEdgeInsets { NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0) }
+}
+@MainActor private final class PinGroupHeaderPicker: NSPopUpButton {
+    override var alignmentRectInsets: NSEdgeInsets { NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0) }
 }
 
 @MainActor private final class PinSessionRowView: NSTableCellView {

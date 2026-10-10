@@ -35,7 +35,7 @@ actor RichPinFrameDecoder {
     var onShowGroupTransform: (() -> Void)?
     private(set) var isGroupSelected = false
     var canParticipateInGroupTransform: Bool {
-        !closed && !locked && !hasActiveLaTeXEditorOrRender && window?.ignoresMouseEvents != true
+        !closed && !locked && !hasActiveLaTeXEditorOrRender && !hasActiveTextDraft && window?.ignoresMouseEvents != true
     }
     func setGroupSelected(_ selected: Bool) {
         isGroupSelected = selected
@@ -52,6 +52,15 @@ actor RichPinFrameDecoder {
     private(set) var desktopVisibility: PinDesktopVisibility = .defaultMode
     let desktopVisibilityMenu = PinDesktopVisibilityMenu()
     var onRichChange: ((PreparedRichPin) throws -> Void)?
+    /// (new value, original saved value) lets persistence reject a stale draft.
+    var onUpdateText: ((PinTextContent, PinTextContent) throws -> Void)?
+    var onRename: ((String, String) throws -> Void)?
+    private(set) var pinTitle: String
+    private(set) var textEditController: PinTextEditController?
+    private(set) var renameController: PinRenameController?
+    private var textDraftGeneration = UUID()
+    var hasActiveTextDraft: Bool { textEditController != nil || renameController != nil }
+    var textDisplayView: NSTextView { textView }
     let kind: PinContentKind
     private(set) var richDocument: PinRichDocument?
     private let asset: PinRichAsset
@@ -91,7 +100,7 @@ actor RichPinFrameDecoder {
     private(set) var displayedLaTeXRaster: CGImage?
 
     init(asset: PinRichAsset, data: Data, title: String, renderedImage: CGImage? = nil) throws {
-        self.asset = asset; kind = asset.kind
+        self.asset = asset; kind = asset.kind; pinTitle = title
         guard asset.isValid, data.count == Int(asset.byteCount) else { throw RichPinError.invalidContent }
         let decodedDocument: PinRichDocument?
         if asset.kind != .animation {
@@ -177,7 +186,7 @@ actor RichPinFrameDecoder {
             textView.autoresizingMask = [.width]; textView.textContainer?.widthTracksTextView = true
             let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
             scroll.scrollerStyle = .overlay; scroll.documentView = textView; content = scroll
-            statusMessage = richDocument?.text?.importedHTML == true ? "HTML 安全子集；外部资源、脚本、链接与 CSS 不加载" : "选择文字复制；拖动边缘移动贴图"
+            statusMessage = richDocument?.text.map(PinTextEditController.isEditable) == true ? "右键编辑文字或重命名；选择文字复制；拖动边缘移动贴图" : "导入的富文本仅供查看；编辑会丢失格式，因此不提供内容编辑；可以重命名"
             renderText()
         case .files:
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("file")); column.title = "文件引用"
@@ -242,6 +251,14 @@ actor RichPinFrameDecoder {
         }
         switch kind {
         case .text:
+            let edit = item("编辑文字…", #selector(editPlainText)); edit.identifier = .init("pin-text-edit")
+            edit.toolTip = "只编辑纯文本贴图；保存成功后才更新原文"
+            let rename = item("重命名…", #selector(renamePin)); rename.identifier = .init("pin-rename")
+            if richDocument?.text.map(PinTextEditController.isEditable) != true {
+                let note = menu.addItem(withTitle: "富文本内容只读（保留导入格式）", action: nil, keyEquivalent: "")
+                note.identifier = .init("pin-text-readonly"); note.isEnabled = false
+            }
+            menu.addItem(.separator())
             _ = item("复制所选文字", #selector(copySelectedText)); _ = item("复制全文", #selector(copyContent))
             _ = item("纯文本显示", #selector(changeTextStyle))
             let sizeMenu = NSMenu(title: "文字大小"); sizeMenu.delegate = self
@@ -297,10 +314,71 @@ actor RichPinFrameDecoder {
         }
     }
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(editPlainText) {
+            return !closed && onUpdateText != nil && renameController == nil && richDocument?.text.map(PinTextEditController.isEditable) == true
+        }
+        if item.action == #selector(renamePin) { return !closed && kind == .text && onRename != nil && textEditController == nil }
         if item.action == #selector(undoLaTeX) { return latexModel?.canUndo == true }
         if item.action == #selector(saveLaTeXFormat(_:)) { return latexModel?.working == false && !latexSaveInProgress }
         if item.action == #selector(copyLaTeXFormat(_:)) { return item.tag == 0 || (latexModel?.working == false && !latexSaveInProgress) }
         return true
+    }
+    /// Metadata only: never rebuild text storage or disturb a text selection.
+    func applySavedTitle(_ title: String) {
+        guard !closed else { return }; pinTitle = title; window?.title = title
+    }
+    @objc func editPlainText() {
+        guard !closed, kind == .text, let window, onUpdateText != nil, renameController == nil,
+              let content = richDocument?.text, PinTextEditController.isEditable(content) else { return }
+        if let editor = textEditController { editor.presentSheet(for: window); return }
+        let generation = UUID(); textDraftGeneration = generation
+        do {
+            let editor = try PinTextEditController(content: content) { [weak self] next, expected in
+                guard let self, !self.closed, self.textDraftGeneration == generation,
+                      let save = self.onUpdateText else { throw CancellationError() }
+                try save(next, expected)
+                guard !self.closed, self.textDraftGeneration == generation else { throw CancellationError() }
+                self.richDocument = PinRichDocument(text: next)
+                self.renderText()
+            }
+            textEditController = editor
+            editor.onDismiss = { [weak self, weak editor] in
+                guard let self, self.textEditController === editor else { return }
+                self.textEditController = nil; self.textDraftGeneration = UUID()
+            }
+            editor.presentSheet(for: window)
+        } catch { statusMessage = error.localizedDescription; window.contentView?.toolTip = statusMessage }
+    }
+    @objc func renamePin() {
+        guard !closed, kind == .text, let window, onRename != nil, textEditController == nil else { return }
+        if let editor = renameController { editor.presentSheet(for: window); return }
+        let expected = pinTitle, generation = UUID(); textDraftGeneration = generation
+        let editor = PinRenameController(title: expected) { [weak self] title in
+            guard let self, !self.closed, self.textDraftGeneration == generation,
+                  let save = self.onRename else { throw CancellationError() }
+            try save(title, expected)
+            guard !self.closed, self.textDraftGeneration == generation else { throw CancellationError() }
+            self.applySavedTitle(title)
+        }
+        renameController = editor
+        editor.onDismiss = { [weak self, weak editor] in
+            guard let self, self.renameController === editor else { return }
+            self.renameController = nil; self.textDraftGeneration = UUID()
+        }
+        editor.presentSheet(for: window)
+    }
+    func dismissTextEditors() {
+        textDraftGeneration = UUID()
+        let textEditor = textEditController, renameEditor = renameController
+        textEditController = nil; renameController = nil
+        textEditor?.close(); renameEditor?.close()
+    }
+    func copyText(to pasteboard: NSPasteboard) {
+        guard !closed, let text = richDocument?.text else { return }
+        pasteboard.clearContents(); pasteboard.setString(text.plainText, forType: .string)
+        if !plainText, let data = try? textView.attributedString().data(from: NSRange(location: 0, length: textView.attributedString().length), documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]) {
+            pasteboard.setData(data, forType: .rtf)
+        }
     }
     @objc private func closePin() { close() }
     @objc private func copySelectedText() {
@@ -328,11 +406,7 @@ actor RichPinFrameDecoder {
         let pasteboard = NSPasteboard.general
         switch kind {
         case .text:
-            guard let text = richDocument?.text else { return }
-            pasteboard.clearContents(); pasteboard.setString(text.plainText, forType: .string)
-            if !plainText, let data = try? textView.attributedString().data(from: NSRange(location: 0, length: textView.attributedString().length), documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]) {
-                pasteboard.setData(data, forType: .rtf)
-            }
+            copyText(to: pasteboard)
         case .files:
             let urls = selectedFiles(fallbackToAll: true).map { URL(fileURLWithPath: $0.path) as NSURL }
             guard !urls.isEmpty else { return }; pasteboard.clearContents(); pasteboard.writeObjects(urls)
@@ -593,7 +667,7 @@ actor RichPinFrameDecoder {
     /// Metadata-only: never reconstruct a controller or decode/render content.
     func applyDesktopVisibility(_ mode: PinDesktopVisibility) {
         guard !closed else { return }
-        if mode != desktopVisibility { dismissLaTeXEditor() }
+        if mode != desktopVisibility { dismissLaTeXEditor(); dismissTextEditors() }
         desktopVisibility = mode; desktopVisibilityMenu.mode = mode
         PinDesktopVisibilityPolicy.apply(mode, to: window)
     }
@@ -608,6 +682,7 @@ actor RichPinFrameDecoder {
         window?.alphaValue = value.opacity
         locked = value.locked; window?.isMovable = !locked
         if locked { window?.styleMask.remove(.resizable) } else { window?.styleMask.insert(.resizable) }
+        if value.clickThrough { dismissTextEditors() }
         window?.ignoresMouseEvents = value.clickThrough
         if kind == .text, textScale != (value.zoom ?? 1) {
             textScale = value.zoom ?? 1
@@ -628,6 +703,7 @@ actor RichPinFrameDecoder {
         guard !closed else { return }; closed = true
         let callback = onClose
         onClose = nil; onPresentationChange = nil; onToggleGroupSelection = nil; onShowGroupTransform = nil; onRichChange = nil
+        onUpdateText = nil; onRename = nil; dismissTextEditors()
         onDesktopVisibilityChange = nil; desktopVisibilityMenu.invalidate()
         cancelLaTeXSave()
         latexModel?.close(); latexModel = nil

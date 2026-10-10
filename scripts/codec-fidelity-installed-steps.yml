@@ -16,7 +16,7 @@
     python3 scripts/run-bounded-command.py --timeout-seconds 6240 --max-log-bytes 1048576
     --log dist/codec-fidelity-metadata/outer.log --report dist/codec-fidelity-metadata/outer.json
     -- bash scripts/codec-fidelity-installed.sh
-    "${{ github.workspace }}/dist/PicShot-0.20.0-macos-${{ matrix.arch }}.zip"
+    "${{ github.workspace }}/dist/PicShot-0.21.0-macos-${{ matrix.arch }}.zip"
     "${{ github.workspace }}/dist/codec-fidelity-standalone" "${{ github.sha }}"
 - name: Preserve standalone fidelity reports and actual default-route evidence
   if: always()

@@ -138,6 +138,72 @@ import PicShotCore
         try commit(next); committed = true; removeThumbnail(id: id)
     }
 
+    /// Saves plain text and its preview as one transaction. Drafts never mutate storage;
+    /// callers pass the original content to reject a stale editor before any file write.
+    /// Every other pin is retained, and the old payload/preview survive every failure.
+    func updateText(id: UUID, content: PinTextContent, expectedContent: PinTextContent) throws {
+        guard let position = index.entries.firstIndex(where: { $0.id == id }) else { throw PinSessionError.missingPin }
+        let previous = index.entries[position]
+        guard previous.richContent?.kind == .text, Self.isEditablePlainText(content) else { throw RichPinError.invalidContent }
+        let document = try JSONDecoder().decode(PinRichDocument.self, from: richData(id: id))
+        guard let oldContent = document.text, Self.isEditablePlainText(oldContent) else { throw RichPinError.invalidContent }
+        guard expectedContent == oldContent else { throw PinSessionError.stalePinContent }
+        guard content != oldContent else { return }
+
+        // Bound serialization before rendering or creating files. JSON escaping can
+        // exceed the document budget even when the source text is within its own limit.
+        let replacement = PinRichDocument(text: content)
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(replacement)
+        guard data.count <= PinRichAsset.maximumDocumentBytes else { throw RichPinError.tooLarge }
+        let rich = PinRichAsset(kind: .text, filename: UUID().uuidString + ".pinjson", byteCount: Int64(data.count))
+        guard rich.isValid else { throw RichPinError.invalidContent }
+        var next = index
+        next.entries[position].richContent = rich
+        // Reject a clearly impossible payload before writing its preview. The final
+        // check below uses the actual new PNG size, without evicting unrelated pins.
+        guard Int64(data.count) <= policy.maxDiskBytes else { throw PinSessionError.capacityExceeded }
+        try editableAssets.requireDirectory()
+        let target = try assetURL(rich.filename)
+        let temporary = directory.appendingPathComponent(".pin-write-" + rich.filename)
+        guard !fileManager.fileExists(atPath: target.path), !fileManager.fileExists(atPath: temporary.path),
+              (try? fileManager.destinationOfSymbolicLink(atPath: target.path)) == nil,
+              (try? fileManager.destinationOfSymbolicLink(atPath: temporary.path)) == nil
+        else { throw PinSessionError.unsafePath }
+        var newRaster: PinRasterAsset?, ownsPayload = false, ownsTemporary = false, committed = false
+        defer {
+            if ownsTemporary, (try? checkedRegularFile(temporary)) != nil { try? fileManager.removeItem(at: temporary) }
+            if !committed {
+                if let newRaster { removeAssetIfSafe(newRaster.filename) }
+                if ownsPayload { removeAssetIfSafe(rich.filename) }
+            }
+        }
+        let raster = try writeAsset(RichPinPoster.make(replacement))
+        newRaster = raster
+        try failureInjector?(.rasterWritten)
+        next.entries[position].original = raster; next.entries[position].current = raster
+        next.entries[position].updatedAt = Date()
+        guard policy.fits(next.entries) else { throw PinSessionError.capacityExceeded }
+        _ = try next.validated()
+        // A fresh, owned path is the only file ever written. The previous JSON is
+        // removed by commit only after the atomic manifest replacement succeeds.
+        ownsTemporary = true
+        try data.write(to: temporary, options: .atomic)
+        guard try checkedRegularFile(temporary).fileSize == data.count else { throw RichPinError.invalidContent }
+        try fileManager.moveItem(at: temporary, to: target)
+        ownsPayload = true; ownsTemporary = false
+        try failureInjector?(.documentWritten)
+        guard try readRichAsset(rich) == data else { throw RichPinError.invalidContent }
+        try commit(next)
+        committed = true; removeThumbnail(id: id)
+    }
+
+    private static func isEditablePlainText(_ content: PinTextContent) -> Bool {
+        content.isValid && !content.importedHTML && content.runs.allSatisfy {
+            !$0.bold && !$0.italic && !$0.code && !$0.text.contains("\0")
+        }
+    }
+
     /// A bounded payload read never follows the referenced file paths inside a document.
     func richData(id: UUID) throws -> Data {
         guard let rich = entry(id: id)?.richContent else { throw PinSessionError.missingPin }
@@ -346,6 +412,12 @@ import PicShotCore
     }
     func renameGroup(id: UUID, name: String, color: PinGroupColor? = nil) throws {
         var next = index; try next.renameGroup(id: id, name: name, color: color); try commit(next)
+    }
+    /// Stable identities remain unchanged; boundary and zero-offset moves do not write.
+    func moveGroup(id: UUID, offset: Int) throws {
+        var next = index; try next.moveGroup(id: id, offset: offset)
+        guard next != index else { return }
+        try commit(next)
     }
     func deleteGroup(id: UUID) throws {
         var next = index; try next.deleteGroup(id: id); try commit(next)
