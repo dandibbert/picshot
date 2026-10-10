@@ -345,14 +345,10 @@ import PicShotCore
             states.append(store.groups.map { $0.id.uuidString })
         }
         try require(callbackCount == 3 && initialActive == active, "Group boundary invoked mutation")
-        let controls = descendants(window.contentView).compactMap { $0 as? NSButton }.filter { !$0.isHiddenOrHasHiddenAncestor }
-        trace("groupSnapshotEnter", ["appearance": mode])
-        visuals.append(try snapshot(window, "order", mode, directory, controls: controls))
-        trace("groupSnapshotReturn", ["appearance": mode])
         let identities = try required(selection["eventIdentity"] as? [String: Any], "Table identity absent")
         let expected = try required(identities["expected"] as? [String: Any], "Expected table event absent")
         let dequeued = try required(identities["dequeued"] as? [String: Any], "Dequeued table event absent")
-        return ["activeGroupID": active.uuidString, "selectedPinIDs": selected.map(\.uuidString).sorted(), "states": states,
+        let result: [String: Any] = ["activeGroupID": active.uuidString, "selectedPinIDs": selected.map(\.uuidString).sorted(), "states": states,
             "menuEvents": menuEvents, "callbacks": callbackCount, "entriesUnchanged": true, "selectionPreserved": true,
             "pickerOrder": picker.itemArray.compactMap { ($0.representedObject as? UUID)?.uuidString },
             "minimumWindowSize": [680, 600], "rowSelection": ["requestedRow": selection["requestedRow"]!,
@@ -360,6 +356,18 @@ import PicShotCore
                 "ownedWindowIsKey": identities["ownedWindowIsKey"]!, "sameQuartzTimestamp": identities["sameQuartzTimestamp"]!,
                 "expectedQuartzTimestamp": expected["quartzTimestampNanoseconds"]!, "dequeuedQuartzTimestamp": dequeued["quartzTimestampNanoseconds"]!,
                 "eventType": expected["type"]!, "dispatchRoute": selection["dispatchRoute"]!, "targetPointVisible": selection["targetPointVisible"]!]]
+        // Preserve UUID transitions and actual input receipts before a visual
+        // assertion can prevent the final combined report from being written.
+        let functional: [String: Any] = ["sourceCommit": Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String ?? "unknown",
+            "appearance": mode, "status": "functional-sequence-complete-layout-pending", "order": result]
+        let functionalData = try JSONSerialization.data(withJSONObject: functional, options: [.sortedKeys])
+        try require(functionalData.count <= 131_072, "Order transition receipt byte bound")
+        try functionalData.write(to: directory.appendingPathComponent("pin-management-order-functional-\(mode).json"), options: .atomic)
+        let controls = descendants(window.contentView).compactMap { $0 as? NSButton }.filter { !$0.isHiddenOrHasHiddenAncestor }
+        trace("groupSnapshotEnter", ["appearance": mode])
+        visuals.append(try snapshot(window, "order", mode, directory, controls: controls))
+        trace("groupSnapshotReturn", ["appearance": mode])
+        return result
     }
 
     private static func cycles(_ root: URL, _ owners: inout [WeakOwner], deadline: Date) async throws -> [String: Any] {
@@ -439,7 +447,10 @@ import PicShotCore
             let hit = root.hitTest(root.convert(point, to: root.superview))
             let insets = control.alignmentRectInsets
             let drawing = control.convert(control.cell?.drawingRect(forBounds: control.bounds) ?? control.bounds, to: root)
-            geometry.append(["id": control.identifier?.rawValue ?? "button.\(index)", "frame": rect(frame),
+            let minimumSize = control.cell?.cellSize ?? .zero
+            let title = (control as? NSButton)?.title ?? ""
+            geometry.append(["id": control.identifier?.rawValue ?? "button.\(index)", "title": title,
+                "minimumSize": [minimumSize.width, minimumSize.height], "availableSize": [frame.width, frame.height], "frame": rect(frame),
                 "alignmentRect": rect(alignmentFrames[index]), "cellDrawingRect": rect(drawing),
                 "alignmentInsets": ["top": insets.top, "left": insets.left, "bottom": insets.bottom, "right": insets.right],
                 "centerHitClass": hit.map { NSStringFromClass(type(of: $0)) } ?? "none",
@@ -471,7 +482,8 @@ import PicShotCore
             let size = control.cell?.cellSize ?? .zero
             try require(root.bounds.insetBy(dx: -0.5, dy: -0.5).contains(frame) && frame.width >= 18 && frame.height >= 18, "Control clipped" + failureGeometry)
             try require(hit === control || hit?.isDescendant(of: control) == true || editorHit, "Control obscured" + failureGeometry)
-            try require(frame.width + 1 >= size.width && frame.height + 1 >= size.height, "Control text does not fit" + failureGeometry)
+            try require(frame.width + 1 >= size.width && frame.height + 1 >= size.height,
+                        "Control text does not fit: id=\(control.identifier?.rawValue ?? "button.\(index)") title=\((control as? NSButton)?.title ?? "") required=\(size) available=\(frame.size)" + failureGeometry)
             try require(frames.allSatisfy { !$0.insetBy(dx: 0.5, dy: 0.5).intersects(frame.insetBy(dx: 0.5, dy: 0.5)) }, "Controls overlap" + failureGeometry)
             rows.append(["id": control.identifier?.rawValue ?? "button.\(index)", "frame": rect(frame), "minimumSize": [size.width, size.height], "hitTest": true])
             frames.append(frame)

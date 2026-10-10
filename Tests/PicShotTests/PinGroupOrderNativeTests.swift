@@ -231,9 +231,11 @@ import PicShotCore
                     window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded()
                     XCTAssertEqual(window.frame.size, size)
                     try assertHeaderHitTargets(f.controller)
+                    try assertActionRowHitTargets(f.controller)
                     try invoke(try orderItem("earlier", in: f.controller))
                     window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded()
                     try assertHeaderHitTargets(f.controller)
+                    try assertActionRowHitTargets(f.controller)
                     try invoke(try orderItem("later", in: f.controller))
                     assertPickerIDs(f)
                 }
@@ -333,6 +335,12 @@ import PicShotCore
             XCTAssertGreaterThanOrEqual(control.bounds.height, 20)
             XCTAssertGreaterThanOrEqual(control.bounds.width, 24)
             let fullFrame = control.convert(control.bounds, to: root)
+            if control.identifier?.rawValue == "pin-group-order" {
+                let required = try XCTUnwrap(control.cell?.cellSize)
+                XCTAssertGreaterThanOrEqual(fullFrame.width + 1, required.width)
+                XCTAssertGreaterThanOrEqual(fullFrame.height + 1, required.height)
+                XCTAssertEqual((control as? NSPopUpButton)?.item(at: 0)?.title, "排序")
+            }
             XCTAssertTrue(root.bounds.insetBy(dx: -1, dy: -1).contains(fullFrame), "Control must stay within content: \(control)")
             XCTAssertTrue(heading.bounds.insetBy(dx: -1, dy: -1).contains(control.convert(control.bounds, to: heading)))
             for x in [control.bounds.minX + 2, control.bounds.midX, control.bounds.maxX - 2] {
@@ -345,6 +353,34 @@ import PicShotCore
             for other in controls.dropFirst(index + 1) {
                 let overlap = fullFrame.intersection(other.convert(other.bounds, to: root))
                 XCTAssertTrue(overlap.isNull || overlap.width <= 0.5 || overlap.height <= 0.5, "Full control frames overlap")
+            }
+        }
+    }
+
+    private func assertActionRowHitTargets(_ controller: PinGroupsController) throws {
+        let root = try XCTUnwrap(controller.window?.contentView)
+        for ids in [["pin-group-show", "pin-group-hide-all"],
+                    ["pin-group-open-pin", "pin-group-rename-pin", "pin-group-remove-pin"]] {
+            let controls = try ids.map { id in try XCTUnwrap(descendants(root).first { $0.identifier?.rawValue == id } as? NSButton) }
+            var prior: CGRect?
+            for control in controls {
+                let frame = control.convert(control.bounds, to: root)
+                XCTAssertTrue(root.bounds.contains(frame))
+                if let prior { XCTAssertGreaterThanOrEqual(frame.minX - prior.maxX, 2 - 0.01, "Native full-frame gap") }
+                prior = frame
+                let visible = root.convert(control.alignmentRect(forFrame: control.frame), from: control.superview)
+                for x in [visible.minX + 1, visible.midX, visible.maxX - 1] {
+                    let hit = root.hitTest(root.convert(NSPoint(x: x, y: visible.midY), to: root.superview))
+                    XCTAssertTrue(hit === control || hit?.isDescendant(of: control) == true, "Native visible button edge is owned")
+                }
+                // Rounded-control padding need not activate the button. It must
+                // never resolve to a neighboring action after the spacing fix.
+                for x in [frame.minX + 0.5, frame.maxX - 0.5] {
+                    let hit = root.hitTest(root.convert(NSPoint(x: x, y: frame.midY), to: root.superview))
+                    for sibling in controls where sibling !== control {
+                        XCTAssertFalse(hit === sibling || hit?.isDescendant(of: sibling) == true, "Padding hit a neighboring action")
+                    }
+                }
             }
         }
     }

@@ -97,7 +97,10 @@ import PicShotCore
         groupPicker.setContentHuggingPriority(.defaultLow, for: .horizontal)
         groupPicker.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         groupPicker.cell?.lineBreakMode = .byTruncatingTail
-        groupOrderPicker.widthAnchor.constraint(equalToConstant: 64).isActive = true
+        // A pull-down cell also measures its action labels. Keep the compact
+        // minimum, but never force it below AppKit's actual required width.
+        let orderWidth = max(CGFloat(64), ceil(groupOrderPicker.cell?.cellSize.width ?? 64))
+        groupOrderPicker.widthAnchor.constraint(equalToConstant: orderWidth).isActive = true
         groupPicker.widthAnchor.constraint(greaterThanOrEqualToConstant: 160).isActive = true
 
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("pin"))
@@ -138,6 +141,19 @@ import PicShotCore
         movePicker.cell?.lineBreakMode = .byTruncatingTail
         let actions = NSStackView(views: [openButton, renamePinButton, removePinButton, NSView(), NSTextField(labelWithString: "移动到"), movePicker])
         actions.orientation = .horizontal; actions.spacing = 8
+        // Stack spacing is between alignment rectangles; native rounded cells
+        // extend beyond them. Preserve a real two-point full-frame gap.
+        for (row, first, second) in [(visibility, showGroupButton, hideAllButton),
+                                     (actions, openButton, renamePinButton),
+                                     (actions, renamePinButton, removePinButton)] {
+            first.bezelStyle = .rounded; second.bezelStyle = .rounded
+            row.setCustomSpacing(max(row.spacing, 2 + first.alignmentRectInsets.right + second.alignmentRectInsets.left), after: first)
+        }
+        showGroupButton.identifier = NSUserInterfaceItemIdentifier("pin-group-show")
+        hideAllButton.identifier = NSUserInterfaceItemIdentifier("pin-group-hide-all")
+        openButton.identifier = NSUserInterfaceItemIdentifier("pin-group-open-pin")
+        renamePinButton.identifier = NSUserInterfaceItemIdentifier("pin-group-rename-pin")
+        removePinButton.identifier = NSUserInterfaceItemIdentifier("pin-group-remove-pin")
         status.font = .systemFont(ofSize: 11); status.textColor = .secondaryLabelColor
         status.maximumNumberOfLines = 3
         transformButton.target = self; transformButton.action = #selector(transformSelected)
