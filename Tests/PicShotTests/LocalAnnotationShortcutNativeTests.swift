@@ -145,6 +145,7 @@ import PicShotCore
             let settings = try LocalAnnotationShortcutSettings.defaults.replacing(.rectangle, with: .init(keyCode: 15))
             let editor = try makeEditor(settings); defer { editor.close() }
             let window = try XCTUnwrap(editor.window), canvas = editor.annotationCanvas
+            recordMenuPhase("editor-ready")
             let other = NSWindow(contentRect: CGRect(x: 40, y: 40, width: 200, height: 120), styleMask: [.titled], backing: .buffered, defer: false)
             other.isReleasedWhenClosed = false; defer { other.close() }
             try show(other)
@@ -154,17 +155,52 @@ import PicShotCore
             let sheet = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 200, height: 100), styleMask: [.titled], backing: .buffered, defer: false)
             sheet.isReleasedWhenClosed = false
             window.beginSheet(sheet)
+            recordMenuPhase("sheet-began")
             XCTAssertNotNil(window.attachedSheet)
             XCTAssertFalse(canvas.handleLocalToolShortcut(try key(window, code: 15, characters: "r")))
             window.endSheet(sheet); sheet.orderOut(nil); sheet.close()
+            recordMenuPhase("sheet-ended")
             try show(window); window.makeFirstResponder(canvas)
             let menu = NSMenu(title: "Owned shortcut test"); menu.addItem(withTitle: "Fixture", action: nil, keyEquivalent: "")
             let event = try key(window, code: 15, characters: "r")
             var observedTracking = false, routed = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                observedTracking = true; routed = canvas.handleLocalToolShortcut(event); menu.cancelTracking()
+            var began = 0, ended = 0, ticks = 0, expired = false
+            let start = ProcessInfo.processInfo.systemUptime
+            let beginToken = NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification,
+                object: menu, queue: nil) { _ in MainActor.assumeIsolated {
+                    began += 1; self.recordMenuPhase("menu-tracking-began")
+                } }
+            let endToken = NotificationCenter.default.addObserver(forName: NSMenu.didEndTrackingNotification,
+                object: menu, queue: nil) { _ in MainActor.assumeIsolated {
+                    ended += 1; self.recordMenuPhase("menu-tracking-ended")
+                } }
+            // Main-queue work is not a reliable closer for a nested tracking loop.
+            // Enter the actual event-tracking mode before testing and cancelling.
+            let timer = Timer(timeInterval: 0.01, repeats: true) { _ in MainActor.assumeIsolated {
+                ticks += 1
+                if began == 1, ended == 0, RunLoop.current.currentMode == .eventTracking, !observedTracking {
+                    observedTracking = true
+                    routed = canvas.handleLocalToolShortcut(event)
+                    self.recordMenuPhase("shortcut-tested-during-tracking")
+                    menu.cancelTracking()
+                }
+                if ProcessInfo.processInfo.systemUptime - start >= 2 || ticks >= 200 {
+                    expired = true; self.recordMenuPhase("menu-deadline"); menu.cancelTracking()
+                }
+            } }
+            RunLoop.main.add(timer, forMode: .eventTracking)
+            defer {
+                timer.invalidate()
+                NotificationCenter.default.removeObserver(beginToken)
+                NotificationCenter.default.removeObserver(endToken)
+                menu.cancelTracking()
             }
+            recordMenuPhase("before-menu-popup")
             _ = menu.popUp(positioning: nil, at: CGPoint(x: 100, y: 100), in: canvas)
+            timer.invalidate(); recordMenuPhase("after-menu-popup")
+            XCTAssertEqual(began, 1); XCTAssertEqual(ended, 1)
+            XCTAssertFalse(expired); XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - start, 2)
+            XCTAssertGreaterThan(ticks, 0); XCTAssertLessThan(ticks, 200)
             XCTAssertTrue(observedTracking); XCTAssertFalse(routed); XCTAssertEqual(canvas.tool, .arrow)
             try show(window); window.makeFirstResponder(canvas)
             try send(window, code: 15, characters: "r"); XCTAssertEqual(canvas.tool, .rectangle)
@@ -367,6 +403,17 @@ import PicShotCore
             "ownedWindowNumber": window?.windowNumber ?? -1, "ownedWindowIsKey": window?.isKeyWindow ?? false]
         if let data = try? JSONSerialization.data(withJSONObject: observation, options: [.sortedKeys]) {
             print("LocalAnnotationShortcut native host: " + String(decoding: data, as: UTF8.self))
+        }
+    }
+
+    private func recordMenuPhase(_ phase: String) {
+        let observation: [String: Any] = ["phase": phase, "test": name,
+            "uptime": ProcessInfo.processInfo.systemUptime,
+            "runLoopMode": RunLoop.current.currentMode?.rawValue ?? "none",
+            "keyWindowNumber": NSApp.keyWindow?.windowNumber ?? -1,
+            "hasModalWindow": NSApp.modalWindow != nil]
+        if let data = try? JSONSerialization.data(withJSONObject: observation, options: [.sortedKeys]) {
+            FileHandle.standardOutput.write(Data("Local shortcut menu phase: ".utf8) + data + Data("\n".utf8))
         }
     }
 
