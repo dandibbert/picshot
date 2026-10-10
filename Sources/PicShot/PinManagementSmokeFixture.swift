@@ -259,7 +259,18 @@ import PicShotCore
         manager.onSessionChange = { callbackCount += 1 }
         let beforeEntries = try digest(store.entries), initialActive = store.index.activeGroupID
         for (item, boundary) in [("earlier", false), ("earlier", true), ("later", false), ("later", false), ("later", true)] {
-            menuEvents.append(try popup(order, id: "pin-group-order-" + item, boundary: boundary))
+            let orderBefore = store.groups.map { $0.id.uuidString }, callbacksBefore = callbackCount
+            do { menuEvents.append(try popup(order, id: "pin-group-order-" + item, boundary: boundary)) }
+            catch {
+                let state: [String: Any] = ["requestedItem": "pin-group-order-" + item, "boundary": boundary,
+                    "orderBefore": orderBefore, "orderAfter": store.groups.map { $0.id.uuidString },
+                    "callbacksBefore": callbacksBefore, "callbacksAfter": callbackCount,
+                    "activeGroupID": store.index.activeGroupID.uuidString,
+                    "selectedPinIDs": manager.selectedPinIDs.map(\.uuidString).sorted(), "selectedRow": table.selectedRow]
+                let data = try JSONSerialization.data(withJSONObject: state, options: [.sortedKeys])
+                try require(data.count <= 16_384, "Order failure state byte budget exceeded")
+                throw failure(error.localizedDescription + " | orderState=" + String(decoding: data, as: UTF8.self))
+            }
             try require(store.index.activeGroupID == active && manager.selectedPinIDs == selected && table.selectedRow == 1,
                         "Group order lost active group/selected pin")
             try require(try digest(store.entries) == beforeEntries, "Group order changed pins")
@@ -421,7 +432,12 @@ import PicShotCore
         RunLoop.main.add(timer, forMode: .eventTracking)
         defer { timer.invalidate(); menu.delegate = previous }
         try PortableSettingsUIPreviewFixture.click(button)
-        try require(probe.opened && probe.closed && !probe.timedOut && probe.activated == !boundary, "Native order tracking failed")
+        let receipt = try JSONSerialization.data(withJSONObject: probe.evidence, options: [.sortedKeys])
+        try require(receipt.count <= 32_768, "Order probe receipt byte budget exceeded")
+        FileHandle.standardError.write(Data("Pin management menu probe: ".utf8))
+        FileHandle.standardError.write(receipt); FileHandle.standardError.write(Data([10]))
+        try require(probe.opened && probe.closed && !probe.timedOut && probe.activated == !boundary,
+                    "Native order tracking failed | probe=" + String(decoding: receipt, as: UTF8.self))
         return ["itemID": id, "boundary": boundary, "enabled": !boundary, "opened": probe.opened, "closed": probe.closed,
             "activated": probe.activated, "postedKeyCount": probe.posted, "timeoutSeconds": 2, "windowNumber": window.windowNumber,
             "dispatchRoute": "owned-mouseDown/native-menu-tracking", "disabledDismissedWithEscape": boundary]
@@ -487,23 +503,51 @@ import PicShotCore
     @MainActor private final class MenuProbe: NSObject, NSMenuDelegate {
         weak var menu: NSMenu?; weak var window: NSWindow?; weak var target: NSMenuItem?
         weak var previous: NSMenuDelegate?
-        let boundary: Bool; private let deadline = ProcessInfo.processInfo.systemUptime + 2
+        let boundary: Bool; private let started = ProcessInfo.processInfo.systemUptime
+        private let deadline = ProcessInfo.processInfo.systemUptime + 2
         var opened = false, closed = false, activated = false, timedOut = false, posted = 0
         private var highlighted: NSMenuItem?, entered = false
-        init(menu: NSMenu, window: NSWindow, item: NSMenuItem, boundary: Bool) { self.menu = menu; self.window = window; target = item; self.boundary = boundary }
-        func menuNeedsUpdate(_ menu: NSMenu) { previous?.menuNeedsUpdate?(menu) }
-        func menuWillOpen(_ menu: NSMenu) { opened = true; previous?.menuWillOpen?(menu) }
-        func menuDidClose(_ menu: NSMenu) { closed = true; activated = !boundary && entered && highlighted === target; previous?.menuDidClose?(menu) }
-        func menu(_ menu: NSMenu, willHighlight item: NSMenuItem?) { if let item { highlighted = item }; previous?.menu?(menu, willHighlight: item) }
+        private var events: [[String: Any]] = [], omittedEvents = 0
+        var evidence: [String: Any] {
+            ["requestedItem": target?.identifier?.rawValue ?? "none", "boundary": boundary,
+             "opened": opened, "closed": closed, "activated": activated, "timedOut": timedOut,
+             "posted": posted, "entered": entered, "highlightedItem": highlighted?.identifier?.rawValue ?? "none",
+             "highlightIsTarget": highlighted === target, "targetEnabled": target?.isEnabled ?? false,
+             "elapsedSeconds": ProcessInfo.processInfo.systemUptime - started, "timeoutSeconds": 2,
+             "maximumPostedEvents": 40, "maximumTraceEvents": 96, "omittedTraceEvents": omittedEvents,
+             "windowNumber": window?.windowNumber ?? -1, "windowIsKey": window?.isKeyWindow ?? false,
+             "applicationIsActive": NSApp.isActive, "events": events]
+        }
+        private func record(_ kind: String, code: UInt16? = nil) {
+            guard events.count < 96 else { omittedEvents += 1; return }
+            events.append(["event": kind, "elapsedSeconds": ProcessInfo.processInfo.systemUptime - started,
+                "highlightedItem": highlighted?.identifier?.rawValue ?? "none", "highlightIsTarget": highlighted === target,
+                "entered": entered, "posted": posted, "syntheticKeyCode": code.map(Int.init) ?? -1])
+        }
+        init(menu: NSMenu, window: NSWindow, item: NSMenuItem, boundary: Bool) {
+            self.menu = menu; self.window = window; target = item; self.boundary = boundary
+            super.init(); record("created")
+        }
+        func menuNeedsUpdate(_ menu: NSMenu) { record("needsUpdate"); previous?.menuNeedsUpdate?(menu) }
+        func menuWillOpen(_ menu: NSMenu) { opened = true; record("willOpen"); previous?.menuWillOpen?(menu) }
+        func menuDidClose(_ menu: NSMenu) {
+            closed = true; activated = !boundary && entered && highlighted === target
+            record("didClose"); previous?.menuDidClose?(menu)
+        }
+        func menu(_ menu: NSMenu, willHighlight item: NSMenuItem?) {
+            if let item { highlighted = item }; record(item == nil ? "willHighlightNil" : "willHighlightItem")
+            previous?.menu?(menu, willHighlight: item)
+        }
         func tick() {
+            record("tick")
             guard !closed else { return }
-            if ProcessInfo.processInfo.systemUptime >= deadline || posted >= 40 { timedOut = true; menu?.cancelTracking(); return }
+            if ProcessInfo.processInfo.systemUptime >= deadline || posted >= 40 { timedOut = true; record("timeout"); menu?.cancelTracking(); return }
             guard opened, !entered, let window else { return }
             let select = highlighted === target, code: UInt16 = boundary ? 53 : (select ? 36 : 125)
             let text = boundary ? "\u{1b}" : (select ? "\r" : "\u{f701}")
             guard let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-                windowNumber: window.windowNumber, context: nil, characters: text, charactersIgnoringModifiers: text, isARepeat: false, keyCode: code) else { timedOut = true; menu?.cancelTracking(); return }
-            entered = boundary || select; posted += 1; NSApp.postEvent(event, atStart: true)
+                windowNumber: window.windowNumber, context: nil, characters: text, charactersIgnoringModifiers: text, isARepeat: false, keyCode: code) else { timedOut = true; record("eventCreationFailed"); menu?.cancelTracking(); return }
+            entered = boundary || select; posted += 1; record("postedKey", code: code); NSApp.postEvent(event, atStart: true)
         }
     }
 }
