@@ -179,9 +179,20 @@ import PicShotCore
             func copyEntireDraft(_ view: NSTextView, to board: NSPasteboard, expected: String) {
                 let selection = view.selectedRange()
                 defer { view.setSelectedRange(selection) }
-                view.setSelectedRange(NSRange(location: 0, length: (view.string as NSString).length))
-                board.declareTypes([.string], owner: nil)
-                XCTAssertTrue(view.writeSelection(to: board, type: .string))
+                let fullRange = NSRange(location: 0, length: (view.string as NSString).length)
+                view.setSelectedRange(fullRange)
+                XCTAssertEqual(view.selectedRange(), fullRange)
+                let types = view.writablePasteboardTypes
+                XCTAssertFalse(types.isEmpty)
+                board.clearContents()
+                XCTAssertNil(board.string(forType: .string), "Fresh copy must not reuse earlier expected clipboard data")
+                let before = board.changeCount
+                // AppKit's single-type writer is an override hook; invoke the
+                // public multi-type route that declares and writes the selection.
+                let written = view.writeSelection(to: board, types: types)
+                FileHandle.standardError.write(Data(("PinTextEdit native draft copy: selected=\(NSStringFromRange(view.selectedRange())) offeredTypes=\(types.map(\.rawValue)) actualTypes=\((board.types ?? []).map(\.rawValue)) changeCountBefore=\(before) changeCountAfter=\(board.changeCount) written=\(written)\n").utf8))
+                XCTAssertTrue(written)
+                XCTAssertGreaterThan(board.changeCount, before)
                 XCTAssertEqual(board.string(forType: .string), expected)
             }
             let original = PinTextContent(text: String(repeating: "🐱", count: PinTextContent.maximumUTF8Bytes / 4))
