@@ -5,13 +5,32 @@ import XCTest
 @testable import PicShot
 
 @MainActor final class PortableSettingsUITests: XCTestCase {
+    private static var preparedStandaloneApplication = false
     private func isolated(_ body: (UserDefaults, String, Data) throws -> Void) throws {
         _ = NSApplication.shared
         let originalPolicy = NSApp.activationPolicy()
+        recordHostState("before-preparation")
         if originalPolicy == .prohibited {
             XCTAssertTrue(NSApp.setActivationPolicy(.accessory), "Native Settings interaction requires an activatable owned application")
         }
-        defer { if NSApp.activationPolicy() != originalPolicy { _ = NSApp.setActivationPolicy(originalPolicy) } }
+        defer {
+            if NSApp.activationPolicy() != originalPolicy { _ = NSApp.setActivationPolicy(originalPolicy) }
+            recordHostState("policy-restored")
+        }
+        if !Self.preparedStandaloneApplication {
+            if !NSApp.isRunning {
+                // XCTest creates NSApplication without running its launch
+                // lifecycle. Finish only this otherwise-empty owned host;
+                // never invoke an application delegate or file-open request.
+                _ = try XCTUnwrap(NSApp.delegate == nil ? true : nil,
+                    "Standalone UI test host unexpectedly has an application delegate")
+                _ = try XCTUnwrap(UserDefaults.standard.object(forKey: "NSOpen") == nil ? true : nil,
+                    "Standalone UI test host unexpectedly has a file-open request")
+                NSApp.finishLaunching()
+            }
+            Self.preparedStandaloneApplication = true
+        }
+        recordHostState("after-preparation")
         let suite = "PicShot-PortableSettingsUITests-" + UUID().uuidString, donorSuite = suite + "-donor"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite)), donor = try XCTUnwrap(UserDefaults(suiteName: donorSuite))
         let appearance = NSApp.appearance
@@ -23,13 +42,30 @@ import XCTest
         try body(defaults, suite, PortableSettingsStore(defaults: donor, persistentDomainName: donorSuite).exportData())
     }
 
+    private func recordHostState(_ phase: String, window: NSWindow? = nil) {
+        let observation: [String: Any] = ["phase": phase, "test": name,
+            "launchPrepared": Self.preparedStandaloneApplication, "applicationIsActive": NSApp.isActive,
+            "applicationIsRunning": NSApp.isRunning, "activationPolicy": NSApp.activationPolicy().rawValue,
+            "keyWindowNumber": NSApp.keyWindow?.windowNumber ?? -1,
+            "ownedWindowNumber": window?.windowNumber ?? -1, "ownedWindowIsKey": window?.isKeyWindow ?? false]
+        if let data = try? JSONSerialization.data(withJSONObject: observation, options: [.sortedKeys]) {
+            print("PortableSettings native host: " + String(decoding: data, as: UTF8.self))
+        }
+    }
+
+    private func readyWindow(_ controller: SettingsController, appearance: NSAppearance.Name) throws -> NSWindow {
+        let window = try PortableSettingsUIPreviewFixture.show(controller, appearance: appearance)
+        recordHostState("owned-window-ready", window: window)
+        return window
+    }
+
     func testNativeCancelPreservesSavedDomainAndExistingAnnotationDraft() throws {
         try isolated { defaults, suite, incoming in
             var changes = 0, validations = 0
             let controller = SettingsController(onChange: { changes += 1 }, defaults: defaults, isSmoke: false,
                 validateImportedHotkeys: { _ in validations += 1 }, defaultsDomainName: suite)
             defer { controller.close() }
-            let window = try PortableSettingsUIPreviewFixture.show(controller, appearance: .aqua)
+            let window = try readyWindow(controller, appearance: .aqua)
             try PortableSettingsUIPreviewFixture.select(.annotations, in: controller)
             let evidence = ProcessInfo.processInfo.environment["CI"] == "true"
                 ? URL(fileURLWithPath: FileManager.default.currentDirectoryPath).resolvingSymlinksInPath()
@@ -59,7 +95,7 @@ import XCTest
             let controller = SettingsController(onChange: { changes += 1 }, defaults: defaults, isSmoke: false,
                 validateImportedHotkeys: { _ in validations += 1 }, defaultsDomainName: suite)
             defer { controller.close() }
-            let window = try PortableSettingsUIPreviewFixture.show(controller, appearance: .aqua)
+            let window = try readyWindow(controller, appearance: .aqua)
             let review = try controller.reviewPortableSettingsImport(incoming)
             controller.portableSettingsStore.beforeWrite = { _ in writes += 1 }
             try PortableSettingsUIPreviewFixture.click(review.applyButton)
@@ -79,7 +115,7 @@ import XCTest
                 let controller = SettingsController(onChange: { changes += 1 }, defaults: defaults, isSmoke: false,
                     validateImportedHotkeys: { _ in if kind == "os" { throw PortableSettingsError.conflict } }, defaultsDomainName: suite)
                 defer { controller.close() }
-                let window = try PortableSettingsUIPreviewFixture.show(controller, appearance: .aqua)
+                let window = try readyWindow(controller, appearance: .aqua)
                 let review = try controller.reviewPortableSettingsImport(incoming)
                 if kind == "stale" { defaults.set(5, forKey: ScreenshotPreferences.delayKey) }
                 let before = defaults.persistentDomain(forName: suite) ?? [:]
@@ -100,7 +136,7 @@ import XCTest
         try isolated { defaults, suite, incoming in
             let controller = SettingsController(onChange: { XCTFail("Closing must not apply") }, defaults: defaults, isSmoke: false, defaultsDomainName: suite)
             defer { controller.close() }
-            let window = try PortableSettingsUIPreviewFixture.show(controller, appearance: .aqua)
+            let window = try readyWindow(controller, appearance: .aqua)
             XCTAssertThrowsError(try controller.reviewPortableSettingsImport(Data("{}".utf8)))
             XCTAssertNil(controller.portableImportReview); XCTAssertNil(window.attachedSheet)
             let review = try controller.reviewPortableSettingsImport(incoming)
@@ -134,7 +170,7 @@ import XCTest
             for appearance in [NSAppearance.Name.aqua, .darkAqua] {
                 let controller = SettingsController(onChange: {}, defaults: defaults, isSmoke: false, defaultsDomainName: suite)
                 defer { controller.close() }
-                let window = try PortableSettingsUIPreviewFixture.show(controller, appearance: appearance)
+                let window = try readyWindow(controller, appearance: appearance)
                 for category in [SettingsCategory.annotations, .configuration] {
                     try PortableSettingsUIPreviewFixture.select(category, in: controller)
                     XCTAssertEqual(try PortableSettingsUIPreviewFixture.layout(window)["fullVisibleFramesChecked"] as? Bool, true)
