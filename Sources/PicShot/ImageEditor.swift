@@ -363,8 +363,21 @@ final class ImageEditorCanvas: NSView {
     /// New marks may use this session's edit time without changing stored capture metadata.
     private let editingStartedAt: Date
     var annotations: [ImageAnnotation] = []
-    var tool: ImageEditorTool = .arrow { didSet { finishNumberComment(commit: true); cancelInteraction(); cropRect = nil; needsDisplay = true } }
+    var localShortcuts = LocalAnnotationShortcutSettings.defaults
+    var onSelectLocalTool: ((ImageEditorTool) -> Bool)?
+    private let localShortcutContext = LocalAnnotationShortcutContext()
+    var tool: ImageEditorTool = .arrow {
+        didSet {
+            finishNumberComment(commit: true); cancelInteraction(); cropRect = nil
+            if oldValue != tool { switchFutureStyle(from: oldValue) }
+            needsDisplay = true
+        }
+    }
     var style = ImageAnnotation(tool: .arrow, points: [], color: NSColor.systemRed.cgColor, fontSize: 20)
+    private let stylePresets: AnnotationStylePresetStore
+    // Preserve legacy carryover for unsaved tools; saved/reset tools remain isolated.
+    private var unsavedStyle: ImageAnnotation?
+    private var isolatedStyles: [ImageEditorTool: ImageAnnotation] = [:]
     var color: CGColor { get { style.color } set { style.color = newValue } }
     var strokeWidth: CGFloat { get { style.lineWidth } set { style.lineWidth = newValue } }
     var zoom: CGFloat = 1 { didSet { resizeCanvas() } }
@@ -413,7 +426,8 @@ final class ImageEditorCanvas: NSView {
     var activeNumberCommentInput: InlineAnnotationTextView? { numberCommentSession?.box.input }
     var canCreateNumber: Bool { !numberSequence.isExhausted && annotations.lazy.filter { $0.tool == .number }.count < NumberedCalloutSequence.maximumMarks }
 
-    init(image: CGImage, captureDate: Date? = nil, timeZone: TimeZone = .current) {
+    init(image: CGImage, captureDate: Date? = nil, timeZone: TimeZone = .current, styleDefaults: UserDefaults? = nil) {
+        stylePresets = AnnotationStylePresetStore(defaults: styleDefaults)
         let editingStartedAt = Date()
         self.editingStartedAt = editingStartedAt
         self.image = image; self.captureDate = captureDate ?? editingStartedAt; self.captureTimeZoneIdentifier = timeZone.identifier
@@ -423,6 +437,10 @@ final class ImageEditorCanvas: NSView {
         style.freehandSmoothing = true
         style.highlighterMode = .freehand; style.highlighterBlend = .multiply
         if captureDate == nil { style.watermarkTemplate = "PicShot · 编辑于 $yyyy-MM-dd HH:mm:ss$" }
+        unsavedStyle = style
+        if let saved = stylePresets.style(for: tool) {
+            AnnotationStyleAdapter.apply(saved, to: &style); isolatedStyles[tool] = style
+        }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override var acceptsFirstResponder: Bool { true }
@@ -440,6 +458,8 @@ final class ImageEditorCanvas: NSView {
         captureTimeZoneIdentifier = timeZoneIdentifier
         captureTimestampKnown = known
         style.watermarkTemplate = known ? "PicShot · $yyyy-MM-dd HH:mm:ss$" : "PicShot · 编辑于 $yyyy-MM-dd HH:mm:ss$"
+        unsavedStyle?.watermarkTemplate = style.watermarkTemplate
+        for key in Array(isolatedStyles.keys) { isolatedStyles[key]?.watermarkTemplate = style.watermarkTemplate }
     }
 
     func setContent(image: CGImage, annotations: [ImageAnnotation], numberSequence: NumberedCalloutSequence? = nil, cropViewportInBase: CGRect? = nil) {
@@ -468,8 +488,60 @@ final class ImageEditorCanvas: NSView {
     }
     func releasePresentationCache() { cachedImage = nil }
 
+    private func originalFutureStyle(for tool: ImageEditorTool) -> ImageAnnotation {
+        var result = AnnotationStyleAdapter.original(tool: tool, captureTimestampKnown: captureTimestampKnown)
+        // The editor's current literal template stays in this session only.
+        result.watermarkTemplate = style.tool == .watermark ? style.watermarkTemplate : (unsavedStyle?.watermarkTemplate ?? style.watermarkTemplate)
+        return result
+    }
+
+    private func switchFutureStyle(from previousTool: ImageEditorTool) {
+        if isolatedStyles[previousTool] != nil { isolatedStyles[previousTool] = style }
+        else { unsavedStyle = style }
+        if let isolated = isolatedStyles[tool] { style = isolated }
+        else if let saved = stylePresets.style(for: tool) {
+            var next = originalFutureStyle(for: tool)
+            AnnotationStyleAdapter.apply(saved, to: &next); isolatedStyles[tool] = next; style = next
+        } else { style = unsavedStyle ?? style }
+        style.tool = tool
+    }
+
+    private func futureStyle(for requestedTool: ImageEditorTool) -> ImageAnnotation {
+        if requestedTool == tool { return style }
+        if let isolated = isolatedStyles[requestedTool] { return isolated }
+        if let saved = stylePresets.style(for: requestedTool) {
+            var result = originalFutureStyle(for: requestedTool)
+            AnnotationStyleAdapter.apply(saved, to: &result); return result
+        }
+        return isolatedStyles[tool] == nil ? style : (unsavedStyle ?? style)
+    }
+
+    func hasSavedStyle(for tool: ImageEditorTool) -> Bool { stylePresets.style(for: tool) != nil }
+
+    /// Explicit settings actions affect future marks only. They never edit selection,
+    /// drafts, undo snapshots, counters, capture data or required-effect rendering.
+    func saveDefaultStyle(from annotation: ImageAnnotation) throws {
+        try stylePresets.save(annotation)
+        restoreSavedStyle(for: annotation.tool)
+    }
+    func restoreSavedStyle(for target: ImageEditorTool) {
+        guard let saved = stylePresets.style(for: target) else { return }
+        var next = originalFutureStyle(for: target)
+        AnnotationStyleAdapter.apply(saved, to: &next)
+        isolatedStyles[target] = next
+        if tool == target { style = next }
+        onChange?()
+    }
+    func resetDefaultStyle(for target: ImageEditorTool) throws {
+        guard AnnotationStyleSettings.Tool(rawValue: target.rawValue) != nil else { return }
+        try stylePresets.reset(target)
+        let next = originalFutureStyle(for: target); isolatedStyles[target] = next
+        if tool == target { style = next }
+        onChange?()
+    }
+
     func makeAnnotation(tool: ImageEditorTool, points: [CGPoint], text: String = "") -> ImageAnnotation {
-        var result = style
+        var result = futureStyle(for: tool)
         result.id = UUID(); result.tool = tool; result.points = points; result.text = text
         result.rotation = 0; result.textBoxSize = nil
         result.freehandCorners = []; result.freehandWasSimplified = false
@@ -1137,6 +1209,19 @@ final class ImageEditorCanvas: NSView {
         }
     }
 
+    /// Called only by this owned canvas's keyDown, never by an event monitor or
+    /// a descendant key-equivalent walk. Active drafts keep their geometry.
+    @discardableResult
+    func handleLocalToolShortcut(_ event: NSEvent) -> Bool {
+        guard localShortcutContext.allows(event, canvas: self),
+              draft == nil, dragOrigin == nil, !didBeginMoving, cropRect == nil,
+              activeNumberCommentInput == nil,
+              automaticMosaicReview == nil, automaticMosaicDrawHandler == nil,
+              let binding = try? LocalAnnotationShortcutBinding.capture(event),
+              let tool = localShortcuts.tool(for: binding) else { return false }
+        return onSelectLocalTool?(tool) ?? false
+    }
+
     override func keyDown(with event: NSEvent) {
         if automaticMosaicReview != nil || automaticMosaicDrawHandler != nil {
             if event.keyCode == 53 { onAutomaticMosaicCancel?(); return }
@@ -1172,7 +1257,7 @@ final class ImageEditorCanvas: NSView {
             }
         default:
             if event.charactersIgnoringModifiers?.lowercased() == "a", !event.modifierFlags.contains(.command), selectedAnnotation?.tool == .number { beginNumberComment() }
-            else { super.keyDown(with: event) }
+            else if !handleLocalToolShortcut(event) { super.keyDown(with: event) }
         }
     }
 }
@@ -1262,6 +1347,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     private var toolButtons: [ImageEditorTool: NSButton] = [:]
     private var subtoolMenus: [ImageEditorTool: NSPopUpButton] = [:]
     let toolbarOrder: AnnotationToolbarOrder
+    let localShortcuts: LocalAnnotationShortcutSettings
     private var toolbarDividers: [NSView] = []
     private var toolbarFallbackActions: [NSButton] = []
     private var pinAvailableScreenFrame: CGRect?
@@ -1365,9 +1451,11 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
          onApplyEditable: ((CGImage, EditableCapturePayload) throws -> Void)? = nil,
          baseProvenance: EditableAnnotationBaseProvenance = .legacyRaster,
          toolbarOrder: AnnotationToolbarOrder? = nil,
+         localShortcuts: LocalAnnotationShortcutSettings? = nil,
          defaults: UserDefaults? = ProcessInfo.processInfo.environment["PICSHOT_SMOKE_REPORT"] == nil ? .standard : nil) {
-        canvas = ImageEditorCanvas(image: image, captureDate: presentation?.capturedAt ?? captureDate)
+        canvas = ImageEditorCanvas(image: image, captureDate: presentation?.capturedAt ?? captureDate, styleDefaults: defaults)
         self.toolbarOrder = toolbarOrder ?? defaults.map { AnnotationToolbarOrder.read(from: $0) } ?? .defaults
+        self.localShortcuts = localShortcuts ?? defaults.map { LocalAnnotationShortcutSettings.read(from: $0) } ?? .defaults
         self.presentation = presentation
         self.onSave = onSave; self.onPin = onPin; self.onOCR = onOCR
         self.onPinWithOriginal = onPinWithOriginal; initialOriginalImage = image
@@ -1398,6 +1486,13 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         canvas.onCopy = { [weak self] in self?.copyResult() }
         canvas.onExport = { [weak self] in self?.exportResult() }
         canvas.onCancel = { [weak self] in self?.cancelEditor() }
+        canvas.localShortcuts = self.localShortcuts
+        canvas.onSelectLocalTool = { [weak self] tool in
+            guard let self, !self.isClosed, self.inlineBox == nil,
+                  !self.workspace.isResizingBoundary, self.outputDecorationPalette == nil,
+                  !self.automaticMosaicBlocksOutput else { return false }
+            self.chooseTool(tool); return true
+        }
         canvas.onBeforeInteraction = { [weak self] in
             self?.cancelDecorationWork(); self?.finishInlineText(commit: true)
         }
@@ -1405,6 +1500,21 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         let mosaicInvalidation = canvas.onContentInvalidated
         canvas.onContentInvalidated = { [weak self] in
             mosaicInvalidation?(); self?.cancelDecorationWork()
+        }
+        inspector.onStyleAction = { [weak self] action, annotation in
+            guard let self else { return }
+            do {
+                switch action {
+                case .save: try self.canvas.saveDefaultStyle(from: annotation)
+                case .restore: self.canvas.restoreSavedStyle(for: annotation.tool)
+                case .reset: try self.canvas.resetDefaultStyle(for: annotation.tool)
+                }
+                self.updateStatus()
+            } catch {
+                let alert = NSAlert(); alert.messageText = "无法保存标注样式"
+                alert.informativeText = error.localizedDescription
+                if let window = self.window { alert.beginSheetModal(for: window) }
+            }
         }
         inspector.onClearAnnotations = { [weak self] in self?.canvas.clearAnnotations() }
         inspector.onFinishPolyline = { [weak self] in
@@ -1944,6 +2054,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         inspector.polylinePointCount = canvas.pendingPolylinePointCount
         inspector.numberSequence = canvas.numberSequence
         inspector.numberCount = canvas.annotations.lazy.filter { $0.tool == .number }.count
+        inspector.hasSavedStyle = canvas.hasSavedStyle(for: inspected.tool)
         inspector.display(annotation: inspected, selected: selected != nil, enabled: enabled)
         layoutInterface()
     }
@@ -2393,7 +2504,8 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         canvas.onWillChange = nil; canvas.onChange = nil; canvas.onRequestText = nil
         canvas.onUndo = nil; canvas.onRedo = nil; canvas.onApplyCrop = nil
         canvas.onCopy = nil; canvas.onExport = nil; canvas.onCancel = nil; canvas.onBeforeInteraction = nil
-        inspector.onEdit = nil; inspector.onClearAnnotations = nil; inspector.onFinishPolyline = nil; inspector.onCancelPolyline = nil
+        canvas.onSelectLocalTool = nil
+        inspector.onEdit = nil; inspector.onStyleAction = nil; inspector.onClearAnnotations = nil; inspector.onFinishPolyline = nil; inspector.onCancelPolyline = nil
         inspector.numberControls.clearCallbacks()
         canvas.cancelPolyline(); canvas.cancelPendingFreehand(); canvas.releasePresentationCache(); inspector.deactivateColorWells()
         workspace.onLayout = nil; workspace.onDismiss = nil; workspace.onOutsideClick = nil

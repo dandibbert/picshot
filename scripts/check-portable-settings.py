@@ -66,13 +66,18 @@ def unique_object(pairs):
 def check_export(data):
     need(0 < len(data) <= 65536, 'export byte bound')
     value = json.loads(data, object_pairs_hook=unique_object)
-    need(set(value) == {'format', 'schemaVersion', 'preferences', 'hotkeys', 'annotationToolOrder'}, 'export allowlist')
+    need(set(value) == {'format', 'schemaVersion', 'preferences', 'hotkeys', 'annotationToolOrder',
+                        'annotationStyles', 'annotationShortcuts'}, 'export allowlist')
     need(value['format'] == 'picshot.preferences' and value['schemaVersion'] == 1, 'export format/version')
     prefs = value['preferences']
     need(set(prefs) == PREFERENCES, 'export preference allowlist')
     need(prefs['appearance'] == 'system' and prefs['screenshotDelaySeconds'] == 0 and prefs['screenshotShowsCursor'] is False,
          'export contains unsaved/imported values')
     need(value['annotationToolOrder'] == ORDER, 'export contains unsaved toolbar draft')
+    need(value['annotationStyles'] == {'version': 1, 'styles': []}, 'export contains unexpected annotation style data')
+    need(type(value['annotationStyles']['version']) is int, 'style version must be an integer')
+    need(value['annotationShortcuts'] == {'schemaVersion': 1, 'bindings': []}, 'export contains unexpected local shortcuts')
+    need(type(value['annotationShortcuts']['schemaVersion']) is int, 'shortcut version must be an integer')
     shortcuts = value['hotkeys']
     need(len(shortcuts) == 6 and {item['action'] for item in shortcuts} ==
          {'capture', 'clipboardPin', 'restoreLastPin', 'history', 'recordingPauseResume', 'recordingStopSave'}, 'six exported actions')

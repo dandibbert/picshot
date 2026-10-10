@@ -27,10 +27,10 @@ class EarlyRecordingExportContracts(unittest.TestCase):
         self.dist = self.workspace / "dist"
         self.dist.mkdir()
         self.packaged = self.dist / "PicShot.app"
-        self.archive = self.dist / "PicShot-0.19.1-macos-arm64.zip"
+        self.archive = self.dist / "PicShot-0.20.0-macos-arm64.zip"
         self.archive.write_bytes(b"portable package identity stub")
-        info = dict(PicShotSourceCommit=COMMIT, CFBundleExecutable="PicShot", CFBundleShortVersionString="0.19.1", CFBundleVersion="1")
-        build = dict(sourceCommit=COMMIT, version="0.19.1", architecture="arm64")
+        info = dict(PicShotSourceCommit=COMMIT, CFBundleExecutable="PicShot", CFBundleShortVersionString="0.20.0", CFBundleVersion="1")
+        build = dict(sourceCommit=COMMIT, version="0.20.0", architecture="arm64")
         for name, data in zip(EARLY.IDENTITY_FILES, (b"portable executable stub", plistlib.dumps(info), json.dumps(build).encode())):
             path = self.packaged / name
             path.parent.mkdir(parents=True, exist_ok=True)

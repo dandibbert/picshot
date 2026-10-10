@@ -30,7 +30,9 @@ def document():
                                  automaticallyRecognizePinText=False, historyDays=30, historyCount=500, historyMegabytes=1024),
                 hotkeys=[dict(action=action, binding=None) for action in
                          ('capture', 'clipboardPin', 'restoreLastPin', 'history', 'recordingPauseResume', 'recordingStopSave')],
-                annotationToolOrder=CHECK.ORDER)
+                annotationToolOrder=CHECK.ORDER,
+                annotationStyles=dict(version=1, styles=[]),
+                annotationShortcuts=dict(schemaVersion=1, bindings=[]))
 
 
 def report():
@@ -205,6 +207,20 @@ class PortableSettingsCheckerTests(unittest.TestCase):
     def test_reject_duplicate_export_fields(self):
         self.replace('portable-settings-export.json', b'{"format":"picshot.preferences","format":"picshot.preferences"}')
         with self.assertRaisesRegex(ValueError, 'duplicate JSON'): self.check()
+
+    def test_reject_missing_or_nonempty_new_sections_in_clean_export_fixture(self):
+        for key, mutations in (
+            ('annotationStyles', [None, {'version': True, 'styles': []}, {'version': 2, 'styles': []},
+                                  {'version': 1, 'styles': [], 'text': 'PRIVATE'},
+                                  {'version': 1, 'styles': [{'tool': 'arrow', 'values': {'lineWidth': 6}}]}]),
+            ('annotationShortcuts', [None, {'schemaVersion': True, 'bindings': []},
+                                     {'schemaVersion': 1, 'bindings': [], 'text': 'PRIVATE'},
+                                     {'schemaVersion': 1, 'bindings': [{'tool': 'arrow', 'binding': {'keyCode': 15, 'modifiers': 0}}]}])):
+            missing = document(); missing.pop(key)
+            with self.assertRaises(ValueError): CHECK.check_export(json.dumps(missing).encode())
+            for value in mutations:
+                changed = document(); changed[key] = value
+                with self.assertRaises(ValueError): CHECK.check_export(json.dumps(changed).encode())
 
     def test_reject_digest_change_and_identical_light_dark(self):
         name = 'portable-settings-review-dark.png'

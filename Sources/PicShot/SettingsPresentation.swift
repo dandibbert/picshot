@@ -2,7 +2,7 @@ import AppKit
 import PicShotCore
 
 enum SettingsCategory: String, CaseIterable {
-    case appearance, capture, save, annotations, pins, history, shortcuts, configuration
+    case appearance, capture, save, annotations, pins, history, shortcuts, localTools, configuration
     var title: String {
         switch self {
         case .appearance: return "外观"
@@ -12,6 +12,7 @@ enum SettingsCategory: String, CaseIterable {
         case .pins: return "贴图"
         case .history: return "历史记录"
         case .shortcuts: return "快捷键 / 动作"
+        case .localTools: return "标注快捷键"
         case .configuration: return "配置文件"
         }
     }
@@ -24,6 +25,7 @@ enum SettingsCategory: String, CaseIterable {
         case .pins: return "pin"
         case .history: return "clock"
         case .shortcuts: return "command"
+        case .localTools: return "keyboard"
         case .configuration: return "arrow.triangle.2.circlepath"
         }
     }

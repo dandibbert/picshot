@@ -9,6 +9,10 @@ final class AnnotationInspector: EditorFloatingSurface {
     var numberSequence = NumberedCalloutSequence()
     var numberCount = 0
     var onEdit: (((inout ImageAnnotation) -> Void) -> Void)?
+    enum StyleAction: Int { case save, restore, reset }
+    var onStyleAction: ((StyleAction, ImageAnnotation) -> Void)?
+    var hasSavedStyle = false
+    private let styleMenu = EditorToolbarPopupButton(frame: .zero, pullsDown: true)
     var onClearAnnotations: (() -> Void)?
     var onFinishPolyline: (() -> Void)?
     var onCancelPolyline: (() -> Void)?
@@ -153,6 +157,24 @@ final class AnnotationInspector: EditorFloatingSurface {
         lineStyles.onEdit = { [weak self] edit in self?.onEdit?(edit) }
         textOutline.onEdit = { [weak self] edit in self?.onEdit?(edit) }
         configureToolControls()
+        styleMenu.identifier = .init("annotation.savedStyles")
+        styleMenu.controlSize = .small; styleMenu.bezelStyle = .rounded
+        styleMenu.setAccessibilityLabel("此工具的默认样式")
+        styleMenu.toolTip = "保存或恢复此工具的外观；仅用于以后新建，不修改已有标注"
+        styleMenu.addItem(withTitle: "样式")
+        styleMenu.menu?.autoenablesItems = false
+        for (action, title, id) in [(StyleAction.save, "保存为此工具默认", "save"),
+                                    (.restore, "恢复已保存样式", "restore"),
+                                    (.reset, "重置为原始样式", "reset")] {
+            let item = NSMenuItem(title: title, action: #selector(performStyleAction(_:)), keyEquivalent: "")
+            item.tag = action.rawValue; item.target = self; item.identifier = .init("annotation.savedStyles." + id)
+            styleMenu.menu?.addItem(item)
+        }
+        styleMenu.menu?.addItem(.separator())
+        let scope = NSMenuItem(title: "仅用于以后新建，不改现有标注", action: nil, keyEquivalent: "")
+        scope.identifier = .init("annotation.savedStyles.scope")
+        scope.isEnabled = false; styleMenu.menu?.addItem(scope)
+        fixedWidth(styleMenu, 54)
         numberControls.onEdit = { [weak self] edit in self?.onEdit?(edit) }
         hint.font = .systemFont(ofSize: 10); hint.textColor = .secondaryLabelColor
         hint.lineBreakMode = .byTruncatingTail; hint.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -318,13 +340,26 @@ final class AnnotationInspector: EditorFloatingSurface {
             primary = [textGroup, widthGroup, dashGroup, fillGroup, colorGroup, detailButton]
             secondary = [opacityGroup, rotationGroup, radiusGroup]
         }
-        primary.forEach { primaryRow.addArrangedSubview($0) }
+        (primary + [styleMenu]).forEach { primaryRow.addArrangedSubview($0) }
         secondary.forEach { detailsGroup.addArrangedSubview($0) }
     }
 
     func display(annotation: ImageAnnotation, selected: Bool, enabled: Bool) {
         if previousTool != annotation.tool { showsDetails = false; configureRows(for: annotation.tool) }
         previousTool = annotation.tool; displayedAnnotation = annotation; displayedSelected = selected; displayedEnabled = enabled
+        let supportsStyle = AnnotationStyleSettings.Tool(rawValue: annotation.tool.rawValue) != nil
+        styleMenu.isHidden = !enabled || !supportsStyle
+        styleMenu.itemArray.first { $0.identifier?.rawValue == "annotation.savedStyles.scope" }?.title = annotation.tool == .redact
+            ? "新遮盖始终为不透明黑色，不改现有标注" : "仅用于以后新建，不改现有标注"
+        for item in styleMenu.itemArray where item.action != nil {
+            guard let action = StyleAction(rawValue: item.tag) else { continue }
+            item.isEnabled = enabled && supportsStyle && onStyleAction != nil && (action != .restore || hasSavedStyle)
+            switch action {
+            case .save: item.title = "保存为\(annotation.tool.title)默认样式"
+            case .restore: item.title = "恢复\(annotation.tool.title)已保存样式"
+            case .reset: item.title = "重置\(annotation.tool.title)为原始样式"
+            }
+        }
         let dedicatedRows: [ImageEditorTool] = [.eraser, .spotlight, .watermark, .magnifier, .arc, .sector, .polyline, .freehand, .highlighter, .number]
         let alwaysShowsDetails = [.watermark, .magnifier, .arc, .sector, .polyline, .pixelate, .blur, .redact, .freehand, .highlighter, .number].contains(annotation.tool)
         primaryRow.isHidden = !enabled
@@ -412,6 +447,13 @@ final class AnnotationInspector: EditorFloatingSurface {
         magnifierSmoothToggle.state = annotation.magnifierSmooth ? .on : .off
         magnifierShadowToggle.state = annotation.magnifierShadow ? .on : .off
         magnifierAnnotationsToggle.state = annotation.magnifierShowsAnnotations ? .on : .off
+    }
+
+    @objc private func performStyleAction(_ sender: NSMenuItem) {
+        guard displayedEnabled, sender.isEnabled, let action = StyleAction(rawValue: sender.tag),
+              AnnotationStyleSettings.Tool(rawValue: displayedAnnotation.tool.rawValue) != nil,
+              action != .restore || hasSavedStyle else { return }
+        onStyleAction?(action, displayedAnnotation)
     }
 
     @objc private func findAutomaticMosaic() { onAutomaticMosaic?() }

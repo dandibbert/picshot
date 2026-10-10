@@ -10,7 +10,7 @@ enum PortableSettingsError: LocalizedError, Equatable {
         case .tooLarge: return "设置文件不能超过 64 KiB。"
         case .malformed: return "设置文件格式无效，包含重复、未知或缺失的字段。未更改任何设置。"
         case .unsupportedVersion: return "不支持此设置文件版本。未更改任何设置。"
-        case .invalidValues: return "设置文件包含无效值、重复快捷键或无效工具顺序。未更改任何设置。"
+        case .invalidValues: return "设置文件包含无效值、重复快捷键或无效标注样式／工具顺序。未更改任何设置。"
         case .conflict: return "设置在预览后发生了更改，请重新导入并检查差异。"
         case .unknownPersistenceDomain: return "无法确定此自定义设置存储的位置，未保存导入内容。"
         case .applyFailed: return "未能保存导入的设置；本次已写入的设置已还原。"
@@ -160,7 +160,8 @@ struct PortableSettingsImportPlan {
         [AppAppearancePreference.preferenceKey, ScreenshotPreferences.delayKey, ScreenshotPreferences.cursorKey,
          PinDesktopVisibility.preferenceKey, PinSessionStore.restorePreferenceKey, PinOCRPreferences.automaticPreferenceKey,
          "historyDays", "historyCount", "historyMB", HotKeyConfiguration.preferenceKey,
-         HotKeyConfiguration.legacyPreferenceKey, AnnotationToolbarOrder.preferenceKey]
+         HotKeyConfiguration.legacyPreferenceKey, AnnotationToolbarOrder.preferenceKey,
+         AnnotationStyleSettings.preferenceKey, LocalAnnotationShortcutSettings.preferenceKey]
     }
 
     private func snapshot() -> [String: PortableStoredValue] {
@@ -191,7 +192,9 @@ struct PortableSettingsImportPlan {
                 automaticallyRecognizePinText: defaults.bool(forKey: PinOCRPreferences.automaticPreferenceKey),
                 historyDays: history.days, historyCount: history.count, historyMegabytes: history.megabytes),
             hotkeys: PortableHotKeyAction.allCases.map { PortableSettingsHotKey(action: $0, binding: hotkeys[$0.localAction]) },
-            annotationToolOrder: AnnotationToolbarOrder.read(from: defaults).rawIDs)
+            annotationToolOrder: AnnotationToolbarOrder.read(from: defaults).rawIDs,
+            annotationStyles: AnnotationStyleSettings.read(from: defaults),
+            annotationShortcuts: LocalAnnotationShortcutSettings.read(from: defaults))
     }
 }
 
@@ -278,6 +281,9 @@ private struct PortableSettingsDocument: Codable {
     let preferences: PortableSettingsPreferences
     let hotkeys: [PortableSettingsHotKey]
     let annotationToolOrder: [String]?
+    /// Absent optional sections preserve local settings when importing older files.
+    let annotationStyles: AnnotationStyleSettings?
+    let annotationShortcuts: LocalAnnotationShortcutSettings?
 
     var hotKeyConfiguration: HotKeyConfiguration {
         HotKeyConfiguration(shortcuts: hotkeys.compactMap { shortcut in
@@ -296,6 +302,10 @@ private struct PortableSettingsDocument: Codable {
             do { _ = try AnnotationToolbarOrder(rawIDs: annotationToolOrder) }
             catch { throw PortableSettingsError.invalidValues }
         }
+        do {
+            if let annotationStyles { _ = try annotationStyles.encoded() }
+            try annotationShortcuts?.validate()
+        } catch { throw PortableSettingsError.invalidValues }
     }
 
     static func decode(_ data: Data) throws -> Self {
@@ -305,7 +315,8 @@ private struct PortableSettingsDocument: Codable {
             try scanner.validate()
             let object = try JSONSerialization.jsonObject(with: data)
             guard let root = object as? [String: Any] else { throw PortableSettingsError.malformed }
-            try requireKeys(root, required: ["format", "schemaVersion", "preferences", "hotkeys"], optional: ["annotationToolOrder"])
+            try requireKeys(root, required: ["format", "schemaVersion", "preferences", "hotkeys"],
+                optional: ["annotationToolOrder", "annotationStyles", "annotationShortcuts"])
             guard let preferences = root["preferences"] as? [String: Any],
                   let hotkeys = root["hotkeys"] as? [[String: Any]] else { throw PortableSettingsError.malformed }
             try requireKeys(preferences, required: PortableSettingsPreferences.keys)
@@ -317,6 +328,11 @@ private struct PortableSettingsDocument: Codable {
                 }
             }
             if let order = root["annotationToolOrder"], !(order is [String]) { throw PortableSettingsError.malformed }
+            // Null is not an omitted section. The nested strict Codable models
+            // validate their schema, keys, primitive types and bounded allowlists.
+            for key in ["annotationStyles", "annotationShortcuts"] {
+                if let value = root[key], !(value is [String: Any]) { throw PortableSettingsError.malformed }
+            }
             let document = try JSONDecoder().decode(Self.self, from: data)
             try document.validate()
             return document
@@ -354,6 +370,22 @@ private struct PortableSettingsDocument: Codable {
             func titles(_ ids: [String]) -> String { ids.map { ImageEditorTool(rawValue: $0)?.title ?? $0 }.joined(separator: "、") }
             add("annotationToolOrder", "标注工具顺序", titles(old.annotationToolOrder ?? []), titles(annotationToolOrder))
         }
+        if let annotationStyles {
+            let before = old.annotationStyles ?? .defaults
+            for tool in AnnotationStyleSettings.Tool.allCases {
+                let prior = before.styles.first { $0.tool == tool }
+                let next = annotationStyles.styles.first { $0.tool == tool }
+                if prior != next {
+                    result.append(PortableSettingsChange(id: "annotationStyle.\(tool.rawValue)",
+                        label: "\(tool.title)默认样式", oldValue: prior?.summary ?? "原始默认样式",
+                        newValue: next?.summary ?? "原始默认样式"))
+                }
+            }
+        }
+        if let annotationShortcuts, annotationShortcuts != old.annotationShortcuts {
+            result.append(PortableSettingsChange(id: "annotationShortcuts", label: "标注工具快捷键",
+                oldValue: (old.annotationShortcuts ?? .defaults).summary, newValue: annotationShortcuts.summary))
+        }
         return result
     }
 
@@ -378,6 +410,14 @@ private struct PortableSettingsDocument: Codable {
         }
         if let annotationToolOrder, annotationToolOrder != old.annotationToolOrder {
             result.append(PortableSettingsMutation(key: AnnotationToolbarOrder.preferenceKey, value: annotationToolOrder))
+        }
+        if let annotationStyles, annotationStyles != old.annotationStyles {
+            result.append(PortableSettingsMutation(key: AnnotationStyleSettings.preferenceKey,
+                value: try annotationStyles.encoded()))
+        }
+        if let annotationShortcuts, annotationShortcuts != old.annotationShortcuts {
+            result.append(PortableSettingsMutation(key: LocalAnnotationShortcutSettings.preferenceKey,
+                value: try annotationShortcuts.encodedData()))
         }
         return result
     }

@@ -400,7 +400,20 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
         inventory = self.current_source_inventory()
         plan = shards.make_plan(inventory, '', 'a' * 40, process_count=4)
         record = self.execute_pin_inventory_guard(plan)
-        self.assertEqual((record['discoveredCount'], record['discoveredClassCount']), (1954, 220))
+        self.assertEqual((record['discoveredCount'], record['discoveredClassCount']), (1998, 225))
+        annotation = json.loads((Path(__file__).parents[1] / 'annotation-preferences-native-additions.json').read_text())
+        self.assertEqual(len(annotation), 44)
+        self.assertEqual(annotation, sorted(set(annotation)))
+        self.assertTrue(set(annotation).issubset(inventory))
+        current_inventory, current_plan = inventory, plan
+        inventory = [name for name in current_inventory if name not in annotation]
+        self.assertEqual(len(inventory), 1954)
+        self.assertEqual(len({name.split('/')[0] for name in inventory}), 220)
+        plan = shards.make_plan(inventory, '', 'a' * 40, process_count=4)
+        self.assertEqual(current_inventory, sorted(inventory + annotation))
+        self.assertEqual([len(shard['tests']) for shard in current_plan['shards']], [546, 440, 512, 500])
+        for old_shard, current_shard in zip(plan['shards'], current_plan['shards']):
+            self.assertEqual([name for name in current_shard['tests'] if name not in annotation], old_shard['tests'])
         staging = json.loads((Path(__file__).parents[1] / 'codec-staging-native-additions.json').read_text())
         self.assertEqual(len(staging), 9)
         self.assertEqual(staging, sorted(set(staging)))
@@ -440,6 +453,10 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
                          '1b5d454926a5ad3d3408ad8827e5fcec619755d284d208d9c13b0e144627cf9b')
         selection = re.search(r"--selection-regex '([^']+)'", self.step(
             'Plan exhaustive and focused native test processes'))[1]
+        for count in [2, 4]:
+            current_focused = shards.make_plan(current_inventory, selection, 'a' * 40, process_count=count)
+            self.assertEqual(len(current_focused['selectedTests']), 1466)
+            self.assertTrue(set(annotation).issubset(current_focused['selectedTests']))
         for count, sizes in [(2, [774, 648]), (4, [432, 294, 342, 354])]:
             with self.subTest(process_count=count):
                 focused = shards.make_plan(inventory, selection, 'a' * 40, process_count=count)

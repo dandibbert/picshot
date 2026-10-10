@@ -18,6 +18,7 @@ import UniformTypeIdentifiers
     private(set) var portableImportReview: PortableSettingsReviewController?
     let configurationStatus = NSTextField(wrappingLabelWithString: "")
     let annotationToolbarView: AnnotationToolbarSettingsView
+    let localAnnotationShortcutsView: LocalAnnotationShortcutSettingsView
     private var shortcuts: HotKeyConfiguration
     private let unavailableShortcuts: [HotKeyAction]
     private let heading = NSTextField(labelWithString: "")
@@ -42,6 +43,7 @@ import UniformTypeIdentifiers
         portableSettingsStore = PortableSettingsStore(defaults: defaults, persistentDomainName: defaultsDomainName)
         self.validateImportedHotkeys = validateImportedHotkeys
         annotationToolbarView = AnnotationToolbarSettingsView(order: safeMode ? .defaults : .read(from: defaults))
+        localAnnotationShortcutsView = LocalAnnotationShortcutSettingsView(settings: safeMode ? .defaults : .read(from: defaults))
         saveWorkflowView = SaveWorkflowSettingsView(settings: safeMode ? .init() : .read(from: defaults))
         let window = SettingsWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 570), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         super.init(window: window); window.delegate = self
@@ -108,6 +110,7 @@ import UniformTypeIdentifiers
         let footerLine = NSBox(); footerLine.boxType = .separator; footerLine.translatesAutoresizingMaskIntoConstraints = false; root.addSubview(footerLine)
         let cancel = SettingsActionButton(title: "取消", target: self, action: #selector(cancelSettings)); cancel.keyEquivalent = "\u{1b}"
         let save = SettingsActionButton(title: "保存设置", target: self, action: #selector(saveSettings)); save.keyEquivalent = "\r"
+        cancel.identifier = .init("settings.cancel"); save.identifier = .init("settings.save")
         let footer = NSStackView(views: [cancel, save]); footer.spacing = 10; footer.translatesAutoresizingMaskIntoConstraints = false; root.addSubview(footer)
         let footnote = NSTextField(labelWithString: "更改在保存后生效"); footnote.font = .systemFont(ofSize: 11); footnote.textColor = .secondaryLabelColor
         footnote.translatesAutoresizingMaskIntoConstraints = false; root.addSubview(footnote)
@@ -129,6 +132,7 @@ import UniformTypeIdentifiers
         selectCategory(SettingsCategory.allCases[sender.tag])
     }
     func selectCategory(_ category: SettingsCategory) {
+        localAnnotationShortcutsView.cancelRecording()
         window?.makeFirstResponder(nil)
         selectedCategory = category; heading.stringValue = category.title
         for (key, button) in categoryButtons { button.isCurrent = key == category }
@@ -176,6 +180,8 @@ import UniformTypeIdentifiers
             var help = "点击后按组合键；至少包含 ⌘、⌃ 或 ⌥。Esc 取消录入。录屏快捷键默认未设置，仅在录制或暂停时生效。设置窗口打开期间暂停全局快捷键，关闭后恢复。"
             if !unavailableShortcuts.isEmpty { help += "\n当前不可用，请更换：" + unavailableShortcuts.map(\.title).joined(separator: "、") }
             addNote(help)
+        case .localTools:
+            addGroup("画布工具切换", rows: [localAnnotationShortcutsView])
         case .configuration:
             let export = SettingsActionButton(title: "导出已保存设置…", target: self, action: #selector(exportConfiguration))
             let importButton = SettingsActionButton(title: "导入并预览…", target: self, action: #selector(importConfiguration))
@@ -183,7 +189,7 @@ import UniformTypeIdentifiers
             importButton.identifier = .init("settings.configuration.import")
             let actions = NSStackView(views: [export, importButton]); actions.spacing = 10
             addGroup("本地配置文件", rows: [actions,
-                note("导出已保存的外观、截图选项、贴图行为、历史上限、六项快捷键和标注工具顺序。本窗口未保存的草稿不会导出。")])
+                note("导出已保存的外观、截图选项、贴图行为、历史上限、六项全局快捷键、标注工具顺序、默认样式和本地工具快捷键。本窗口未保存的草稿不会导出。")])
             addNote("导入先显示逐项差异。点击“导入并保存”才更改设置并关闭窗口；取消保留当前设置和草稿。格式与版本、字段、大小、快捷键重复或当前系统冲突检查失败时，拒绝整次导入。")
             addNote("不包含截图、识别文字、历史和贴图内容、保存路径、命名与自动副本设置、录屏输入提示开关、密码或凭据。不提供云同步。系统快捷键检查不为组合键作长期保留。")
             configurationStatus.font = .systemFont(ofSize: 12)
@@ -217,7 +223,9 @@ import UniformTypeIdentifiers
             if index > 0 { let line = NSBox(); line.boxType = .separator; stack.addArrangedSubview(line); line.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
             stack.addArrangedSubview(row)
             if let label = row as? NSTextField, label.cell?.wraps == true { label.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
-            if row === saveWorkflowView || row === annotationToolbarView { row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
+            if row === saveWorkflowView || row === annotationToolbarView || row === localAnnotationShortcutsView {
+                row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            }
         }
         group.addSubview(stack)
         NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo: group.leadingAnchor, constant: 16), stack.trailingAnchor.constraint(equalTo: group.trailingAnchor, constant: -16), stack.topAnchor.constraint(equalTo: group.topAnchor, constant: 14), stack.bottomAnchor.constraint(equalTo: group.bottomAnchor, constant: -14)])
@@ -247,11 +255,12 @@ import UniformTypeIdentifiers
         }
         callingWindow = nil; callingCollectionBehavior = nil
     }
-    override func close() { isClosing = true; cancelConfigurationWork(); saveWorkflowView.cancelPendingPanel(); detachCallingWindow(); super.close() }
-    func windowWillClose(_ notification: Notification) { isClosing = true; cancelConfigurationWork(); saveWorkflowView.cancelPendingPanel(); detachCallingWindow() }
+    override func close() { isClosing = true; localAnnotationShortcutsView.cancelRecording(); cancelConfigurationWork(); saveWorkflowView.cancelPendingPanel(); detachCallingWindow(); super.close() }
+    func windowWillClose(_ notification: Notification) { isClosing = true; localAnnotationShortcutsView.cancelRecording(); cancelConfigurationWork(); saveWorkflowView.cancelPendingPanel(); detachCallingWindow() }
     @objc private func cancelSettings() { close() }
     func validateSaveWorkflowDraft() throws -> SaveWorkflowSettings { try saveWorkflowView.validatedSettings() }
     @objc private func saveSettings() {
+        localAnnotationShortcutsView.cancelRecording()
         window?.makeFirstResponder(nil)
         let values = retentionFields.compactMap { Int($0.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) }
         guard values.count == 3 else { selectCategory(.history); showError(PicShotError.message("请填写有效的整数。")); return }
@@ -261,6 +270,9 @@ import UniformTypeIdentifiers
         let saveWorkflow: SaveWorkflowSettings
         do { saveWorkflow = try validateSaveWorkflowDraft() }
         catch { selectCategory(.save); saveWorkflowView.errorLabel.stringValue = error.localizedDescription; return }
+        let localShortcutData: Data
+        do { localShortcutData = try localAnnotationShortcutsView.draft.encodedData() }
+        catch { selectCategory(.localTools); showError(error); return }
         // Rendering/test modes can inspect every panel without changing the user's preferences.
         guard savesPreferences else { close(); return }
         do { try shortcuts.save(to: defaults); try saveWorkflow.save(to: defaults) } catch { showError(error); return }
@@ -273,18 +285,21 @@ import UniformTypeIdentifiers
             desktopModes[pinDesktopVisibility.indexOfSelectedItem].save(to: defaults)
         }
         annotationToolbarView.draft.write(to: defaults)
+        defaults.set(localShortcutData, forKey: LocalAnnotationShortcutSettings.preferenceKey)
         let choice = AppAppearancePreference.allCases[max(0, appearance.indexOfSelectedItem)]
         choice.save(to: defaults); NSApp.appearance = choice.appKitAppearance
         change(); close()
     }
 
     func exportPortableSettings(to url: URL) throws {
+        localAnnotationShortcutsView.cancelRecording()
         let data = try portableSettingsStore.exportData()
         try data.write(to: url, options: .atomic)
     }
 
     @discardableResult
     func reviewPortableSettingsImport(_ data: Data) throws -> PortableSettingsReviewController {
+        localAnnotationShortcutsView.cancelRecording()
         guard !isClosing, portableImportReview == nil, let window, window.attachedSheet == nil else {
             throw PicShotError.message("请先关闭当前配置预览或文件选择窗口。")
         }
@@ -380,6 +395,9 @@ import UniformTypeIdentifiers
 /// Give shortcut recording first refusal before Escape, Return, or menu equivalents.
 @MainActor private final class SettingsWindow: NSWindow {
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if let button = firstResponder as? LocalAnnotationShortcutCaptureButton, button.isRecording {
+            button.keyDown(with: event); return true
+        }
         if let button = firstResponder as? ShortcutButton, button.listening {
             button.keyDown(with: event); return true
         }

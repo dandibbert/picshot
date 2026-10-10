@@ -127,7 +127,7 @@ class FidelityOnlyTests(unittest.TestCase):
 
     def test_installed_proposal_keeps_new_media_out_of_existing_QA_artifact(self):
         proposal=(HERE/'codec-fidelity-installed-steps.yml').read_text();wrapper=(HERE/'codec-fidelity-installed.sh').read_text()
-        self.assertIn('PicShot-0.19.1-macos-',proposal);self.assertIn('dist/codec-fidelity-standalone',proposal)
+        self.assertIn('PicShot-0.20.0-macos-',proposal);self.assertIn('dist/codec-fidelity-standalone',proposal)
         self.assertNotIn('dist/evidence/codec-fidelity',proposal)
         self.assertIn('dist/codec-fidelity-metadata/outer.log',proposal)
         self.assertNotIn('dist/codec-fidelity-only.log',proposal)
