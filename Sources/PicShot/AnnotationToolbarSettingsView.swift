@@ -78,8 +78,8 @@ final class AnnotationToolbarSettingsView: NSView, NSTableViewDataSource, NSTabl
         scroll.autohidesScrollers = true; scroll.borderType = .bezelBorder
         scroll.heightAnchor.constraint(equalToConstant: 208).isActive = true
         let controls = NSStackView(views: [moveUpButton, moveDownButton, restoreDefaultsButton]); controls.spacing = 8
-        for (button, id, action) in [(moveUpButton, "moveUp", #selector(moveUp)),
-                                     (moveDownButton, "moveDown", #selector(moveDown)),
+        for (button, id, action) in [(moveUpButton, "moveUp", #selector(moveToolbarFamilyUp)),
+                                     (moveDownButton, "moveDown", #selector(moveToolbarFamilyDown)),
                                      (restoreDefaultsButton, "restoreDefaults", #selector(restoreDefaults))] {
             button.target = self; button.action = action; button.bezelStyle = .rounded
             button.identifier = .init("annotationToolbar." + id); button.setAccessibilityLabel(button.title)
@@ -137,8 +137,8 @@ final class AnnotationToolbarSettingsView: NSView, NSTableViewDataSource, NSTabl
         guard let family = selectedFamily, draft.move(family, by: offset) else { return }
         tableView.reloadData(); selectFamily(family); onChange?()
     }
-    @objc private func moveUp() { moveSelection(by: -1) }
-    @objc private func moveDown() { moveSelection(by: 1) }
+    @objc private func moveToolbarFamilyUp() { moveSelection(by: -1) }
+    @objc private func moveToolbarFamilyDown() { moveSelection(by: 1) }
     @objc private func restoreDefaults() {
         guard draft != .defaults else { return }
         apply(order: .defaults); onChange?()

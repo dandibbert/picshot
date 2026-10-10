@@ -104,8 +104,6 @@ jobs:
           python3 -m unittest discover -s scripts/tests -p test_run_bounded_command.py -v
           python3 -m unittest discover -s scripts/tests -p test_recording_input_ui_contract.py -v
           python3 -m unittest discover -s scripts/tests -p test_check_recording_transport_report.py -v
-          python3 -m unittest discover -s scripts/tests -p test_check_portable_settings.py -v
-          python3 -O -m unittest discover -s scripts/tests -p test_check_portable_settings.py -v
           python3 -m unittest discover -s scripts/tests -p test_recording_input_export_contract.py -v
           python3 -m unittest discover -s scripts/tests -p test_recording_input_export_early.py -v
           python3 -O -m unittest discover -s scripts/tests -p test_recording_input_export_early.py -v
@@ -117,6 +115,11 @@ jobs:
           python3 -m unittest discover -s scripts/tests -p test_check_multiwindow_memory_comparison.py -v
           python3 -m unittest discover -s scripts/tests -p test_multiwindow_resource_smoke_selection.py -v
           python3 -m unittest discover -s scripts/tests -p test_check_editable_annotation_report.py -v
+      - name: Check portable settings evidence contract
+        timeout-minutes: 2
+        run: |
+          python3 -m unittest discover -s scripts/tests -p test_check_portable_settings.py -v
+          python3 -O -m unittest discover -s scripts/tests -p test_check_portable_settings.py -v
       - name: Check installed drawing default product and source contracts
         timeout-minutes: 4
         run: |
