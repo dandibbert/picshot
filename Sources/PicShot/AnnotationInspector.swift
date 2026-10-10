@@ -162,6 +162,8 @@ final class AnnotationInspector: EditorFloatingSurface {
         styleMenu.setAccessibilityLabel("此工具的默认样式")
         styleMenu.toolTip = "保存或恢复此工具的外观；仅用于以后新建，不修改已有标注"
         styleMenu.addItem(withTitle: "样式")
+        styleMenu.item(at: 0)?.identifier = .init("annotation.savedStyles.title")
+        styleMenu.item(at: 0)?.tag = -1
         styleMenu.menu?.autoenablesItems = false
         for (action, title, id) in [(StyleAction.save, "保存为此工具默认", "save"),
                                     (.restore, "恢复已保存样式", "restore"),
@@ -351,8 +353,9 @@ final class AnnotationInspector: EditorFloatingSurface {
         styleMenu.isHidden = !enabled || !supportsStyle
         styleMenu.itemArray.first { $0.identifier?.rawValue == "annotation.savedStyles.scope" }?.title = annotation.tool == .redact
             ? "新遮盖始终为不透明黑色，不改现有标注" : "仅用于以后新建，不改现有标注"
-        for item in styleMenu.itemArray where item.action != nil {
-            guard let action = StyleAction(rawValue: item.tag) else { continue }
+        for item in styleMenu.itemArray {
+            guard item.target === self, item.action == #selector(performStyleAction(_:)),
+                  let action = StyleAction(rawValue: item.tag) else { continue }
             item.isEnabled = enabled && supportsStyle && onStyleAction != nil && (action != .restore || hasSavedStyle)
             switch action {
             case .save: item.title = "保存为\(annotation.tool.title)默认样式"

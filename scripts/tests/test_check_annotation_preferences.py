@@ -33,6 +33,23 @@ def raster(blue=False):
     return b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', 640, 360, 8, 6, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(b''.join(rows))) + chunk(b'IEND', b'')
 
 
+def title_evidence():
+    # Synthetic numeric schema input only; these values are not AppKit measurements.
+    return dict(controlID='annotation.savedStyles', expectedTitle='样式', buttonTitle='样式', cellTitle='样式',
+        attributedTitle='样式', firstItemTitle='样式',
+        measurement='NSPopUpButtonCell.titleRect+CoreText-untruncated-attributed-title',
+        controlBounds=[0, 0, 140, 32], titleRect=[8, 5, 108, 22], titleAdvance=26,
+        cellFontName='Synthetic Font', cellFontSize=13, fullTitleFits=True)
+
+
+def compact_evidence(tool):
+    return dict(tool=tool, activeTool='select' if tool == 'number' else tool, selectedNumber=tool == 'number',
+        contentBounds=[0, 0, 760, 600], paletteFrame=[10, 20, 740, 55], toolbarFrame=[10, 90, 740, 40],
+        fullVisibleFramesChecked=True, controlsDoNotOverlap=True, savedStyleTitle=title_evidence(),
+        controls=[dict(id=value, frame=[20+index*150, 30, 140, 32], hitTest=True)
+                  for index, value in enumerate(C.COMPACT_CONTROLS[tool])])
+
+
 class AnnotationPreferencesCheckerTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
@@ -59,6 +76,8 @@ class AnnotationPreferencesCheckerTests(unittest.TestCase):
             self.r['imports'].append(imports)
             styles = dict(appearance=mode, defaultLineWidth=4, savedLineWidth=10, defaultPixelSHA256='a'*64, resetPixelSHA256='a'*64, reopenedPixelSHA256='b'*64)
             for field in 'existingLayerUnchanged savedStyleRestored futureMarksOnly reopenedStyleMatches nativeOutputPNGExact resetRestoresOriginal'.split(): styles[field] = True
+            styles.update(initialSavedStyleTitle=title_evidence(), compactPaletteStateRestored=True,
+                          compactPalettes=[compact_evidence(tool) for tool in C.COMPACT_TOOLS])
             self.r['styles'].append(styles)
             for purpose, code, modifiers in C.KEYS:
                 self.r['keyEvents'].append(dict(purpose=purpose+'-'+mode, keyCode=code, modifiers=modifiers, windowNumber=100,
@@ -67,18 +86,23 @@ class AnnotationPreferencesCheckerTests(unittest.TestCase):
                 self.r['menuEvents'].append(dict(appearance=mode, itemID=item if item.startswith('width.') else 'annotation.savedStyles.'+item,
                     controlID='annotation.lineWidth' if item.startswith('width.') else 'annotation.savedStyles', opened=True, closed=True,
                     nativeKeyboardSelection=True, postedKeyCount=3, timeoutSeconds=2, dispatchRoute='owned-mouseDown/native-menu-tracking'))
+                if item != 'width.10': self.r['menuEvents'][-1]['savedStyleTitle'] = title_evidence()
             for category in C.CATEGORIES:
                 v = copy.deepcopy(next(v for v in base['visuals'] if v['category'] == ('review' if category == 'import' else 'configuration') and v['appearance'] == mode))
                 v.update(category=category, file=f'annotation-preferences-{category}-{mode}.png')
-                if category == 'styles': v.update(paletteFrame=[10, 20, 760, 55], toolbarFrame=[10, 90, 760, 40])
+                if category == 'styles': v.update(paletteFrame=[10, 20, 760, 55], toolbarFrame=[10, 90, 760, 40], savedStyleTitle=title_evidence())
                 ids = {'shortcuts': ['localShortcuts.capture', 'localShortcuts.clear', 'localShortcuts.restoreDefaults', 'settings.save', 'settings.cancel'],
-                       'import': ['settings.importReview.cancel', 'settings.importReview.apply'], 'styles': ['annotation.savedStyles', 'annotation.lineWidth']}[category]
+                       'import': ['settings.importReview.cancel', 'settings.importReview.apply'], 'styles': ['annotation.savedStyles', 'annotation.lineWidth'],
+                       'styles-narrow-number': C.COMPACT_CONTROLS['number']}[category]
                 v['controls'] = [dict(id=value, frame=[20+index*150, 30, 140, 32], hitTest=True) for index, value in enumerate(ids)]
+                if category == 'styles-narrow-number':
+                    v.update(styles['compactPalettes'][2], pixelWidth=760, pixelHeight=600)
+                    styles['compactPalettes'][2] = copy.deepcopy(v)
                 if category == 'import':
                     opening = v['openingReview']; opening['firstChangeID'] = opening['expectedFirstChangeID'] = 'settings.importReview.change.annotationStyle.rectangle'
                     for row, text in zip(opening['firstChangeLabels'], ['矩形默认样式', '当前：'+imports['oldValue'], '导入：'+imports['newValue']]): row['text'] = text
                 self.r['visuals'].append(v)
-                self.replace(v['file'], OLD.png(800, 570, 16+index*48))
+                self.replace(v['file'], OLD.png(v['pixelWidth'], v['pixelHeight'], 16+index*48))
             for name in ('default', 'reopened', 'reset'):
                 self.replace(f'annotation-preferences-{name}-{mode}.png', raster(name == 'reopened'))
 
@@ -99,7 +123,7 @@ class AnnotationPreferencesCheckerTests(unittest.TestCase):
         alias = self.root/'alias.app'; alias.symlink_to(self.app)
         self.r['bundlePath'] = str(alias)
         with mock.patch.object(C.P.PNG, 'png_rgba', wraps=C.P.PNG.png_rgba) as decoder:
-            self.check(); self.assertEqual(decoder.call_count, 12)
+            self.check(); self.assertEqual(decoder.call_count, 14)
 
     def test_reject_identity_tampering(self):
         for key, value in [('sourceCommit', 'old'), ('buildVersion', '185'), ('executableSHA256', '0'*64), ('infoPlistSHA256', '0'*64)]:
@@ -126,6 +150,49 @@ class AnnotationPreferencesCheckerTests(unittest.TestCase):
                          lambda r: r['visuals'][0]['controls'][1].update(frame=r['visuals'][0]['controls'][0]['frame']),
                          lambda r: r['visuals'][1]['openingReview']['firstChangeLabels'][1].update(text='当前：矩形'),
                          lambda r: r['imports'][0].update(newValue=r['imports'][0]['oldValue'])]: self.reject(mutation)
+
+    def test_reject_saved_style_title_rewrite_at_each_observation(self):
+        paths = [('styles', index, 'initialSavedStyleTitle') for index in range(2)]
+        paths += [('menuEvents', index, 'savedStyleTitle') for index in (1, 2, 3, 5, 6, 7)]
+        paths += [('visuals', index, 'savedStyleTitle') for index in (2, 3, 6, 7)]
+        for section, index, key in paths:
+            for field in ('expectedTitle', 'buttonTitle', 'cellTitle', 'attributedTitle', 'firstItemTitle'):
+                with self.subTest(section=section, index=index, field=field):
+                    self.reject(lambda r: r[section][index][key].update({field: '保存为矩形默认样式'}))
+        for index in range(2):
+            for tool in range(3):
+                self.reject(lambda r: r['styles'][index]['compactPalettes'][tool]['savedStyleTitle'].update(cellTitle='…'))
+
+    def test_reject_unmeasured_or_clipped_saved_style_title(self):
+        for key, value in [('measurement', 'accessibility-label'), ('controlID', 'annotation.lineWidth'),
+                           ('titleAdvance', 109), ('titleAdvance', 0), ('titleAdvance', float('nan')),
+                           ('titleRect', [8, 5, 133, 22]), ('titleRect', [0, 0, 0, 22]),
+                           ('cellFontName', ''), ('cellFontSize', 0), ('fullTitleFits', False)]:
+            self.reject(lambda r: r['styles'][0]['initialSavedStyleTitle'].update({key: value}))
+        self.reject(lambda r: r['visuals'][2]['savedStyleTitle'].update(controlBounds=[0, 0, 150, 32]))
+        self.reject(lambda r: r['styles'][0].pop('initialSavedStyleTitle'))
+        self.reject(lambda r: r['menuEvents'][1].pop('savedStyleTitle'))
+        # The gate uses measured advance and title rect, with no fixed button width
+        # requirement or extra tolerance. Exact fit passes; any shortfall fails.
+        row = title_evidence(); row.update(controlBounds=[0, 0, 54, 32], titleRect=[8, 5, 26, 22])
+        C.saved_style_title(row, [20, 30, 54, 32])
+        row['titleAdvance'] = 26.01
+        with self.assertRaisesRegex(ValueError, 'title advance'): C.saved_style_title(row)
+
+    def test_reject_missing_narrow_selected_number_or_detached_pixels(self):
+        for mutation in [lambda r: r['styles'][0]['compactPalettes'].pop(),
+                         lambda r: r['styles'][0]['compactPalettes'].reverse(),
+                         lambda r: r['styles'][0]['compactPalettes'][0].update(contentBounds=[0, 0, 761, 600]),
+                         lambda r: r['styles'][0]['compactPalettes'][2].update(activeTool='number'),
+                         lambda r: r['styles'][0]['compactPalettes'][2].update(selectedNumber=False),
+                         lambda r: r['styles'][0]['compactPalettes'][1].update(paletteFrame=[10, 20, 751, 55]),
+                         lambda r: r['styles'][0]['compactPalettes'][1]['controls'][0].update(frame=[745, 30, 54, 22]),
+                         lambda r: r['styles'][0]['compactPalettes'][2]['controls'][1].update(hitTest=False),
+                         lambda r: r['styles'][0]['compactPalettes'][2]['controls'].pop(),
+                         lambda r: r['styles'][0].update(compactPaletteStateRestored=False),
+                         lambda r: r['visuals'][3].update(tool='text'),
+                         lambda r: r['visuals'].pop(3),
+                         lambda r: r['fileSHA256'].pop('annotation-preferences-styles-narrow-number-light.png')]: self.reject(mutation)
 
     def test_reject_file_substitution_and_path_escape(self):
         self.reject(lambda r: r['fileSHA256'].update({'../escape.png': '0'*64}))

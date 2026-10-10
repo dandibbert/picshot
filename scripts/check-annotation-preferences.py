@@ -20,7 +20,11 @@ CHECKS = {'native-local-tools-panel', 'remap-duplicate-reserved', 'clear-reset-c
           'import-write-rollback', 'native-style-menu', 'future-marks-only', 'reopened-render-export', 'reset-render-export',
           'light-dark-hit-layout', 'owned-cleanup'}
 MODES = ('light', 'dark')
-CATEGORIES = ('shortcuts', 'import', 'styles')
+CATEGORIES = ('shortcuts', 'import', 'styles', 'styles-narrow-number')
+COMPACT_TOOLS = ('text', 'line', 'number')
+COMPACT_CONTROLS = {'text': ['annotation.savedStyles', 'annotation.fontSize'],
+                    'line': ['annotation.savedStyles', 'annotation.lineWidth'],
+                    'number': ['annotation.savedStyles', 'annotation.numberValue', 'annotation.numberStyle', 'annotation.numberComment']}
 FILES = {f'annotation-preferences-{name}-{mode}.png' for name in (*CATEGORIES, 'default', 'reopened', 'reset') for mode in MODES}
 KEYS = [('recorder', 11, 0), ('recorder', 11, 0), ('reserved', 0, 0), ('reserved', 36, 0),
         ('reserved', 8, 1 << 20), ('cancel-recording', 53, 0), ('recorder', 15, 1 << 17),
@@ -53,6 +57,44 @@ def rows(value):
 def true_fields(row, fields):
     for field in fields.split():
         need(row[field] is True, 'missing native check: ' + field)
+
+
+def saved_style_title(row, frame=None):
+    need(row['controlID'] == 'annotation.savedStyles', 'title control identity')
+    for field in ('expectedTitle', 'buttonTitle', 'cellTitle', 'attributedTitle', 'firstItemTitle'):
+        need(row[field] == '样式', 'saved-style display title mismatch: ' + field)
+    need(row['measurement'] == 'NSPopUpButtonCell.titleRect+CoreText-untruncated-attributed-title', 'native title measurement route')
+    bounds, title = rectangle(row['controlBounds']), rectangle(row['titleRect'])
+    need(bounds[:2] == (0, 0) and contains(list(bounds), list(title), 0), 'native title rectangle clipped')
+    need(0 < number(row['titleAdvance']) <= title[2], 'saved-style title advance exceeds native title rectangle')
+    need(type(row['cellFontName']) is str and 0 < len(row['cellFontName']) <= 128 and
+         0 < number(row['cellFontSize']) <= 72, 'native title font absent/invalid')
+    true_fields(row, 'fullTitleFits')
+    if frame is not None:
+        need(bounds[2:] == rectangle(frame)[2:], 'title measurement detached from control frame')
+
+
+def compact_palettes(style):
+    rows = style['compactPalettes']
+    need(type(rows) is list and len(rows) == 3 and [row['tool'] for row in rows] == list(COMPACT_TOOLS), 'compact tool coverage/order')
+    true_fields(style, 'compactPaletteStateRestored')
+    for row in rows:
+        tool = row['tool']
+        need(row['activeTool'] == ('select' if tool == 'number' else tool) and row['selectedNumber'] is (tool == 'number'),
+             'compact selected-number state')
+        bounds = rectangle(row['contentBounds'])
+        need(bounds == (0, 0, 760, 600), 'compact viewport must be exactly 760 by 600')
+        true_fields(row, 'fullVisibleFramesChecked controlsDoNotOverlap')
+        need(contains(list(bounds), row['paletteFrame'], 0) and contains(list(bounds), row['toolbarFrame'], 0) and
+             not overlaps(rectangle(row['paletteFrame']), rectangle(row['toolbarFrame'])), 'compact palette clipped/overlapping toolbar')
+        controls = row['controls']
+        need([control['id'] for control in controls] == COMPACT_CONTROLS[tool], 'compact native control coverage/order')
+        seen = []
+        for control in controls:
+            frame = rectangle(control['frame']); true_fields(control, 'hitTest')
+            need(frame[2] >= 16 and frame[3] >= 16 and contains(row['paletteFrame'], list(frame), 0), 'compact control clipped')
+            need(not any(overlaps(frame, other) for other in seen), 'compact controls overlap'); seen.append(frame)
+        saved_style_title(row['savedStyleTitle'], controls[0]['frame'])
 
 
 def validate(report, *, expected_commit, expected_version, expected_build, installed_app, evidence_directory):
@@ -113,16 +155,18 @@ def validate(report, *, expected_commit, expected_version, expected_build, insta
         true_fields(row, 'opened closed nativeKeyboardSelection')
         need(1 <= integer(row['postedKeyCount']) <= 40 and integer(row['timeoutSeconds']) == 2 and
              row['dispatchRoute'] == 'owned-mouseDown/native-menu-tracking', 'menu route/bound')
+        if item != 'width.10': saved_style_title(row['savedStyleTitle'])
     for row in rows(r['imports']):
         true_fields(row, 'colorDetailVisible previewReadOnly cancelPreservedDraft rollbackPreservedDraft rollbackErrorVisible oldMissingSectionsPreserved')
         need(integer(row['rollbackWriteCount']) == 2 and integer(row['callbacks']) == 0, 'rollback count')
         need(row['oldValue'] != row['newValue'] and '#FF0000FF' in row['oldValue'] and '#0000FFFF' in row['newValue'], 'same-tool color detail')
     for row in rows(r['styles']):
+        saved_style_title(row['initialSavedStyleTitle']); compact_palettes(row)
         true_fields(row, 'existingLayerUnchanged savedStyleRestored futureMarksOnly reopenedStyleMatches nativeOutputPNGExact resetRestoresOriginal')
         need(number(row['defaultLineWidth']) == 4 and number(row['savedLineWidth']) == 10, 'style widths')
         need(sha(row['defaultPixelSHA256']) == sha(row['resetPixelSHA256']) != sha(row['reopenedPixelSHA256']), 'native render digest relation')
     visuals = r['visuals']
-    need(len(visuals) == 6 and {(v['category'], v['appearance']) for v in visuals} == {(c, m) for c in CATEGORIES for m in MODES}, 'visual coverage')
+    need(len(visuals) == len(CATEGORIES) * 2 and {(v['category'], v['appearance']) for v in visuals} == {(c, m) for c in CATEGORIES for m in MODES}, 'visual coverage')
     for v in visuals:
         need(v['file'] == f"annotation-preferences-{v['category']}-{v['appearance']}.png", 'visual filename')
         true_fields(v, 'fullVisibleFramesChecked controlsDoNotOverlap opaqueWindowBackgroundComposited')
@@ -131,19 +175,24 @@ def validate(report, *, expected_commit, expected_version, expected_build, insta
         controls = v['controls']; ids = [row['id'] for row in controls]
         need(len(ids) == len(set(ids)) and 2 <= len(ids) <= 80, 'control geometry bound/duplicates')
         expected = {'shortcuts': {'localShortcuts.capture', 'localShortcuts.clear', 'localShortcuts.restoreDefaults', 'settings.save', 'settings.cancel'},
-                    'import': {'settings.importReview.cancel', 'settings.importReview.apply'}, 'styles': {'annotation.savedStyles', 'annotation.lineWidth'}}[v['category']]
+                    'import': {'settings.importReview.cancel', 'settings.importReview.apply'}, 'styles': {'annotation.savedStyles', 'annotation.lineWidth'},
+                    'styles-narrow-number': set(COMPACT_CONTROLS['number'])}[v['category']]
         need(expected.issubset(ids), 'missing native controls')
         seen = []
         for row in controls:
             frame = rectangle(row['frame']); true_fields(row, 'hitTest')
             need(contains(list(bounds), list(frame), .5) and frame[2] >= 16 and frame[3] >= 16, 'full control clipped')
             need(not any(overlaps(frame, other) for other in seen), 'native controls overlap'); seen.append(frame)
-        if v['category'] != 'styles':
+        if v['category'] not in ('styles', 'styles-narrow-number'):
             need(contains(v['visibleFrame'], v['windowFrame']), 'window clipped')
             true_fields(v, 'scrollViewportsChecked'); need(integer(v['readableLabelCount'], 1) > 0, 'unreadable labels')
         else:
+            saved_style_title(v['savedStyleTitle'], next(row['frame'] for row in controls if row['id'] == 'annotation.savedStyles'))
             need(contains(list(bounds), v['paletteFrame'], 0) and contains(list(bounds), v['toolbarFrame'], 0)
                  and not overlaps(rectangle(v['paletteFrame']), rectangle(v['toolbarFrame'])), 'style palette clipped/overlapping toolbar')
+        if v['category'] == 'styles-narrow-number':
+            number_row = next(row for row in r['styles'] if row['appearance'] == v['appearance'])['compactPalettes'][2]
+            need(v == number_row, 'number snapshot detached from compact palette evidence')
         if v['category'] == 'import':
             opening = v['openingReview']
             need(opening['checkMoment'] == 'immediately-after-opening-before-any-scroll' and opening['firstChangeID'] ==

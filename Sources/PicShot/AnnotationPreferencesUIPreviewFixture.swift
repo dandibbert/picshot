@@ -1,5 +1,6 @@
 import AppKit
 import CryptoKit
+import CoreText
 import ImageIO
 import PicShotCore
 
@@ -199,6 +200,7 @@ import PicShotCore
         var completed = false
         let first = try editor(defaults, appearance, &owners); defer { close(first, completed, "styles-" + mode, directory) }
         try choose(.rectangle, first); try draw(first, from: CGPoint(x: 70, y: 70), to: CGPoint(x: 210, y: 160))
+        let initialTitle = try savedStyleTitle(try control("annotation.savedStyles", first.window!))
         let base = try rendered(first), original = try digest(base)
         try base.writePNG(to: directory.appendingPathComponent("annotation-preferences-default-\(mode).png"))
         let old = try required(first.annotationCanvas.annotations.first, "Default mark absent")
@@ -217,7 +219,12 @@ import PicShotCore
         try require(first.contextualPaletteVisible && bounds.contains(first.contextualPaletteFrame) && bounds.contains(first.floatingToolbarFrame)
             && !first.contextualPaletteFrame.intersects(first.floatingToolbarFrame), "Compact style palette overlaps toolbar or leaves workspace")
         visual["paletteFrame"] = rect(first.contextualPaletteFrame); visual["toolbarFrame"] = rect(first.floatingToolbarFrame)
+        visual["savedStyleTitle"] = try savedStyleTitle(try control("annotation.savedStyles", first.window!))
         visuals.append(visual)
+        let compactPalettes = try compactStylePalettes(first, mode: mode, directory: directory, visuals: &visuals)
+        try require(first.annotationCanvas.annotations.count == 1 && first.annotationCanvas.annotations.first?.id == old.id
+            && (try digest(rendered(first))) == original && (try AnnotationStyleAdapter.capture(first.annotationCanvas.style)) == saved,
+            "Compact title checks changed the existing mark or saved future style")
         first.close()
         let reopened = try editor(defaults, appearance, &owners); defer { close(reopened, completed, "reopened-" + mode, directory) }
         try choose(.rectangle, reopened); try draw(reopened, from: CGPoint(x: 70, y: 70), to: CGPoint(x: 210, y: 160))
@@ -242,7 +249,87 @@ import PicShotCore
         completed = true
         return ["appearance": mode, "existingLayerUnchanged": true, "savedStyleRestored": true, "futureMarksOnly": true,
             "reopenedStyleMatches": true, "nativeOutputPNGExact": true, "resetRestoresOriginal": true, "defaultLineWidth": old.lineWidth, "savedLineWidth": 10,
+            "initialSavedStyleTitle": initialTitle, "compactPalettes": compactPalettes, "compactPaletteStateRestored": true,
             "defaultPixelSHA256": original, "reopenedPixelSHA256": changed, "resetPixelSHA256": try digest(resetPixels)]
+    }
+
+    /// This reads the native cell's display title, not an accessibility label or
+    /// menu command. CoreText measures the untruncated attributed text, including
+    /// font fallback; the native title rectangle excludes popup chrome.
+    private static func savedStyleTitle(_ button: NSPopUpButton) throws -> [String: Any] {
+        try require(button.isEnabled && !button.isHiddenOrHasHiddenAncestor, "Saved-style popup is unavailable")
+        let cell = try required(button.cell as? NSPopUpButtonCell, "Saved-style popup cell absent")
+        let font = try required(cell.font, "Saved-style popup font absent")
+        let attributed = cell.attributedTitle, titleRect = cell.titleRect(forBounds: button.bounds)
+        let title = NSMutableAttributedString(attributedString: attributed)
+        attributed.enumerateAttribute(.font, in: NSRange(location: 0, length: attributed.length), options: []) { value, range, _ in
+            if value == nil { title.addAttribute(.font, value: font, range: range) }
+        }
+        let advance = CTLineGetTypographicBounds(CTLineCreateWithAttributedString(title), nil, nil, nil)
+        let detail = "button=\(button.title.debugDescription); firstItem=\((button.item(at: 0)?.title ?? "<absent>").debugDescription); "
+            + "cell=\(cell.title.debugDescription); attributed=\(attributed.string.debugDescription); bounds=\(button.bounds); "
+            + "titleRect=\(titleRect); advance=\(advance); font=\(font.fontName)@\(font.pointSize)"
+        try require(button.title == "样式" && cell.title == "样式" && attributed.string == "样式"
+            && button.item(at: 0)?.title == "样式", "Saved-style visible title is not 样式: " + detail)
+        try require(titleRect.width > 0 && titleRect.height > 0 && button.bounds.contains(titleRect)
+            && advance.isFinite && advance > 0 && advance <= Double(titleRect.width), "Saved-style title does not fit its native title rectangle: " + detail)
+        return ["controlID": "annotation.savedStyles", "expectedTitle": "样式", "buttonTitle": button.title,
+            "cellTitle": cell.title, "attributedTitle": attributed.string, "firstItemTitle": button.item(at: 0)!.title,
+            "measurement": "NSPopUpButtonCell.titleRect+CoreText-untruncated-attributed-title",
+            "controlBounds": rect(button.bounds), "titleRect": rect(titleRect), "titleAdvance": advance,
+            "cellFontName": font.fontName, "cellFontSize": font.pointSize, "fullTitleFits": true]
+    }
+
+    /// Reuse the existing editor. Tool activation happens at its original width
+    /// because the toolbar may legitimately overflow at 760 points. Every title
+    /// and palette measurement below is taken after resizing to exactly 760.
+    private static func compactStylePalettes(_ editor: ImageEditorController, mode: String, directory: URL,
+        visuals: inout [[String: Any]]) throws -> [[String: Any]] {
+        let window = try required(editor.window, "Compact editor absent"), canvas = editor.annotationCanvas
+        let originalFrame = window.frame, originalTool = canvas.tool, sequence = canvas.numberSequence
+        var rows: [[String: Any]] = []
+        defer { window.setFrame(originalFrame, display: true) }
+        for tool in [ImageEditorTool.text, .line, .number] {
+            window.setFrame(originalFrame, display: true)
+            try choose(tool, editor)
+            if tool == .number {
+                let point = CGPoint(x: 400, y: 180)
+                try draw(editor, from: point, to: point, expectedCount: 2)
+                try choose(.select, editor)
+                try draw(editor, from: point, to: point, expectedCount: 2)
+                try require(canvas.tool == .select && canvas.selectedAnnotation?.tool == .number, "Compact number mark is not selected")
+            }
+            window.setContentSize(CGSize(width: 760, height: 600))
+            let view = try required(window.contentView, "Compact content absent")
+            view.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            try require(view.bounds.width == 760 && view.bounds.height == 600, "Compact viewport differs from 760 by 600")
+            let ids = ["annotation.savedStyles"] + (tool == .text ? ["annotation.fontSize"] :
+                (tool == .line ? ["annotation.lineWidth"] : ["annotation.numberValue", "annotation.numberStyle", "annotation.numberComment"]))
+            let controls: [NSControl] = try ids.map { try control($0, window) }
+            // Save pixels before strict title/geometry gates so a failure remains inspectable.
+            var row: [String: Any]
+            if tool == .number { row = try snapshot(window, "styles-narrow-number", mode: mode, directory: directory, controls: controls) }
+            else { row = try controlLayout(window, controls: controls) }
+            try require(editor.contextualPaletteVisible && view.bounds.contains(editor.contextualPaletteFrame)
+                && view.bounds.contains(editor.floatingToolbarFrame) && !editor.contextualPaletteFrame.intersects(editor.floatingToolbarFrame),
+                "760-point palette overlaps toolbar or leaves workspace")
+            for widget in controls {
+                try require(!widget.isHiddenOrHasHiddenAncestor && editor.contextualPaletteFrame.contains(widget.convert(widget.bounds, to: view)),
+                    "Compact control leaves its palette")
+            }
+            row["tool"] = tool.rawValue; row["activeTool"] = canvas.tool.rawValue
+            row["selectedNumber"] = tool == .number && canvas.selectedAnnotation?.tool == .number
+            row["paletteFrame"] = rect(editor.contextualPaletteFrame); row["toolbarFrame"] = rect(editor.floatingToolbarFrame)
+            row["savedStyleTitle"] = try savedStyleTitle(try control("annotation.savedStyles", window))
+            if tool == .number { visuals.append(row) }
+            rows.append(row)
+        }
+        window.setFrame(originalFrame, display: true)
+        try PortableSettingsUIPreviewFixture.click(try control("editor.undo", window))
+        try choose(originalTool, editor)
+        try require(window.frame == originalFrame && canvas.tool == originalTool && canvas.numberSequence == sequence,
+            "Compact title checks did not restore viewport, tool, or number sequence")
+        return rows
     }
 
     private static func editor(_ defaults: UserDefaults, _ appearance: NSAppearance.Name, _ owners: inout [WeakOwner]) throws -> ImageEditorController {
@@ -262,7 +349,7 @@ import PicShotCore
         try PortableSettingsUIPreviewFixture.click(try control("editor.tool." + tool.rawValue, editor.window!))
         try require(editor.annotationCanvas.tool == tool, "Native tool click failed")
     }
-    private static func draw(_ editor: ImageEditorController, from start: CGPoint, to end: CGPoint) throws {
+    private static func draw(_ editor: ImageEditorController, from start: CGPoint, to end: CGPoint, expectedCount: Int = 1) throws {
         let canvas = editor.annotationCanvas, window = try required(canvas.window, "Canvas window absent")
         for (type, point) in [(NSEvent.EventType.leftMouseDown, start), (.leftMouseDragged, end), (.leftMouseUp, end)] {
             let location = canvas.convert(CGPoint(x: point.x * canvas.zoom, y: point.y * canvas.displayScaleY), to: nil)
@@ -273,7 +360,7 @@ import PicShotCore
             window.sendEvent(try required(NSEvent.mouseEvent(with: type, location: location, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                 windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1), "Canvas mouse unavailable"))
         }
-        try require(editor.annotationCanvas.annotations.count == 1, "Native gesture did not create exactly one mark")
+        try require(editor.annotationCanvas.annotations.count == expectedCount, "Native gesture produced an unexpected mark count")
     }
 
     /// Use the actual application event loop. Quartz integer nanoseconds are the
@@ -307,9 +394,11 @@ import PicShotCore
         defer { timer.invalidate(); menu.delegate = prior }
         try PortableSettingsUIPreviewFixture.click(button)
         try require(observer.opened && observer.closed && observer.activated && !observer.timedOut, "Native popup tracking did not activate requested item")
-        return ["appearance": mode, "controlID": button.identifier?.rawValue ?? "", "itemID": id ?? "width.\(title ?? "")",
+        var result: [String: Any] = ["appearance": mode, "controlID": button.identifier?.rawValue ?? "", "itemID": id ?? "width.\(title ?? "")",
             "opened": observer.opened, "closed": observer.closed, "nativeKeyboardSelection": observer.activated,
             "postedKeyCount": observer.posted, "timeoutSeconds": 2, "dispatchRoute": "owned-mouseDown/native-menu-tracking"]
+        if button.identifier?.rawValue == "annotation.savedStyles" { result["savedStyleTitle"] = try savedStyleTitle(button) }
+        return result
     }
 
     private static func snapshot(_ window: NSWindow, _ category: String, mode: String, directory: URL, controls: [NSControl]? = nil) throws -> [String: Any] {
@@ -334,20 +423,24 @@ import PicShotCore
         // PNG precedes every strict layout gate, so failures retain inspectable pixels.
         var result: [String: Any]
         if let controls {
-            var frames: [CGRect] = [], rows: [[String: Any]] = []
-            for control in controls {
-                let frame = control.convert(control.bounds, to: view), center = CGPoint(x: frame.midX, y: frame.midY)
-                let hit = view.hitTest(view.convert(center, to: view.superview))
-                try require(view.bounds.contains(frame) && frame.width >= 16 && frame.height >= 16, "Style control clipped")
-                try require(hit === control || hit?.isDescendant(of: control) == true, "Style control obscured")
-                try require(frames.allSatisfy { !$0.insetBy(dx: 0.5, dy: 0.5).intersects(frame.insetBy(dx: 0.5, dy: 0.5)) }, "Style controls overlap")
-                rows.append(["id": control.identifier?.rawValue ?? "", "frame": rect(frame), "hitTest": true]); frames.append(frame)
-            }
-            result = ["controls": rows, "contentBounds": rect(view.bounds), "controlsDoNotOverlap": true, "fullVisibleFramesChecked": true]
+            result = try controlLayout(window, controls: controls)
         } else { result = try PortableSettingsUIPreviewFixture.layout(window) }
         result["category"] = category; result["appearance"] = mode; result["file"] = name
         result["pixelWidth"] = width; result["pixelHeight"] = height; result["opaqueWindowBackgroundComposited"] = true
         return result
+    }
+    private static func controlLayout(_ window: NSWindow, controls: [NSControl]) throws -> [String: Any] {
+        let view = try required(window.contentView, "Control layout root absent")
+        var frames: [CGRect] = [], rows: [[String: Any]] = []
+        for control in controls {
+            let frame = control.convert(control.bounds, to: view), center = CGPoint(x: frame.midX, y: frame.midY)
+            let hit = view.hitTest(view.convert(center, to: view.superview))
+            try require(view.bounds.contains(frame) && frame.width >= 16 && frame.height >= 16, "Style control clipped")
+            try require(hit === control || hit?.isDescendant(of: control) == true, "Style control obscured")
+            try require(frames.allSatisfy { !$0.insetBy(dx: 0.5, dy: 0.5).intersects(frame.insetBy(dx: 0.5, dy: 0.5)) }, "Style controls overlap")
+            rows.append(["id": control.identifier?.rawValue ?? "", "frame": rect(frame), "hitTest": true]); frames.append(frame)
+        }
+        return ["controls": rows, "contentBounds": rect(view.bounds), "controlsDoNotOverlap": true, "fullVisibleFramesChecked": true]
     }
     private static func show(_ window: NSWindow) throws {
         window.animationBehavior = .none; window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
