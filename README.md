@@ -4,9 +4,13 @@ Original, local-first macOS screenshot, annotation, pinning and recording utilit
 
 **Development preview. Not full PixPin parity yet.** This project is not affiliated with PixPin and uses no proprietary source, assets, subscription bypasses, or hosted recognition credentials. See [feature ledger](docs/PARITY.md) for actual scope and [verification](docs/VERIFICATION.md) for the test boundary.
 
-ARM 0.19.0/build180 is accepted within the bounded [verification scope](docs/VERIFICATION.md), adding local preference/hotkey JSON export, reviewed import and persisted ordering of 14 annotation toolbar families. Cloud sync, per-tool presets and local shortcut remapping remain absent; physical-Mac acceptance and sustained-resource limits remain open. Accepted/delivered Intel stays 0.11.0/build69; Intel180 failed its early GIF gate and later stages were unrun.
+ARM **0.19.1/build 185 is accepted** within the bounded [verification scope](docs/VERIFICATION.md#build-185-webp-only-acceptance). Static WebP export now avoids an unused intermediate PNG staging preview; final output and the displayed preview remain unchanged. AVIF retains its legacy route after bounded latency rejection. This narrow change makes no feature-row promotion or global memory-stability claim. Accepted/delivered Intel remains 0.11.0/build 69; Intel 185 timed out during debug compilation before native/runtime qualification.
 
-ARM 0.19.0/build180 ZIP version 18 and guide version 26 were delivered on 10 October 2026 at 08:43:13 UTC. DMG version 18 is saved only. Accepted installer bytes, saved versions and actual delivery are separate records. See the [current feature ledger](docs/PARITY.md#current-arm-019-and-retained-intel-011-acceptance) for exact scope and unresolved resource measurements.
+ARM build 185 ZIP version 19 and guide version 27 were delivered on 10 October 2026 at 12:40:39 UTC. DMG version 19 is saved only. Accepted installer bytes, saved versions and actual delivery remain separate records; the prior ARM 180 record below is historical.
+
+Historical ARM 0.19.0/build180 is accepted within the bounded [verification scope](docs/VERIFICATION.md), adding local preference/hotkey JSON export, reviewed import and persisted ordering of 14 annotation toolbar families. Cloud sync, per-tool presets and local shortcut remapping remain absent; physical-Mac acceptance and sustained-resource limits remain open. Accepted/delivered Intel stays 0.11.0/build69; Intel180 failed its early GIF gate and later stages were unrun.
+
+ARM 0.19.0/build180 ZIP version 18 and guide version 26 were delivered on 10 October 2026 at 08:43:13 UTC. DMG version 18 is saved only. Accepted installer bytes, saved versions and actual delivery are separate records. See the [current feature ledger](docs/PARITY.md#current-arm-0191-and-retained-intel-011-acceptance) for exact scope and unresolved resource measurements.
 
 ## Build
 
