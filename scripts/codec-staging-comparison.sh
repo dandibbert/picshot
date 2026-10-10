@@ -1,11 +1,11 @@
 #!/bin/bash
 set -euo pipefail
-[[ $# == 4 && "$1" == --phase ]] || { echo 'Usage: codec-staging-comparison.sh --phase export|product|fidelity|summary ABS_APP ABS_EVIDENCE_ROOT' >&2; exit 64; }
+[[ $# == 4 && "$1" == --phase ]] || { echo 'Usage: codec-staging-comparison.sh --phase export|product|fidelity|summary|avif-confirmation ABS_APP ABS_EVIDENCE_ROOT' >&2; exit 64; }
 phase="$2"; app="$3"; root="$4"
 [[ "$app" == /* && "$app" == *.app && "$root" == /* && "$(uname -s)" == Darwin ]] || exit 64
 cd -P "$(dirname "$0")/.."
-[[ "$phase" == export || "$phase" == product || "$phase" == fidelity || "$phase" == summary ]] || exit 64
-if [[ "$phase" == export ]]; then
+[[ "$phase" == export || "$phase" == product || "$phase" == fidelity || "$phase" == summary || "$phase" == avif-confirmation ]] || exit 64
+if [[ "$phase" == export || "$phase" == avif-confirmation ]]; then
   [[ ! -e "$root" ]] || exit 65
   mkdir -p "$root"
 else
@@ -27,7 +27,9 @@ root=pathlib.Path(sys.argv[1]); phase=sys.argv[2]
 parts=root/'upload';parts.mkdir(exist_ok=True)
 (root/(phase+'-exit.json')).write_text(json.dumps({'phase':phase,'exitCode':int(sys.argv[3])})+'\n')
 if not (root/(phase+'-summary.json')).exists():
-    (root/(phase+'-summary.json')).write_text(json.dumps({'phase':phase,'verdict':'inconclusive-phase-did-not-complete','promotionReady':False})+'\n')
+    incomplete={'phase':phase,'verdict':'inconclusive-phase-did-not-complete','promotionReady':False}
+    if phase=='avif-confirmation':incomplete.update(avifQualificationHold=True,overallAVIFVerdict='inconclusive-incomplete-confirmation')
+    (root/(phase+'-summary.json')).write_text(json.dumps(incomplete)+'\n')
 total=0
 with zipfile.ZipFile(parts/(phase+'-reports.zip'),'w',compression=zipfile.ZIP_DEFLATED) as z:
     for p in sorted(root.rglob('*')):
@@ -78,7 +80,7 @@ actual={'schemaVersion':1,'bundlePath':str(canonical),'sourceCommit':source,
     'helperExecutablePath':str(helper),'helperExecutableSHA256':digest(helper),
     'infoPlistSHA256':digest(info)}
 identity=root/'identity.json'
-if phase=='export' and position=='before':
+if phase in ('export','avif-confirmation') and position=='before':
     with identity.open('x') as f:json.dump(actual,f,indent=2,sort_keys=True);f.write('\n')
 with identity.open() as f:expected=json.load(f)
 report={'phase':phase,'position':position,'outsideMeasuredParents':True,'matchesPreflight':actual==expected,'identity':actual}
@@ -86,6 +88,9 @@ report={'phase':phase,'position':position,'outsideMeasuredParents':True,'matches
 if actual!=expected:raise SystemExit('Signed app/helper/Info.plist identity changed since preflight')
 PYIDENTITY
 }
+if [[ "$phase" == avif-confirmation ]]; then
+  PYTHONDONTWRITEBYTECODE=1 python3 scripts/check-avif-confirmation-source.py --report "$root/source-guard-before.json"
+fi
 identity before
 run() {
   local name="$1" mode="$2" arm="$3" profile="$4" format="${5:-webp}" input="${6:-}"
@@ -104,6 +109,10 @@ run() {
   fi
 }
 case "$phase" in
+ avif-confirmation)
+  run avif-confirmation-candidate export-only candidate staging-768x576 avif
+  run avif-confirmation-control export-only control staging-768x576 avif
+  ;;
  export)
   run export-ab-control export-only control installed-768x576
   run export-ab-candidate export-only candidate installed-768x576
@@ -135,6 +144,9 @@ case "$phase" in
   ;;
  summary) ;;
 esac
+if [[ "$phase" == avif-confirmation ]]; then
+  PYTHONDONTWRITEBYTECODE=1 python3 scripts/check-avif-confirmation-source.py --report "$root/source-guard-after.json"
+fi
 identity after
 check_status=0
 python3 scripts/check-codec-staging-comparison.py "$root" --phase "$phase" || check_status=$?

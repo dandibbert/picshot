@@ -218,11 +218,54 @@ def evidence_checks(root, profile):
             need(c['sourceSHA256'] == specimen['sourceSHA256'] and c['helper']['sourceSHA256'] == entry['stagedSHA256'] and c['encodedSHA256'] == entry['finalSHA256'], 'measured bytes not bound to independently validated actual files')
     return {'profile': profile, 'status': 'passed', 'actualStagedFinalPreviewBytesMatch': True, 'allMeasuredDigestsBound': True}
 
+# Immutable bounded context from build 182; this one confirmation never erases it.
+AVIF_PRIOR_FAILURE = {
+    'sourceCommit': 'c625e309d39326541db1c4c4756e16fcd7e1eb6b',
+    'workflowBuild': 182, 'order': ['control', 'candidate'],
+    'productReportSHA256': 'b84cef481dbd6472faf31bb2482b3246d186ec4dac708447a8658d4887e2bb81',
+    'terminalReceiptSHA256': 'f65e4b3b6387bc74085801e65e2afcb2c1cfcec0a95afdafa32961a37095b33f',
+    'failedIndependentGates': ['latency.warmP95'],
+    'controlWarmP95Seconds': 0.5350528750000194,
+    'candidateWarmP95Seconds': 0.669911083333318,
+    'fixedLimitSeconds': 0.5885581625000214,
+    'passes': False,
+}
+
+def avif_confirmation(root):
+    before,after=[load(root/('source-guard-'+position+'.json')) for position in ['before','after']]
+    expected=identity(root)
+    need(before==after and before['status']=='verified' and before['nativeSourceBytesUnchanged'] is True and
+         before['baseCommit']==AVIF_PRIOR_FAILURE['sourceCommit'] and before['baseTree']=='009df062cd6439f967f1ce33ac6eef7dfd014f05' and
+         before['headCommit']==expected['sourceCommit'] and integer(before['protectedFileCount'],1) and
+         len(before['protectedFiles'])==before['protectedFileCount'], 'pinned native source guard differs or is missing')
+    names=['avif-confirmation-candidate','avif-confirmation-control']
+    need(sorted(p.parent.name for p in root.glob('*/codec-staging.json'))==sorted(names), 'confirmation must contain only the two intended AVIF cells')
+    candidate,control=[cell(root,name) for name in names]
+    for r in [candidate,control]:
+        need(r['comparisonMode']=='export-only' and r['format']=='avif' and r['profile']=='staging-768x576' and
+             r['sourceWidth']==768 and r['sourceHeight']==576 and r['warmupCycles']==2 and r['measuredCycles']==3,
+             'confirmation profile/format/counts differ from approved AVIF pair')
+    candidate_end=candidate['backingHalfSecondAfterFinalCycle']['standard']['observedAtUptimeSeconds']
+    control_start=control['diagnosticEntryBacking']['standard']['observedAtUptimeSeconds']
+    need(positive(candidate_end) and positive(control_start) and candidate_end<control_start, 'confirmation is not candidate then control')
+    pair=compare(control,candidate,False)
+    repeated=set(pair['failedIndependentGates']) & set(AVIF_PRIOR_FAILURE['failedIndependentGates'])
+    return {'confirmationPair':pair,'observedOrder':['candidate','control'],'priorFailedPair':AVIF_PRIOR_FAILURE,
+        'binaryProvenance':'Same-product-source rebuild; only these two new cells share the recorded new binary. No cross-build executable equality is claimed.',
+        'pinnedNativeSource':{'baseCommit':before['baseCommit'],'baseTree':before['baseTree'],'protectedFileCount':before['protectedFileCount']},
+        'verdict':'passes-predeclared-gates' if pair['passes'] else 'confirmation-pair-failed-independent-gates',
+        'overallAVIFVerdict':'reject-consistent-gate-excess' if repeated else 'inconclusive-order-sensitive',
+        'avifQualificationHold':True,'promotionReady':False,
+        'scope':'Only one reversed AVIF 768x576 2+3 confirmation. A passing pair does not replace the failed original pair or establish AVIF acceptance. Full fidelity and installed acceptance remain unrun here.',
+        'requiredProductScope':'Retain the legacy AVIF staging path before qualifying a WebP-only candidate; no production mutation is performed by this diagnostic.'}
+
 def run(root, phase):
     expected_identity=identity_recheck(root,phase)
     result = {'protocol': PROTOCOL, 'phase': phase, 'predeclaredCriteria': CRITERIA,
         'signedExecutableIdentity': expected_identity, 'binaryIdentityRecheckedOutsideMeasuredParents': True}
-    if phase == 'export':
+    if phase == 'avif-confirmation':
+        result.update(avif_confirmation(root))
+    elif phase == 'export':
         pairs = [compare(cell(root, f'export-{repeat}-control'), cell(root, f'export-{repeat}-candidate'), True) for repeat in ['ab', 'ba']]
         result.update(pairs=pairs, verdict=paired_result(pairs), promotionReady=False)
     elif phase == 'product':
@@ -251,12 +294,14 @@ def run(root, phase):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('root', type=Path); parser.add_argument('--phase', choices=['export', 'product', 'fidelity', 'summary'], required=True)
+    parser.add_argument('root', type=Path); parser.add_argument('--phase', choices=['export', 'product', 'fidelity', 'summary', 'avif-confirmation'], required=True)
     args = parser.parse_args()
     try:
         output = run(args.root, args.phase)
     except (EvidenceError, KeyError, StopIteration, TypeError) as e:
         output = {'phase': args.phase, 'verdict': 'inconclusive-invalid-or-missing-evidence', 'error': str(e), 'promotionReady': False}
+        if args.phase=='avif-confirmation':
+            output.update(avifQualificationHold=True, overallAVIFVerdict='inconclusive-incomplete-confirmation', priorFailedPair=AVIF_PRIOR_FAILURE)
     destination = args.root / (args.phase + '-summary.json')
     destination.write_text(json.dumps(output, indent=2, sort_keys=True)+'\n')
     print(json.dumps({'report': str(destination), 'verdict': output['verdict']}))

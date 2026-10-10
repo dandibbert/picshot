@@ -75,7 +75,7 @@ jobs:
           compression-level: 6
 
   build:
-    if: ${{ !contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') && !contains(github.event.head_commit.message || '', '[codec-attribution]') && !contains(github.event.head_commit.message || '', '[codec-staging]') && !contains(github.event.head_commit.message || '', '[runner-only]') && !contains(github.event.head_commit.message || '', '[scroll-memory]') && !contains(github.event.head_commit.message || '', '[manual-hash]') && !contains(github.event.head_commit.message || '', '[recording-wait]') && !contains(github.event.head_commit.message || '', '[multiwindow-memory]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-documents]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
+    if: ${{ !contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') && !contains(github.event.head_commit.message || '', '[codec-attribution]') && !contains(github.event.head_commit.message || '', '[codec-staging]') && !contains(github.event.head_commit.message || '', '[codec-avif-confirmation]') && !contains(github.event.head_commit.message || '', '[runner-only]') && !contains(github.event.head_commit.message || '', '[scroll-memory]') && !contains(github.event.head_commit.message || '', '[manual-hash]') && !contains(github.event.head_commit.message || '', '[recording-wait]') && !contains(github.event.head_commit.message || '', '[multiwindow-memory]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-documents]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
     strategy:
       fail-fast: false
       matrix:
@@ -3356,3 +3356,58 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
           compression-level: 0
+
+  codec-avif-confirmation:
+    # Exactly one reversed pair; this job cannot grant AVIF or installer acceptance.
+    if: ${{ contains(github.event.head_commit.message || '', '[codec-avif-confirmation]') }}
+    runs-on: macos-15
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 2
+      - name: Verify unchanged native sources and portable confirmation contract
+        timeout-minutes: 2
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/check-avif-confirmation-source.py --report dist/avif-confirmation-source-before.json
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_check_codec_staging_comparison.py -v
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_avif_confirmation.py -v
+          PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p test_avif_confirmation.py -v
+      - name: Package unchanged signed product without rebuilding native tests
+        timeout-minutes: 25
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 1440 --max-log-bytes 4194304
+          --log dist/avif-confirmation-package.log --report dist/avif-confirmation-package-report.json
+          -- env PICSHOT_PACKAGE_APP_ONLY=1 bash scripts/package.sh
+      - name: Confirm source identity after packaging
+        timeout-minutes: 1
+        run: python3 scripts/check-avif-confirmation-source.py --report dist/avif-confirmation-source-after.json
+      - name: Observe only candidate then control AVIF exports
+        timeout-minutes: 22
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 1300 --max-log-bytes 1048576
+          --log dist/avif-confirmation-phase.log --report dist/avif-confirmation-phase-report.json
+          -- bash scripts/codec-staging-comparison.sh --phase avif-confirmation
+          "${{ github.workspace }}/dist/PicShot.app" "${{ github.workspace }}/dist/evidence/avif-confirmation"
+      - name: Preserve separate nonpromoting AVIF confirmation evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-AVIF-Confirmation-arm64-${{ github.sha }}
+          path: dist/evidence/avif-confirmation/upload/avif-confirmation-reports.zip
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 0
+      - name: Preserve source guard and package outcome separately
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-AVIF-Confirmation-Build-arm64-${{ github.sha }}
+          path: |
+            dist/avif-confirmation-source-*.json
+            dist/avif-confirmation-package.log
+            dist/avif-confirmation-package-report.json
+            dist/avif-confirmation-phase.log
+            dist/avif-confirmation-phase-report.json
+          if-no-files-found: warn
+          retention-days: 14
