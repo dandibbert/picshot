@@ -183,6 +183,30 @@ def validate(report, *, expected_commit, expected_version, expected_build, insta
         need(before[:2] == after[:2] == (480, 280) and before[2] != after[2], 'poster pixels missing/unchanged')
 
 
+def validate_mouse_dispatch(row):
+    mouse = fields(row['mouseDispatch'],
+        'route elapsedSeconds eventType windowNumber eventNumber clickCount modifierFlags '
+        'expectedQuartzTimestamp dequeuedQuartzTimestamp currentQuartzTimestamp '
+        'expectedLocation dequeuedLocation currentLocation currentEventType currentWindowNumber '
+        'currentEventNumber currentClickCount currentModifierFlags ownedWindowIsKey hitTestVerified')
+    need(mouse['route'] == 'owned-nextEvent-sendEvent', 'native popup mouse dispatch bypass')
+    need(0 < number(mouse['elapsedSeconds']) <= 2 and
+         mouse['elapsedSeconds'] <= number(row['trackingBeginElapsedSeconds']), 'popup mouse dispatch outside tracking deadline/order')
+    need(integer(mouse['eventType']) == integer(mouse['currentEventType']) == 1, 'popup mouse event type mismatch')
+    need(integer(mouse['windowNumber'], 1) == integer(mouse['currentWindowNumber'], 1) == row['windowNumber'],
+         'popup mouse window mismatch')
+    need(integer(mouse['eventNumber']) == integer(mouse['currentEventNumber']) == 1, 'popup mouse event number mismatch')
+    need(integer(mouse['clickCount']) == integer(mouse['currentClickCount']) == 1, 'popup mouse click count mismatch')
+    need(integer(mouse['modifierFlags']) == integer(mouse['currentModifierFlags']) == 0, 'popup mouse modifiers mismatch')
+    need(integer(mouse['expectedQuartzTimestamp'], 1, 2**64-1) ==
+         integer(mouse['dequeuedQuartzTimestamp'], 1, 2**64-1) ==
+         integer(mouse['currentQuartzTimestamp'], 1, 2**64-1), 'popup mouse Quartz identity mismatch')
+    locations = [tuple(number(value) for value in array(mouse[key], 2))
+                 for key in ('expectedLocation', 'dequeuedLocation', 'currentLocation')]
+    need(locations[0] == locations[1] == locations[2], 'popup mouse location mismatch')
+    yes(mouse, 'ownedWindowIsKey hitTestVerified')
+
+
 def validate_order(order, group):
     o = fields(order, 'activeGroupID selectedPinIDs states menuEvents callbacks entriesUnchanged selectionPreserved pickerOrder minimumWindowSize rowSelection')
     need(o['activeGroupID'] == group, 'active group changed'); identifier(array(o['selectedPinIDs'], 1)[0])
@@ -196,7 +220,7 @@ def validate_order(order, group):
     need(states == [[a,b,c], [b,a,c], [b,a,c], [a,b,c], [a,c,b], [a,c,b]], 'one-step native order/boundary transition')
     need(o['pickerOrder'] == states[-1], 'picker order detached from stored order')
     for row, (direction, boundary) in zip(array(o['menuEvents'], 5), [('earlier',False), ('earlier',True), ('later',False), ('later',False), ('later',True)]):
-        fields(row, 'itemID boundary enabled activated postedKeyCount timeoutSeconds windowNumber dispatchRoute disabledDismissedWithEscape lastPostedKeyCode trackingBeginCount trackingEndCount trackingIdentityVerified trackingBeginElapsedSeconds trackingEndElapsedSeconds trackingEndedBeforeClickReturn delegateOpenObserved delegateOpenIdentityVerified delegateOpenElapsedSeconds delegateCloseObserved delegateCloseIdentityVerified delegateCloseElapsedSeconds clickReturnElapsedSeconds lifecycleObservation highlightObservation returnHighlightVerified returnHighlightElapsedSeconds returnHighlightedItemID returnTargetEnabled returnTargetHighlighted returnTargetMenuIdentityVerified delegateHighlightEvents')
+        fields(row, 'itemID boundary enabled activated postedKeyCount timeoutSeconds windowNumber dispatchRoute mouseDispatch disabledDismissedWithEscape lastPostedKeyCode trackingBeginCount trackingEndCount trackingIdentityVerified trackingBeginElapsedSeconds trackingEndElapsedSeconds trackingEndedBeforeClickReturn delegateOpenObserved delegateOpenIdentityVerified delegateOpenElapsedSeconds delegateCloseObserved delegateCloseIdentityVerified delegateCloseElapsedSeconds clickReturnElapsedSeconds lifecycleObservation highlightObservation returnHighlightVerified returnHighlightElapsedSeconds returnHighlightedItemID returnTargetEnabled returnTargetHighlighted returnTargetMenuIdentityVerified delegateHighlightEvents')
         need(row['itemID'] == 'pin-group-order-' + direction and row['boundary'] is boundary and row['enabled'] is (not boundary), 'order action/boundary state')
         need(row['highlightObservation'] == 'exact-owned-menu-current-state', 'native current highlight substituted')
         for key in ('returnHighlightVerified', 'returnTargetEnabled', 'returnTargetHighlighted', 'returnTargetMenuIdentityVerified'):
@@ -224,7 +248,8 @@ def validate_order(order, group):
         integer(row['postedKeyCount'], 1, 40); integer(row['windowNumber'], 1)
         need(integer(row['lastPostedKeyCode']) == (53 if boundary else 36), 'owned Escape/Return key absent')
         need(not boundary or row['postedKeyCount'] == 1, 'Escape cancellation repeated input')
-        need(integer(row['timeoutSeconds']) == 2 and row['dispatchRoute'] == 'owned-mouseDown/native-menu-tracking', 'native menu route/bound')
+        need(integer(row['timeoutSeconds']) == 2 and row['dispatchRoute'] == 'owned-nextEvent-sendEvent/native-menu-tracking', 'native menu route/bound')
+        validate_mouse_dispatch(row)
         need(row['lifecycleObservation'] == 'exact-root-menu-begin-end-notifications', 'native lifecycle substituted')
         need(integer(row['trackingBeginCount']) == integer(row['trackingEndCount']) == 1, 'missing/duplicate tracking lifecycle')
         returned = number(row['clickReturnElapsedSeconds'])

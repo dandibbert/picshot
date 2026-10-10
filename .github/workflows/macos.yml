@@ -167,12 +167,13 @@ jobs:
           from pathlib import Path
           def git(*args):
               return subprocess.check_output(['git', *args], text=True, timeout=20).strip()
-          expected = 'e84b7a2d6a6f55ac4d3d7f3e096b30897b273346'
+          expected = 'f4f19e2870a23fd763f58c9810c47d8631388a57'
           parent = git('rev-parse', 'HEAD^')
           if parent != expected:
-              raise SystemExit('Reproduction must directly descend from exact diagnosed206 source')
+              raise SystemExit('Reproduction must directly descend from exact diagnosed207 source')
           changed = git('diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD').splitlines()
           allowed = {'.github/workflows/macos.yml', 'Sources/PicShot/PinManagementSmokeFixture.swift',
+                     'Sources/PicShot/PortableSettingsUIPreviewFixture.swift',
                      'scripts/check-pin-management.py', 'scripts/tests/test_check_pin_management.py',
                      'docs/VERIFICATION.md'}
           if set(changed) != allowed:
@@ -202,7 +203,7 @@ jobs:
           mkdir -p dist
           set -o pipefail
           bash scripts/package.sh 2>&1 | tee dist/package.log
-      - name: Reproduce the corrected installed full UI sequence with owned sampling
+      - name: Reproduce application-dispatched popup input with owned sampling
         timeout-minutes: 12
         run: |
           set -o pipefail

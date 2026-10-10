@@ -510,7 +510,9 @@ import PicShotCore
             menu.delegate = previous
         }
         trace("popupMouseDownEnter", ["item": id, "boundary": boundary, "windowNumber": window.windowNumber])
-        try PortableSettingsUIPreviewFixture.click(button)
+        try PortableSettingsUIPreviewFixture.clickMenuButton(button) { event, hit, identity in
+            try probe.recordMouseDispatch(event, hit: hit, identity: identity)
+        }
         trace("popupMouseDownReturn", ["item": id, "boundary": boundary, "windowNumber": window.windowNumber])
         try await probe.observeTrackingAfterClick()
         let receipt = try JSONSerialization.data(withJSONObject: probe.evidence, options: [.sortedKeys])
@@ -521,7 +523,8 @@ import PicShotCore
                     "Native order tracking failed | probe=" + String(decoding: receipt, as: UTF8.self))
         return ["itemID": id, "boundary": boundary, "enabled": !boundary,
             "activated": probe.activated, "postedKeyCount": probe.posted, "timeoutSeconds": 2, "windowNumber": window.windowNumber,
-            "dispatchRoute": "owned-mouseDown/native-menu-tracking", "disabledDismissedWithEscape": boundary && probe.lastPostedKeyCode == 53 && probe.posted == 1,
+            "dispatchRoute": "owned-nextEvent-sendEvent/native-menu-tracking",
+            "mouseDispatch": try required(probe.mouseDispatch, "Owned menu mouse dispatch receipt absent"), "disabledDismissedWithEscape": boundary && probe.lastPostedKeyCode == 53 && probe.posted == 1,
             "lastPostedKeyCode": Int(try required(probe.lastPostedKeyCode, "Owned menu key absent")),
             "trackingBeginCount": probe.trackingBeginCount, "trackingEndCount": probe.trackingEndCount,
             "trackingIdentityVerified": probe.trackingIdentityVerified,
@@ -627,6 +630,7 @@ import PicShotCore
         private(set) var returnTargetHighlighted = false, returnTargetMenuIdentityVerified = false
         private(set) var returnHighlightElapsed: TimeInterval?, returnHighlightedItemID: String?
         private(set) var delegateHighlightEvents: [[String: Any]] = []
+        private(set) var mouseDispatch: [String: Any]?
         private var cancellationIssued = false, cancellationCallCount = 0
         private var cancellationReason: String?
         private var ownedTrackingEndObserved = false
@@ -666,6 +670,47 @@ import PicShotCore
              "trackingEndElapsedSeconds": trackingEndElapsed.map { $0 as Any } ?? NSNull(),
              "applicationIsActive": NSApp.isActive, "events": events]
         }
+        func recordMouseDispatch(_ event: NSEvent, hit: NSView?, identity: [String: Any]) throws {
+            let now = ProcessInfo.processInfo.systemUptime
+            let current = try PinManagementSmokeFixture.required(NSApp.currentEvent, "Owned popup current event absent")
+            let button = try PinManagementSmokeFixture.required(button, "Owned popup button absent")
+            let window = try PinManagementSmokeFixture.required(window, "Owned popup window absent")
+            let expected = try PinManagementSmokeFixture.required(identity["expected"] as? [String: Any], "Expected mouse identity absent")
+            let expectedClock = try PinManagementSmokeFixture.required(expected["quartzTimestampNanoseconds"] as? UInt64, "Expected mouse clock absent")
+            let dequeuedClock = try PinManagementSmokeFixture.required(event.cgEvent?.timestamp, "Dequeued mouse clock absent")
+            let currentClock = try PinManagementSmokeFixture.required(current.cgEvent?.timestamp, "Current mouse clock absent")
+            let location = event.locationInWindow
+            let expectedLocation = try PinManagementSmokeFixture.required(expected["location"] as? [CGFloat], "Expected mouse location absent")
+            let currentLocation = current.locationInWindow
+            let hitVerified = hit === button || hit?.isDescendant(of: button) == true
+            let valid = now <= deadline && mouseDispatch == nil && window.isKeyWindow && hitVerified &&
+                expectedClock > 0 && expectedClock == dequeuedClock && dequeuedClock == currentClock &&
+                event.type == .leftMouseDown && current.type == .leftMouseDown &&
+                event.windowNumber == window.windowNumber && current.windowNumber == window.windowNumber &&
+                event.eventNumber == 1 && current.eventNumber == event.eventNumber &&
+                event.clickCount == 1 && current.clickCount == event.clickCount &&
+                event.modifierFlags.isEmpty && current.modifierFlags == event.modifierFlags &&
+                expectedLocation == [location.x, location.y] && currentLocation == location
+            let receipt: [String: Any] = ["route": "owned-nextEvent-sendEvent", "elapsedSeconds": now - started,
+                "eventType": Int(event.type.rawValue), "windowNumber": event.windowNumber,
+                "eventNumber": event.eventNumber, "clickCount": event.clickCount, "modifierFlags": event.modifierFlags.rawValue,
+                "expectedQuartzTimestamp": expectedClock, "dequeuedQuartzTimestamp": dequeuedClock, "currentQuartzTimestamp": currentClock,
+                "expectedLocation": expectedLocation, "dequeuedLocation": [location.x, location.y],
+                "currentLocation": [currentLocation.x, currentLocation.y], "currentEventType": Int(current.type.rawValue),
+                "currentWindowNumber": current.windowNumber, "currentEventNumber": current.eventNumber,
+                "currentClickCount": current.clickCount, "currentModifierFlags": current.modifierFlags.rawValue,
+                "ownedWindowIsKey": window.isKeyWindow, "hitTestVerified": hitVerified]
+            PinManagementSmokeFixture.trace("popupApplicationMouseDispatch", ["requestedItem": target?.identifier?.rawValue ?? "none",
+                "valid": valid, "mouseDispatch": receipt])
+            guard valid else {
+                timedOut = true
+                // The helper restored a foreign dequeue before reaching us. This
+                // guard owns its matching dequeue and stops before sendEvent.
+                throw PinManagementSmokeFixture.failure("Owned popup current-event identity mismatch")
+            }
+            mouseDispatch = receipt
+        }
+
         func startTrackingObservations() {
             guard let menu, trackingObservers.isEmpty else { timedOut = true; return }
             for name in [NSMenu.didBeginTrackingNotification, NSMenu.didEndTrackingNotification] {

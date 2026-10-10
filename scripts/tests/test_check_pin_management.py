@@ -69,7 +69,13 @@ class PinManagementCheckerTests(unittest.TestCase):
             for direction,boundary in [('earlier',False),('earlier',True),('later',False),('later',False),('later',True)]:
                 order['menuEvents'].append(dict(itemID='pin-group-order-'+direction, boundary=boundary, enabled=not boundary,
                     activated=not boundary, postedKeyCount=1 if boundary else 3, timeoutSeconds=2,
-                    windowNumber=100, dispatchRoute='owned-mouseDown/native-menu-tracking', disabledDismissedWithEscape=boundary,
+                    windowNumber=100, dispatchRoute='owned-nextEvent-sendEvent/native-menu-tracking', disabledDismissedWithEscape=boundary,
+                    mouseDispatch=dict(route='owned-nextEvent-sendEvent', elapsedSeconds=0.005,
+                        eventType=1, windowNumber=100, eventNumber=1, clickCount=1, modifierFlags=0,
+                        expectedQuartzTimestamp=12345, dequeuedQuartzTimestamp=12345, currentQuartzTimestamp=12345,
+                        expectedLocation=[240.5, 420], dequeuedLocation=[240.5, 420], currentLocation=[240.5, 420],
+                        currentEventType=1, currentWindowNumber=100, currentEventNumber=1, currentClickCount=1,
+                        currentModifierFlags=0, ownedWindowIsKey=True, hitTestVerified=True),
                     lastPostedKeyCode=53 if boundary else 36, trackingBeginCount=1, trackingEndCount=1,
                     trackingIdentityVerified=True, trackingBeginElapsedSeconds=0.01, trackingEndElapsedSeconds=0.30 if boundary else 0.26,
                     trackingEndedBeforeClickReturn=not boundary, delegateCloseObserved=not boundary,
@@ -150,6 +156,18 @@ class PinManagementCheckerTests(unittest.TestCase):
                     row.update(returnHighlightElapsedSeconds=2, postedKeyCount=40)
         self.check()
 
+        # The dispatch witness may equal the tracking-begin timestamp, including
+        # the inclusive two-second limit; UInt64 Quartz values remain exact.
+        for mode, flow in enumerate(self.r['flows']):
+            for row in flow['order']['menuEvents']:
+                row['trackingBeginElapsedSeconds'] = 2
+                row['mouseDispatch'].update(elapsedSeconds=2,
+                    expectedQuartzTimestamp=1 if mode == 0 else 2**64-1,
+                    dequeuedQuartzTimestamp=1 if mode == 0 else 2**64-1,
+                    currentQuartzTimestamp=1 if mode == 0 else 2**64-1,
+                    expectedLocation=[0, -0.5], dequeuedLocation=[0.0, -0.5], currentLocation=[0, -0.5])
+        self.check()
+
     def test_every_dictionary_rejects_unknown_and_missing_fields(self):
         paths=[]
         def walk(value,path=()):
@@ -201,6 +219,57 @@ class PinManagementCheckerTests(unittest.TestCase):
                          lambda r:r['flows'][0]['order']['menuEvents'][1].update(activated=True),
                          lambda r:r['flows'][0]['order']['menuEvents'][0].update(dispatchRoute='sendAction'),
                          lambda r:r['flows'][0]['order']['menuEvents'][0].update(postedKeyCount=41)]:self.reject(mutation)
+        # The queued/down/current-event receipt is required on every popup,
+        # including both disabled boundaries and both appearance modes.
+        for mode in range(2):
+            for index in range(5):
+                def event(r): return r['flows'][mode]['order']['menuEvents'][index]
+                with self.subTest(mode=mode, event=index, missing='mouseDispatch'):
+                    self.reject(lambda r:event(r).pop('mouseDispatch'))
+                for key in list(event(self.r)['mouseDispatch']):
+                    with self.subTest(mode=mode, event=index, missing=key):
+                        self.reject(lambda r:event(r)['mouseDispatch'].pop(key))
+                self.reject(lambda r:event(r)['mouseDispatch'].update(unrecognized=True))
+                self.reject(lambda r:event(r).update(dispatchRoute='owned-mouseDown/native-menu-tracking'))
+
+        def mouse(r): return r['flows'][0]['order']['menuEvents'][0]['mouseDispatch']
+        for value in [None, [], (), '', True, 1]:
+            self.reject(lambda r:r['flows'][0]['order']['menuEvents'][0].update(mouseDispatch=value))
+        for value in [None, True, 1, '', 'owned-mouseDown', 'sendAction', 'owned-nextEvent-sendEvent/native-menu-tracking']:
+            self.reject(lambda r:mouse(r).update(route=value))
+        for key, foreign in [('eventType', 10), ('currentEventType', 10), ('windowNumber', 101),
+                             ('currentWindowNumber', 101), ('eventNumber', 2), ('currentEventNumber', 2),
+                             ('clickCount', 2), ('currentClickCount', 2), ('modifierFlags', 1), ('currentModifierFlags', 1)]:
+            for value in [None, True, False, 1.0, '1', -1, 2**63, foreign]:
+                with self.subTest(mouseField=key, invalid=value):
+                    self.reject(lambda r:mouse(r).update({key:value}))
+        # Matching but foreign windows/identities cannot hide behind equality.
+        for updates in [dict(windowNumber=101, currentWindowNumber=101), dict(eventType=10, currentEventType=10),
+                        dict(eventNumber=2, currentEventNumber=2), dict(clickCount=2, currentClickCount=2),
+                        dict(modifierFlags=1, currentModifierFlags=1)]:
+            self.reject(lambda r:mouse(r).update(updates))
+        for key in ['expectedQuartzTimestamp', 'dequeuedQuartzTimestamp', 'currentQuartzTimestamp']:
+            for value in [None, True, False, 12345.0, '12345', -1, 0, 2**64, 12346]:
+                with self.subTest(mouseField=key, invalid=value):
+                    self.reject(lambda r:mouse(r).update({key:value}))
+        for value in [None, True, False, 12345.0, '12345', -1, 0, 2**64]:
+            self.reject(lambda r:mouse(r).update(expectedQuartzTimestamp=value,
+                dequeuedQuartzTimestamp=value, currentQuartzTimestamp=value))
+        for key in ['expectedLocation', 'dequeuedLocation', 'currentLocation']:
+            for value in [None, True, 1, {}, (), (240.5, 420), '240.5,420', [], [240.5], [240.5, 420, 0],
+                          [240.5, 421], [241.5, 420], [True, 420], [240.5, False], ['240.5', 420],
+                          [240.5, None], [float('nan'), 420], [240.5, float('inf')], [float('-inf'), 420]]:
+                with self.subTest(mouseField=key, invalid=value):
+                    self.reject(lambda r:mouse(r).update({key:value}))
+        for value in [[True, 420], [240.5, False], ['240.5', 420], [240.5, None],
+                      [float('nan'), 420], [240.5, float('inf')], [float('-inf'), 420]]:
+            self.reject(lambda r:mouse(r).update(expectedLocation=value, dequeuedLocation=value, currentLocation=value))
+        for value in [None, True, False, '0.005', float('nan'), float('inf'), float('-inf'), -0.1, 0, 0.010001, 2.000001]:
+            self.reject(lambda r:mouse(r).update(elapsedSeconds=value))
+        self.reject(lambda r:r['flows'][0]['order']['menuEvents'][0].update(trackingBeginElapsedSeconds=0.004))
+        for key in ['ownedWindowIsKey', 'hitTestVerified']:
+            for value in [False, None, 0, 1, 'true']:
+                self.reject(lambda r:mouse(r).update({key:value}))
         for key in ['trackingIdentityVerified', 'trackingBeginCount', 'trackingEndCount', 'trackingEndedBeforeClickReturn',
                     'clickReturnElapsedSeconds', 'trackingBeginElapsedSeconds', 'trackingEndElapsedSeconds',
                     'delegateCloseObserved', 'delegateCloseIdentityVerified', 'delegateCloseElapsedSeconds', 'lifecycleObservation', 'lastPostedKeyCode']:

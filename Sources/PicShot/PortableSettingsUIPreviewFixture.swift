@@ -227,6 +227,15 @@ import PicShotCore
         try mouseClick(button, point: CGPoint(x: button.bounds.midX, y: button.bounds.midY))
     }
 
+    // Pin-order menu fixtures use the same identity-checked application dispatch
+    // as table selection. Other controls retain their existing local route.
+    static func clickMenuButton(_ button: NSPopUpButton,
+                                beforeDispatch: @escaping (NSEvent, NSView?, [String: Any]) throws -> Void) throws {
+        try require(button.isEnabled && !button.isHiddenOrHasHiddenAncestor, "Native menu button unavailable")
+        try mouseClick(button, point: CGPoint(x: button.bounds.midX, y: button.bounds.midY),
+                       applicationEventDispatch: true, beforeDispatch: beforeDispatch)
+    }
+
     @discardableResult static func clickRow(_ row: Int, in table: NSTableView,
                                            failureEvidenceDirectory: URL? = nil) throws -> [String: Any] {
         let window = try required(table.window, "Table target has no window")
@@ -279,8 +288,8 @@ import PicShotCore
         return observation
     }
 
-    private static func mouseClick(_ view: NSView, point: CGPoint,
-                                   beforeDispatch: ((NSEvent, NSView?, [String: Any]) -> Void)? = nil) throws {
+    private static func mouseClick(_ view: NSView, point: CGPoint, applicationEventDispatch: Bool = false,
+                                   beforeDispatch: ((NSEvent, NSView?, [String: Any]) throws -> Void)? = nil) throws {
         let window = try required(view.window, "Mouse target has no window")
         let root = try required(window.contentView, "Mouse root absent")
         root.layoutSubtreeIfNeeded(); window.displayIfNeeded()
@@ -294,7 +303,7 @@ import PicShotCore
         let up = try required(NSEvent.mouseEvent(with: .leftMouseUp, location: location, modifierFlags: [],
             timestamp: down.timestamp + 0.01, windowNumber: window.windowNumber, context: nil,
             eventNumber: 2, clickCount: 1, pressure: 0), "Mouse-up unavailable")
-        if view is NSTableView {
+        if view is NSTableView || applicationEventDispatch {
             // Match the application event loop for native table selection. A
             // direct mouseDown call leaves currentEvent at the previous mouseUp
             // in a standalone XCTest host. These events stay in this process.
@@ -336,11 +345,11 @@ import PicShotCore
                               String(decoding: evidence, as: UTF8.self))
             }
             NSApp.postEvent(up, atStart: true)
-            beforeDispatch?(owned, hit, identity)
+            try beforeDispatch?(owned, hit, identity)
             NSApp.sendEvent(owned)
         } else {
             NSApp.postEvent(up, atStart: true)
-            beforeDispatch?(down, hit, [:])
+            try beforeDispatch?(down, hit, [:])
             view.mouseDown(with: down)
         }
     }
