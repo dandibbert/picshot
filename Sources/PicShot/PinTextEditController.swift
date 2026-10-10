@@ -142,6 +142,13 @@ private enum PinDraftError: LocalizedError {
 @MainActor private final class PinDraftWindow: NSWindow {
     var onSave: (() -> Void)?
     var onCancel: (() -> Void)?
+    override func performClose(_ sender: Any?) {
+        // A sheet's standard close button can be unavailable, so AppKit's
+        // performClose need not reach windowWillClose. End the owned draft
+        // through its controller, just like the explicit Cancel button.
+        // Only Escape gives marked text first refusal; Close discards it.
+        onCancel?()
+    }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.capsLock, .numericPad])
         if event.keyCode == 53, flags.isEmpty {
@@ -328,6 +335,12 @@ private enum PinDraftError: LocalizedError {
     override func shouldChangeText(in affectedCharRange: NSRange, replacementString: String?) -> Bool {
         if let replacementString, !permitsReplacement(replacementString, range: affectedCharRange) { return false }
         return super.shouldChangeText(in: affectedCharRange, replacementString: replacementString)
+    }
+    // AppKit reconfigures a field editor when a text field acquires it.
+    // Keep its backing flag off even when that setup asks to enable undo.
+    override var allowsUndo: Bool {
+        get { false }
+        set { super.allowsUndo = false }
     }
     // No enclosing window / application undo manager can retain draft payloads.
     override var undoManager: UndoManager? { nil }

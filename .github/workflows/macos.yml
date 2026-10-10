@@ -273,6 +273,20 @@ jobs:
           done
           python3 scripts/native-test-shards.py check --plan dist/recording-regression-plan.json --expected-source "$GITHUB_SHA" --directory dist/evidence/recording-018-regression --output dist/recording-regression-report.json
           test "$execution_status" -eq 0
+      - name: Upload early pin and settings native evidence
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Early-Pin-Tests-${{ matrix.arch }}-${{ github.sha }}
+          path: |
+            dist/native-test-discovery.log
+            dist/native-test-discovery-report.json
+            dist/recording-regression-plan.json
+            dist/recording-regression-report.json
+            dist/evidence/recording-018-regression/
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Upload test compilation evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

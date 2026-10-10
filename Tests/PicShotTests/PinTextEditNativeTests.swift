@@ -81,21 +81,36 @@ import PicShotCore
             let original = PinTextContent(text: "original")
             let pin = try makePin(original); defer { pin.close() }
             var calls = 0; pin.onUpdateText = { _, _ in calls += 1 }
-            for route in 0..<4 {
+            for (routeIndex, route) in ["cancel-button", "escape-key", "window-performClose", "owner-dismiss-editors"].enumerated() {
                 try show(try XCTUnwrap(pin.window)); try activate("pin-text-edit", on: pin)
                 let editor = try XCTUnwrap(pin.textEditController), window = try XCTUnwrap(editor.window)
                 try show(window); replace(editor.textView, with: "discard me 🐱")
-                switch route {
+                XCTAssertTrue(window.sheetParent === pin.window, route)
+                FileHandle.standardError.write(Data(("PinTextEdit native cancellation: route=\(route) sheetParent=\(window.sheetParent != nil) closeButtonEnabled=\(window.standardWindowButton(.closeButton)?.isEnabled ?? false)\n").utf8))
+                switch routeIndex {
                 case 0: try PortableSettingsUIPreviewFixture.click(editor.cancelButton)
                 case 1: try send(window, code: 53, characters: "\u{1b}")
                 case 2: window.performClose(nil)
                 default: pin.dismissTextEditors()
                 }
-                XCTAssertTrue(editor.completed); XCTAssertNil(pin.textEditController)
-                XCTAssertNil(pin.window?.attachedSheet); XCTAssertNil(editor.window?.contentView)
-                XCTAssertEqual(editor.textView.string, ""); XCTAssertEqual(editor.history.retainedHistoryBytes, 0)
-                editor.saveDraft(); XCTAssertEqual(calls, 0); XCTAssertEqual(pin.richDocument?.text, original)
+                XCTAssertTrue(editor.completed, route); XCTAssertNil(pin.textEditController, route)
+                XCTAssertNil(pin.window?.attachedSheet, route); XCTAssertNil(editor.window?.contentView, route)
+                XCTAssertEqual(editor.textView.string, "", route); XCTAssertEqual(editor.history.retainedHistoryBytes, 0, route)
+                editor.saveDraft(); XCTAssertEqual(calls, 0, route); XCTAssertEqual(pin.richDocument?.text, original, route)
             }
+            // Explicit Close must still discard a live composition, whereas
+            // the marked-input Escape test leaves it to the input method.
+            try activate("pin-text-edit", on: pin)
+            let composing = try XCTUnwrap(pin.textEditController), composingWindow = try XCTUnwrap(composing.window)
+            try show(composingWindow); replace(composing.textView, with: "discard composition")
+            composing.textView.setMarkedText("拼", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+            XCTAssertTrue(composing.textView.hasMarkedText())
+            composingWindow.performClose(nil)
+            XCTAssertTrue(composing.completed); XCTAssertNil(pin.textEditController)
+            XCTAssertNil(pin.window?.attachedSheet); XCTAssertNil(composingWindow.contentView)
+            XCTAssertEqual(composing.textView.string, ""); XCTAssertEqual(composing.history.retainedHistoryBytes, 0)
+            composingWindow.performClose(nil); composing.saveDraft()
+            XCTAssertEqual(calls, 0); XCTAssertEqual(pin.richDocument?.text, original)
             try activate("pin-text-edit", on: pin)
             let retained = try XCTUnwrap(pin.textEditController)
             pin.close(); retained.saveDraft()
@@ -131,25 +146,44 @@ import PicShotCore
 
     func testUTF8LimitInvalidInputAndEmptySaveKeepOriginal() throws {
         try withApplicationLoop { [self] in
+            var previousPhase = ProcessInfo.processInfo.systemUptime
+            func recordPhase(_ phase: String) {
+                let now = ProcessInfo.processInfo.systemUptime
+                let line = "PinTextEdit native UTF8 phase: \(phase) elapsedSeconds=\(now - previousPhase)\n"
+                FileHandle.standardError.write(Data(line.utf8)); previousPhase = now
+            }
             let original = PinTextContent(text: String(repeating: "🐱", count: PinTextContent.maximumUTF8Bytes / 4))
-            let pin = try makePin(original); defer { pin.close() }
+            let pin = try makePin(original, phase: recordPhase)
+            defer {
+                previousPhase = ProcessInfo.processInfo.systemUptime
+                pin.close(); recordPhase("pin-closed-and-cleaned")
+            }
             var calls = 0; pin.onUpdateText = { _, _ in calls += 1 }
             try activate("pin-text-edit", on: pin)
+            recordPhase("editor-created-and-presented")
             let editor = try XCTUnwrap(pin.textEditController); try show(try XCTUnwrap(editor.window))
+            recordPhase("editor-shown-and-displayed")
             editor.textView.setSelectedRange(NSRange(location: (original.plainText as NSString).length, length: 0))
             editor.textView.insertText("a", replacementRange: NSRange(location: NSNotFound, length: 0))
+            recordPhase("over-limit-insert-rejected")
             XCTAssertEqual(editor.textView.string, original.plainText); XCTAssertFalse(editor.errorLabel.stringValue.isEmpty)
             editor.textView.insertText("\0", replacementRange: NSRange(location: 0, length: 2))
+            recordPhase("invalid-input-rejected")
             XCTAssertEqual(editor.textView.string, original.plainText); XCTAssertFalse(editor.errorLabel.stringValue.isEmpty)
             replace(editor.textView, with: "")
+            recordPhase("maximum-emoji-draft-cleared")
             try PortableSettingsUIPreviewFixture.click(editor.saveButton)
+            recordPhase("empty-save-refused")
             XCTAssertFalse(editor.completed); XCTAssertFalse(editor.errorLabel.stringValue.isEmpty); XCTAssertEqual(calls, 0)
             XCTAssertEqual(pin.richDocument?.text, original)
             replace(editor.textView, with: original.plainText)
+            recordPhase("maximum-emoji-draft-restored")
             editor.textView.setSelectedRange(NSRange(location: (original.plainText as NSString).length, length: 0))
             editor.textView.setMarkedText("拼", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+            recordPhase("maximum-emoji-composition-marked")
             XCTAssertTrue(editor.textView.hasMarkedText())
             editor.textView.insertText("字", replacementRange: NSRange(location: NSNotFound, length: 0))
+            recordPhase("over-limit-composition-rolled-back")
             XCTAssertFalse(editor.textView.hasMarkedText()); XCTAssertEqual(editor.textView.string, original.plainText)
             XCTAssertFalse(editor.errorLabel.stringValue.isEmpty); XCTAssertEqual(calls, 0)
         }
@@ -204,6 +238,13 @@ import PicShotCore
             let editor = try XCTUnwrap(pin.renameController), window = try XCTUnwrap(editor.window)
             try show(window)
             let field = try XCTUnwrap(editor.nameField.currentEditor() as? PinDraftTextView)
+            XCTAssertFalse(field.allowsUndo, "AppKit must not enable undo when acquiring the owned field editor")
+            XCTAssertNil(field.undoManager)
+            XCTAssertTrue(window.makeFirstResponder(nil))
+            XCTAssertTrue(window.makeFirstResponder(editor.nameField))
+            XCTAssertTrue(editor.nameField.currentEditor() === field)
+            XCTAssertFalse(field.allowsUndo, "AppKit must not enable undo when reacquiring the owned field editor")
+            XCTAssertNil(field.undoManager)
             replace(field, with: "Name")
             field.setMarkedText("拼", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
             let before = field.string, range = field.markedRange(), selection = field.selectedRange()
@@ -300,10 +341,16 @@ import PicShotCore
         }
     }
 
-    private func makePin(_ content: PinTextContent, appearance: NSAppearance.Name = .aqua) throws -> RichPinController {
+    private func makePin(_ content: PinTextContent, appearance: NSAppearance.Name = .aqua,
+                         phase: (@MainActor (String) -> Void)? = nil) throws -> RichPinController {
         let prepared = try PreparedRichPin(document: PinRichDocument(text: content), title: "Original title")
+        phase?("rich-pin-prepared")
         let pin = try RichPinController(asset: prepared.asset, data: prepared.data, title: prepared.title)
-        do { let window = try XCTUnwrap(pin.window); window.appearance = NSAppearance(named: appearance); try show(window); return pin }
+        phase?("rich-pin-controller-initialized")
+        do {
+            let window = try XCTUnwrap(pin.window); window.appearance = NSAppearance(named: appearance)
+            try show(window); phase?("rich-pin-shown-and-displayed"); return pin
+        }
         catch { pin.close(); throw error }
     }
     private func activate(_ id: String, on pin: RichPinController) throws {
