@@ -236,7 +236,8 @@ import PicShotCore
         var observation: [String: Any] = ["requestedRow": row, "selectedRowBefore": table.selectedRow,
             "rowFrameBeforeFinalLayout": rect(rowFrame), "tableBounds": rect(table.bounds),
             "tableVisibleRect": rect(table.visibleRect), "windowNumber": window.windowNumber]
-        try mouseClick(table, point: point) { down, hit in
+        try mouseClick(table, point: point) { down, hit, identity in
+            observation["eventIdentity"] = identity
             let actualPoint = table.convert(down.locationInWindow, from: nil)
             observation["rowFrameAtDispatch"] = rect(table.rect(ofRow: row))
             observation["pointAtDispatch"] = [actualPoint.x, actualPoint.y]
@@ -279,7 +280,7 @@ import PicShotCore
     }
 
     private static func mouseClick(_ view: NSView, point: CGPoint,
-                                   beforeDispatch: ((NSEvent, NSView?) -> Void)? = nil) throws {
+                                   beforeDispatch: ((NSEvent, NSView?, [String: Any]) -> Void)? = nil) throws {
         let window = try required(view.window, "Mouse target has no window")
         let root = try required(window.contentView, "Mouse root absent")
         root.layoutSubtreeIfNeeded(); window.displayIfNeeded()
@@ -297,35 +298,49 @@ import PicShotCore
             // Match the application event loop for native table selection. A
             // direct mouseDown call leaves currentEvent at the previous mouseUp
             // in a standalone XCTest host. These events stay in this process.
+            // Quartz represents this event clock as integer nanoseconds. AppKit
+            // may round its Double seconds when queueing a copied event.
+            let suppliedClock = try required(down.cgEvent?.timestamp, "Owned table down has no Quartz clock")
+            try require(suppliedClock > 0, "Owned table down has an empty Quartz clock")
             NSApp.postEvent(down, atStart: true)
             let owned = try required(NSApp.nextEvent(matching: .leftMouseDown,
                 until: Date(timeIntervalSinceNow: 0.1), inMode: .default, dequeue: true), "Owned table mouse-down not dequeued")
+            let dequeuedClock = owned.cgEvent?.timestamp
+            func eventFields(_ event: NSEvent, clock: UInt64?) -> [String: Any] {
+                ["type": Int(event.type.rawValue), "windowNumber": event.windowNumber,
+                 "timestamp": event.timestamp, "quartzTimestampNanoseconds": clock.map { $0 as Any } ?? NSNull(),
+                 "location": [event.locationInWindow.x, event.locationInWindow.y],
+                 "eventNumber": event.eventNumber, "clickCount": event.clickCount,
+                 "modifierFlags": event.modifierFlags.rawValue]
+            }
+            let identity: [String: Any] = ["expected": eventFields(down, clock: suppliedClock),
+                "dequeued": eventFields(owned, clock: dequeuedClock),
+                "sameObject": owned === down, "sameType": owned.type == down.type,
+                "sameWindow": owned.windowNumber == window.windowNumber,
+                "sameTimestamp": owned.timestamp == down.timestamp,
+                "sameQuartzTimestamp": suppliedClock == dequeuedClock,
+                "sameLocation": owned.locationInWindow == down.locationInWindow,
+                "sameEventNumber": owned.eventNumber == down.eventNumber,
+                "sameClickCount": owned.clickCount == down.clickCount,
+                "sameModifiers": owned.modifierFlags == down.modifierFlags,
+                "timestampDifference": owned.timestamp - down.timestamp,
+                "ownedWindowIsKey": window.isKeyWindow]
             guard owned.type == .leftMouseDown && owned.windowNumber == window.windowNumber &&
-                  owned.timestamp == down.timestamp && owned.locationInWindow == down.locationInWindow else {
+                  suppliedClock == dequeuedClock && owned.locationInWindow == down.locationInWindow &&
+                  owned.eventNumber == down.eventNumber && owned.clickCount == down.clickCount &&
+                  owned.modifierFlags == down.modifierFlags else {
                 NSApp.postEvent(owned, atStart: true)
-                func eventFields(_ event: NSEvent) -> [String: Any] {
-                    ["type": Int(event.type.rawValue), "windowNumber": event.windowNumber,
-                     "timestamp": event.timestamp, "location": [event.locationInWindow.x, event.locationInWindow.y],
-                     "eventNumber": event.eventNumber, "clickCount": event.clickCount,
-                     "modifierFlags": event.modifierFlags.rawValue]
-                }
-                let comparison: [String: Any] = ["expected": eventFields(down), "dequeued": eventFields(owned),
-                    "sameObject": owned === down, "sameType": owned.type == down.type,
-                    "sameWindow": owned.windowNumber == window.windowNumber,
-                    "sameTimestamp": owned.timestamp == down.timestamp,
-                    "sameLocation": owned.locationInWindow == down.locationInWindow,
-                    "timestampDifference": owned.timestamp - down.timestamp,
-                    "ownedWindowIsKey": window.isKeyWindow, "unexpectedEventRestored": true]
+                var comparison = identity; comparison["unexpectedEventRestored"] = true
                 let evidence = try JSONSerialization.data(withJSONObject: comparison, options: [.sortedKeys])
                 throw failure("Dequeued event does not match the owned table click; unrelated event restored: " +
                               String(decoding: evidence, as: UTF8.self))
             }
             NSApp.postEvent(up, atStart: true)
-            beforeDispatch?(owned, hit)
+            beforeDispatch?(owned, hit, identity)
             NSApp.sendEvent(owned)
         } else {
             NSApp.postEvent(up, atStart: true)
-            beforeDispatch?(down, hit)
+            beforeDispatch?(down, hit, [:])
             view.mouseDown(with: down)
         }
     }

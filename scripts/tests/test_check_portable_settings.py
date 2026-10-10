@@ -73,7 +73,14 @@ def report():
                     requestedRow=1, rowAtDispatch=1, selectedRowAfter=1, selectedRowBefore=0,
                     targetPointVisible=True, windowIsKey=True, windowNumber=100, ownedDownWindowNumber=100,
                     keyWindowNumber=100, applicationIsActive=True, applicationIsRunning=True,
-                    currentEventIsSuppliedDown=True, currentEventType=1, currentEventWindowNumber=100)
+                    currentEventIsSuppliedDown=True, currentEventType=1, currentEventWindowNumber=100,
+                    eventIdentity=dict(sameType=True, sameWindow=True, sameQuartzTimestamp=True, sameLocation=True,
+                        sameEventNumber=True, sameClickCount=True, sameModifiers=True, ownedWindowIsKey=True,
+                        sameTimestamp=False, sameObject=False, timestampDifference=-0.0000000003,
+                        expected=dict(type=1, windowNumber=100, quartzTimestampNanoseconds=2838590167208,
+                            eventNumber=1, clickCount=1, modifierFlags=0, timestamp=2838.5901672083, location=[473.5, 417]),
+                        dequeued=dict(type=1, windowNumber=100, quartzTimestampNanoseconds=2838590167208,
+                            eventNumber=1, clickCount=1, modifierFlags=0, timestamp=2838.590167208, location=[473.5, 417])))
                     for appearance in ('light', 'dark')],
                 checks=sorted(CHECK.CHECKS), fileRoundTrip=dict(readbackMatchesWritten=True, savedOnlyExport=True,
                                                              readbackByteCount=1400, maximumFileBytes=65536),
@@ -132,6 +139,11 @@ class PortableSettingsCheckerTests(unittest.TestCase):
             for invalid in (True, False, 1.0, '1', None):
                 with self.subTest(field=field, invalid=invalid):
                     self.reject(lambda r: r['tableSelectionEvents'][0].update({field: invalid}))
+        for field, invalid in [('quartzTimestampNanoseconds', True), ('quartzTimestampNanoseconds', 2838590167209),
+                               ('quartzTimestampNanoseconds', None), ('eventNumber', 2), ('clickCount', 2),
+                               ('modifierFlags', 1), ('location', [473.5, 418])]:
+            with self.subTest(identityField=field, invalid=invalid):
+                self.reject(lambda r: r['tableSelectionEvents'][0]['eventIdentity']['dequeued'].update({field: invalid}))
         for mutation in [lambda r: r.pop('tableSelectionEvents'),
                          lambda r: r['tableSelectionEvents'][0].update(selectedRowAfter=0),
                          lambda r: r['tableSelectionEvents'][0].update(ownedDownVerified=False),

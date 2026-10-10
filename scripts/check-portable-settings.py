@@ -132,6 +132,24 @@ def validate(report, *, expected_commit, expected_version, expected_build, insta
         for field in ('applicationIsActive', 'applicationIsRunning', 'currentEventIsSuppliedDown'):
             need(type(row[field]) is bool, 'missing table event state: ' + field)
         number(row['currentEventType']); number(row['currentEventWindowNumber'])
+        identity = row['eventIdentity']
+        for field in ('sameType', 'sameWindow', 'sameQuartzTimestamp', 'sameLocation',
+                      'sameEventNumber', 'sameClickCount', 'sameModifiers', 'ownedWindowIsKey'):
+            need(identity[field] is True, 'native table event identity: ' + field)
+        need(type(identity['sameTimestamp']) is bool and type(identity['sameObject']) is bool, 'event representation observation')
+        number(identity['timestampDifference'])
+        expected, dequeued = identity['expected'], identity['dequeued']
+        for event in (expected, dequeued):
+            for field in ('type', 'windowNumber', 'quartzTimestampNanoseconds', 'eventNumber', 'clickCount', 'modifierFlags'):
+                need(type(event[field]) is int, 'noninteger event identity: ' + field)
+            need(event['type'] == 1 and event['windowNumber'] == row['windowNumber']
+                 and 0 < event['quartzTimestampNanoseconds'] <= 2**64-1
+                 and event['eventNumber'] == event['clickCount'] == 1 and event['modifierFlags'] == 0, 'invalid owned event identity')
+            number(event['timestamp'])
+            need(type(event['location']) is list and len(event['location']) == 2, 'event location shape')
+            for coordinate in event['location']: number(coordinate)
+        for field in ('type', 'windowNumber', 'quartzTimestampNanoseconds', 'eventNumber', 'clickCount', 'modifierFlags', 'location'):
+            need(expected[field] == dequeued[field], 'event identity changed: ' + field)
     roundtrip = r['fileRoundTrip']
     need(roundtrip['readbackMatchesWritten'] is True and roundtrip['savedOnlyExport'] is True and
          0 < roundtrip['readbackByteCount'] <= roundtrip['maximumFileBytes'] == 65536, 'bounded file round trip')
