@@ -201,7 +201,36 @@ class EarlyRecordingExportContracts(unittest.TestCase):
         self.assertIn("if: always()", upload)
         self.assertIn("path: dist/evidence/recording-input-export-early/artifact/", upload)
         self.assertLess(workflow.index("bash scripts/ui-preview.sh"), early)
-        for later in ("-- swift build --product PicShot", "-- swift build --build-tests", "--directory dist/focused-test-shards", "--directory dist/native-test-shards", "bash scripts/smoke.sh"):
+        # The native settings host reproduction now precedes packaging. Keep
+        # that exact prerequisite chain, while media remains ahead of the broad
+        # native executions and final installed checks.
+        prerequisite_names = (
+            "Prepare verified codec dependencies before native tests",
+            "Compile debug app",
+            "Compile native tests",
+            "Build dedicated native codec helper for actual lifecycle tests",
+            "Plan exhaustive and focused native test processes",
+            "Reproduce settings interaction and recording regressions",
+            "Package signed native app for early pixel review",
+            "Render native UI from installed ZIP before slow verification",
+            "Check installed recording exports before slow native gates",
+        )
+        positions = []
+        for name in prerequisite_names:
+            marker = "- name: " + name + "\n"
+            self.assertEqual(workflow.count(marker), 1)
+            positions.append(workflow.index(marker))
+        self.assertEqual(positions, sorted(positions))
+        prepare = workflow.split("- name: " + prerequisite_names[0], 1)[1].split("- name:", 1)[0]
+        regression = workflow.split("- name: " + prerequisite_names[5], 1)[1].split("- name:", 1)[0]
+        self.assertIn("timeout-minutes: 15", prepare)
+        self.assertIn("--timeout-seconds 840", prepare)
+        self.assertIn("scripts/build-native-codecs.py --arch ${{ matrix.arch }}", prepare)
+        self.assertIn("timeout-minutes: 16", regression)
+        self.assertIn("--process-count 2", regression)
+        self.assertIn("for shard in 0 1; do", regression)
+        self.assertIn('test "$execution_status" -eq 0', regression)
+        for later in ("--directory dist/focused-test-shards", "--directory dist/native-test-shards", "bash scripts/smoke.sh"):
             self.assertLess(early, workflow.index(later))
         smoke = (ROOT / "Sources/PicShot/SmokeVerification.swift").read_text()
         self.assertEqual(smoke.count("RecordingInputSmokeFixture.verify(evidenceDirectory:"), 2)
