@@ -7,8 +7,8 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && 'intel154-fresh-diagnostic' || contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && 'native-timeout-diagnostic' || contains(github.event.head_commit.message || '', '[installed-diagnostic]') && 'installed-diagnostic' || contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-product-resource' || contains(github.event.head_commit.message || '', '[seed-render-crop]') && 'seed-render-crop' || contains(github.event.head_commit.message || '', '[effect-context]') && 'effect-context' || contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && 'renderer-scope-controls' || contains(github.event.head_commit.message || '', '[renderer-storage]') && 'renderer-storage' || contains(github.event.head_commit.message || '', '[drawing-pair]') && 'drawing-pair' || contains(github.event.head_commit.message || '', '[editable-observation]') && 'editable-observation' || contains(github.event.head_commit.message || '', '[callout-retirement]') && 'callout-retirement' || contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-documents' || contains(github.event.head_commit.message || '', '[multiwindow-memory]') && 'multiwindow-memory' || contains(github.event.head_commit.message || '', '[recording-wait]') && 'recording-wait' || contains(github.event.head_commit.message || '', '[manual-hash]') && 'manual-hash' || contains(github.event.head_commit.message || '', '[scroll-memory]') && 'scroll-memory' || contains(github.event.head_commit.message || '', '[decode-exit-latch]') && 'decode-exit-latch' || contains(github.event.head_commit.message || '', '[decode-timing-v3]') && 'decode-timing-v3' || contains(github.event.head_commit.message || '', '[decode-large]') && 'decode-large' || contains(github.event.head_commit.message || '', '[pin-workflows]') && 'pins-010' || contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
-  cancel-in-progress: ${{ !contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && !(contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]')) && !contains(github.event.head_commit.message || '', '[seed-render-crop]') && !contains(github.event.head_commit.message || '', '[effect-context]') && !contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && !contains(github.event.head_commit.message || '', '[renderer-storage]') && !contains(github.event.head_commit.message || '', '[drawing-pair]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
+  group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[shortcut-isolation]') && 'shortcut-isolation' || contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && 'intel154-fresh-diagnostic' || contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && 'native-timeout-diagnostic' || contains(github.event.head_commit.message || '', '[installed-diagnostic]') && 'installed-diagnostic' || contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-product-resource' || contains(github.event.head_commit.message || '', '[seed-render-crop]') && 'seed-render-crop' || contains(github.event.head_commit.message || '', '[effect-context]') && 'effect-context' || contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && 'renderer-scope-controls' || contains(github.event.head_commit.message || '', '[renderer-storage]') && 'renderer-storage' || contains(github.event.head_commit.message || '', '[drawing-pair]') && 'drawing-pair' || contains(github.event.head_commit.message || '', '[editable-observation]') && 'editable-observation' || contains(github.event.head_commit.message || '', '[callout-retirement]') && 'callout-retirement' || contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-documents' || contains(github.event.head_commit.message || '', '[multiwindow-memory]') && 'multiwindow-memory' || contains(github.event.head_commit.message || '', '[recording-wait]') && 'recording-wait' || contains(github.event.head_commit.message || '', '[manual-hash]') && 'manual-hash' || contains(github.event.head_commit.message || '', '[scroll-memory]') && 'scroll-memory' || contains(github.event.head_commit.message || '', '[decode-exit-latch]') && 'decode-exit-latch' || contains(github.event.head_commit.message || '', '[decode-timing-v3]') && 'decode-timing-v3' || contains(github.event.head_commit.message || '', '[decode-large]') && 'decode-large' || contains(github.event.head_commit.message || '', '[pin-workflows]') && 'pins-010' || contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
+  cancel-in-progress: ${{ !contains(github.event.head_commit.message || '', '[shortcut-isolation]') && !contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && !(contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]')) && !contains(github.event.head_commit.message || '', '[seed-render-crop]') && !contains(github.event.head_commit.message || '', '[effect-context]') && !contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && !contains(github.event.head_commit.message || '', '[renderer-storage]') && !contains(github.event.head_commit.message || '', '[drawing-pair]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
 jobs:
   runner-check:
     if: ${{ contains(github.event.head_commit.message || '', '[runner-only]') }}
@@ -74,8 +74,84 @@ jobs:
           retention-days: 14
           compression-level: 6
 
+  shortcut-isolation:
+    if: ${{ contains(github.event.head_commit.message || '', '[shortcut-isolation]') }}
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+    - name: Prepare verified codec dependencies before native tests
+      timeout-minutes: 15
+      run: python3 scripts/run-bounded-command.py --timeout-seconds 840 --log dist/native-dependencies-preflight.log --report dist/native-dependencies-preflight-report.json -- python3 scripts/build-native-codecs.py --arch arm64
+    - name: Compile debug app
+      timeout-minutes: 8
+      run: python3 scripts/run-bounded-command.py --timeout-seconds 420 --log dist/debug-build.log --report dist/debug-build-report.json -- swift build --product PicShot
+    - name: Compile native tests
+      timeout-minutes: 10
+      run: python3 scripts/run-bounded-command.py --timeout-seconds 540 --log dist/test-build.log --report dist/test-build-report.json -- swift build --build-tests
+    - name: Build dedicated native codec helper for actual lifecycle tests
+      run: swift build --product PicShotCodecHelper
+    - name: Validate narrow diagnostic and unchanged native inventory
+      timeout-minutes: 3
+      run: |
+        python3 -m unittest discover -s scripts/tests -p test_local_shortcut_owned_diagnostic.py -v
+        python3 -m unittest discover -s scripts/tests -p test_native_test_shards.py -v
+        python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/native-test-discovery.log --report dist/native-test-discovery-report.json -- swift test list --skip-build
+        python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count 4 --output dist/native-tests-plan.json
+        python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count 2 --selection-regex '^PicShotTests\.(RecordingInputExportTests/testAuthoredInputTrimPreservesAllSelectedPixelsAndPacketBoundaries|RecordingInputExportTests/testInteriorSelectionAndSamplingIncludeExpiryResumeAndFrozenStop|RecordingInputExportTests/testPixelOracleUsesTopDownRGBAAndDetectsEffectRelocationAndExpiry|RecordingInputExportTests/testFixtureRequiresAcceptedOriginalReportBeforeLaunchingHelpers|RecordingCommandCoordinatorTests/testExpandCollapseAndDisplayChangesRetainOneOwnerWithoutClosingSession|AnnotationToolbarOrderUITests/[^/]+|PortableSettingsUITests/[^/]+|AnnotationStylePresetTests/[^/]+|LocalAnnotationShortcutTests/[^/]+|LocalAnnotationShortcutNativeTests/[^/]+|PortableAnnotationPreferencesTests/[^/]+|PinManagementCoordinatorTests/[^/]+|PinTextEditNativeTests/[^/]+|PinTextDraftHistoryTests/[^/]+|PinTextUpdateStoreTests/[^/]+|PinGroupOrderStoreTests/[^/]+|PinGroupOrderNativeTests/[^/]+)$|^PicShotCoreTests\.PinGroupOrderTests/[^/]+$' --output dist/recording-regression-plan.json
+
+    - name: Isolate one shortcut method and conditionally the exact early group
+      timeout-minutes: 18
+      run: |
+        python3 - <<'PYDIAGNOSTIC'
+        import hashlib, json, os, subprocess, sys
+        from pathlib import Path
+        source = Path.cwd().resolve(strict=True)
+        def query(argv):
+            return subprocess.check_output(argv, cwd=source, text=True, timeout=20).strip()
+        def digest(path):
+            value = hashlib.sha256()
+            with path.open('rb') as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                    value.update(chunk)
+            return value.hexdigest()
+        bundle = (Path(query(['swift', 'build', '--show-bin-path'])) / 'PicShotPackageTests.xctest').resolve(strict=True)
+        plan = source / 'dist/recording-regression-plan.json'
+        bound = {'source': os.environ['GITHUB_SHA'], 'tree': query(['git', 'rev-parse', 'HEAD^{tree}']),
+                 'plan-sha256': digest(plan),
+                 'inventory-sha256': '926ac5674df90163b949fe461f0d4589ef72c8fc3215fa00b927564aae57cb44',
+                 'bundle-sha256': digest(bundle / 'Contents/MacOS/PicShotPackageTests')}
+        common = [sys.executable, 'scripts/local-shortcut-owned-diagnostic.py', '--source-root', str(source),
+                  '--bundle', str(bundle), '--plan', str(plan)]
+        for key, value in bound.items():
+            common += ['--expected-' + key, value]
+        (source / 'dist/shortcut-diagnostic-identities.json').write_text(json.dumps(bound, indent=2) + '\n')
+        single = source / 'dist/shortcut-single'
+        print('Starting exact single-method owned XCTest diagnostic', flush=True)
+        first = subprocess.run(common + ['--selection', 'single', '--directory', str(single)], check=False)
+        if first.returncode != 0:
+            print('Single-method diagnostic did not pass; group0 remains unrun', flush=True)
+            raise SystemExit(first.returncode)
+        print('Single method passed; starting exact 75-method group with the same compiled bundle', flush=True)
+        second = subprocess.run(common + ['--selection', 'group0', '--single-pass', str(single),
+                                         '--directory', str(source / 'dist/shortcut-group0')], check=False)
+        raise SystemExit(second.returncode)
+        PYDIAGNOSTIC
+    - name: Retain exact diagnostic logs and owned process evidence
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Shortcut-Isolation-arm64-${{ github.sha }}
+        path: |
+          dist/*.log
+          dist/*.json
+          dist/shortcut-single*
+          dist/shortcut-group0*
+        if-no-files-found: error
+        retention-days: 14
+
   build:
-    if: ${{ !contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') && !contains(github.event.head_commit.message || '', '[codec-attribution]') && !contains(github.event.head_commit.message || '', '[codec-staging]') && !contains(github.event.head_commit.message || '', '[codec-avif-confirmation]') && !contains(github.event.head_commit.message || '', '[runner-only]') && !contains(github.event.head_commit.message || '', '[scroll-memory]') && !contains(github.event.head_commit.message || '', '[manual-hash]') && !contains(github.event.head_commit.message || '', '[recording-wait]') && !contains(github.event.head_commit.message || '', '[multiwindow-memory]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-documents]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
+    if: ${{ !contains(github.event.head_commit.message || '', '[shortcut-isolation]') && !contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') && !contains(github.event.head_commit.message || '', '[codec-attribution]') && !contains(github.event.head_commit.message || '', '[codec-staging]') && !contains(github.event.head_commit.message || '', '[codec-avif-confirmation]') && !contains(github.event.head_commit.message || '', '[runner-only]') && !contains(github.event.head_commit.message || '', '[scroll-memory]') && !contains(github.event.head_commit.message || '', '[manual-hash]') && !contains(github.event.head_commit.message || '', '[recording-wait]') && !contains(github.event.head_commit.message || '', '[multiwindow-memory]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-documents]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
     strategy:
       fail-fast: false
       matrix:

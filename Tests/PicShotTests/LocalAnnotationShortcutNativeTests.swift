@@ -141,8 +141,11 @@ import PicShotCore
     }
 
     func testNativeSheetMenuAndOtherWindowBlockCanvasShortcutRouting() throws {
+        recordMenuPhase("method-entry-before-host")
         try withApplicationLoop { [self] in
+            recordMenuPhase("host-body-entered")
             let settings = try LocalAnnotationShortcutSettings.defaults.replacing(.rectangle, with: .init(keyCode: 15))
+            recordMenuPhase("before-make-editor")
             let editor = try makeEditor(settings); defer { editor.close() }
             let window = try XCTUnwrap(editor.window), canvas = editor.annotationCanvas
             recordMenuPhase("editor-ready")
@@ -331,7 +334,10 @@ import PicShotCore
     }
 
     private func withApplicationLoop(_ body: @escaping @MainActor () throws -> Void) throws {
+        let tracingMenuHost = name.contains("testNativeSheetMenuAndOtherWindowBlockCanvasShortcutRouting")
+        if tracingMenuHost { recordMenuPhase("before-application-shared") }
         _ = NSApplication.shared
+        if tracingMenuHost { recordMenuPhase("after-application-shared") }
         // Never stop or reconfigure an application loop owned by another host.
         if NSApp.isRunning { try body(); return }
         _ = try XCTUnwrap(NSApp.modalWindow == nil && NSApp.delegate == nil ? true : nil,
@@ -339,6 +345,7 @@ import PicShotCore
         _ = try XCTUnwrap(UserDefaults.standard.object(forKey: "NSOpen") == nil ? true : nil,
             "Standalone UI host unexpectedly has a file-open request")
         let originalPolicy = NSApp.activationPolicy()
+        if tracingMenuHost { recordMenuPhase("before-host-policy") }
         recordHostState("before-preparation")
         let state = LocalShortcutTestApplicationLoop()
         defer {
@@ -351,6 +358,7 @@ import PicShotCore
             _ = try XCTUnwrap(NSApp.setActivationPolicy(.accessory) ? true : nil,
                 "Native local-shortcut interaction requires an activatable owned application")
         }
+        if tracingMenuHost { recordMenuPhase("after-host-policy") }
         let wake = try XCTUnwrap(NSEvent.otherEvent(with: .applicationDefined, location: .zero,
             modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: 0,
             context: nil, subtype: 0, data1: 0, data2: 0))
@@ -388,7 +396,9 @@ import PicShotCore
             }
         }
         CFRunLoopWakeUp(CFRunLoopGetMain())
+        if tracingMenuHost { recordMenuPhase("before-application-run") }
         NSApp.run()
+        if tracingMenuHost { recordMenuPhase("after-application-run") }
         state.acceptsCallbacks = false; state.timer?.invalidate(); state.timer = nil
         recordHostState("owned-loop-returned")
         XCTAssertFalse(NSApp.isRunning)
@@ -410,8 +420,8 @@ import PicShotCore
         let observation: [String: Any] = ["phase": phase, "test": name,
             "uptime": ProcessInfo.processInfo.systemUptime,
             "runLoopMode": RunLoop.current.currentMode?.rawValue ?? "none",
-            "keyWindowNumber": NSApp.keyWindow?.windowNumber ?? -1,
-            "hasModalWindow": NSApp.modalWindow != nil]
+            "keyWindowNumber": NSApp?.keyWindow?.windowNumber ?? -1,
+            "hasModalWindow": NSApp?.modalWindow != nil]
         if let data = try? JSONSerialization.data(withJSONObject: observation, options: [.sortedKeys]) {
             FileHandle.standardOutput.write(Data("Local shortcut menu phase: ".utf8) + data + Data("\n".utf8))
         }
