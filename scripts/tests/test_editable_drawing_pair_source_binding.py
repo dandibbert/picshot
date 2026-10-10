@@ -82,7 +82,24 @@ class DrawingPairSourceBinding(unittest.TestCase):
         }
         for path, digest in expected.items():
             with self.subTest(path=path):
-                self.assert_source_hash(read(path), digest)
+                source = read(path)
+                if path == 'Sources/PicShot/PinSessionStore.swift':
+                    # 0.21 adds text transactions and group order only. Require
+                    # their exact reviewed full source, then prove every prior
+                    # raster/editable-storage byte still matches the old pin.
+                    self.assert_source_hash(source, '09fab41a1f2f775d6e3120a50b3b0eef9c432d16034f96e0a03ae54ec5dc78f0')
+                    for start, end in [
+                        ('    /// Saves plain text and its preview as one transaction.',
+                         '    /// A bounded payload read never follows the referenced file paths'),
+                        ('    /// Stable identities remain unchanged; boundary and zero-offset moves do not write.',
+                         '    func deleteGroup(id: UUID) throws {'),
+                    ]:
+                        self.assertEqual(source.count(start), 1)
+                        self.assertEqual(source.count(end), 1)
+                        a, b = source.index(start), source.index(end)
+                        self.assertLess(a, b)
+                        source = source[:a] + source[b:]
+                self.assert_source_hash(source, digest)
         # Other independent diagnostic routes can add their own observations.
         # Keep the complete existing editable route byte-for-byte unchanged.
         self.assertIn('''            if ProcessInfo.processInfo.environment["PICSHOT_EDITABLE_ANNOTATIONS_ONLY"] == "1" {

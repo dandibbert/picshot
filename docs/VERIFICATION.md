@@ -1,5 +1,13 @@
 # Verification evidence and release boundary
 
+## Build 192 pin-management candidate: pre-compile source guard failure
+
+The authored 0.21 candidate `fcafaf2afcca4e8c28ec0e78b53f36d24ea37fcf`, tree `5afb75d3c40606b473fdcd472bb29539c2b71448`, [run 38068022192](https://github.com/dandibbert/picshot/actions/runs/38068022192), is not accepted. ARM fails before compilation in `DrawingPairSourceBinding.test_existing_validators_public_routes_storage_and_component_work_are_unchanged`: the historical whole-file `PinSessionStore.swift` digest predates the intentional plain-text transaction and group-order additions. The source-contract group reports 62 tests and one failure; native, model and installed gates are unrun. Accepted ARM remains 0.20.0/build191. Intel outcome is independent.
+
+The correction requires the exact reviewed new store digest and then removes only the two counted additive sections before checking the original digest. Thus every prior raster/editable-storage byte, validator and workload remains pinned; no product source, workload, pixel tolerance or resource limit changes in this correction. Fresh native and installed evidence is still required for the candidate.
+
+Intel192 instead expires the shared two-minute portable-settings checker step: the existing normal/optimized settings suites finish in 46.440/46.665 seconds; the added normal pin checker finishes 13/13 in 25.899 seconds, leaving insufficient time for its optimized repeat. It does not reach the source guard or native compilation. The additive pin checker pair now has a separate two-minute step. The original settings step cap, all checkers and the overall job limit remain unchanged; this is a CI stage allocation correction, not a product timeout or acceptance-tolerance adjustment.
+
 ## Build 191 annotation preferences acceptance
 
 **ARM 0.20.0/build 191 is accepted for the documented automated macOS CI scope. Intel 191 is unaccepted; accepted/delivered Intel remains 0.11.0/build 69.** The accepted source is `d1da4cb6789aaad7593ac8bd441fb22cd531341b`, tree `e42bc9bf688e9d63ba57dd10a42210f0b2338516`, [run 38061222945 / ARM job 114239784768](https://github.com/dandibbert/picshot/actions/runs/38061222945/job/114239784768). Independent final review on 10 October 2026 accepts the actual installer bytes and exact-source native/model, installed UI/media and ZIP-only production-default evidence; terminal audit SHA-256 is `9a224eb2214d0887221e88539f55b5f1fa200ad22e7012643d8f1cef2f630ec5`. All 799 frozen source blobs and the reconstructed tree verify. This documentation-only checkpoint changes no installer bytes. Historical records below keep their own source, architecture and then-current outcome.

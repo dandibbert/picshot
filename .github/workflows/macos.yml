@@ -122,6 +122,9 @@ jobs:
         run: |
           python3 -m unittest discover -s scripts/tests -p test_check_portable_settings.py -v
           python3 -O -m unittest discover -s scripts/tests -p test_check_portable_settings.py -v
+      - name: Check pin management evidence contract
+        timeout-minutes: 2
+        run: |
           python3 -m unittest discover -s scripts/tests -p test_check_pin_management.py -v
           python3 -O -m unittest discover -s scripts/tests -p test_check_pin_management.py -v
       - name: Check installed drawing default product and source contracts
