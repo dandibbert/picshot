@@ -54,6 +54,14 @@ def report():
                                 windowFrame=[100, 100, 800, 592], visibleFrame=[0, 0, 1280, 800], contentBounds=[0, 0, 800, 570],
                                 controls=controls, readableLabelCount=3, fullVisibleFramesChecked=True,
                                 controlsDoNotOverlap=True, scrollViewportsChecked=True, opaqueWindowBackgroundComposited=True))
+            if category == 'review':
+                visuals[-1]['openingReview'] = dict(checkMoment='immediately-after-opening-before-any-scroll',
+                    firstChangeID='settings.importReview.change.appearance', expectedFirstChangeID='settings.importReview.change.appearance',
+                    clipBounds=[0, 0, 560, 300], documentBounds=[0, 0, 560, 600], documentFrameInClip=[0, 0, 560, 600],
+                    documentVisibleRect=[0, 0, 560, 300], scrollOffset=[0, 0], documentIsFlipped=True,
+                    firstChangeFrameInClip=[12, 10, 536, 60], firstChangeFrameInDocument=[12, 10, 536, 60],
+                    firstChangeLabels=[dict(text=text, frameInClip=[12, 10+index*20, 536, 18],
+                        frameInDocument=[12, 10+index*20, 536, 18]) for index, text in enumerate(['界面主题', '当前：跟随系统', '导入：深色'])])
     return dict(schemaVersion=1, status='passed', sourceCommit='source', version='1.6.9', buildVersion='169',
                 bundlePath='/tmp/PicShot.app', elapsedSeconds=2.5, overallDeadlineSeconds=120,
                 userPreferencesReadOrWritten=False, globalHotkeysRegistered=False, globalInputPosted=False,
@@ -141,6 +149,13 @@ class PortableSettingsCheckerTests(unittest.TestCase):
     def test_reject_truncated_titles_or_missing_hit_test(self):
         self.reject(lambda r: r['visuals'][0]['controls'][0].update(minimumSize=[170, 28]), 'unreadable')
         self.reject(lambda r: r['visuals'][0]['controls'][0].update(hitTest=False), 'hit/readability')
+        self.reject(lambda r: r['visuals'][4].pop('openingReview'), 'opening review evidence')
+        self.reject(lambda r: r['visuals'][4]['openingReview'].update(firstChangeFrameInClip=[12, -1, 536, 60]), 'complete first change clipped')
+        self.reject(lambda r: r['visuals'][4]['openingReview']['firstChangeLabels'][0].update(frameInClip=[12, -18, 536, 18]), 'first change text clipped')
+        self.reject(lambda r: r['visuals'][5]['openingReview'].update(clipBounds=[0, 40, 560, 300], scrollOffset=[0, 40]), 'complete first change clipped')
+        self.reject(lambda r: r['visuals'][5]['openingReview']['firstChangeLabels'].pop(), 'labels missing')
+        self.reject(lambda r: r['visuals'][4]['openingReview'].update(firstChangeID='settings.importReview.change.screenshotDelaySeconds',
+                    expectedFirstChangeID='settings.importReview.change.screenshotDelaySeconds'), 'first change identity')
 
     def test_reject_unknown_export_field_and_draft_order_even_with_updated_hash(self):
         name = 'portable-settings-export.json'

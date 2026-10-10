@@ -132,6 +132,9 @@ import XCTest
                 }
                 let review = try controller.reviewPortableSettingsImport(incoming)
                 review.window?.appearance = NSAppearance(named: appearance)
+                let opening = try PortableSettingsUIPreviewFixture.reviewOpeningLayout(review)
+                XCTAssertEqual(opening["checkMoment"] as? String, "immediately-after-opening-before-any-scroll")
+                XCTAssertEqual((opening["firstChangeLabels"] as? [[String: Any]])?.count, 3)
                 XCTAssertEqual(try PortableSettingsUIPreviewFixture.layout(XCTUnwrap(review.window))["controlsDoNotOverlap"] as? Bool, true)
                 review.cancel()
             }

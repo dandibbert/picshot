@@ -80,7 +80,8 @@ import PicShotCore
                 try require(review!.plan.hasChanges && review!.plan.changesHotKeys, "Incoming synthetic changes absent")
                 try require(sameDomain(before, defaults, suite) && callbacks == 0 && probes == 0,
                             "Opening preview changed persisted values or probed hotkeys")
-                visuals.append(try visual(try required(review?.window, "Review window missing"), category: "review", mode: mode, directory: evidenceDirectory))
+                visuals.append(try visual(try required(review?.window, "Review window missing"), category: "review", mode: mode,
+                    directory: evidenceDirectory, openingReview: review))
                 try click(review!.cancelButton)
                 try await until({ controller.portableImportReview == nil && window.attachedSheet == nil }, "Cancel retained sheet")
                 try require(sameDomain(before, defaults, suite) && controller.annotationToolbarView.draft == draft && callbacks == 0,
@@ -335,13 +336,71 @@ import PicShotCore
         return result
     }
 
-    private static func visual(_ window: NSWindow, category: String, mode: String, directory: URL) throws -> [String: Any] {
+    /// Called only at first presentation, before the fixture sends any scroll
+    /// action. Normal later scrolling does not invoke this opening-position gate.
+    static func reviewOpeningLayout(_ review: PortableSettingsReviewController) throws -> [String: Any] {
+        let observation = try reviewOpeningGeometry(review)
+        try validateReviewOpening(observation)
+        return observation
+    }
+
+    private static func reviewOpeningGeometry(_ review: PortableSettingsReviewController) throws -> [String: Any] {
+        let window = try required(review.window, "Opening review window absent")
+        window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        let scroll = review.changesScrollView, clip = scroll.contentView
+        let document = try required(scroll.documentView, "Opening review document absent")
+        let first = try required(review.firstChangeView, "Opening review first change absent")
+        let change = try required(review.plan.changes.first, "Opening review plan is empty")
+        let labels = descendants(first).compactMap { $0 as? NSTextField }
+        return ["checkMoment": "immediately-after-opening-before-any-scroll",
+            "firstChangeID": first.identifier?.rawValue ?? "", "expectedFirstChangeID": "settings.importReview.change." + change.id,
+            "clipBounds": rect(clip.bounds), "documentBounds": rect(document.bounds),
+            "documentFrameInClip": rect(document.convert(document.bounds, to: clip)),
+            "documentVisibleRect": rect(scroll.documentVisibleRect),
+            "scrollOffset": [clip.bounds.minX, clip.bounds.minY], "documentIsFlipped": document.isFlipped,
+            "firstChangeFrameInClip": rect(first.convert(first.bounds, to: clip)),
+            "firstChangeFrameInDocument": rect(first.convert(first.bounds, to: document)),
+            "firstChangeLabels": labels.map { label in ["text": label.stringValue,
+                "frameInClip": rect(label.convert(label.bounds, to: clip)),
+                "frameInDocument": rect(label.convert(label.bounds, to: document))] as [String: Any] }]
+    }
+
+    private static func validateReviewOpening(_ observation: [String: Any]) throws {
+        func frame(_ key: String, in values: [String: Any]) throws -> CGRect {
+            let numbers = try required(values[key] as? [CGFloat], "Opening review geometry missing: " + key)
+            try require(numbers.count == 4 && numbers.allSatisfy(\.isFinite) && numbers[2] > 0 && numbers[3] > 0,
+                        "Opening review geometry invalid: " + key)
+            return CGRect(x: numbers[0], y: numbers[1], width: numbers[2], height: numbers[3])
+        }
+        let clip = try frame("clipBounds", in: observation)
+        let document = try frame("documentBounds", in: observation)
+        let visible = try frame("documentVisibleRect", in: observation)
+        let firstInClip = try frame("firstChangeFrameInClip", in: observation)
+        let firstInDocument = try frame("firstChangeFrameInDocument", in: observation)
+        try require(observation["firstChangeID"] as? String == observation["expectedFirstChangeID"] as? String,
+                    "Opening review does not identify the first planned change")
+        try require(clip.contains(firstInClip) && document.contains(firstInDocument) && visible.contains(firstInDocument),
+            "Opening review clips its complete first change: firstInClip=\(firstInClip), clipBounds=\(clip), firstInDocument=\(firstInDocument), documentVisibleRect=\(visible)")
+        let labels = try required(observation["firstChangeLabels"] as? [[String: Any]], "Opening review labels absent")
+        try require(labels.count == 3, "Opening first change must show its heading, saved value and incoming value")
+        for label in labels {
+            let labelInClip = try frame("frameInClip", in: label)
+            let labelInDocument = try frame("frameInDocument", in: label)
+            let text = label["text"] as? String ?? ""
+            try require(!text.isEmpty && clip.contains(labelInClip) && visible.contains(labelInDocument),
+                "Opening review clips first-change text [\(text)]: fullFrameInClip=\(labelInClip), clipBounds=\(clip)")
+        }
+    }
+
+    private static func visual(_ window: NSWindow, category: String, mode: String, directory: URL,
+                               openingReview: PortableSettingsReviewController? = nil) throws -> [String: Any] {
         let view = try required(window.contentView, "Snapshot content missing")
         view.layoutSubtreeIfNeeded(); window.displayIfNeeded()
         let stem = "portable-settings-" + category + "-" + mode
         let name = stem + ".png", geometryName = stem + "-geometry.json"
         let geometryURL = directory.appendingPathComponent(geometryName)
         var diagnostic = rawGeometry(window, root: view)
+        if let openingReview { diagnostic["openingReview"] = try reviewOpeningGeometry(openingReview) }
         diagnostic["category"] = category; diagnostic["appearance"] = mode
         diagnostic["snapshotFile"] = name; diagnostic["status"] = "layout-not-yet-validated"
         try JSONSerialization.data(withJSONObject: diagnostic, options: [.prettyPrinted, .sortedKeys])
@@ -373,6 +432,9 @@ import PicShotCore
         var result: [String: Any]
         do {
             result = try layout(window)
+            if let opening = diagnostic["openingReview"] as? [String: Any] {
+                try validateReviewOpening(opening); result["openingReview"] = opening
+            }
             diagnostic["status"] = "passed"; diagnostic["geometryValidated"] = true
         } catch {
             diagnostic["status"] = "failed"; diagnostic["error"] = error.localizedDescription

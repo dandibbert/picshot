@@ -82,6 +82,28 @@ def check_export(data):
             need(set(item['binding']) == {'keyCode', 'modifiers'}, 'binding export allowlist')
 
 
+def check_opening_review(opening):
+    need(opening['checkMoment'] == 'immediately-after-opening-before-any-scroll', 'opening review observation moment')
+    need(opening['firstChangeID'] == opening['expectedFirstChangeID'] == 'settings.importReview.change.appearance',
+         'opening first change identity')
+    clip, document = opening['clipBounds'], opening['documentBounds']
+    document_in_clip, visible = opening['documentFrameInClip'], opening['documentVisibleRect']
+    row_in_clip, row_in_document = opening['firstChangeFrameInClip'], opening['firstChangeFrameInDocument']
+    for frame in (clip, document, document_in_clip, visible, row_in_clip, row_in_document):
+        rectangle(frame)
+    need(opening['scrollOffset'] == clip[:2] and type(opening['documentIsFlipped']) is bool, 'opening scroll offset observation')
+    need(contains(clip, row_in_clip, 0) and contains(document, row_in_document, 0) and contains(visible, row_in_document, 0),
+         'opening complete first change clipped')
+    need(contains(document_in_clip, row_in_clip, 0) and row_in_clip[2:] == row_in_document[2:], 'opening first row coordinate mismatch')
+    labels = opening['firstChangeLabels']
+    need(len(labels) == 3, 'opening first change labels missing')
+    need([label['text'] for label in labels] == ['界面主题', '当前：跟随系统', '导入：深色'], 'opening first change content mismatch')
+    for label in labels:
+        need(isinstance(label['text'], str) and label['text'], 'opening first change text missing')
+        need(contains(clip, label['frameInClip'], 0) and contains(visible, label['frameInDocument'], 0),
+             'opening first change text clipped')
+
+
 def validate(report, *, expected_commit, expected_version, expected_build, installed_app, evidence_directory):
     r = report
     need(r['status'] == 'passed' and r['schemaVersion'] == 1, 'native report not passed')
@@ -149,6 +171,9 @@ def validate(report, *, expected_commit, expected_version, expected_build, insta
         need(bounds[2:] == [width, height], 'snapshot omitted content bounds')
         need(visual['fullVisibleFramesChecked'] is True and visual['controlsDoNotOverlap'] is True and
              visual['scrollViewportsChecked'] is True and visual['readableLabelCount'] > 0, 'full visible layout contract')
+        if visual['category'] == 'review':
+            need(isinstance(visual.get('openingReview'), dict), 'opening review evidence missing')
+            check_opening_review(visual['openingReview'])
         controls = visual['controls']; need(len(controls) >= 2, 'missing native controls')
         ids = [row['id'] for row in controls]; need(len(set(ids)) == len(ids), 'duplicate control geometry')
         required = {'configuration': {'settings.configuration.export', 'settings.configuration.import'},

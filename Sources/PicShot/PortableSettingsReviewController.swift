@@ -7,6 +7,8 @@ import AppKit
     let applyButton = SettingsActionButton(title: "导入并保存", target: nil, action: nil)
     let cancelButton = SettingsActionButton(title: "取消", target: nil, action: nil)
     let errorLabel = NSTextField(wrappingLabelWithString: "")
+    let changesScrollView = NSScrollView()
+    private(set) var firstChangeView: NSView?
     private let applyPlan: () throws -> Void
     private let finished: (Bool) -> Void
     private var completed = false
@@ -24,9 +26,10 @@ import AppKit
         heading.identifier = .init("settings.importReview.heading")
         let explanation = NSTextField(wrappingLabelWithString: "只替换下列已保存设置。导入并保存后将关闭设置窗口；本窗口尚未保存的草稿将被放弃。取消不会更改设置或草稿。")
         explanation.font = .systemFont(ofSize: 12); explanation.textColor = .secondaryLabelColor
-        let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
+        let scroll = changesScrollView; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
+        scroll.identifier = .init("settings.importReview.changes")
         scroll.borderType = .bezelBorder; scroll.drawsBackground = true
-        let differences = NSStackView(); differences.orientation = .vertical; differences.alignment = .leading
+        let differences = PortableSettingsChangesStack(); differences.orientation = .vertical; differences.alignment = .leading
         differences.spacing = 10; differences.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
         differences.translatesAutoresizingMaskIntoConstraints = false; scroll.documentView = differences
         for change in plan.changes {
@@ -38,6 +41,7 @@ import AppKit
             let row = NSStackView(views: [label, before, after]); row.orientation = .vertical; row.alignment = .leading; row.spacing = 3
             row.identifier = .init("settings.importReview.change." + change.id)
             differences.addArrangedSubview(row)
+            if firstChangeView == nil { firstChangeView = row }
             row.widthAnchor.constraint(equalTo: differences.widthAnchor, constant: -24).isActive = true
             before.widthAnchor.constraint(equalTo: row.widthAnchor).isActive = true
             after.widthAnchor.constraint(equalTo: row.widthAnchor).isActive = true
@@ -78,6 +82,11 @@ import AppKit
     func present(on parent: NSWindow) {
         guard !completed, let window, parent.attachedSheet == nil else { return }
         parent.beginSheet(window)
+        window.contentView?.layoutSubtreeIfNeeded()
+        // A flipped document opens at its first complete change. Keep the
+        // remaining rows scrollable; never begin halfway through the first row.
+        changesScrollView.contentView.scroll(to: .zero)
+        changesScrollView.reflectScrolledClipView(changesScrollView.contentView)
     }
     func cancel() { finish(applied: false) }
     @objc private func cancelImport() { cancel() }
@@ -99,4 +108,8 @@ import AppKit
 
 @MainActor private final class PortableSettingsReviewSurface: NSView {
     override func draw(_ dirtyRect: NSRect) { NSColor.windowBackgroundColor.setFill(); bounds.fill() }
+}
+
+@MainActor private final class PortableSettingsChangesStack: NSStackView {
+    override var isFlipped: Bool { true }
 }
