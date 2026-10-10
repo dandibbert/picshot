@@ -1,6 +1,7 @@
 import AppKit
 import Carbon
 import PicShotCore
+import UniformTypeIdentifiers
 
 @MainActor final class SettingsController: NSWindowController, NSWindowDelegate {
     private weak var callingWindow: NSWindow?
@@ -10,6 +11,13 @@ import PicShotCore
     private let onManageCapturePresets: (() -> Void)?
     private let defaults: UserDefaults
     private let savesPreferences: Bool
+    let portableSettingsStore: PortableSettingsStore
+    private let validateImportedHotkeys: (HotKeyConfiguration) throws -> Void
+    private var configurationFilePanel: NSSavePanel?
+    private var isClosing = false
+    private(set) var portableImportReview: PortableSettingsReviewController?
+    let configurationStatus = NSTextField(wrappingLabelWithString: "")
+    let annotationToolbarView: AnnotationToolbarSettingsView
     private var shortcuts: HotKeyConfiguration
     private let unavailableShortcuts: [HotKeyAction]
     private let heading = NSTextField(labelWithString: "")
@@ -26,10 +34,14 @@ import PicShotCore
     private let restorePins = NSButton(checkboxWithTitle: "启动时恢复上次显示的贴图组", target: nil, action: nil)
     private(set) var selectedCategory: SettingsCategory = .appearance
 
-    init(onChange: @escaping () -> Void, defaults: UserDefaults = .standard, isSmoke: Bool? = nil, unavailableShortcuts: [HotKeyAction] = [], onManageCapturePresets: (() -> Void)? = nil) {
+    init(onChange: @escaping () -> Void, defaults: UserDefaults = .standard, isSmoke: Bool? = nil, unavailableShortcuts: [HotKeyAction] = [], onManageCapturePresets: (() -> Void)? = nil,
+         validateImportedHotkeys: @escaping (HotKeyConfiguration) throws -> Void = { _ in }, defaultsDomainName: String? = nil) {
         let safeMode = isSmoke ?? (ProcessInfo.processInfo.environment["PICSHOT_SMOKE_REPORT"] != nil)
         change = onChange; self.onManageCapturePresets = onManageCapturePresets; self.defaults = defaults; savesPreferences = !safeMode; self.unavailableShortcuts = unavailableShortcuts
         shortcuts = safeMode ? .defaults : HotKeyConfiguration.read(from: defaults)
+        portableSettingsStore = PortableSettingsStore(defaults: defaults, persistentDomainName: defaultsDomainName)
+        self.validateImportedHotkeys = validateImportedHotkeys
+        annotationToolbarView = AnnotationToolbarSettingsView(order: safeMode ? .defaults : .read(from: defaults))
         saveWorkflowView = SaveWorkflowSettingsView(settings: safeMode ? .init() : .read(from: defaults))
         let window = SettingsWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 570), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         super.init(window: window); window.delegate = self
@@ -137,6 +149,8 @@ import PicShotCore
         case .save:
             addGroup("快速保存与自动副本", rows: [saveWorkflowView])
             addNote("快速保存使用 PNG；导出窗口中的快速保存使用当前实际编码格式。已有文件只允许保留两者、更改名称或取消，不提供覆盖替换。")
+        case .annotations:
+            addGroup("浮动工具条顺序", rows: [annotationToolbarView])
         case .pins:
             addGroup("贴图行为", rows: [restorePins, automaticPinOCR, row("所有贴图显示在", control: pinDesktopVisibility)])
             addNote("恢复会话与自动识别默认关闭。贴图保存在本机；关闭会归档，隐藏与切组保留会话。自动识别只处理显示中的图片，不弹窗、不复制、不切换焦点。")
@@ -162,6 +176,20 @@ import PicShotCore
             var help = "点击后按组合键；至少包含 ⌘、⌃ 或 ⌥。Esc 取消录入。录屏快捷键默认未设置，仅在录制或暂停时生效。设置窗口打开期间暂停全局快捷键，关闭后恢复。"
             if !unavailableShortcuts.isEmpty { help += "\n当前不可用，请更换：" + unavailableShortcuts.map(\.title).joined(separator: "、") }
             addNote(help)
+        case .configuration:
+            let export = NSButton(title: "导出已保存设置…", target: self, action: #selector(exportConfiguration))
+            let importButton = NSButton(title: "导入并预览…", target: self, action: #selector(importConfiguration))
+            export.identifier = .init("settings.configuration.export")
+            importButton.identifier = .init("settings.configuration.import")
+            let actions = NSStackView(views: [export, importButton]); actions.spacing = 10
+            addGroup("本地配置文件", rows: [actions,
+                note("导出已保存的外观、截图选项、贴图行为、历史上限、六项快捷键和标注工具顺序。本窗口未保存的草稿不会导出。")])
+            addNote("导入先显示逐项差异。点击“导入并保存”才更改设置并关闭窗口；取消保留当前设置和草稿。格式与版本、字段、大小、快捷键重复或当前系统冲突检查失败时，拒绝整次导入。")
+            addNote("不包含截图、识别文字、历史和贴图内容、保存路径、命名与自动副本设置、录屏输入提示开关、密码或凭据。不提供云同步。系统快捷键检查不为组合键作长期保留。")
+            configurationStatus.font = .systemFont(ofSize: 12)
+            configurationStatus.identifier = .init("settings.configuration.status")
+            content.addArrangedSubview(configurationStatus)
+            configurationStatus.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
         }
     }
 
@@ -189,7 +217,7 @@ import PicShotCore
             if index > 0 { let line = NSBox(); line.boxType = .separator; stack.addArrangedSubview(line); line.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
             stack.addArrangedSubview(row)
             if let label = row as? NSTextField, label.cell?.wraps == true { label.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
-            if row === saveWorkflowView { row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
+            if row === saveWorkflowView || row === annotationToolbarView { row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
         }
         group.addSubview(stack)
         NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo: group.leadingAnchor, constant: 16), stack.trailingAnchor.constraint(equalTo: group.trailingAnchor, constant: -16), stack.topAnchor.constraint(equalTo: group.topAnchor, constant: 14), stack.bottomAnchor.constraint(equalTo: group.bottomAnchor, constant: -14)])
@@ -219,8 +247,8 @@ import PicShotCore
         }
         callingWindow = nil; callingCollectionBehavior = nil
     }
-    override func close() { saveWorkflowView.cancelPendingPanel(); detachCallingWindow(); super.close() }
-    func windowWillClose(_ notification: Notification) { saveWorkflowView.cancelPendingPanel(); detachCallingWindow() }
+    override func close() { isClosing = true; cancelConfigurationWork(); saveWorkflowView.cancelPendingPanel(); detachCallingWindow(); super.close() }
+    func windowWillClose(_ notification: Notification) { isClosing = true; cancelConfigurationWork(); saveWorkflowView.cancelPendingPanel(); detachCallingWindow() }
     @objc private func cancelSettings() { close() }
     func validateSaveWorkflowDraft() throws -> SaveWorkflowSettings { try saveWorkflowView.validatedSettings() }
     @objc private func saveSettings() {
@@ -244,9 +272,78 @@ import PicShotCore
         if desktopModes.indices.contains(pinDesktopVisibility.indexOfSelectedItem) {
             desktopModes[pinDesktopVisibility.indexOfSelectedItem].save(to: defaults)
         }
+        annotationToolbarView.draft.write(to: defaults)
         let choice = AppAppearancePreference.allCases[max(0, appearance.indexOfSelectedItem)]
         choice.save(to: defaults); NSApp.appearance = choice.appKitAppearance
         change(); close()
+    }
+
+    func exportPortableSettings(to url: URL) throws {
+        let data = try portableSettingsStore.exportData()
+        try data.write(to: url, options: .atomic)
+    }
+
+    @discardableResult
+    func reviewPortableSettingsImport(_ data: Data) throws -> PortableSettingsReviewController {
+        guard !isClosing, portableImportReview == nil, let window, window.attachedSheet == nil else {
+            throw PicShotError.message("请先关闭当前配置预览或文件选择窗口。")
+        }
+        let plan = try portableSettingsStore.prepareImport(data)
+        let review = PortableSettingsReviewController(plan: plan, apply: { [weak self] in
+            guard let self, self.savesPreferences, !self.isClosing else {
+                throw PicShotError.message("验证模式不会更改已保存设置。")
+            }
+            try self.portableSettingsStore.apply(plan, validateHotkeys: self.validateImportedHotkeys)
+        }, finished: { [weak self] applied in
+            guard let self else { return }
+            self.portableImportReview = nil
+            if applied {
+                NSApp.appearance = AppAppearancePreference.read(from: self.defaults).appKitAppearance
+                self.change(); self.close()
+            }
+        })
+        portableImportReview = review; review.present(on: window)
+        return review
+    }
+
+    private func configurationMessage(_ message: String, error: Bool) {
+        configurationStatus.stringValue = message
+        configurationStatus.textColor = error ? .systemRed : .secondaryLabelColor
+    }
+    @objc private func exportConfiguration() {
+        guard !isClosing, configurationFilePanel == nil, let window, window.attachedSheet == nil else { return }
+        let data: Data
+        do { data = try portableSettingsStore.exportData() }
+        catch { configurationMessage(error.localizedDescription, error: true); return }
+        let panel = NSSavePanel(); panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "PicShot-settings.json"; panel.title = "导出已保存设置"
+        configurationFilePanel = panel
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard let self else { return }; self.configurationFilePanel = nil
+            guard !self.isClosing, response == .OK, let url = panel.url else { return }
+            do { try data.write(to: url, options: .atomic); self.configurationMessage("已导出本地配置；未更改设置。", error: false) }
+            catch { self.configurationMessage(error.localizedDescription, error: true) }
+        }
+    }
+    @objc private func importConfiguration() {
+        guard !isClosing, configurationFilePanel == nil, let window, window.attachedSheet == nil else { return }
+        let panel = NSOpenPanel(); panel.allowedContentTypes = [.json]
+        panel.canChooseDirectories = false; panel.allowsMultipleSelection = false; panel.title = "选择 PicShot 配置"
+        configurationFilePanel = panel
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard let self else { return }; self.configurationFilePanel = nil
+            guard !self.isClosing, response == .OK, let url = panel.url else { return }
+            // Wait until AppKit has detached the file sheet before showing review.
+            DispatchQueue.main.async { [weak self] in
+                guard let self, !self.isClosing else { return }
+                do { try self.reviewPortableSettingsImport(PortableSettingsStore.readImportData(from: url)) }
+                catch { self.configurationMessage(error.localizedDescription, error: true) }
+            }
+        }
+    }
+    private func cancelConfigurationWork() {
+        configurationFilePanel?.cancel(nil); configurationFilePanel = nil
+        portableImportReview?.cancel(); portableImportReview = nil
     }
 }
 

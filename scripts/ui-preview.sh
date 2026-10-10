@@ -8,7 +8,7 @@ mkdir -p dist
 test "$(cd dist && pwd -P)" = "$PWD/dist"
 work=$(mktemp -d "$PWD/dist/ui-preview.XXXXXXXX")
 trap 'rm -rf "$work"' EXIT
-ditto -x -k "dist/PicShot-0.18.0-macos-$(uname -m).zip" "$work"
+ditto -x -k "dist/PicShot-0.19.0-macos-$(uname -m).zip" "$work"
 app="$work/PicShot.app"
 codesign --verify --deep --strict "$app"
 mkdir -p dist/evidence/ui
@@ -174,7 +174,7 @@ assert not ocr['includeResourceCycles'] and ocr['resourceEvidence']['status']=='
 print(json.dumps(r,indent=2))
 PY
 
-python3 scripts/check-pin-ocr-report.py "$PWD/dist/evidence/ui/pin-ocr/pin-ocr-workflow.json" "$app" "$(git rev-parse HEAD)" 0.18.0 "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")"
+python3 scripts/check-pin-ocr-report.py "$PWD/dist/evidence/ui/pin-ocr/pin-ocr-workflow.json" "$app" "$(git rev-parse HEAD)" 0.19.0 "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")"
 python3 scripts/check-automatic-mosaic-report.py "$PWD/dist/evidence/ui/automatic-mosaic/automatic-mosaic-workflow.json" "$app" "$(git rev-parse HEAD)" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")"
 
 python3 scripts/check-annotation-details-report.py "$PWD/dist/evidence/ui/annotation-details/annotation-details.json" "$app" "$(git rev-parse HEAD)" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")"
@@ -205,3 +205,5 @@ python3 scripts/check-effect-output-failure-report.py "$PWD/dist/evidence/ui/cap
 bash scripts/editable-annotation-smoke.sh "$app" "$PWD/dist/evidence/ui/editable-annotations" "$(git rev-parse HEAD)" functional
 
 python3 scripts/check-recording-transport-report.py "$PWD/dist/evidence/ui/recording-transport.json"
+
+python3 scripts/check-portable-settings.py "$PWD/dist/evidence/ui/portable-settings-ui.json" "$app" "$(git rev-parse HEAD)" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")"

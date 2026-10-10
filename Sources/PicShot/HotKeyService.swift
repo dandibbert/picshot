@@ -220,6 +220,27 @@ enum HotKeyEventPhase: Equatable { case pressed, released }
         self.configuration = configuration
         rebuildRegistrations()
     }
+    /// Settings has already suspended ordinary registrations. Temporary probes
+    /// never enter `registrations`, so even synchronous or delayed backend events
+    /// cannot invoke an application action. This checks current availability,
+    /// not a reservation against another app claiming the chord after dismissal.
+    func validateImportedAvailability(_ proposed: HotKeyConfiguration) throws {
+        guard !invalidated, configuration.shortcuts.isEmpty, registrations.isEmpty else {
+            throw PicShotError.message("请在设置窗口中导入配置，以便安全检查快捷键。")
+        }
+        if let message = proposed.validationMessage { throw PicShotError.message(message) }
+        var probes: [UInt32] = []
+        defer { probes.forEach { backend.unregister($0) } }
+        for action in HotKeyAction.settingsOrder {
+            guard let binding = proposed[action] else { continue }
+            guard let id = Self.nextRuntimeID else { throw PicShotError.message("本次运行无法再检查快捷键，请重新启动 PicShot。") }
+            Self.nextRuntimeID = id == .max ? nil : id + 1
+            guard backend.register(binding, id: id) else {
+                throw PicShotError.message("无法使用导入的“\(action.title)”快捷键（\(binding.displayName)）。原设置未更改。")
+            }
+            probes.append(id)
+        }
+    }
     /// True throughout one active take, including Pause. False for idle,
     /// countdown and finishing. A repeated value preserves held-key state.
     func setRecordingActive(_ active: Bool) {

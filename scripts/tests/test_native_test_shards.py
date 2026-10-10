@@ -400,20 +400,28 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
         inventory = self.current_source_inventory()
         plan = shards.make_plan(inventory, '', 'a' * 40, process_count=4)
         record = self.execute_pin_inventory_guard(plan)
-        self.assertEqual((record['discoveredCount'], record['discoveredClassCount']), (1897, 213))
+        self.assertEqual((record['discoveredCount'], record['discoveredClassCount']), (1945, 218))
         additions = json.loads((Path(__file__).parents[1] / 'recording-controls-native-additions.json').read_text())
         self.assertEqual(len(additions), 61)
         self.assertEqual(additions, sorted(set(additions)))
         self.assertTrue(set(additions).issubset(inventory))
-        original = [name for name in inventory if name not in additions]
+        settings = json.loads((Path(__file__).parents[1] / 'settings-native-additions.json').read_text())
+        self.assertEqual(len(settings), 48)
+        self.assertEqual(settings, sorted(set(settings)))
+        self.assertTrue(set(settings).issubset(inventory))
+        accepted = [name for name in inventory if name not in settings]
+        self.assertEqual(len(accepted), 1897)
+        self.assertEqual(hashlib.sha256(('\n'.join(accepted) + '\n').encode()).hexdigest(),
+                         '57360d46e241f23de466cb09e0e8cdcd55197fbd3ad93be82f229b0557546075')
+        original = [name for name in accepted if name not in additions]
         self.assertEqual(len(original), 1836)
         self.assertEqual(hashlib.sha256(('\n'.join(original) + '\n').encode()).hexdigest(),
                          '1b5d454926a5ad3d3408ad8827e5fcec619755d284d208d9c13b0e144627cf9b')
         selection = re.search(r"--selection-regex '([^']+)'", self.step(
             'Plan exhaustive and focused native test processes'))[1]
         focused = shards.make_plan(inventory, selection, 'a' * 40, process_count=2)
-        self.assertEqual(len(focused['selectedTests']), 1365)
-        self.assertTrue(set(additions).issubset(focused['selectedTests']))
+        self.assertEqual(len(focused['selectedTests']), 1413)
+        self.assertTrue(set(additions + settings).issubset(focused['selectedTests']))
 
     def test_pin_preflight_rejects_stale_missing_extra_and_renamed_inventory(self):
         inventory = self.current_source_inventory()

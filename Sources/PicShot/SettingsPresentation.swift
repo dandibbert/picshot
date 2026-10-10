@@ -2,15 +2,17 @@ import AppKit
 import PicShotCore
 
 enum SettingsCategory: String, CaseIterable {
-    case appearance, capture, save, pins, history, shortcuts
+    case appearance, capture, save, annotations, pins, history, shortcuts, configuration
     var title: String {
         switch self {
         case .appearance: return "外观"
         case .capture: return "截图"
         case .save: return "保存与命名"
+        case .annotations: return "标注工具"
         case .pins: return "贴图"
         case .history: return "历史记录"
         case .shortcuts: return "快捷键 / 动作"
+        case .configuration: return "配置文件"
         }
     }
     var symbol: String {
@@ -18,9 +20,11 @@ enum SettingsCategory: String, CaseIterable {
         case .appearance: return "circle.lefthalf.filled"
         case .capture: return "viewfinder"
         case .save: return "folder.badge.plus"
+        case .annotations: return "pencil.and.outline"
         case .pins: return "pin"
         case .history: return "clock"
         case .shortcuts: return "command"
+        case .configuration: return "arrow.triangle.2.circlepath"
         }
     }
 }

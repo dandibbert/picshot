@@ -6,7 +6,7 @@ mkdir -p dist
 test "$(cd dist && pwd -P)" = "$PWD/dist"
 work=$(mktemp -d "$PWD/dist/gif-attribution.XXXXXXXX")
 trap 'rm -rf "$work"' EXIT
-ditto -x -k "dist/PicShot-0.18.0-macos-$(uname -m).zip" "$work"
+ditto -x -k "dist/PicShot-0.19.0-macos-$(uname -m).zip" "$work"
 app="$work/PicShot.app"
 codesign --verify --deep --strict "$app"
 unset PICSHOT_UI_PREVIEW_ONLY PICSHOT_SMOKE_GIF_RESOURCES

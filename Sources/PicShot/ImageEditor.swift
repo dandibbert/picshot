@@ -1242,6 +1242,10 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     private var redoStates: [Snapshot] = []
     private var toolButtons: [ImageEditorTool: NSButton] = [:]
     private var subtoolMenus: [ImageEditorTool: NSPopUpButton] = [:]
+    let toolbarOrder: AnnotationToolbarOrder
+    private var toolbarDividers: [NSView] = []
+    private var toolbarFallbackActions: [NSButton] = []
+    private var pinAvailableScreenFrame: CGRect?
     private var undoButton: NSButton!
     private var redoButton: NSButton!
     private var cropButton: NSButton!
@@ -1311,6 +1315,11 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         return ["editorClosed": isClosed, "hasContentView": window?.contentView != nil,
                 "windowVisible": window?.isVisible ?? false, "windowFrame": window.map { NSStringFromRect($0.frame) } ?? "missing",
                 "frozenPresentationActive": presentation != nil, "toolbarFrame": NSStringFromRect(toolbar.frame),
+                "toolbarOrder": toolbarOrder.rawIDs,
+                "visibleToolOrder": toolbar.views.filter { !$0.isHidden }.compactMap { view -> String? in
+                    guard let id = view.identifier?.rawValue, id.hasPrefix("editor.tool.") else { return nil }
+                    return String(id.dropFirst("editor.tool.".count))
+                },
                 "toolbarHasSuperview": toolbar.superview != nil,
                 "rootChildren": Array((window?.contentView?.subviews ?? []).prefix(12)).map(item),
                 "toolbarSubviews": Array(toolbar.subviews.prefix(48)).map(item),
@@ -1335,8 +1344,11 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
          onSaveEditable: ((CGImage, EditableCapturePayload) throws -> Void)? = nil,
          onPinEditable: ((CGImage, EditableCapturePayload) throws -> Void)? = nil,
          onApplyEditable: ((CGImage, EditableCapturePayload) throws -> Void)? = nil,
-         baseProvenance: EditableAnnotationBaseProvenance = .legacyRaster) {
+         baseProvenance: EditableAnnotationBaseProvenance = .legacyRaster,
+         toolbarOrder: AnnotationToolbarOrder? = nil,
+         defaults: UserDefaults? = ProcessInfo.processInfo.environment["PICSHOT_SMOKE_REPORT"] == nil ? .standard : nil) {
         canvas = ImageEditorCanvas(image: image, captureDate: presentation?.capturedAt ?? captureDate)
+        self.toolbarOrder = toolbarOrder ?? defaults.map { AnnotationToolbarOrder.read(from: $0) } ?? .defaults
         self.presentation = presentation
         self.onSave = onSave; self.onPin = onPin; self.onOCR = onOCR
         self.onPinWithOriginal = onPinWithOriginal; initialOriginalImage = image
@@ -1437,14 +1449,20 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     /// The new borderless window contains only the viewport and adjacent controls;
     /// its unused area is transparent and no desktop pixels are acquired.
     @discardableResult
-    func showPinned(_ placement: PinEditorPresentation, desktopVisibility: PinDesktopVisibility = .defaultMode) -> Bool {
+    func showPinned(_ placement: PinEditorPresentation, desktopVisibility: PinDesktopVisibility = .defaultMode,
+                    availableScreenFrame: CGRect? = nil) -> Bool {
         guard presentation == nil, (onApply != nil || onApplyEditable != nil),
               [placement.viewportFrame.minX, placement.viewportFrame.minY, placement.viewportFrame.width, placement.viewportFrame.height,
                placement.imageFrame.minX, placement.imageFrame.minY, placement.imageFrame.width, placement.imageFrame.height].allSatisfy({ $0.isFinite }),
               placement.viewportFrame.width > 0, placement.viewportFrame.height > 0,
               placement.imageFrame.width > 0, placement.imageFrame.height > 0 else { return false }
+        if let frame = availableScreenFrame {
+            guard [frame.minX, frame.minY, frame.width, frame.height].allSatisfy({ $0.isFinite }),
+                  frame.width > 0, frame.height > 0 else { return false }
+        }
         finishInlineText(commit: true)
         pinPresentation = placement
+        pinAvailableScreenFrame = availableScreenFrame
         let oldWindow = window
         let panel = EditorOverlayWindow(contentRect: placement.viewportFrame, styleMask: [.borderless], backing: .buffered, defer: false)
         panel.isReleasedWhenClosed = false; panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = false
@@ -1515,7 +1533,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         view.translatesAutoresizingMaskIntoConstraints = false
         view.widthAnchor.constraint(equalToConstant: 1).isActive = true
         view.heightAnchor.constraint(equalToConstant: 22).isActive = true
-        toolbar.addArrangedSubview(view)
+        toolbarDividers.append(view); toolbar.addArrangedSubview(view)
     }
     private func buildInterface() {
         guard let window else { return }
@@ -1526,11 +1544,9 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         toolbar.edgeInsets = NSEdgeInsets(top: 4, left: 7, bottom: 4, right: 7)
         toolbar.identifier = NSUserInterfaceItemIdentifier("editor.floatingToolbar")
         styleFloatingSurface(toolbar)
-        let tools: [(ImageEditorTool, String)] = [(.rectangle, "rectangle"), (.ellipse, "circle"), (.freehand, "pencil"),
-            (.arrow, "arrow.up.right"), (.text, "textformat"), (.number, "1.circle"), (.pixelate, "square.grid.2x2.fill"),
-            (.redact, "rectangle.fill"), (.eraser, "eraser"), (.spotlight, "light.beacon.max"), (.line, "line.diagonal"), (.highlighter, "highlighter"), (.select, "cursorarrow"), (.crop, "crop")]
-        for (tool, symbol) in tools {
-            let control = iconButton(symbol, title: tool.title, id: "editor.tool.\(tool.rawValue)", action: #selector(selectTool(_:)))
+        for family in toolbarOrder.families {
+            let tool = family.editorTool
+            let control = iconButton(family.symbol, title: tool.title, id: "editor.tool.\(tool.rawValue)", action: #selector(selectTool(_:)))
             control.tag = ImageEditorTool.allCases.firstIndex(of: tool) ?? 0
             control.setButtonType(.toggle)
             toolButtons[tool] = control; toolbar.addArrangedSubview(control)
@@ -1593,20 +1609,34 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         toolbar.addArrangedSubview(iconButton("xmark", title: "取消 · Escape", id: "editor.cancel", action: #selector(cancelEditor)))
         toolbar.addArrangedSubview(iconButton("square.on.square", title: "复制图片 · ⌘C", id: "editor.copy", action: #selector(copyResult)))
         overflow.pullsDown = true; overflow.isBordered = false; overflow.addItem(withTitle: "")
+        overflow.menu?.autoenablesItems = false
         overflow.image = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "更多操作")
         overflow.imagePosition = .imageOnly; overflow.setAccessibilityLabel("更多操作")
         overflow.identifier = NSUserInterfaceItemIdentifier("editor.more")
-        for tool in [ImageEditorTool.select, .ellipse, .arc, .sector, .line, .polyline, .highlighter, .crop, .eraser, .spotlight, .watermark, .magnifier] {
+        // Every tool remains reachable when its primary family overflows. Keep
+        // advanced subtools adjacent to their family, then the overflow-only tools.
+        var overflowTools: [ImageEditorTool] = []
+        for family in toolbarOrder.families {
+            overflowTools.append(family.editorTool)
+            if family == .ellipse { overflowTools += [.arc, .sector] }
+            if family == .line { overflowTools.append(.polyline) }
+            if family == .pixelate { overflowTools.append(.blur) }
+        }
+        overflowTools += [.watermark, .magnifier]
+        for tool in overflowTools {
             let item = NSMenuItem(title: tool.title, action: #selector(selectMenuTool(_:)), keyEquivalent: "")
+            item.identifier = .init("editor.overflow.tool." + tool.rawValue)
             item.target = self; item.tag = ImageEditorTool.allCases.firstIndex(of: tool) ?? 0; overflow.menu?.addItem(item)
         }
         overflow.menu?.addItem(.separator())
+        addMenu("撤销 · ⌘Z", action: #selector(undoEdit)); addMenu("重做 · ⇧⌘Z", action: #selector(redoEdit))
+        addMenu("应用裁剪 · Return", action: #selector(applyCrop))
         if presentation != nil { addMenu("截图区域比例与像素尺寸…", action: #selector(toggleCaptureRatio)) }
         addMenu("取消裁剪（恢复完整底图）", action: #selector(restoreFullCrop))
         addMenu("圆角 · 边框 · 阴影…", action: #selector(editOutputDecoration))
         addMenu("自动马赛克…", action: #selector(chooseAutomaticMosaicTool))
         addMenu("查找所选区域的相同内容…", action: #selector(startAutomaticMosaic))
-        addMenu("模糊", action: #selector(selectBlur)); addMenu("创建标注副本 · ⌘D", action: #selector(duplicateAnnotation))
+        addMenu("创建标注副本 · ⌘D", action: #selector(duplicateAnnotation))
         addMenu("删除标注 · Delete", action: #selector(deleteAnnotation)); overflow.menu?.addItem(.separator())
         addMenu(onApply == nil && onApplyEditable == nil ? "保存到历史" : "保存编辑", action: #selector(saveResult))
         if saveWorkflow != nil {
@@ -1614,6 +1644,16 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
             addMenu("保存与命名设置…", action: #selector(openSaveSettings))
         }
         addMenu("适合窗口", action: #selector(fitImage)); addMenu("100% 像素", action: #selector(actualSize))
+        // Normally these stay on the compact toolbar. On an exceptionally
+        // narrow display their named menu actions remain available and enabled
+        // by the same output guards as the visible buttons.
+        let fallbackIDs = ["editor.translate", "editor.ocr", "editor.pin", "editor.applyToPin", "editor.save"]
+        for id in fallbackIDs {
+            if let button = toolbar.views.compactMap({ $0 as? NSButton }).first(where: { $0.identifier?.rawValue == id }),
+               let action = button.action {
+                toolbarFallbackActions.append(button); addMenu(button.toolTip ?? id, action: action)
+            }
+        }
         overflow.translatesAutoresizingMaskIntoConstraints = false; overflow.widthAnchor.constraint(equalToConstant: 32).isActive = true
         overflow.heightAnchor.constraint(equalToConstant: 32).isActive = true; toolbar.addArrangedSubview(overflow)
         inspector.identifier = NSUserInterfaceItemIdentifier("editor.contextPalette"); styleFloatingSurface(inspector)
@@ -1681,20 +1721,44 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         captureRatioSurface.isHidden = !ratioControlsVisible || presentation == nil || automaticMosaicBlocksOutput
         inspector.isHidden = outputDecorationPalette != nil || !captureRatioSurface.isHidden || automaticMosaicReviewState != nil || canvas.automaticMosaicDrawHandler != nil
             || canvas.tool == .crop || (canvas.tool == .select && canvas.selectedAnnotation == nil)
-        let availableBounds = pinPresentation.flatMap { pin in NSScreen.screens.first { $0.frame.intersects(pin.viewportFrame) }?.frame } ?? workspace.bounds
+        let availableBounds = pinAvailableScreenFrame
+            ?? pinPresentation.flatMap { pin in NSScreen.screens.first { $0.frame.intersects(pin.viewportFrame) }?.frame }
+            ?? workspace.bounds
         for button in toolButtons.values { button.isHidden = false }
         for menu in subtoolMenus.values { menu.isHidden = false }
+        for view in toolbarDividers + toolbarFallbackActions { view.isHidden = false }
+        undoButton.isHidden = false; redoButton.isHidden = false; outputDecorationButton?.isHidden = false
+        ratioButton?.isHidden = false; saveActions.isHidden = false
+        cropButton.isHidden = canvas.tool != .crop
         var preferredWidth = max(40, toolbar.fittingSize.width)
-        for tool in [ImageEditorTool.ellipse, .line, .highlighter, .select, .crop, .spotlight, .eraser] where preferredWidth > availableBounds.width - 20 {
+        let maximumWidth = max(1, availableBounds.width - 20)
+        for family in toolbarOrder.overflowPriority where preferredWidth > maximumWidth {
+            let tool = family.editorTool
             if let button = toolButtons[tool] {
                 button.isHidden = true; preferredWidth -= 34
                 if let menu = subtoolMenus[tool] { menu.isHidden = true; preferredWidth -= 16 }
             }
         }
+        // Tool families overflow as complete groups before any fixed action.
+        // Auxiliary actions have matching entries in More; Cancel and Copy stay
+        // visible. Never squeeze fixed hit targets into overlapping controls.
+        let auxiliary: [NSView] = [redoButton, undoButton, cropButton].compactMap { $0 }
+            + [outputDecorationButton, ratioButton].compactMap { $0 }
+        for view in auxiliary where preferredWidth > maximumWidth && !view.isHidden {
+            view.isHidden = true; preferredWidth -= 34
+        }
+        for view in toolbarDividers where preferredWidth > maximumWidth {
+            view.isHidden = true; preferredWidth -= 3
+        }
+        for view in toolbarFallbackActions where preferredWidth > maximumWidth {
+            view.isHidden = true; preferredWidth -= 34
+        }
+        if preferredWidth > maximumWidth { saveActions.isHidden = true; preferredWidth -= 21 }
         toolbar.setFrameSize(CGSize(width: preferredWidth, height: 40))
         toolbar.layoutSubtreeIfNeeded(); inspector.layoutSubtreeIfNeeded()
         let activeFamily: ImageEditorTool = canvas.tool.isArcTool ? .ellipse : (canvas.tool == .polyline ? .line : canvas.tool)
-        let active = toolButtons[activeFamily].map { toolbar.convert($0.bounds, from: $0).midX } ?? 18
+        let active = toolButtons[activeFamily].flatMap { $0.isHidden ? nil : toolbar.convert($0.bounds, from: $0).midX }
+            ?? toolbar.convert(overflow.bounds, from: overflow).midX
         let ratioShown = !captureRatioSurface.isHidden
         let paletteSize = ratioShown ? CGSize(width: max(420, captureRatioSurface.fittingSize.width), height: max(92, captureRatioSurface.fittingSize.height))
             : (inspector.isHidden ? .zero : CGSize(width: inspector.fittingSize.width, height: max(38, inspector.fittingSize.height)))
@@ -1823,6 +1887,13 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         }
         for menu in [canvas.menu, overflow.menu].compactMap({ $0 }) {
             for item in menu.items {
+                if item.action == #selector(undoEdit) { item.isEnabled = !isClosed && (!undoStates.isEmpty || canvas.pendingPolylinePointCount > 0) }
+                if item.action == #selector(redoEdit) { item.isEnabled = !isClosed && !redoStates.isEmpty && canvas.pendingPolylinePointCount == 0 }
+                if item.action == #selector(applyCrop) { item.isEnabled = !isClosed && canvas.tool == .crop && (canvas.cropRect?.width ?? 0) >= 1 && (canvas.cropRect?.height ?? 0) >= 1 }
+                if item.identifier?.rawValue.hasPrefix("editor.overflow.tool.") == true {
+                    item.state = ImageEditorTool.allCases[item.tag] == canvas.tool ? .on : .off
+                    item.isEnabled = !isClosed
+                }
                 if item.action == #selector(startAutomaticMosaic) {
                     item.isEnabled = canvas.selectedAnnotation?.supportsAutomaticMosaic == true && !isClosed
                     item.toolTip = canvas.selectedAnnotation?.mosaicLink == nil ? "选择同尺寸、未旋转的马赛克、模糊或遮盖区域" : "已关联的结果可用同步/补充区域编辑；重新查找请新建选区"

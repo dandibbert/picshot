@@ -728,7 +728,16 @@ import ImageIO
         // Editing an existing global combination must not trigger capture behind Settings.
         let unavailable=hotKeys?.failures ?? []
         hotKeys?.register(HotKeyConfiguration(shortcuts:[]))
-        let controller=SettingsController(onChange:{[weak self] in self?.reloadPinPreferences();do{try self?.history.prune()}catch{showError(error)}},unavailableShortcuts:unavailable,onManageCapturePresets:{[weak self] in self?.manageCapturePresets()})
+        let previousRetention = HistoryRetentionPreferences.read(from: .standard)
+        let controller=SettingsController(onChange:{[weak self] in
+            self?.reloadPinPreferences()
+            if HistoryRetentionPreferences.read(from: .standard) != previousRetention {
+                do { try self?.history.prune() } catch { showError(error) }
+            }
+        },unavailableShortcuts:unavailable,onManageCapturePresets:{[weak self] in self?.manageCapturePresets()},validateImportedHotkeys:{[weak self] configuration in
+            guard let service=self?.hotKeys else{throw PicShotError.message("现在无法检查系统快捷键，原设置未更改。")}
+            try service.validateImportedAvailability(configuration)
+        })
         settingsController=controller;retain(controller);controller.showWindow(nil);NSApp.activate(ignoringOtherApps:true)
     }
     func refreshHotkeys(){

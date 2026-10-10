@@ -79,7 +79,7 @@ final class SettingsAndMenuTests: XCTestCase {
         let controller = SettingsController(onChange: {}, defaults: defaults, isSmoke: true)
         defer { controller.close() }
         XCTAssertEqual(controller.window?.contentView?.frame.width, 800)
-        XCTAssertEqual(SettingsCategory.allCases.count, 6)
+        XCTAssertEqual(SettingsCategory.allCases.count, 8)
         for category in SettingsCategory.allCases {
             controller.selectCategory(category); controller.window?.contentView?.layoutSubtreeIfNeeded()
             XCTAssertEqual(controller.selectedCategory, category)
