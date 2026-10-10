@@ -70,6 +70,8 @@ import PicShotCore
         let previousAppearance = NSApp.appearance
         defer { NSApp.appearance = previousAppearance; try? files.removeItem(at: temporary) }
         var owners: [WeakOwner] = [], visuals: [[String: Any]] = [], actions: [[String: Any]] = []
+        var ownershipEvidence: OwnershipEvidence?, aggregateFinal: OwnershipSnapshot?
+        var cycleRows: [[String: Any]] = [], cycleOwnerStart: Int?
         var report: [String: Any] = ["schemaVersion": 1, "status": "running",
             "bundlePath": Bundle.main.bundleURL.resolvingSymlinksInPath().path,
             "sourceCommit": Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String ?? "unknown",
@@ -84,26 +86,47 @@ import PicShotCore
         do {
             report["executableSHA256"] = hash(try Data(contentsOf: required(Bundle.main.executableURL, "Executable absent")))
             report["infoPlistSHA256"] = hash(try Data(contentsOf: Bundle.main.bundleURL.appendingPathComponent("Contents/Info.plist")))
+            let evidence = try OwnershipEvidence(directory: directory, identity: report)
+            ownershipEvidence = evidence
             var flows: [[String: Any]] = []
             for (mode, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
                 try require(Date().timeIntervalSince(start) < deadlineSeconds, "Overall deadline exceeded")
                 trace("appearanceFlowEnter", ["appearance": mode])
                 NSApp.appearance = NSAppearance(named: appearance)
                 flows.append(try await flow(mode, temporary.appendingPathComponent(mode), directory, &owners, &visuals, &actions))
+                report["flows"] = flows
                 trace("appearanceFlowReturn", ["appearance": mode])
+                if flows.count == 1 {
+                    try evidence.record("firstEarlierFlowObservation", ownershipSnapshot(owners).receipt, owners: owners)
+                }
             }
-            report["flows"] = flows
+            try evidence.record("beforeCycles", ownershipSnapshot(owners).receipt, owners: owners)
             trace("resourceCyclesEnter")
-            report["resourceCycles"] = try await cycles(temporary.appendingPathComponent("cycles"), &owners, deadline: start.addingTimeInterval(deadlineSeconds))
+            cycleOwnerStart = owners.count
+            report["resourceCycles"] = try await cycles(temporary.appendingPathComponent("cycles"), &owners,
+                rows: &cycleRows, evidence: evidence, deadline: start.addingTimeInterval(deadlineSeconds))
             trace("resourceCyclesReturn")
-            try await until({ owners.allSatisfy(\.released) }, "Owned controller/window/content retained")
-            report["ownership"] = ["controllerCount": owners.count, "retainedControllers": owners.filter { $0.controller != nil }.count,
-                "retainedWindows": owners.filter { $0.window != nil }.count, "retainedContentViews": owners.filter { $0.content != nil }.count,
-                "releaseDeadlineSeconds": 4, "allOwnedWindowsClosed": true]
+            // One aggregate release phase owns the original four-second budget.
+            // Its observations never carry an AppKit object across suspension.
+            let release = try await observeRelease(owners, observe: { stage, state, elapsed in
+                if stage == "final" { aggregateFinal = state }
+                try evidence.record(stage == "initial" ? "preAggregate" : stage == "first-post-yield" ? "firstPostYield" : "finalAggregate",
+                    state.receipt.merging(["elapsedSeconds": elapsed]) { _, new in new }, owners: owners)
+            })
+            report["ownership"] = release.final.report
+            try require(release.final.released, "Owned controller/window/content retained")
             report["checks"] = checks.sorted(); report["status"] = "passed"
         } catch {
             trace("fixtureCaughtError", ["type": String(describing: type(of: error))])
             report["status"] = "failed"; report["error"] = error.localizedDescription
+            if let cycleOwnerStart {
+                report["resourceCycles"] = resourceCycleReport(cycleRows, probeCount: owners.count - cycleOwnerStart)
+            }
+            let state = aggregateFinal ?? ownershipSnapshot(owners)
+            report["ownership"] = state.report
+            // Preserve the first failure and its pre-cleanup ownership evidence.
+            // An evidence-write failure must not replace the original error.
+            try? ownershipEvidence?.record("failureObservation", state.receipt, owners: owners)
             for owner in owners { owner.controller?.close() }
         }
         report["visuals"] = visuals; report["actions"] = actions
@@ -149,7 +172,8 @@ import PicShotCore
         let text = try required(session.richControllers[textID], "Managed text absent")
         let htmlPin = try required(session.richControllers[htmlID], "Managed HTML absent")
         let image = try required(session.liveControllers[imageID], "Managed image absent")
-        owners += [WeakOwner(text), WeakOwner(htmlPin), WeakOwner(image)]
+        owners += [WeakOwner(text, label: "\(mode).original.text"), WeakOwner(htmlPin, label: "\(mode).original.html"),
+            WeakOwner(image, label: "\(mode).original.image")]
         try session.flushPresentationChanges()
         let before = try required(store.entry(id: textID), "Text entry absent")
         let htmlBefore = try entryHash(store, htmlID), imageBefore = try entryHash(store, imageID)
@@ -164,7 +188,7 @@ import PicShotCore
 
         try show(text.window)
         text.editPlainText()
-        let cancelled = try required(text.textEditController, "Text action did not open draft"); owners.append(WeakOwner(cancelled))
+        let cancelled = try required(text.textEditController, "Text action did not open draft"); owners.append(WeakOwner(cancelled, label: "\(mode).text-draft.cancel"))
         text.editPlainText(); try require(text.textEditController === cancelled, "Repeated edit duplicated draft")
         try replace(cancelled.textView, with: "Cancelled\n取消 🛑")
         try click(cancelled.cancelButton, "text-cancel", mode, &actions)
@@ -173,7 +197,7 @@ import PicShotCore
         try output(text, expected: initialText)
 
         text.editPlainText()
-        let draft = try required(text.textEditController, "Second draft absent"); owners.append(WeakOwner(draft))
+        let draft = try required(text.textEditController, "Second draft absent"); owners.append(WeakOwner(draft, label: "\(mode).text-draft.save"))
         try replace(draft.textView, with: savedText)
         try click(draft.undoButton, "text-undo", mode, &actions)
         try require(draft.textView.string == initialText, "Native undo did not restore initial text")
@@ -203,7 +227,7 @@ import PicShotCore
         var refused = 0
         text.onUpdateText = { _, _ in refused += 1; throw failure("Injected bounded persistence refusal") }
         text.editPlainText()
-        let rejected = try required(text.textEditController, "Refusal draft absent"); owners.append(WeakOwner(rejected))
+        let rejected = try required(text.textEditController, "Refusal draft absent"); owners.append(WeakOwner(rejected, label: "\(mode).text-draft.refusal"))
         try replace(rejected.textView, with: "Keep this unsaved draft\n保留 🧷")
         try click(rejected.saveButton, "text-refused-save", mode, &actions)
         try require(refused == 1 && !rejected.errorLabel.stringValue.isEmpty && rejected.textView.string == "Keep this unsaved draft\n保留 🧷" && text.textEditController === rejected,
@@ -237,8 +261,10 @@ import PicShotCore
         defer { try? reopenedSession.prepareForTermination() }
         try reopenedSession.openPin(id: textID)
         let reopened = try required(reopenedSession.richControllers[textID], "Reload/reopen absent")
-        for controller in reopenedSession.richControllers.values { owners.append(WeakOwner(controller)) }
-        for controller in reopenedSession.liveControllers.values { owners.append(WeakOwner(controller)) }
+        for (id, controller) in reopenedSession.richControllers.sorted(by: { $0.key.uuidString < $1.key.uuidString }) {
+            owners.append(WeakOwner(controller, label: "\(mode).reopened." + (id == textID ? "text" : "html")))
+        }
+        for controller in reopenedSession.liveControllers.values { owners.append(WeakOwner(controller, label: "\(mode).reopened.image")) }
         let reopenedIdentity = ObjectIdentifier(reopened)
         try reopenedSession.openPin(id: textID)
         try require(reopenedSession.richControllers[textID].map(ObjectIdentifier.init) == reopenedIdentity, "Repeated reopen duplicated controller")
@@ -271,7 +297,7 @@ import PicShotCore
         let callback = try required(getCallback(), "Managed rename callback absent")
         setCallback { value, expected in callbackCount += 1; try callback(value, expected) }
         defer { setCallback(callback) }
-        open(); let cancelled = try required(current(), "Rename did not open"); owners.append(WeakOwner(cancelled))
+        open(); let cancelled = try required(current(), "Rename did not open"); owners.append(WeakOwner(cancelled, label: "\(mode).\(kind)-rename.cancel"))
         open(); try require(current() === cancelled, "Repeated rename duplicated sheet")
         try field(cancelled, "Discarded name")
         try click(cancelled.cancelButton, "\(kind)-rename-cancel", mode, &actions)
@@ -279,7 +305,7 @@ import PicShotCore
         try require(try callbackCount == 0 && title() == initialTitle && manifest(store) == beforeManifest, "Rename cancel committed")
         var refused = 0
         setCallback { _, _ in refused += 1; throw failure("Injected rename refusal") }
-        open(); let failed = try required(current(), "Failed rename absent"); owners.append(WeakOwner(failed))
+        open(); let failed = try required(current(), "Failed rename absent"); owners.append(WeakOwner(failed, label: "\(mode).\(kind)-rename.refusal"))
         try field(failed, renamed)
         try click(failed.saveButton, "\(kind)-rename-refused-save", mode, &actions)
         try require(try refused == 1 && current() === failed && !failed.errorLabel.stringValue.isEmpty && title() == initialTitle && manifest(store) == beforeManifest,
@@ -288,7 +314,7 @@ import PicShotCore
         try click(failed.cancelButton, "\(kind)-rename-refused-cancel", mode, &actions)
         try await until({ current() == nil && window?.attachedSheet == nil }, "Failed rename cancel retained sheet")
         setCallback { value, expected in callbackCount += 1; try callback(value, expected) }
-        open(); let saved = try required(current(), "Rename save absent"); owners.append(WeakOwner(saved))
+        open(); let saved = try required(current(), "Rename save absent"); owners.append(WeakOwner(saved, label: "\(mode).\(kind)-rename.save"))
         try field(saved, renamed)
         visuals.append(try snapshot(try required(saved.window, "Rename window absent"), "\(kind)-rename", mode, directory,
             controls: [saved.nameField, saved.cancelButton, saved.saveButton]))
@@ -308,11 +334,32 @@ import PicShotCore
     private static func orderFlow(_ store: PinSessionStore, _ active: UUID, _ mode: String, _ directory: URL,
                                  _ owners: inout [WeakOwner], _ visuals: inout [[String: Any]]) async throws -> [String: Any] {
         trace("groupManagerInitEnter", ["appearance": mode])
-        let manager = PinGroupsController(store: store); owners.append(WeakOwner(manager)); defer { manager.close() }
+        let manager = PinGroupsController(store: store); owners.append(WeakOwner(manager, label: "\(mode).group-manager")); defer { manager.close() }
         trace("groupManagerInitReturn", ["appearance": mode])
         let window = try required(manager.window, "Group window absent")
+        var sizeReceipts: [[String: Any]] = []
+        func recordWindowSize(_ stage: String) throws {
+            sizeReceipts.append(["stage": stage, "frame": rect(window.frame),
+                "contentBounds": rect(window.contentView?.bounds ?? .zero),
+                "contentLayoutRect": rect(window.contentLayoutRect),
+                "minimumSize": [window.minSize.width, window.minSize.height],
+                "contentMinimumSize": [window.contentMinSize.width, window.contentMinSize.height],
+                "visible": window.isVisible, "key": window.isKeyWindow])
+            let receipt: [String: Any] = ["sourceCommit": Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String ?? "unknown",
+                "appearance": mode, "requestedFrameSize": [680, 600], "stages": sizeReceipts]
+            let data = try JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys])
+            try require(data.count <= 16_384, "Window size receipt byte bound")
+            try data.write(to: directory.appendingPathComponent("pin-management-order-window-\(mode).json"), options: .atomic)
+        }
+        try recordWindowSize("constructed")
+        // Match the existing native resize test: establish native chrome before
+        // requesting the exact outer frame, then keep the strict 680 x 600 gate.
+        manager.showWindow(nil); try show(window)
+        try recordWindowSize("shown-before-resize")
         window.setFrame(NSRect(origin: window.frame.origin, size: NSSize(width: 680, height: 600)), display: true)
-        window.center(); manager.showWindow(nil); try show(window)
+        window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded(); window.center()
+        try recordWindowSize("shown-after-resize")
+        try require(window.frame.size == NSSize(width: 680, height: 600), "Shown group window did not retain exact minimum frame")
         let table: NSTableView = try control("pin-group-entries", window)
         let order: NSPopUpButton = try control("pin-group-order", window)
         let picker: NSPopUpButton = try control("pin-group-picker", window)
@@ -364,28 +411,37 @@ import PicShotCore
         try require(functionalData.count <= 131_072, "Order transition receipt byte bound")
         try functionalData.write(to: directory.appendingPathComponent("pin-management-order-functional-\(mode).json"), options: .atomic)
         let controls = descendants(window.contentView).compactMap { $0 as? NSButton }.filter { !$0.isHiddenOrHasHiddenAncestor }
+        try recordWindowSize("after-order-actions")
         trace("groupSnapshotEnter", ["appearance": mode])
         visuals.append(try snapshot(window, "order", mode, directory, controls: controls))
         trace("groupSnapshotReturn", ["appearance": mode])
         return result
     }
 
-    private static func cycles(_ root: URL, _ owners: inout [WeakOwner], deadline: Date) async throws -> [String: Any] {
+    private static func cycles(_ root: URL, _ owners: inout [WeakOwner], rows: inout [[String: Any]],
+                               evidence: OwnershipEvidence, deadline: Date) async throws -> [String: Any] {
         let store = try PinSessionStore(directory: root)
         let entry = try store.add(rich: PreparedRichPin(document: PinRichDocument(text: PinTextContent(text: initialText)), title: "循环文字"))
-        var rows: [[String: Any]] = []
         let kinds = ["text-cancel", "text-save", "rename-cancel", "rename-save", "text-parent-close", "rename-parent-close"]
         for index in 0..<12 {
             try require(Date() < deadline, "Ownership deadline exceeded")
             let kind = kinds[index % kinds.count]
             let result = try autoreleasepool { try cycle(store, entry.id, index, kind) }
             owners += result.probes
-            try await until({ result.probes.allSatisfy(\.released) }, "Owned cycle objects retained at cycle \(index)")
-            rows.append(["index": index, "warmup": index < 2, "action": kind, "callbacks": result.commits,
-                "releasedControllers": 2, "releasedWindows": 2, "releasedContentViews": 2])
+            let release = try await observeRelease(result.probes)
+            let row: [String: Any] = ["index": index, "warmup": index < 2, "action": kind, "callbacks": result.commits,
+                "releasedControllers": 2, "releasedWindows": 2, "releasedContentViews": 2]
+            if release.final.released { rows.append(row) }
+            try evidence.recordCycle(["index": index, "action": kind, "callbacks": result.commits,
+                "initial": release.initial.receipt, "final": release.final.receipt,
+                "elapsedSeconds": release.elapsed, "completed": release.final.released], completedRows: rows, owners: owners)
+            try require(release.final.released, "Owned cycle objects retained at cycle \(index)")
         }
-        try require(owners.allSatisfy(\.released), "Previously closed owner retained")
-        return ["warmupCycles": 2, "measuredCycles": 10, "rows": rows, "releaseProbeCount": 24,
+        return resourceCycleReport(rows, probeCount: 24)
+    }
+
+    private static func resourceCycleReport(_ rows: [[String: Any]], probeCount: Int) -> [String: Any] {
+        ["warmupCycles": 2, "measuredCycles": 10, "rows": rows, "releaseProbeCount": probeCount,
             "releaseDeadlineSeconds": 4, "maximumHistoryLevels": 12, "maximumHistoryBytes": 524_288]
     }
 
@@ -403,7 +459,8 @@ import PicShotCore
         let text = kind.hasPrefix("text")
         if text { controller.editPlainText() } else { controller.renamePin() }
         let draft = try required(text ? controller.textEditController as PinDraftSheetController? : controller.renameController as PinDraftSheetController?, "Cycle draft absent")
-        let probes = [WeakOwner(controller), WeakOwner(draft)]
+        let probes = [WeakOwner(controller, label: "cycle.\(index).\(kind).pin"),
+            WeakOwner(draft, label: "cycle.\(index).\(kind).draft")]
         if let edit = draft as? PinTextEditController { try replace(edit.textView, with: "Cycle \(index)\n循环 🧪") }
         if let rename = draft as? PinRenameController { try field(rename, "循环 \(index)") }
         if kind.hasSuffix("parent-close") { controller.close() }
@@ -616,10 +673,122 @@ import PicShotCore
     private static func required<T>(_ value: T?, _ message: String) throws -> T { guard let value else { throw failure(message) }; return value }
     private static func failure(_ message: String) -> Error { PicShotError.message("Pin management fixture: " + message) }
 
+    // The registry stores synthetic labels and original identities once. Repeated
+    // observations contain only scalars, including when a weak borrow is alive.
     @MainActor private final class WeakOwner {
+        let label: String, controllerClass: String, windowClass: String, contentClass: String
+        let originalWindowIdentity: String, originalWindowNumber: Int
         weak var controller: NSWindowController?; weak var window: NSWindow?; weak var content: NSView?
-        init(_ owner: NSWindowController) { controller = owner; window = owner.window; content = owner.window?.contentView }
-        var released: Bool { controller == nil && window == nil && content == nil }
+        init(_ owner: NSWindowController, label: String) {
+            self.label = label
+            controller = owner; window = owner.window; content = owner.window?.contentView
+            controllerClass = NSStringFromClass(type(of: owner))
+            windowClass = owner.window.map { NSStringFromClass(type(of: $0)) } ?? "none"
+            contentClass = owner.window?.contentView.map { NSStringFromClass(type(of: $0)) } ?? "none"
+            originalWindowIdentity = owner.window.map { String(describing: ObjectIdentifier($0)) } ?? "none"
+            originalWindowNumber = owner.window?.windowNumber ?? -1
+        }
+        var descriptor: [String: Any] {
+            ["label": label, "controllerClass": controllerClass, "windowClass": windowClass, "contentClass": contentClass,
+             "originalWindowIdentity": originalWindowIdentity, "originalWindowNumber": originalWindowNumber]
+        }
+        var scalarState: [String: Any] {
+            // These strong weak-load temporaries end within ownershipSnapshot's
+            // autorelease pool. No view, window or controller escapes in a receipt.
+            let observedWindow = window, observedContent = content
+            return ["label": label, "controllerAlive": controller != nil, "windowAlive": observedWindow != nil,
+                "contentAlive": observedContent != nil, "windowVisible": observedWindow?.isVisible == true,
+                "attachedSheet": observedWindow?.attachedSheet != nil,
+                "windowOwnsProbedContent": observedContent != nil && observedWindow?.contentView === observedContent]
+        }
+    }
+
+    private struct OwnershipSnapshot {
+        let rows: [[String: Any]]
+        let retainedControllers: Int, retainedWindows: Int, retainedContentViews: Int, visibleWindows: Int
+        var released: Bool { retainedControllers == 0 && retainedWindows == 0 && retainedContentViews == 0 }
+        var report: [String: Any] {
+            ["controllerCount": rows.count, "retainedControllers": retainedControllers, "retainedWindows": retainedWindows,
+                "retainedContentViews": retainedContentViews, "releaseDeadlineSeconds": 4, "allOwnedWindowsClosed": visibleWindows == 0]
+        }
+        var receipt: [String: Any] {
+            ["owners": rows, "counts": report, "allReleased": released]
+        }
+    }
+
+    private static func ownershipSnapshot(_ owners: [WeakOwner]) -> OwnershipSnapshot {
+        autoreleasepool {
+            let rows = owners.map(\.scalarState)
+            return OwnershipSnapshot(rows: rows,
+                retainedControllers: rows.filter { $0["controllerAlive"] as? Bool == true }.count,
+                retainedWindows: rows.filter { $0["windowAlive"] as? Bool == true }.count,
+                retainedContentViews: rows.filter { $0["contentAlive"] as? Bool == true }.count,
+                visibleWindows: rows.filter { $0["windowVisible"] as? Bool == true }.count)
+        }
+    }
+
+    private struct ReleaseObservation {
+        let initial: OwnershipSnapshot, final: OwnershipSnapshot, elapsed: TimeInterval
+    }
+
+    private static func observeRelease(_ owners: [WeakOwner],
+        observe: ((String, OwnershipSnapshot, TimeInterval) throws -> Void)? = nil) async throws -> ReleaseObservation {
+        let started = ProcessInfo.processInfo.systemUptime, deadline = Date().addingTimeInterval(4)
+        let initial = ownershipSnapshot(owners)
+        var current = initial, yielded = false
+        try observe?("initial", initial, ProcessInfo.processInfo.systemUptime - started)
+        do {
+            while !current.released, Date() < deadline {
+                try await Task.sleep(nanoseconds: 10_000_000)
+                current = ownershipSnapshot(owners)
+                if !yielded {
+                    yielded = true
+                    try observe?("first-post-yield", current, ProcessInfo.processInfo.systemUptime - started)
+                }
+            }
+        } catch {
+            // Cancellation stays cancellation, even if writing its final receipt fails.
+            try? observe?("final", ownershipSnapshot(owners), ProcessInfo.processInfo.systemUptime - started)
+            throw error
+        }
+        let final = ownershipSnapshot(owners), elapsed = ProcessInfo.processInfo.systemUptime - started
+        try observe?("final", final, elapsed)
+        return ReleaseObservation(initial: initial, final: final, elapsed: elapsed)
+    }
+
+    @MainActor private final class OwnershipEvidence {
+        private let url: URL
+        private var payload: [String: Any], cycleObservations: [[String: Any]] = []
+        private var writes = 0
+        init(directory: URL, identity: [String: Any]) throws {
+            url = directory.appendingPathComponent("pin-management-ownership.json")
+            payload = ["schemaVersion": 1, "maximumBytes": 131_072, "maximumOwners": 56, "maximumCycles": 12,
+                "maximumWrites": 32, "overallDeadlineSeconds": PinManagementSmokeFixture.deadlineSeconds, "releaseDeadlineSeconds": 4,
+                "syntheticDataOnly": true, "owners": [], "cycleObservations": [], "completedCycleRows": [],
+                "firstEarlierFlowObservation": NSNull(), "beforeCycles": NSNull(), "preAggregate": NSNull(),
+                "firstPostYield": NSNull(), "finalAggregate": NSNull(), "failureObservation": NSNull()]
+            for key in ["sourceCommit", "bundlePath", "version", "buildVersion", "executableSHA256", "infoPlistSHA256"] {
+                payload[key] = identity[key]
+            }
+            try write(owners: [])
+        }
+        func record(_ key: String, _ value: [String: Any], owners: [WeakOwner]) throws {
+            payload[key] = value; try write(owners: owners)
+        }
+        func recordCycle(_ value: [String: Any], completedRows: [[String: Any]], owners: [WeakOwner]) throws {
+            try PinManagementSmokeFixture.require(cycleObservations.count < 12 && completedRows.count <= 12, "Ownership receipt cycle bound")
+            cycleObservations.append(value)
+            payload["cycleObservations"] = cycleObservations; payload["completedCycleRows"] = completedRows
+            try write(owners: owners)
+        }
+        private func write(owners: [WeakOwner]) throws {
+            try PinManagementSmokeFixture.require(owners.count <= 56 && Set(owners.map(\.label)).count == owners.count && writes < 32,
+                "Ownership receipt owner/write bound")
+            payload["owners"] = owners.map(\.descriptor); payload["writeSequence"] = writes
+            let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+            try PinManagementSmokeFixture.require(data.count <= 131_072, "Ownership receipt exceeds 128 KiB")
+            try data.write(to: url, options: .atomic); writes += 1
+        }
     }
     @MainActor private final class MenuProbe: NSObject, NSMenuDelegate {
         weak var menu: NSMenu?; weak var window: NSWindow?; weak var target: NSMenuItem?
