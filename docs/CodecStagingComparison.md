@@ -54,3 +54,9 @@ Upload `upload/<phase>-reports.zip` after every phase with `if: always()`. EXIT 
 ## Local verification boundary
 
 This patch's Python gate tests and shell syntax can run on Linux. Swift/AppKit compilation, signed-helper tests, actual native draw, installed memory/latency and pixel validation require macOS and remain unrun here. Historical build 180 numbers motivated the experiment but are not candidate measurements or proof of causality.
+
+## Build 181 fixture correction
+
+Source `f15eacbccdfb9eef2cd874f85ec3cd8f6e72e3f4`, run `38040932781`, compiled the signed release app, native test bundle and debug executables. The normal Python group then failed its identity-capture test because a macOS temporary-directory alias was supplied to the intentionally strict canonical-path guard. Twelve other Python tests passed; optimized Python, native regressions and every memory cell were unreached. No candidate memory result or installer acceptance follows from this run.
+
+The follow-up resolves the temporary roots in this test module and explicitly verifies rejection of an aliased app path before accepting the canonical path. The product, identity guard, workload, native test IDs and predeclared comparison criteria are unchanged.

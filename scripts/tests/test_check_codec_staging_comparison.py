@@ -106,7 +106,7 @@ class ComparisonTests(unittest.TestCase):
 
     def test_actual_route_pid_exit_and_no_extra_source_draw(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp);d=root/'cell';d.mkdir();r=report('candidate');preflight(root,r)
+            root=Path(tmp).resolve(strict=True);d=root/'cell';d.mkdir();r=report('candidate');preflight(root,r)
             life={'status':'exited','launcherExitCode':0,'ownedExitConfirmed':True,'launchedIdentityMatches':True,
                 'processIdentifier':r['processIdentifier'],'launchedAppPath':r['bundlePath'],'launchedExecutablePath':r['bundlePath']+'/Contents/MacOS/PicShot'}
             (d/'codec-staging.json').write_text(json.dumps(r));(d/'launch.json.launcher.json').write_text(json.dumps(life))
@@ -132,7 +132,7 @@ class ComparisonTests(unittest.TestCase):
 
     def test_export_cli_does_not_green_a_rejected_benefit(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp);preflight(root,report('control'))
+            root=Path(tmp).resolve(strict=True);preflight(root,report('control'))
             for i,name in enumerate(['export-ab-control','export-ab-candidate','export-ba-candidate','export-ba-control']):
                 arm=name.rsplit('-',1)[-1];r=report(arm);r['processIdentifier']=100+i
                 if arm=='candidate':
@@ -148,7 +148,7 @@ class ComparisonTests(unittest.TestCase):
 
     def test_binary_identity_requires_unchanged_final_recheck(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp);expected=preflight(root,report('control'),'summary')
+            root=Path(tmp).resolve(strict=True);expected=preflight(root,report('control'),'summary')
             self.assertEqual(m.identity_recheck(root,'summary'),expected)
             path=root/'identity-summary-after.json';changed=json.loads(path.read_text())
             changed['identity']['mainExecutableSHA256']='0'*64;path.write_text(json.dumps(changed))
@@ -160,7 +160,7 @@ class ComparisonTests(unittest.TestCase):
 
     def test_cell_rejects_preflight_source_helper_or_main_path_mismatch(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp);d=root/'cell';d.mkdir();original=report('candidate');preflight(root,original)
+            root=Path(tmp).resolve(strict=True);d=root/'cell';d.mkdir();original=report('candidate');preflight(root,original)
             life={'status':'exited','launcherExitCode':0,'ownedExitConfirmed':True,'launchedIdentityMatches':True,
                 'processIdentifier':original['processIdentifier'],'launchedAppPath':original['bundlePath'],
                 'launchedExecutablePath':original['bundlePath']+'/Contents/MacOS/PicShot'}
@@ -175,12 +175,17 @@ class ComparisonTests(unittest.TestCase):
         script=(Path(m.__file__).parent/'codec-staging-comparison.sh').read_text()
         body=script.split("<<'PYIDENTITY'\n",1)[1].split('\nPYIDENTITY',1)[0]
         with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp);app=root/'PicShot.app';evidence=root/'evidence';evidence.mkdir()
+            root=Path(tmp).resolve(strict=True);app=root/'PicShot.app';evidence=root/'evidence';evidence.mkdir()
             main=app/'Contents/MacOS/PicShot';helper=app/'Contents/Helpers/PicShotCodecHelper'
             main.parent.mkdir(parents=True);helper.parent.mkdir(parents=True)
             main.write_bytes(b'original-main');helper.write_bytes(b'original-helper')
             (app/'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleExecutable':'PicShot','PicShotSourceCommit':'a'*40}))
-            def capture(phase,position):return subprocess.run([sys.executable,'-c',body,str(app),str(evidence),phase,position],capture_output=True,text=True)
+            def capture(phase,position,bundle=app):return subprocess.run([sys.executable,'-c',body,str(bundle),str(evidence),phase,position],capture_output=True,text=True)
+            alias=root/'Aliased.app';alias.symlink_to(app,target_is_directory=True)
+            rejected=capture('export','before',alias)
+            self.assertNotEqual(rejected.returncode,0)
+            self.assertIn('requires the canonical bundle path',rejected.stderr)
+            self.assertFalse((evidence/'identity.json').exists())
             first=capture('export','before');self.assertEqual(first.returncode,0,first.stderr)
             identity=json.loads((evidence/'identity.json').read_text())
             self.assertEqual(identity['mainExecutableSHA256'],hashlib.sha256(b'original-main').hexdigest())
