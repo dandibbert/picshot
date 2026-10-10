@@ -4,7 +4,9 @@ Original, local-first macOS screenshot, annotation, pinning and recording utilit
 
 **Development preview. Not full PixPin parity yet.** This project is not affiliated with PixPin and uses no proprietary source, assets, subscription bypasses, or hosted recognition credentials. See [feature ledger](docs/PARITY.md) for actual scope and [verification](docs/VERIFICATION.md) for the test boundary.
 
-ARM 0.17.0/build159 is accepted within the bounded [verification scope](docs/VERIFICATION.md#build-159-recording-input-acceptance-record), adding [opt-in recording input effects](docs/RecordingInputEffects.md). Intel159 failed its bounded [installed long-capture resource gate](docs/Intel159InstalledFailure.md); accepted Intel stays 0.11.0/build69. ARM159 ZIP Library v16 and guide v24 were delivered on 9 October 2026 at 18:48:27 UTC; DMG v16 is saved only.
+ARM 0.19.0/build180 is accepted within the bounded [verification scope](docs/VERIFICATION.md), adding local preference/hotkey JSON export, reviewed import and persisted ordering of 14 annotation toolbar families. Cloud sync, per-tool presets and local shortcut remapping remain absent; physical-Mac acceptance and sustained-resource limits remain open. Accepted/delivered Intel stays 0.11.0/build69; Intel180 failed its early GIF gate and later stages were unrun.
+
+ARM 0.19.0/build180 ZIP version 18 and guide version 26 were delivered on 10 October 2026 at 08:43:13 UTC. DMG version 18 is saved only. Accepted installer bytes, saved versions and actual delivery are separate records. See the [current feature ledger](docs/PARITY.md#current-arm-019-and-retained-intel-011-acceptance) for exact scope and unresolved resource measurements.
 
 ## Build
 
