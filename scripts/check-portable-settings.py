@@ -115,7 +115,23 @@ def validate(report, *, expected_commit, expected_version, expected_build, insta
         need(r[field] is False, 'unexpected side effect: ' + field)
     need(r['canonicalTemporaryRoot'] is True, 'uncanonical fixture root')
     need(set(r['checks']) == CHECKS and len(r['checks']) == len(CHECKS), 'native action coverage')
-    need(r['interactionRoute'] == 'NSView.hitTest and local NSEvent mouseDown with queued owned-window mouseUp', 'native mouse route missing')
+    need(r['interactionRoute'] == 'NSView.hitTest and owned local NSEvents; buttons use mouseDown, tables use NSApplication.nextEvent/sendEvent with queued mouseUp', 'native mouse route missing')
+    selections = r.get('tableSelectionEvents', [])
+    need(len(selections) == 2 and {row['appearance'] for row in selections} == {'light', 'dark'}, 'native table event coverage')
+    for row in selections:
+        for field in ('requestedRow', 'rowAtDispatch', 'selectedRowAfter', 'selectedRowBefore',
+                      'ownedDownType', 'windowNumber', 'ownedDownWindowNumber', 'keyWindowNumber',
+                      'currentEventType', 'currentEventWindowNumber'):
+            need(type(row[field]) is int, 'noninteger native table event field: ' + field)
+        need(row['status'] == 'passed-local-row-selection' and row['dispatchRoute'] == 'owned-nextEvent-sendEvent'
+             and row['ownedDownVerified'] is True and row['ownedDownType'] == 1, 'owned table down event')
+        need(row['requestedRow'] == row['rowAtDispatch'] == row['selectedRowAfter'] == 1
+             and row['selectedRowBefore'] == 0 and row['targetPointVisible'] is True, 'actual native table selection')
+        need(row['windowIsKey'] is True and row['windowNumber'] > 0
+             and row['windowNumber'] == row['ownedDownWindowNumber'] == row['keyWindowNumber'], 'owned table key window')
+        for field in ('applicationIsActive', 'applicationIsRunning', 'currentEventIsSuppliedDown'):
+            need(type(row[field]) is bool, 'missing table event state: ' + field)
+        number(row['currentEventType']); number(row['currentEventWindowNumber'])
     roundtrip = r['fileRoundTrip']
     need(roundtrip['readbackMatchesWritten'] is True and roundtrip['savedOnlyExport'] is True and
          0 < roundtrip['readbackByteCount'] <= roundtrip['maximumFileBytes'] == 65536, 'bounded file round trip')

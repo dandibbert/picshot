@@ -1195,6 +1195,9 @@ final class EditorSaveActionsButton: EditorToolbarPopupButton {}
 /// without changing drawing, tracking, action dispatch, or enabled-state guards.
 @MainActor
 final class EditorToolbarIconButton: NSButton {
+    override var alignmentRectInsets: NSEdgeInsets { NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0) }
+    override func alignmentRect(forFrame frame: NSRect) -> NSRect { frame }
+    override func frame(forAlignmentRect alignmentRect: NSRect) -> NSRect { alignmentRect }
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard !isHiddenOrHasHiddenAncestor, alphaValue > 0,
               bounds.contains(convert(point, from: superview)) else { return nil }
@@ -1513,7 +1516,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     private func addSubtoolMenu(for family: ImageEditorTool, tools: [ImageEditorTool], identifier: String) {
         let menu = EditorToolbarPopupButton(); menu.pullsDown = true; menu.isBordered = false
         menu.addItem(withTitle: "")
-        menu.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: "选择\(family.title)子工具")?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold))
+        menu.item(at: 0)?.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: "选择\(family.title)子工具")?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold))
         (menu.cell as? NSPopUpButtonCell)?.arrowPosition = .noArrow
         menu.imagePosition = .imageOnly; menu.contentTintColor = EditorFloatingSurface.ink
         menu.identifier = NSUserInterfaceItemIdentifier(identifier)

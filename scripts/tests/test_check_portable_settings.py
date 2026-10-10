@@ -67,7 +67,14 @@ def report():
                 bundlePath='/tmp/PicShot.app', elapsedSeconds=2.5, overallDeadlineSeconds=120,
                 userPreferencesReadOrWritten=False, globalHotkeysRegistered=False, globalInputPosted=False,
                 permissionRequests=False, networkUsed=False, liveScreenCaptured=False, canonicalTemporaryRoot=True,
-                interactionRoute='NSView.hitTest and local NSEvent mouseDown with queued owned-window mouseUp',
+                interactionRoute='NSView.hitTest and owned local NSEvents; buttons use mouseDown, tables use NSApplication.nextEvent/sendEvent with queued mouseUp',
+                tableSelectionEvents=[dict(appearance=appearance, status='passed-local-row-selection',
+                    dispatchRoute='owned-nextEvent-sendEvent', ownedDownVerified=True, ownedDownType=1,
+                    requestedRow=1, rowAtDispatch=1, selectedRowAfter=1, selectedRowBefore=0,
+                    targetPointVisible=True, windowIsKey=True, windowNumber=100, ownedDownWindowNumber=100,
+                    keyWindowNumber=100, applicationIsActive=True, applicationIsRunning=True,
+                    currentEventIsSuppliedDown=True, currentEventType=1, currentEventWindowNumber=100)
+                    for appearance in ('light', 'dark')],
                 checks=sorted(CHECK.CHECKS), fileRoundTrip=dict(readbackMatchesWritten=True, savedOnlyExport=True,
                                                              readbackByteCount=1400, maximumFileBytes=65536),
                 commitObservationLight=commit.copy(), commitObservationDark=commit.copy(), failureCases=failures,
@@ -118,6 +125,18 @@ class PortableSettingsCheckerTests(unittest.TestCase):
     def test_reject_missing_coverage_or_wrong_bundle(self):
         for mutation in [lambda r: r['checks'].pop(), lambda r: r.update(sourceCommit='old'),
                          lambda r: r.update(buildVersion='168'), lambda r: r.update(bundlePath='/elsewhere/PicShot.app')]:
+            self.reject(mutation)
+        for field in ('requestedRow', 'rowAtDispatch', 'selectedRowAfter', 'selectedRowBefore',
+                      'ownedDownType', 'windowNumber', 'ownedDownWindowNumber', 'keyWindowNumber',
+                      'currentEventType', 'currentEventWindowNumber'):
+            for invalid in (True, False, 1.0, '1', None):
+                with self.subTest(field=field, invalid=invalid):
+                    self.reject(lambda r: r['tableSelectionEvents'][0].update({field: invalid}))
+        for mutation in [lambda r: r.pop('tableSelectionEvents'),
+                         lambda r: r['tableSelectionEvents'][0].update(selectedRowAfter=0),
+                         lambda r: r['tableSelectionEvents'][0].update(ownedDownVerified=False),
+                         lambda r: r['tableSelectionEvents'][0].update(windowIsKey=False),
+                         lambda r: r['tableSelectionEvents'][0].update(ownedDownWindowNumber=101)]:
             self.reject(mutation)
 
     def test_reject_unbounded_runtime_and_unsafe_side_effects(self):

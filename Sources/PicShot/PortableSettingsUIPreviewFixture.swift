@@ -34,7 +34,7 @@ import PicShotCore
             "globalInputPosted": false, "permissionRequests": false, "networkUsed": false,
             "liveScreenCaptured": false, "canonicalTemporaryRoot": true,
             "snapshotScope": "cached complete owned native content views; no live desktop capture",
-            "interactionRoute": "NSView.hitTest and local NSEvent mouseDown with queued owned-window mouseUp",
+            "interactionRoute": "NSView.hitTest and owned local NSEvents; buttons use mouseDown, tables use NSApplication.nextEvent/sendEvent with queued mouseUp",
             "overallDeadlineSeconds": 120]
         do {
             AppAppearancePreference.dark.save(to: donor)
@@ -48,7 +48,7 @@ import PicShotCore
             try incoming.write(to: importedURL, options: .atomic)
             let readback = try PortableSettingsStore.readImportData(from: importedURL)
             try require(readback == incoming, "File import readback changed bytes")
-            var visuals: [[String: Any]] = []
+            var visuals: [[String: Any]] = [], tableSelections: [[String: Any]] = []
             for (mode, name) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
                 defaults.removePersistentDomain(forName: suite)
                 defaults.set("excluded-synthetic-path", forKey: "portable-fixture-excluded")
@@ -59,7 +59,9 @@ import PicShotCore
                 defer { controller.close() }
                 let window = try show(controller, appearance: name)
                 try select(.annotations, in: controller)
-                try clickRow(1, in: controller.annotationToolbarView.tableView)
+                var tableSelection = try clickRow(1, in: controller.annotationToolbarView.tableView)
+                tableSelection["appearance"] = mode; tableSelections.append(tableSelection)
+                report["tableSelectionEvents"] = tableSelections
                 try click(controller.annotationToolbarView.moveDownButton)
                 let draft = controller.annotationToolbarView.draft
                 try require(draft != .defaults && AnnotationToolbarOrder.read(from: defaults) == .defaults,
@@ -202,6 +204,12 @@ import PicShotCore
         let window = try required(controller.window, "Settings window missing")
         window.appearance = NSAppearance(named: appearance); window.animationBehavior = .none
         controller.showWindow(nil); window.center(); window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        let deadline = ProcessInfo.processInfo.systemUptime + 1
+        while !window.isKeyWindow, ProcessInfo.processInfo.systemUptime < deadline {
+            _ = RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.01))
+        }
+        try require(window.isKeyWindow, "Owned Settings window did not become key within one second; active=\(NSApp.isActive), policy=\(NSApp.activationPolicy().rawValue)")
         window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded(); return window
     }
 
@@ -219,7 +227,8 @@ import PicShotCore
         try mouseClick(button, point: CGPoint(x: button.bounds.midX, y: button.bounds.midY))
     }
 
-    static func clickRow(_ row: Int, in table: NSTableView, failureEvidenceDirectory: URL? = nil) throws {
+    @discardableResult static func clickRow(_ row: Int, in table: NSTableView,
+                                           failureEvidenceDirectory: URL? = nil) throws -> [String: Any] {
         let window = try required(table.window, "Table target has no window")
         window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded()
         table.scrollRowToVisible(row); table.layoutSubtreeIfNeeded()
@@ -232,6 +241,10 @@ import PicShotCore
             observation["rowFrameAtDispatch"] = rect(table.rect(ofRow: row))
             observation["pointAtDispatch"] = [actualPoint.x, actualPoint.y]
             observation["rowAtDispatch"] = table.row(at: actualPoint)
+            observation["dispatchRoute"] = "owned-nextEvent-sendEvent"
+            observation["ownedDownVerified"] = true
+            observation["ownedDownWindowNumber"] = down.windowNumber
+            observation["ownedDownType"] = Int(down.type.rawValue)
             observation["selectedRowAtDispatch"] = table.selectedRow
             observation["windowIsKey"] = window.isKeyWindow
             observation["applicationIsActive"] = NSApp.isActive
@@ -261,6 +274,8 @@ import PicShotCore
             let data = try JSONSerialization.data(withJSONObject: observation, options: [.sortedKeys])
             throw failure("Native table row selection failed: " + String(decoding: data, as: UTF8.self))
         }
+        observation["status"] = "passed-local-row-selection"
+        return observation
     }
 
     private static func mouseClick(_ view: NSView, point: CGPoint,
@@ -278,9 +293,26 @@ import PicShotCore
         let up = try required(NSEvent.mouseEvent(with: .leftMouseUp, location: location, modifierFlags: [],
             timestamp: down.timestamp + 0.01, windowNumber: window.windowNumber, context: nil,
             eventNumber: 2, clickCount: 1, pressure: 0), "Mouse-up unavailable")
-        beforeDispatch?(down, hit)
-        NSApp.postEvent(up, atStart: true)
-        view.mouseDown(with: down)
+        if view is NSTableView {
+            // Match the application event loop for native table selection. A
+            // direct mouseDown call leaves currentEvent at the previous mouseUp
+            // in a standalone XCTest host. These events stay in this process.
+            NSApp.postEvent(down, atStart: true)
+            let owned = try required(NSApp.nextEvent(matching: .leftMouseDown,
+                until: Date(timeIntervalSinceNow: 0.1), inMode: .default, dequeue: true), "Owned table mouse-down not dequeued")
+            guard owned.type == .leftMouseDown && owned.windowNumber == window.windowNumber &&
+                  owned.timestamp == down.timestamp && owned.locationInWindow == down.locationInWindow else {
+                NSApp.postEvent(owned, atStart: true)
+                throw failure("Dequeued event does not match the owned table click; unrelated event restored")
+            }
+            NSApp.postEvent(up, atStart: true)
+            beforeDispatch?(owned, hit)
+            NSApp.sendEvent(owned)
+        } else {
+            NSApp.postEvent(up, atStart: true)
+            beforeDispatch?(down, hit)
+            view.mouseDown(with: down)
+        }
     }
 
     static func layout(_ window: NSWindow) throws -> [String: Any] {

@@ -7,6 +7,11 @@ import XCTest
 @MainActor final class PortableSettingsUITests: XCTestCase {
     private func isolated(_ body: (UserDefaults, String, Data) throws -> Void) throws {
         _ = NSApplication.shared
+        let originalPolicy = NSApp.activationPolicy()
+        if originalPolicy == .prohibited {
+            XCTAssertTrue(NSApp.setActivationPolicy(.accessory), "Native Settings interaction requires an activatable owned application")
+        }
+        defer { if NSApp.activationPolicy() != originalPolicy { _ = NSApp.setActivationPolicy(originalPolicy) } }
         let suite = "PicShot-PortableSettingsUITests-" + UUID().uuidString, donorSuite = suite + "-donor"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite)), donor = try XCTUnwrap(UserDefaults(suiteName: donorSuite))
         let appearance = NSApp.appearance
