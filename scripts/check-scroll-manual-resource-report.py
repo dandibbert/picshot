@@ -41,7 +41,7 @@ PREVIEW_FIELDS = {'outputWidth', 'outputHeight', 'zoom', 'displayScale', 'visibl
                   'tileWidth', 'tileHeight', 'activeJobs', 'pendingJobs', 'cachedTiles', 'sourceReferences', 'resolutionLabel'}
 STATS_FIELDS = {'residentSampleCount', 'physicalFootprintSampleCount', 'failedResidentSampleCount',
                 'failedPhysicalFootprintSampleCount', 'timerTickCount', 'boundarySampleCount',
-                'peakResidentBytes', 'peakPhysicalFootprintBytes'}
+                'peakResidentBytes', 'peakPhysicalFootprintBytes', 'backingSampleCount'}
 
 
 def need(condition, message):
@@ -170,6 +170,8 @@ def sampled(stats):
     keys(stats, STATS_FIELDS)
     for value in stats.values():
         integer(value)
+    # Manual-scroll backing accounting stays boundary-only, outside this sampler.
+    need(stats['backingSampleCount'] == 0, 'manual-scroll sampler must not collect backing samples')
     need(stats['timerTickCount'] > 0 and stats['boundarySampleCount'] > 0, 'timer/boundary samples missing')
     count = stats['timerTickCount'] + stats['boundarySampleCount']
     need(stats['failedResidentSampleCount'] == stats['failedPhysicalFootprintSampleCount'] == 0, 'memory samples failed')

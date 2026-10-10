@@ -35,7 +35,7 @@ def mem(index):
 def stats():
     return dict(residentSampleCount=30, physicalFootprintSampleCount=30, failedResidentSampleCount=0,
                 failedPhysicalFootprintSampleCount=0, timerTickCount=20, boundarySampleCount=10,
-                peakResidentBytes=20_000_000, peakPhysicalFootprintBytes=15_000_000)
+                peakResidentBytes=20_000_000, peakPhysicalFootprintBytes=15_000_000, backingSampleCount=0)
 
 
 def functional():
@@ -151,6 +151,46 @@ class ResourceReportTests(unittest.TestCase):
         self.validate()
         self.assertGreater(self.report['residentLateThreeIntervalGrowthBytes'][-1],0)
         self.assertFalse(self.report['stabilityAssessed'])
+
+    def sampled_statistics(self):
+        for name in ('warmupSampledMemory', 'sampledMemory'):
+            yield name, self.report[name]
+        for phase in ('warmups', 'cycles'):
+            for index, row in enumerate(self.report[phase]):
+                yield f'{phase}[{index}].sampledMemory', row['sampledMemory']
+
+    def test_backing_sample_count_required_at_every_statistics_location(self):
+        for location, samples in self.sampled_statistics():
+            with self.subTest(location=location):
+                original = samples.pop('backingSampleCount')
+                try:
+                    with self.assertRaisesRegex(ValueError, 'unexpected object keys'):
+                        self.validate()
+                finally:
+                    samples['backingSampleCount'] = original
+
+    def test_backing_sample_count_must_be_integer_zero_at_every_statistics_location(self):
+        for location, samples in self.sampled_statistics():
+            for value in (1, 30, -1, 2**63, False, True, 0.0, 1.0, '0', None, [], {}):
+                with self.subTest(location=location, value=repr(value)):
+                    samples['backingSampleCount'] = value
+                    try:
+                        with self.assertRaisesRegex(ValueError, 'invalid bounded integer|must not collect backing samples'):
+                            self.validate()
+                    finally:
+                        samples['backingSampleCount'] = 0
+
+    def test_diagnostic_peaks_and_unknown_fields_rejected_at_every_statistics_location(self):
+        for location, samples in self.sampled_statistics():
+            for field in ('peakVolatileResidentBytes', 'peakVolatileLedgerBytes', 'unexpectedStatistic'):
+                for value in (0, None):
+                    with self.subTest(location=location, field=field, value=value):
+                        samples[field] = value
+                        try:
+                            with self.assertRaisesRegex(ValueError, 'unexpected object keys'):
+                                self.validate()
+                        finally:
+                            del samples[field]
 
     def test_every_required_cycle_assertion_fails_closed(self):
         for field in CHECK.TRUE_CYCLE_FIELDS:
