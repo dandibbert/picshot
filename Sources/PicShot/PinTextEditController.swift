@@ -50,6 +50,15 @@ private enum PinDraftError: LocalizedError {
     }
 }
 
+/// Stack spacing uses alignment rectangles; preserve a small real gap between
+/// rounded buttons' full native frames, including their transparent padding.
+@MainActor private func pinDraftButtonRow(_ first: NSButton, _ second: NSButton) -> NSStackView {
+    for button in [first, second] { button.bezelStyle = .rounded }
+    let row = NSStackView(views: [first, second])
+    row.spacing = 2 + max(0, first.alignmentRectInsets.right) + max(0, second.alignmentRectInsets.left)
+    return row
+}
+
 /// Shared owned sheet lifecycle. No asynchronous save callback can outlive its
 /// owner, and a retained button cannot re-enter or repeat a completed commit.
 @MainActor class PinDraftSheetController: NSWindowController, NSWindowDelegate {
@@ -74,12 +83,11 @@ private enum PinDraftError: LocalizedError {
         hint.font = .systemFont(ofSize: 12); hint.textColor = .secondaryLabelColor
         errorLabel.font = .systemFont(ofSize: 11); errorLabel.textColor = .systemRed
         errorLabel.identifier = .init(identifier + ".error"); errorLabel.setAccessibilityLabel("保存错误")
-        for button in [cancelButton, saveButton] { button.bezelStyle = .rounded }
         saveButton.target = self; saveButton.action = #selector(saveDraft); saveButton.identifier = .init(identifier + ".save")
         cancelButton.target = self; cancelButton.action = #selector(cancelDraft); cancelButton.identifier = .init(identifier + ".cancel")
         // Return remains a newline / IME commit in the multiline editor.
         // Cmd-S and Escape are routed only by this owned window.
-        let buttons = NSStackView(views: [cancelButton, saveButton]); buttons.spacing = 8
+        let buttons = pinDraftButtonRow(cancelButton, saveButton)
         for view in [hint, body, errorLabel, buttons] { view.translatesAutoresizingMaskIntoConstraints = false; root.addSubview(view) }
         NSLayoutConstraint.activate([
             hint.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16),
@@ -208,7 +216,7 @@ private enum PinDraftError: LocalizedError {
         let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
         scroll.borderType = .bezelBorder; scroll.documentView = textView
         countLabel.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular); countLabel.textColor = .secondaryLabelColor
-        let body = NSView(), buttons = NSStackView(views: [undoButton, redoButton]); buttons.spacing = 6
+        let body = NSView(), buttons = pinDraftButtonRow(undoButton, redoButton)
         for view in [scroll, buttons, countLabel] { view.translatesAutoresizingMaskIntoConstraints = false; body.addSubview(view) }
         NSLayoutConstraint.activate([
             scroll.topAnchor.constraint(equalTo: body.topAnchor), scroll.leadingAnchor.constraint(equalTo: body.leadingAnchor),
@@ -228,7 +236,7 @@ private enum PinDraftError: LocalizedError {
         textView.onUndo = { [weak self] in self?.undoDraft() }
         textView.onRedo = { [weak self] in self?.redoDraft() }
         textView.onCancel = { [weak self] in self?.close() }
-        for button in [undoButton, redoButton] { button.bezelStyle = .rounded; button.target = self }
+        for button in [undoButton, redoButton] { button.target = self }
         undoButton.action = #selector(undoDraft); undoButton.identifier = .init("pin.textEdit.undo")
         redoButton.action = #selector(redoDraft); redoButton.identifier = .init("pin.textEdit.redo")
         refreshState()

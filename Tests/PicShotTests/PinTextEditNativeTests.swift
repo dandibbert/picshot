@@ -16,36 +16,63 @@ import PicShotCore
     func testContextActionSavePersistsBeforeDisplayInLightAndDark() throws {
         try withApplicationLoop { [self] in
             for appearance in [NSAppearance.Name.aqua, .darkAqua] {
-                let original = PinTextContent(text: "Saved original\n原文 🐱")
-                let pin = try makePin(original, appearance: appearance); defer { pin.close() }
-                var committed = original, calls = 0
-                pin.onUpdateText = { next, expected in
-                    calls += 1
-                    XCTAssertEqual(expected, original); XCTAssertEqual(pin.richDocument?.text, original)
+                for edge in ButtonEdge.allCases {
+                    let original = PinTextContent(text: "Saved original\n原文 🐱")
+                    let pin = try makePin(original, appearance: appearance); defer { pin.close() }
+                    var committed = original, calls = 0
+                    pin.onUpdateText = { next, expected in
+                        calls += 1
+                        XCTAssertEqual(expected, original); XCTAssertEqual(pin.richDocument?.text, original)
+                        XCTAssertEqual(pin.textDisplayView.string, original.plainText)
+                        pin.textEditController?.saveDraft() // Reentrant Save must coalesce.
+                        committed = next
+                    }
+                    try activate("pin-text-edit", on: pin)
+                    let editor = try XCTUnwrap(pin.textEditController), window = try XCTUnwrap(editor.window)
+                    try show(window); XCTAssertTrue(window.firstResponder === editor.textView)
+                    XCTAssertTrue(try XCTUnwrap(pin.window).attachedSheet === window)
+                    XCTAssertFalse(pin.canParticipateInGroupTransform)
+                    XCTAssertFalse(editor.textView.allowsUndo); XCTAssertNil(editor.textView.undoManager)
+                    let replacement = "First line\n多行中文 👩🏽‍💻\nLast 🐱"
+                    replace(editor.textView, with: replacement)
+                    XCTAssertEqual(editor.textView.string, replacement)
+                    XCTAssertEqual(committed, original); XCTAssertEqual(pin.textDisplayView.string, original.plainText)
+                    try assertVisibleControls(editor)
+                    try clickVisibleEdge(editor.undoButton, edge: edge)
+                    XCTAssertEqual(editor.textView.string, original.plainText)
+                    XCTAssertEqual(editor.history.current.text, original.plainText)
+                    XCTAssertEqual(calls, 0); XCTAssertEqual(committed, original)
                     XCTAssertEqual(pin.textDisplayView.string, original.plainText)
-                    pin.textEditController?.saveDraft() // Reentrant Save must coalesce.
-                    committed = next
+                    try clickVisibleEdge(editor.redoButton, edge: edge)
+                    XCTAssertEqual(editor.textView.string, replacement)
+                    XCTAssertEqual(editor.history.current.text, replacement)
+                    XCTAssertEqual(calls, 0); XCTAssertEqual(committed, original)
+                    XCTAssertEqual(pin.textDisplayView.string, original.plainText)
+                    try clickVisibleEdge(editor.saveButton, edge: edge)
+                    XCTAssertEqual(calls, 1); XCTAssertEqual(committed.plainText, replacement)
+                    XCTAssertEqual(pin.richDocument?.text, committed); XCTAssertEqual(pin.textDisplayView.string, replacement)
+                    XCTAssertNil(pin.textEditController); XCTAssertNil(pin.window?.attachedSheet)
+                    XCTAssertTrue(editor.completed); XCTAssertNil(editor.saveButton.target)
+                    editor.saveDraft(); XCTAssertEqual(calls, 1)
+                    XCTAssertTrue(pin.canParticipateInGroupTransform)
+                    let board = NSPasteboard.withUniqueName(); defer { board.releaseGlobally() }
+                    pin.copyText(to: board); XCTAssertEqual(board.string(forType: .string), replacement)
+
+                    try activate("pin-text-edit", on: pin)
+                    let cancelled = try XCTUnwrap(pin.textEditController)
+                    let cancelledWindow = try XCTUnwrap(cancelled.window)
+                    try show(cancelledWindow); replace(cancelled.textView, with: "Discard visible-edge draft 🐱")
+                    try assertVisibleControls(cancelled)
+                    try clickVisibleEdge(cancelled.cancelButton, edge: edge)
+                    XCTAssertTrue(cancelled.completed); XCTAssertNil(pin.textEditController)
+                    XCTAssertNil(pin.window?.attachedSheet); XCTAssertNil(cancelledWindow.contentView)
+                    XCTAssertNil(cancelled.cancelButton.target); XCTAssertEqual(cancelled.textView.string, "")
+                    XCTAssertEqual(cancelled.history.retainedHistoryBytes, 0)
+                    cancelled.saveDraft(); XCTAssertEqual(calls, 1); XCTAssertEqual(committed.plainText, replacement)
+                    XCTAssertEqual(pin.richDocument?.text, committed); XCTAssertEqual(pin.textDisplayView.string, replacement)
+                    XCTAssertTrue(pin.canParticipateInGroupTransform)
+                    pin.copyText(to: board); XCTAssertEqual(board.string(forType: .string), replacement)
                 }
-                try activate("pin-text-edit", on: pin)
-                let editor = try XCTUnwrap(pin.textEditController), window = try XCTUnwrap(editor.window)
-                try show(window); XCTAssertTrue(window.firstResponder === editor.textView)
-                XCTAssertTrue(try XCTUnwrap(pin.window).attachedSheet === window)
-                XCTAssertFalse(pin.canParticipateInGroupTransform)
-                XCTAssertFalse(editor.textView.allowsUndo); XCTAssertNil(editor.textView.undoManager)
-                let replacement = "First line\n多行中文 👩🏽‍💻\nLast 🐱"
-                replace(editor.textView, with: replacement)
-                XCTAssertEqual(editor.textView.string, replacement)
-                XCTAssertEqual(committed, original); XCTAssertEqual(pin.textDisplayView.string, original.plainText)
-                try assertVisibleControls(editor)
-                try PortableSettingsUIPreviewFixture.click(editor.saveButton)
-                XCTAssertEqual(calls, 1); XCTAssertEqual(committed.plainText, replacement)
-                XCTAssertEqual(pin.richDocument?.text, committed); XCTAssertEqual(pin.textDisplayView.string, replacement)
-                XCTAssertNil(pin.textEditController); XCTAssertNil(pin.window?.attachedSheet)
-                XCTAssertTrue(editor.completed); XCTAssertNil(editor.saveButton.target)
-                editor.saveDraft(); XCTAssertEqual(calls, 1)
-                XCTAssertTrue(pin.canParticipateInGroupTransform)
-                let board = NSPasteboard.withUniqueName(); defer { board.releaseGlobally() }
-                pin.copyText(to: board); XCTAssertEqual(board.string(forType: .string), replacement)
             }
         }
     }
@@ -424,32 +451,55 @@ import PicShotCore
         try withApplicationLoop { [self] in
             let rich = PinTextContent(runs: [PinTextRun(text: "Rich ", bold: true), PinTextRun(text: "中文 🐱", italic: true)], importedHTML: true)
             for appearance in [NSAppearance.Name.aqua, .darkAqua] {
-                let pin = try makePin(rich, appearance: appearance); defer { pin.close() }
-                pin.onUpdateText = { _, _ in XCTFail("Imported text must never flatten") }
-                let menu = try XCTUnwrap(pin.textDisplayView.menu)
-                let item = try XCTUnwrap(menu.items.first { $0.identifier?.rawValue == "pin-text-edit" })
-                XCTAssertFalse(pin.validateMenuItem(item)); pin.editPlainText(); XCTAssertNil(pin.textEditController)
-                XCTAssertTrue(menu.items.contains { $0.identifier?.rawValue == "pin-text-readonly" })
-                let selection = NSRange(location: 0, length: 4); pin.textDisplayView.setSelectedRange(selection)
-                let before = NSAttributedString(attributedString: pin.textDisplayView.attributedString())
-                var fail = true, calls = 0, savedTitle = pin.pinTitle
-                pin.onRename = { next, expected in
-                    calls += 1; XCTAssertEqual(expected, "Original title")
-                    if fail { throw CocoaError(.fileWriteOutOfSpace) }; savedTitle = next
+                for edge in ButtonEdge.allCases {
+                    let pin = try makePin(rich, appearance: appearance); defer { pin.close() }
+                    pin.onUpdateText = { _, _ in XCTFail("Imported text must never flatten") }
+                    let menu = try XCTUnwrap(pin.textDisplayView.menu)
+                    let item = try XCTUnwrap(menu.items.first { $0.identifier?.rawValue == "pin-text-edit" })
+                    XCTAssertFalse(pin.validateMenuItem(item)); pin.editPlainText(); XCTAssertNil(pin.textEditController)
+                    XCTAssertTrue(menu.items.contains { $0.identifier?.rawValue == "pin-text-readonly" })
+                    let selection = NSRange(location: 0, length: 4); pin.textDisplayView.setSelectedRange(selection)
+                    let before = NSAttributedString(attributedString: pin.textDisplayView.attributedString())
+                    var fail = true, calls = 0, savedTitle = pin.pinTitle
+                    pin.onRename = { next, expected in
+                        calls += 1; XCTAssertEqual(expected, "Original title")
+                        if fail { throw CocoaError(.fileWriteOutOfSpace) }; savedTitle = next
+                    }
+                    try activate("pin-rename", on: pin)
+                    let editor = try XCTUnwrap(pin.renameController), window = try XCTUnwrap(editor.window)
+                    try show(window); XCTAssertFalse(pin.canParticipateInGroupTransform)
+                    let field = try XCTUnwrap(editor.nameField.currentEditor() as? NSTextView)
+                    XCTAssertTrue(window.firstResponder === field); replace(field, with: "新的名称 🐱")
+                    try assertVisibleControls(editor)
+                    try clickVisibleEdge(editor.saveButton, edge: edge)
+                    XCTAssertFalse(editor.errorLabel.stringValue.isEmpty); XCTAssertEqual(pin.pinTitle, "Original title")
+                    XCTAssertEqual(pin.textDisplayView.selectedRange(), selection); XCTAssertEqual(pin.textDisplayView.attributedString(), before)
+                    fail = false; try clickVisibleEdge(editor.saveButton, edge: edge)
+                    XCTAssertEqual(savedTitle, "新的名称 🐱"); XCTAssertEqual(pin.pinTitle, savedTitle); XCTAssertEqual(calls, 2)
+                    XCTAssertEqual(pin.richDocument?.text, rich); XCTAssertEqual(pin.textDisplayView.selectedRange(), selection)
+                    XCTAssertEqual(pin.textDisplayView.attributedString(), before); XCTAssertNil(pin.renameController)
+                    XCTAssertTrue(editor.completed); XCTAssertNil(pin.window?.attachedSheet)
+                    XCTAssertNil(window.contentView); XCTAssertNil(editor.saveButton.target)
+                    editor.saveDraft(); XCTAssertEqual(calls, 2)
+                    XCTAssertTrue(pin.canParticipateInGroupTransform)
+
+                    try activate("pin-rename", on: pin)
+                    let cancelled = try XCTUnwrap(pin.renameController)
+                    let cancelledWindow = try XCTUnwrap(cancelled.window)
+                    try show(cancelledWindow)
+                    let cancelledField = try XCTUnwrap(cancelled.nameField.currentEditor() as? NSTextView)
+                    replace(cancelledField, with: "Discard visible-edge name 🐱")
+                    try assertVisibleControls(cancelled)
+                    try clickVisibleEdge(cancelled.cancelButton, edge: edge)
+                    XCTAssertTrue(cancelled.completed); XCTAssertNil(pin.renameController)
+                    XCTAssertNil(pin.window?.attachedSheet); XCTAssertNil(cancelledWindow.contentView)
+                    XCTAssertNil(cancelled.cancelButton.target); XCTAssertEqual(cancelled.nameField.stringValue, "")
+                    cancelled.saveDraft(); XCTAssertEqual(calls, 2)
+                    XCTAssertEqual(savedTitle, "新的名称 🐱"); XCTAssertEqual(pin.pinTitle, savedTitle)
+                    XCTAssertEqual(pin.richDocument?.text, rich); XCTAssertEqual(pin.textDisplayView.selectedRange(), selection)
+                    XCTAssertEqual(pin.textDisplayView.attributedString(), before)
+                    XCTAssertTrue(pin.canParticipateInGroupTransform)
                 }
-                try activate("pin-rename", on: pin)
-                let editor = try XCTUnwrap(pin.renameController), window = try XCTUnwrap(editor.window)
-                try show(window); XCTAssertFalse(pin.canParticipateInGroupTransform)
-                let field = try XCTUnwrap(editor.nameField.currentEditor() as? NSTextView)
-                XCTAssertTrue(window.firstResponder === field); replace(field, with: "新的名称 🐱")
-                try assertVisibleControls(editor)
-                try PortableSettingsUIPreviewFixture.click(editor.saveButton)
-                XCTAssertFalse(editor.errorLabel.stringValue.isEmpty); XCTAssertEqual(pin.pinTitle, "Original title")
-                XCTAssertEqual(pin.textDisplayView.selectedRange(), selection); XCTAssertEqual(pin.textDisplayView.attributedString(), before)
-                fail = false; try PortableSettingsUIPreviewFixture.click(editor.saveButton)
-                XCTAssertEqual(savedTitle, "新的名称 🐱"); XCTAssertEqual(pin.pinTitle, savedTitle); XCTAssertEqual(calls, 2)
-                XCTAssertEqual(pin.richDocument?.text, rich); XCTAssertEqual(pin.textDisplayView.selectedRange(), selection)
-                XCTAssertEqual(pin.textDisplayView.attributedString(), before); XCTAssertNil(pin.renameController)
             }
         }
     }
@@ -493,16 +543,68 @@ import PicShotCore
         view.setSelectedRange(NSRange(location: 0, length: (view.string as NSString).length))
         view.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
     }
+    private enum ButtonEdge: String, CaseIterable { case left, right }
+
     private func assertVisibleControls(_ editor: PinDraftSheetController) throws {
         let window = try XCTUnwrap(editor.window), root = try XCTUnwrap(window.contentView)
         root.layoutSubtreeIfNeeded(); window.displayIfNeeded()
-        let controls: [NSView] = [editor.saveButton, editor.cancelButton, editor.errorLabel]
+        var rows = [[editor.cancelButton, editor.saveButton]]
+        if let textEditor = editor as? PinTextEditController { rows.append([textEditor.undoButton, textEditor.redoButton]) }
+        var controls: [NSView] = rows.flatMap { $0 }; controls.append(editor.errorLabel)
         for control in controls {
             XCTAssertFalse(control.isHiddenOrHasHiddenAncestor)
             let rect = control.convert(control.bounds, to: root)
             XCTAssertGreaterThan(rect.width, 0); XCTAssertGreaterThan(rect.height, 0)
             XCTAssertTrue(root.bounds.contains(rect), "Owned draft control clipped: \(control.identifier?.rawValue ?? "unknown")")
         }
+        for row in rows {
+            let left = row[0].convert(row[0].bounds, to: root), right = row[1].convert(row[1].bounds, to: root)
+            let ids = row.map { $0.identifier?.rawValue ?? "unknown" }.joined(separator: "/")
+            XCTAssertFalse(left.intersects(right), "Owned draft full frames overlap: \(ids) \(left) \(right)")
+            XCTAssertGreaterThanOrEqual(right.minX - left.maxX, 2, "Owned draft full-frame gap below two points: \(ids)")
+            for (index, button) in row.enumerated() {
+                let other = row[1 - index]
+                for edge in ButtonEdge.allCases {
+                    let point = NSPoint(x: edge == .left ? button.bounds.minX + 0.5 : button.bounds.maxX - 0.5,
+                                        y: button.bounds.midY)
+                    let local = button.convert(point, to: root)
+                    let hit = root.hitTest(root.convert(local, to: root.superview))
+                    let hitID = hit?.identifier?.rawValue ?? hit.map { String(describing: type(of: $0)) } ?? "none"
+                    // Full-frame edges can be transparent AppKit padding. They
+                    // must never belong to the neighboring button, but need not activate.
+                    XCTAssertFalse(hit === other || hit?.isDescendant(of: other) == true,
+                                   "Owned draft full-frame edge stolen: \(ids) \(edge.rawValue) hit=\(hitID)")
+                    FileHandle.standardError.write(Data(("PinTextEdit native full-frame edge: control=\(button.identifier?.rawValue ?? "unknown") edge=\(edge.rawValue) point=\(local) hit=\(hitID)\n").utf8))
+                }
+            }
+        }
+    }
+
+    private func clickVisibleEdge(_ button: NSButton, edge: ButtonEdge) throws {
+        let window = try XCTUnwrap(button.window), root = try XCTUnwrap(window.contentView)
+        root.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        _ = try XCTUnwrap(button.isEnabled && !button.isHiddenOrHasHiddenAncestor ? true : nil,
+                          "Owned visible-edge button unavailable: \(button.identifier?.rawValue ?? "unknown")")
+        // The alignment rectangle excludes the rounded bezel's transparent
+        // outer padding. Click one point inside its lateral edge at mid-height.
+        let visible = button.convert(button.alignmentRect(forFrame: button.frame), from: button.superview)
+        _ = try XCTUnwrap(visible.width > 2 && visible.height > 2 ? true : nil, "Owned button has no visible edge")
+        let point = NSPoint(x: edge == .left ? visible.minX + 1 : visible.maxX - 1, y: visible.midY)
+        XCTAssertTrue(button.bounds.contains(point)); XCTAssertTrue(button.visibleRect.contains(point))
+        let location = button.convert(point, to: nil), local = root.convert(location, from: nil)
+        let hit = root.hitTest(root.convert(local, to: root.superview))
+        _ = try XCTUnwrap(hit === button || hit?.isDescendant(of: button) == true ? true : nil,
+                          "Owned visible button edge obscured: \(button.identifier?.rawValue ?? "unknown") \(edge.rawValue)")
+        let down = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: location, modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
+            eventNumber: 1, clickCount: 1, pressure: 1))
+        let up = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseUp, location: location, modifierFlags: [],
+            timestamp: down.timestamp + 0.01, windowNumber: window.windowNumber, context: nil,
+            eventNumber: 2, clickCount: 1, pressure: 0))
+        FileHandle.standardError.write(Data(("PinTextEdit native visible-edge click: control=\(button.identifier?.rawValue ?? "unknown") edge=\(edge.rawValue) point=\(local) window=\(window.windowNumber)\n").utf8))
+        // Match PortableSettingsUIPreviewFixture's non-table owned-event route.
+        NSApp.postEvent(up, atStart: true)
+        button.mouseDown(with: down)
     }
     private func show(_ window: NSWindow) throws {
         window.animationBehavior = .none; window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
