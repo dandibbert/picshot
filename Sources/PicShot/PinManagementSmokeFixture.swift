@@ -449,8 +449,11 @@ import PicShotCore
             let drawing = control.convert(control.cell?.drawingRect(forBounds: control.bounds) ?? control.bounds, to: root)
             let minimumSize = control.cell?.cellSize ?? .zero
             let title = (control as? NSButton)?.title ?? ""
+            let nativeTitleRect = control.cell?.titleRect(forBounds: control.bounds) ?? .zero
+            let titleRect = control.convert(nativeTitleRect, to: root)
             geometry.append(["id": control.identifier?.rawValue ?? "button.\(index)", "title": title,
                 "minimumSize": [minimumSize.width, minimumSize.height], "availableSize": [frame.width, frame.height], "frame": rect(frame),
+                "nativeTitleRect": rect(titleRect), "fullTitleTooltip": control.toolTip ?? "",
                 "alignmentRect": rect(alignmentFrames[index]), "cellDrawingRect": rect(drawing),
                 "alignmentInsets": ["top": insets.top, "left": insets.left, "bottom": insets.bottom, "right": insets.right],
                 "centerHitClass": hit.map { NSStringFromClass(type(of: $0)) } ?? "none",

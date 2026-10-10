@@ -294,6 +294,7 @@ import PicShotCore
             guard let picker = try? popup(identifier, in: f.controller) else { XCTFail("Missing \(identifier)", file: file, line: line); continue }
             XCTAssertEqual(picker.itemArray.compactMap { $0.representedObject as? UUID }, f.store.groups.map(\.id), file: file, line: line)
             XCTAssertEqual(picker.selectedItem?.representedObject as? UUID, f.store.index.activeGroupID, file: file, line: line)
+            XCTAssertEqual(picker.toolTip, picker.selectedItem?.title, "Full selected label remains available", file: file, line: line)
         }
     }
     private func orderItem(_ direction: String, in controller: PinGroupsController) throws -> NSMenuItem {
@@ -334,6 +335,10 @@ import PicShotCore
             XCTAssertFalse(control.isHiddenOrHasHiddenAncestor)
             XCTAssertGreaterThanOrEqual(control.bounds.height, 20)
             XCTAssertGreaterThanOrEqual(control.bounds.width, 24)
+            if let picker = control as? NSPopUpButton, picker.identifier?.rawValue == "pin-group-picker" {
+                XCTAssertEqual(picker.toolTip, picker.selectedItem?.title)
+                XCTAssertTrue(picker.toolTip?.contains(String(repeating: "长", count: 48)) == true)
+            }
             let fullFrame = control.convert(control.bounds, to: root)
             if control.identifier?.rawValue == "pin-group-order" {
                 let required = try XCTUnwrap(control.cell?.cellSize)

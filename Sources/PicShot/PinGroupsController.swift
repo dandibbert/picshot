@@ -90,7 +90,7 @@ import PicShotCore
         let hideAllButton = NSButton(title: "隐藏全部", target: self, action: #selector(hideAll))
 
         let heading = NSStackView(views: [NSTextField(labelWithString: "贴图组"), groupPicker, groupOrderPicker, addGroupButton, renameGroupButton, deleteGroupButton])
-        heading.orientation = .horizontal; heading.spacing = 8
+        heading.orientation = .horizontal; heading.spacing = 6
         heading.identifier = NSUserInterfaceItemIdentifier("pin-group-heading")
         let visibility = NSStackView(views: [hiddenToggle, protectedToggle, NSView(), showGroupButton, hideAllButton])
         visibility.orientation = .horizontal; visibility.spacing = 12
@@ -101,7 +101,9 @@ import PicShotCore
         // minimum, but never force it below AppKit's actual required width.
         let orderWidth = max(CGFloat(64), ceil(groupOrderPicker.cell?.cellSize.width ?? 64))
         groupOrderPicker.widthAnchor.constraint(equalToConstant: orderWidth).isActive = true
-        groupPicker.widthAnchor.constraint(greaterThanOrEqualToConstant: 160).isActive = true
+        // These compact minima accommodate the measured native cells while
+        // preserving bounded truncation for user-supplied long group names.
+        groupPicker.widthAnchor.constraint(greaterThanOrEqualToConstant: 172).isActive = true
 
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("pin"))
         column.title = "贴图"; column.resizingMask = .autoresizingMask
@@ -139,6 +141,7 @@ import PicShotCore
         movePicker.identifier = NSUserInterfaceItemIdentifier("pin-group-move-pin")
         movePicker.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         movePicker.cell?.lineBreakMode = .byTruncatingTail
+        movePicker.widthAnchor.constraint(greaterThanOrEqualToConstant: 150).isActive = true
         let actions = NSStackView(views: [openButton, renamePinButton, removePinButton, NSView(), NSTextField(labelWithString: "移动到"), movePicker])
         actions.orientation = .horizontal; actions.spacing = 8
         // Stack spacing is between alignment rectangles; native rounded cells
@@ -272,6 +275,10 @@ import PicShotCore
         openButton.isEnabled = selectedPinID != nil; renamePinButton.isEnabled = selectedPinID != nil
         removePinButton.isEnabled = selectedPinID != nil; movePicker.isEnabled = selectedPinID != nil
         if selectedPinIDs.count > 1 { details.stringValue = "已选 \(selectedPinIDs.count) 项\n组合操作仅适用于正在显示、未锁定且未穿透的贴图。归档与隐藏项不会自动打开。直接拖动 / 拉伸仍只改变单个贴图；组合操作请用下方按钮。" }
+        // Native menu/selection labels stay complete even when the compact
+        // control truncates a long name; hover provides the same full string.
+        groupPicker.toolTip = groupPicker.selectedItem?.title
+        movePicker.toolTip = movePicker.selectedItem?.title
         updateTransformControls()
     }
     /// Context menus and reset/hide own the live transform selection. A catalog
