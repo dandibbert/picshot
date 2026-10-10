@@ -65,8 +65,18 @@ final class RecordingInputExportTests: XCTestCase {
         var changed = try Data(contentsOf: url)
         let loop = try XCTUnwrap(changed.range(of: Data("NETSCAPE2.0".utf8)))
         changed[loop.upperBound + 2] = 1
+        // A raw finite repeat count is not necessarily ImageIO's exposed
+        // playback count (ARM166 returned 2 for raw 1). Preserve the actual
+        // native value, and independently prove that it is finite/nonzero.
+        let finiteSource = try XCTUnwrap(CGImageSourceCreateWithData(changed as CFData, nil))
+        let finiteProperties = try XCTUnwrap(CGImageSourceCopyProperties(finiteSource, nil) as? [CFString: Any])
+        let finiteGIF = try XCTUnwrap(finiteProperties[kCGImagePropertyGIFDictionary] as? [CFString: Any])
+        let finiteLoop = try XCTUnwrap((finiteGIF[kCGImagePropertyGIFLoopCount] as? NSNumber)?.intValue)
+        XCTAssertEqual(changed[loop.upperBound + 2], 1)
+        XCTAssertGreaterThan(finiteLoop, 0, "The deliberately finite GIF must not be reported as infinite")
+        metadata = [:]
         XCTAssertThrowsError(try Oracle.gifContainer(changed) { metadata = $0 })
-        XCTAssertEqual((metadata["loopCount"] as? NSNumber)?.intValue, 1,
+        XCTAssertEqual((metadata["loopCount"] as? NSNumber)?.intValue, finiteLoop,
                        "Actual native metadata must survive a failed assertion")
     }
 
