@@ -1,11 +1,11 @@
 #!/bin/bash
 set -euo pipefail
-[[ $# == 4 && "$1" == --phase ]] || { echo 'Usage: codec-staging-comparison.sh --phase export|product|fidelity|summary|avif-confirmation ABS_APP ABS_EVIDENCE_ROOT' >&2; exit 64; }
+[[ $# == 4 && "$1" == --phase ]] || { echo 'Usage: codec-staging-comparison.sh --phase export|product|fidelity|summary|avif-confirmation|fidelity-only ABS_APP ABS_EVIDENCE_ROOT' >&2; exit 64; }
 phase="$2"; app="$3"; root="$4"
 [[ "$app" == /* && "$app" == *.app && "$root" == /* && "$(uname -s)" == Darwin ]] || exit 64
 cd -P "$(dirname "$0")/.."
-[[ "$phase" == export || "$phase" == product || "$phase" == fidelity || "$phase" == summary || "$phase" == avif-confirmation ]] || exit 64
-if [[ "$phase" == export || "$phase" == avif-confirmation ]]; then
+[[ "$phase" == export || "$phase" == product || "$phase" == fidelity || "$phase" == summary || "$phase" == avif-confirmation || "$phase" == fidelity-only ]] || exit 64
+if [[ "$phase" == export || "$phase" == avif-confirmation || "$phase" == fidelity-only ]]; then
   [[ ! -e "$root" ]] || exit 65
   mkdir -p "$root"
 else
@@ -28,6 +28,7 @@ parts=root/'upload';parts.mkdir(exist_ok=True)
 (root/(phase+'-exit.json')).write_text(json.dumps({'phase':phase,'exitCode':int(sys.argv[3])})+'\n')
 if not (root/(phase+'-summary.json')).exists():
     incomplete={'phase':phase,'verdict':'inconclusive-phase-did-not-complete','promotionReady':False}
+    if phase=='fidelity-only':incomplete.update(sameRunMeasuredCellBinding=False,historicalMemoryQualification=False)
     if phase=='avif-confirmation':incomplete.update(avifQualificationHold=True,overallAVIFVerdict='inconclusive-incomplete-confirmation')
     (root/(phase+'-summary.json')).write_text(json.dumps(incomplete)+'\n')
 total=0
@@ -37,7 +38,7 @@ with zipfile.ZipFile(parts/(phase+'-reports.zip'),'w',compression=zipfile.ZIP_DE
             total+=p.stat().st_size
             if total>=28*1024*1024:raise SystemExit('Report/log budget exceeds 28 MiB; retain raw evidence and fail')
             z.write(p,p.relative_to(root))
-if phase=='fidelity':
+if phase in ('fidelity','fidelity-only'):
     for group,pattern in [('small','evidence-small-*/*'),('large-control','evidence-large-control/*'),('large-candidate','evidence-large-candidate/*')]:
         archive=parts/(group+'-specimens.zip')
         with zipfile.ZipFile(archive,'x',compression=zipfile.ZIP_DEFLATED) as z:
@@ -80,7 +81,7 @@ actual={'schemaVersion':1,'bundlePath':str(canonical),'sourceCommit':source,
     'helperExecutablePath':str(helper),'helperExecutableSHA256':digest(helper),
     'infoPlistSHA256':digest(info)}
 identity=root/'identity.json'
-if phase in ('export','avif-confirmation') and position=='before':
+if phase in ('export','avif-confirmation','fidelity-only') and position=='before':
     with identity.open('x') as f:json.dump(actual,f,indent=2,sort_keys=True);f.write('\n')
 with identity.open() as f:expected=json.load(f)
 report={'phase':phase,'position':position,'outsideMeasuredParents':True,'matchesPreflight':actual==expected,'identity':actual}
@@ -131,7 +132,7 @@ case "$phase" in
     run combined-$arm combined "$arm" installed-768x576
   done
   ;;
- fidelity)
+ fidelity|fidelity-only)
   for profile in small large; do
     native_profile=installed-768x576
     [[ "$profile" != large ]] || native_profile=staging-2048x1536

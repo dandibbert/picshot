@@ -91,12 +91,14 @@ final class ImageExportPNGStagingTests: XCTestCase {
         let snapshot = try ImageExportSnapshot(image: fixture())
         let expected = try ImageExportService.encode(snapshot: snapshot, options: ImageExportOptions()).data
         let expectedHash = SHA256.hash(data: expected).map { String(format: "%02x", $0) }.joined()
-        for mode in [CodecPNGStagingMode.verifiedBytesOnly, .legacyPreview] {
+        for mode in [nil, .verifiedBytesOnly, .legacyPreview] as [CodecPNGStagingMode?] {
             for format in [CodecExportFormat.webp, .avif] {
                 let capture = StagedPNGObservation()
+                let expectedMode = mode ?? (format == .webp ? .verifiedBytesOnly : .legacyPreview)
+                let collectIdentity = mode != nil
                 let service = CodecExportProcessService(configuration: .init(
                     executable: { URL(fileURLWithPath: "/usr/bin/false") },
-                    pngStagingMode: mode, collectStagedPNGIdentityForDiagnostics: true,
+                    pngStagingMode: mode, collectStagedPNGIdentityForDiagnostics: collectIdentity,
                     stagedPNGForDiagnostics: { url in
                         try capture.record(url)
                         // Cancel the actual detached staging task, without a
@@ -118,9 +120,9 @@ final class ImageExportPNGStagingTests: XCTestCase {
                 XCTAssertNil(metrics.childProcessIdentifier)
                 XCTAssertEqual(metrics.outcome, "cancelled")
                 XCTAssertTrue(metrics.temporaryDirectoryRemoved)
-                XCTAssertEqual(metrics.pngStagingMode, mode.rawValue)
+                XCTAssertEqual(metrics.pngStagingMode, expectedMode.rawValue)
                 XCTAssertEqual(metrics.sourceBytes, Int64(expected.count))
-                XCTAssertEqual(metrics.sourceSHA256, expectedHash)
+                XCTAssertEqual(metrics.sourceSHA256, collectIdentity ? expectedHash : nil)
                 // A cancelled stage must release the shared native lease.
                 let lease = try XCTUnwrap(NativeExportAdmission.shared.acquire())
                 NativeExportAdmission.shared.release(lease)
@@ -130,7 +132,9 @@ final class ImageExportPNGStagingTests: XCTestCase {
 
     func testProductionDefaultsToBytesOnlyWithoutDiagnosticWork() {
         let configuration = CodecProcessConfiguration.production
-        XCTAssertEqual(configuration.pngStagingMode, .verifiedBytesOnly)
+        XCTAssertNil(configuration.pngStagingMode)
+        XCTAssertEqual(configuration.resolvedPNGStagingMode(for: .webp), .verifiedBytesOnly)
+        XCTAssertEqual(configuration.resolvedPNGStagingMode(for: .avif), .legacyPreview)
         XCTAssertFalse(configuration.collectStagedPNGIdentityForDiagnostics)
         XCTAssertNil(configuration.stagedPNGForDiagnostics)
     }

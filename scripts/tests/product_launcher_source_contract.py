@@ -1,4 +1,37 @@
-"""Remove only the literal counted opt-in product and early-recording hooks."""
+"""Remove only the literal counted opt-in product, early and staging hooks."""
+
+# Reverse only candidate182's four reviewed staging additions before applying
+# the older exact reversals. The historical launcher byte hash stays unchanged.
+CODEC_STAGING_LAUNCHER_HOOKS = (
+    (
+        '"PICSHOT_CODEC_STAGING_MODE", "PICSHOT_CODEC_STAGING_ARM", "PICSHOT_CODEC_STAGING_PROFILE", "PICSHOT_CODEC_STAGING_FORMAT", "PICSHOT_CODEC_STAGING_INPUT_DIRECTORY", ',
+        '',
+    ),
+    (
+        '    if recordingInputExportOnly || ProcessInfo.processInfo.environment["PICSHOT_CODEC_STAGING_MODE"] != nil || ProcessInfo.processInfo.environment["PICSHOT_EDITABLE_PRODUCT_MODE"] != nil ||\n',
+        '    if recordingInputExportOnly || ProcessInfo.processInfo.environment["PICSHOT_EDITABLE_PRODUCT_MODE"] != nil ||\n',
+    ),
+    (
+        '        if ProcessInfo.processInfo.environment["PICSHOT_CODEC_STAGING_MODE"] != nil {\n'
+        '            report["launchedIdentityMatches"] = launchedIdentityMatches()\n'
+        '            report["expectedExecutablePath"] = expectedExecutablePath\n'
+        '        }\n',
+        '',
+    ),
+    (
+        '        if (recordingInputExportOnly || ProcessInfo.processInfo.environment["PICSHOT_CODEC_STAGING_MODE"] != nil) && !launchedIdentityMatches() {\n',
+        '        if recordingInputExportOnly && !launchedIdentityMatches() {\n',
+    ),
+)
+
+
+def without_codec_staging_launcher_hooks(test, source):
+    for hook, replacement in CODEC_STAGING_LAUNCHER_HOOKS:
+        test.assertEqual(source.count(hook), 1,
+                         "Missing, duplicated or changed codec-staging launcher hook")
+        source = source.replace(hook, replacement, 1)
+    return source
+
 
 # These ten exact reversals preserve the pre-existing launcher byte hash.
 # Do not generalize to regex/block deletion or refresh the historical hashes.
@@ -122,6 +155,7 @@ def without_early_recording_launcher_hooks(test, source):
 
 
 def without_product_launcher_hooks(test, source):
+    source = without_codec_staging_launcher_hooks(test, source)
     source = without_early_recording_launcher_hooks(test, source)
     hooks = [
         ('"PICSHOT_EDITABLE_PRODUCT_MODE", "PICSHOT_EDITABLE_PRODUCT_INPUT", "PICSHOT_EDITABLE_PRODUCT_CERTIFICATE", ', ''),

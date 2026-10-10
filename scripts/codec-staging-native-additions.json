@@ -1,0 +1,11 @@
+[
+  "PicShotTests.CodecStagingComparisonTests/testBoundedLargeProfileAndOptInVolatileSampler",
+  "PicShotTests.CodecStagingComparisonTests/testProviderIdentityBindsSourceWithoutAnExtraMeasuredRasterDraw",
+  "PicShotTests.CodecStagingComparisonTests/testSelectorsRejectMixedOrUnboundedWorkBeforeClaimingProcess",
+  "PicShotTests.ImageExportPNGStagingTests/testBothStillFormatsAndModesKeepPrivateExactStageAndCancelBeforeLaunch",
+  "PicShotTests.ImageExportPNGStagingTests/testProductionDefaultsToBytesOnlyWithoutDiagnosticWork",
+  "PicShotTests.ImageExportPNGStagingTests/testStagedBytesPassTheSharedVerifierWhichRejectsWrongMetadata",
+  "PicShotTests.ImageExportPNGStagingTests/testStagingHasExactOrdinaryAndReferencePNGBytesAndSourcePixels",
+  "PicShotTests.ImageExportPNGStagingTests/testStagingKeepsInclusiveSourceAndEncodedByteCaps",
+  "PicShotTests.ImageExportPNGStagingTests/testStagingKeepsLimitValidationAndPreCancelledFailure"
+]

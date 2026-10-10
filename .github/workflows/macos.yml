@@ -91,7 +91,9 @@ jobs:
     # Early same-ZIP recording witness adds orchestration allowance only:
     # 20 minutes execution plus 2 for its upload; no existing limit changes.
     # ARM: 176 + 22 = 198; Intel: 204 + 22 = 226. All prior allowances remain.
-    timeout-minutes: ${{ matrix.arch == 'x86_64' && 226 || 198 }}
+    # Installed fidelity adds120m (3 checks +106 wrapper +10 uploads +1 reserve).
+    # This changes only the enclosing allowance: ARM318 / Intel346.
+    timeout-minutes: ${{ matrix.arch == 'x86_64' && 346 || 318 }}
     env:
       # Subdivide exhaustive ARM processes; preserve focused isolation.
       NATIVE_TEST_PROCESS_COUNT: '4'
@@ -253,6 +255,67 @@ jobs:
             dist/evidence/image-backing/
           if-no-files-found: ignore
           retention-days: 14
+      - name: Verify installed production staging routes and portable fidelity contract
+        timeout-minutes: 3
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_codec_fidelity_only.py -v
+          PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p test_codec_fidelity_only.py -v
+          python3 scripts/check-codec-staging-defaults.py dist/evidence/codec-attribution --source "$GITHUB_SHA" --webp verifiedBytesOnly --avif legacyPreview --report dist/codec-fidelity-metadata/default-routes.json
+      - name: Verify actual staged final and preview pixels from installed ZIP
+        timeout-minutes: 106
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 6240 --max-log-bytes 1048576
+          --log dist/codec-fidelity-metadata/outer.log --report dist/codec-fidelity-metadata/outer.json
+          -- bash scripts/codec-fidelity-installed.sh
+          "${{ github.workspace }}/dist/PicShot-0.19.1-macos-${{ matrix.arch }}.zip"
+          "${{ github.workspace }}/dist/codec-fidelity-standalone" "${{ github.sha }}"
+      - name: Preserve standalone fidelity reports and actual default-route evidence
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Fidelity-Only-Reports-${{ matrix.arch }}-${{ github.sha }}
+          path: dist/codec-fidelity-standalone/upload/fidelity-only-reports.zip
+          if-no-files-found: warn
+          compression-level: 0
+      - name: Preserve small fidelity specimens separately
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Fidelity-Only-Small-${{ matrix.arch }}-${{ github.sha }}
+          path: dist/codec-fidelity-standalone/upload/small-specimens.zip
+          if-no-files-found: warn
+          compression-level: 0
+      - name: Preserve large control fidelity specimens separately
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Fidelity-Only-Large-Control-${{ matrix.arch }}-${{ github.sha }}
+          path: dist/codec-fidelity-standalone/upload/large-control-specimens.zip
+          if-no-files-found: warn
+          compression-level: 0
+      - name: Preserve large candidate fidelity specimens separately
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Fidelity-Only-Large-Candidate-${{ matrix.arch }}-${{ github.sha }}
+          path: dist/codec-fidelity-standalone/upload/large-candidate-specimens.zip
+          if-no-files-found: warn
+          compression-level: 0
+      - name: Preserve ordinary default-route and outer-command evidence separately
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Fidelity-Only-Default-Routes-${{ matrix.arch }}-${{ github.sha }}
+          path: |
+            dist/codec-fidelity-metadata/default-routes.json
+            dist/codec-fidelity-metadata/outer.log
+            dist/codec-fidelity-metadata/outer.json
+          if-no-files-found: warn
       - name: Reproduce the exact pin Apply regression before broader native gates
         # Method first, then its four-method class. Each keeps 420s native,
         # 5s TERM grace and 8MiB log cap: 2 * (420s + 10s cleanup) + 60s = 920s.
@@ -301,16 +364,16 @@ jobs:
               plan_path = Path('dist/native-tests-plan.json')
               plan = native.checked_plan(plan_path, source)
               inventory = plan['discoveredTests']
-              native.need(len(inventory) == 1945 and len({case.split('/')[0] for case in inventory}) == 218
+              native.need(len(inventory) == 1954 and len({case.split('/')[0] for case in inventory}) == 220
                   and hashlib.sha256(('\n'.join(inventory)+'\n').encode()).hexdigest() ==
-                      '11d1789bc19d0ad0f0b5b2e482e21c4aca16a5f08cef246b4706cdc584f21772'
+                      '9b5e137cdbf8707a952ea0c2a8b4d289683f8bd1fb3de3d33471d2572fae7b94'
                   and plan['selectedTests'] == inventory and plan['selectionRegex'] == ''
                   and plan['processCount'] == 4 and plan['timeoutSecondsPerProcess'] == 420
-                  and [len(shard['tests']) for shard in plan['shards']] == [529, 432, 490, 494],
+                  and [len(shard['tests']) for shard in plan['shards']] == [529, 432, 493, 500],
                   'Complete native inventory or original process grouping changed')
               native.need([case for case in inventory if case.startswith('PicShotTests.PinAnchoredEditingTests/')] == class_ids,
                   'Pin class inventory differs from the four original methods')
-              record.update(planSHA256=digest(plan_path), discoveredCount=1945, discoveredClassCount=218,
+              record.update(planSHA256=digest(plan_path), discoveredCount=1954, discoveredClassCount=220,
                   discoverySHA256=digest(Path('dist/native-test-discovery.log')),
                   fixtureSHA256=digest(Path('Tests/PicShotTests/PinAnchoredEditingTests.swift')))
               for label, expected in (('method', [method]), ('class', class_ids)):

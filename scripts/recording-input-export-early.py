@@ -56,7 +56,7 @@ def package_identity(app, packaged, archive, commit, architecture):
     build = json.loads((app / IDENTITY_FILES[2]).read_text())
     GATE.need(info.get("PicShotSourceCommit") == build.get("sourceCommit") == commit
               and info.get("CFBundleExecutable") == "PicShot"
-              and info.get("CFBundleShortVersionString") == build.get("version") == "0.19.0"
+              and info.get("CFBundleShortVersionString") == build.get("version") == "0.19.1"
               and build.get("architecture") == architecture, "Installed source, architecture or version differs")
     if "GITHUB_RUN_NUMBER" in os.environ:
         GATE.need(info.get("CFBundleVersion") == os.environ["GITHUB_RUN_NUMBER"], "Installed build number differs")
@@ -166,7 +166,7 @@ def run(commit):
     work, app, launch_attempted = None, None, False
     try:
         source_identity(commit)
-        archive = dist / f"PicShot-0.19.0-macos-{platform.machine()}.zip"
+        archive = dist / f"PicShot-0.19.1-macos-{platform.machine()}.zip"
         work = Path(tempfile.mkdtemp(prefix="recording-input-export-early.", dir=dist)).resolve()
         app = work / "PicShot.app"
         subprocess.run(["ditto", "-x", "-k", str(archive), str(work)], check=True, timeout=60)

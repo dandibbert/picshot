@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Predeclared bounded comparison. Missing observations never become zero."""
 import argparse
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -195,15 +196,44 @@ def paired_result(pairs):
         return 'reject-consistent-gate-excess'
     return 'inconclusive-noise-or-order-sensitive'
 
-def evidence_checks(root, profile):
+def specimen(path, expected_hash, expected_bytes, maximum):
+    need(isinstance(expected_hash,str) and len(expected_hash)==64 and all(c in '0123456789abcdef' for c in expected_hash), 'invalid specimen digest')
+    need(integer(expected_bytes,1) and expected_bytes<=maximum and path.is_file() and not path.is_symlink() and path.stat().st_size==expected_bytes, 'missing/oversized/changed specimen')
+    digest=hashlib.sha256()
+    with path.open('rb') as stream:
+        for block in iter(lambda:stream.read(MIB),b''):digest.update(block)
+    need(digest.hexdigest()==expected_hash, 'actual specimen bytes differ from validated digest')
+
+def evidence_checks(root, profile, bind_measured=True):
     reports = [cell(root, f'evidence-{profile}-{arm}') for arm in ('control', 'candidate')]
     checks = [cell(root, f'validate-{profile}-{arm}') for arm in ('control', 'candidate')]
-    for report, check in zip(reports, checks):
+    width,height=(2048,1536) if profile=='large' else (768,576)
+    for arm,report,check in zip(('control','candidate'),reports,checks):
+        need(report['status']=='preserved' and report['comparisonMode']=='evidence' and check['comparisonMode']=='validate' and
+             report['arm']==check['arm']==arm and report['sourceWidth']==check['sourceWidth']==width and report['sourceHeight']==check['sourceHeight']==height,
+             'wrong producer/validator cell or source dimensions')
+        need([e['format'] for e in report['entries']]==['webp','avif'] and [e['format'] for e in check['entries']]==['webp','avif'], 'exactly two format evidence entries required')
+        directory=root/f'evidence-{profile}-{arm}'
+        specimen(directory/'source.rgba',report['sourceSHA256'],width*height*4,width*height*4)
+        for entry,validated in zip(report['entries'],check['entries']):
+            fmt=entry['format'];pw,ph=entry['previewWidth'],entry['previewHeight']
+            need(integer(pw,1) and integer(ph,1) and any((pw,ph)==(max(1,round(width*min(1,limit/max(width,height)))),max(1,round(height*min(1,limit/max(width,height))))) for limit in (1024,1000)), 'preview geometry exceeds native plans')
+            need(validated['previewWidth']==pw and validated['previewHeight']==ph and validated['decodedBytes']==width*height*4 and
+                 validated['previewValidatedBytes']==pw*ph*4 and validated['finalSHA256']==entry['finalSHA256'] and validated['stagedSHA256']==entry['stagedSHA256'], 'validator geometry/byte/digest binding differs')
+            specimen(directory/f'actual-staged-{fmt}.png',entry['stagedSHA256'],entry['stagedBytes'],80_000_000)
+            specimen(directory/f'actual-final.{fmt}',entry['finalSHA256'],entry['finalBytes'],134_217_728)
+            need(entry['previewBytes']==pw*ph*4, 'actual preview raster byte count differs')
+            specimen(directory/f'actual-preview-{fmt}.rgba',entry['previewSHA256'],entry['previewBytes'],4_194_304)
+            helper=entry['helper']
+            need(helper['outcome']=='succeeded' and integer(helper['terminationStatus']) and helper['terminationStatus']==0 and helper['childExitConfirmed'] is True and helper['temporaryDirectoryRemoved'] is True and
+                 integer(helper['childProcessIdentifier'],1) and helper['helperExecutablePath']==report['helperVerifiedPath'] and
+                 helper['pngStagingMode']==report['pngStagingMode'] and helper['sourceSHA256']==entry['stagedSHA256'], 'actual producer helper route/exit/staging identity differs')
         need(check['status'] == 'validated' and check['producerPID'] == report['processIdentifier'], 'validation did not use preserved evidence')
-        need(all(e['allPixelsAndAlphaCompared'] and e['previewCompared'] and e['stagedCompared'] for e in check['entries']), 'pixel validation missing')
+        need(check['independentValidationProcess'] is True and check['helperLaunches']==0 and all(e['allPixelsAndAlphaCompared'] is True and e['previewCompared'] is True and e['stagedCompared'] is True for e in check['entries']), 'pixel validation missing')
     need(reports[0]['sourceSHA256'] == reports[1]['sourceSHA256'], 'evidence source differs')
     for a, b in zip(reports[0]['entries'], reports[1]['entries']):
         need(a['format'] == b['format'] and a['stagedSHA256'] == b['stagedSHA256'] and a['finalSHA256'] == b['finalSHA256'] and a['previewSHA256'] == b['previewSHA256'], 'actual stage/final/preview files differ')
+    matched=0
     for directory in root.iterdir():
         if not directory.is_dir() or not (directory / 'codec-staging.json').exists():
             continue
@@ -212,11 +242,15 @@ def evidence_checks(root, profile):
             continue
         if (r['sourceWidth'] == 2048) != (profile == 'large'):
             continue
-        specimen = reports[0 if r['arm'] == 'control' else 1]
-        entry = next(e for e in specimen['entries'] if e['format'] == r['format'])
+        need(bind_measured, 'standalone fidelity must not contain measured cells')
+        matched+=1
+        reference = reports[0 if r['arm'] == 'control' else 1]
+        entry = next(e for e in reference['entries'] if e['format'] == r['format'])
         for c in r['warmups'] + r['cycles']:
-            need(c['sourceSHA256'] == specimen['sourceSHA256'] and c['helper']['sourceSHA256'] == entry['stagedSHA256'] and c['encodedSHA256'] == entry['finalSHA256'], 'measured bytes not bound to independently validated actual files')
-    return {'profile': profile, 'status': 'passed', 'actualStagedFinalPreviewBytesMatch': True, 'allMeasuredDigestsBound': True}
+            need(c['sourceSHA256'] == reference['sourceSHA256'] and c['helper']['sourceSHA256'] == entry['stagedSHA256'] and c['encodedSHA256'] == entry['finalSHA256'], 'measured bytes not bound to independently validated actual files')
+    need(not bind_measured or matched>0, 'full fidelity requires actual same-run measured cells')
+    return {'profile': profile, 'status': 'passed', 'actualStagedFinalPreviewBytesMatch': True,
+        'sameRunMeasuredCellBinding':bind_measured and matched>0, 'measuredCellCount':matched, 'allMeasuredDigestsBound':bind_measured and matched>0}
 
 # Immutable bounded context from build 182; this one confirmation never erases it.
 AVIF_PRIOR_FAILURE = {
@@ -275,13 +309,23 @@ def run(root, phase):
         result['boundedChecks'] = {name: compare(cell(root, name+'-control'), cell(root, name+'-candidate'), False) for name in ['large-export', 'large-controller', 'avif-export', 'combined']}
         result['combinedScope'] = 'Corroboration only; parent independent ImageIO decode/full raster remains. Cannot qualify export-only benefit.'
         result['verdict'] = 'passes-predeclared-gates' if all(p['passes'] for p in pairs) and all(v['passes'] for k, v in result['boundedChecks'].items() if k != 'combined') else 'inconclusive-or-reject-review-independent-gates'
-    elif phase == 'fidelity':
-        result['evidence'] = [evidence_checks(root, p) for p in ('small', 'large')]
+    elif phase in ('fidelity','fidelity-only'):
+        standalone=phase=='fidelity-only'
+        if standalone:
+            expected={f'{mode}-{profile}-{arm}' for mode in ('evidence','validate') for profile in ('small','large') for arm in ('control','candidate')} | {'interruptions-control','interruptions-candidate'}
+            need({p.parent.name for p in root.glob('*/codec-staging.json')}==expected, 'standalone fidelity needs exactly ten producer/validator/interruption cells')
+            need(not any((root/(name+'-summary.json')).exists() for name in ('export','product','summary')), 'standalone fidelity cannot inherit or fabricate measured summaries')
+        result['evidence'] = [evidence_checks(root, p,bind_measured=not standalone) for p in ('small', 'large')]
         for arm in ('control', 'candidate'):
             r = cell(root, 'interruptions-'+arm)
-            need(r['status'] == 'passed' and r['closeDuringHelper']['lateResultSuppressed'] and r['closeDuringHelper']['controllerReleased'], 'interruption checks incomplete')
-            need(len(r['formats']) == 2 and all(f['inFlightFormatQualityChange'] and f['realPixelsAndAlphaVerified'] and f['sameByteSave'] for f in r['formats']), 'WebP/AVIF UI fidelity incomplete')
+            need(r['status'] == 'passed' and r['comparisonMode']=='interruptions' and r['arm']==arm and r['closeDuringHelper']['progressTriggeredClose'] is True and r['closeDuringHelper']['lateResultSuppressed'] is True and r['closeDuringHelper']['controllerReleased'] is True, 'interruption checks incomplete')
+            h=r['closeDuringHelper']['helper']
+            need(h['childExitConfirmed'] is True and h['temporaryDirectoryRemoved'] is True and integer(h['childProcessIdentifier'],1) and h['helperExecutablePath']==r['helperVerifiedPath'] and h['pngStagingMode']==r['pngStagingMode'], 'close helper identity/route/cleanup missing')
+            need(len(r['formats']) == 2 and {f['format'].lower() for f in r['formats']}=={'webp','avif'} and all(f['inFlightFormatQualityChange'] is True and f['realPixelsAndAlphaVerified'] is True and f['sameByteSave'] is True and f['childExitConfirmed'] is True and f['temporaryDirectoryRemoved'] is True for f in r['formats']), 'WebP/AVIF UI fidelity incomplete')
         result['verdict'] = 'passed'
+        if standalone:
+            result.update(promotionReady=False,sameRunMeasuredCellBinding=False,historicalMemoryQualification=False,
+                scope='Standalone actual-file/independent-pixel/native-UI fidelity only. No same-run measured-cell binding, historical memory qualification, installed default-route acceptance or promotion is inferred.')
     else:
         summaries = {p: load(root / (p+'-summary.json')) for p in ['export', 'product', 'fidelity']}
         result['phases'] = {p: r['verdict'] for p, r in summaries.items()}
@@ -294,12 +338,14 @@ def run(root, phase):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('root', type=Path); parser.add_argument('--phase', choices=['export', 'product', 'fidelity', 'summary', 'avif-confirmation'], required=True)
+    parser.add_argument('root', type=Path); parser.add_argument('--phase', choices=['export', 'product', 'fidelity', 'summary', 'avif-confirmation', 'fidelity-only'], required=True)
     args = parser.parse_args()
     try:
         output = run(args.root, args.phase)
     except (EvidenceError, KeyError, StopIteration, TypeError) as e:
         output = {'phase': args.phase, 'verdict': 'inconclusive-invalid-or-missing-evidence', 'error': str(e), 'promotionReady': False}
+        if args.phase=='fidelity-only':
+            output.update(sameRunMeasuredCellBinding=False,historicalMemoryQualification=False)
         if args.phase=='avif-confirmation':
             output.update(avifQualificationHold=True, overallAVIFVerdict='inconclusive-incomplete-confirmation', priorFailedPair=AVIF_PRIOR_FAILURE)
     destination = args.root / (args.phase + '-summary.json')

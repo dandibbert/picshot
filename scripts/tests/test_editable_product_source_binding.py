@@ -7,7 +7,9 @@ import tempfile
 from pathlib import Path
 import re
 import unittest
-from product_launcher_source_contract import EARLY_RECORDING_LAUNCHER_HOOKS, without_product_launcher_hooks
+from product_launcher_source_contract import (CODEC_STAGING_LAUNCHER_HOOKS,
+    EARLY_RECORDING_LAUNCHER_HOOKS, without_codec_staging_launcher_hooks,
+    without_early_recording_launcher_hooks, without_product_launcher_hooks)
 from product_retirement_source_contract import without_product_retirement_waits, without_provider_test_observer
 
 ROOT=Path(__file__).resolve().parents[2]
@@ -26,18 +28,20 @@ class ProductSourceBindingTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(stripped.encode()).hexdigest(),
             'ab3166f71cd826b10e137bf2c4f2171dd3b8fbf8e4da3a279337a866199c2363')
 
-    def test_general_launcher_preserves_prior_body_after_four_literal_insertions(self):
+    def test_general_launcher_preserves_prior_body_after_literal_hooks(self):
         source=(ROOT/'scripts/launch-smoke-app.swift').read_text()
         stripped=without_product_launcher_hooks(self,source)
         self.assertEqual(hashlib.sha256(stripped.encode()).hexdigest(),'a46ab938b151e73ebadd99f2800f31e32ec147a707f9a19815555a7a2f2d8d19')
 
     def test_early_launcher_hooks_require_exact_literals_once(self):
         source=(ROOT/'scripts/launch-smoke-app.swift').read_text()
+        source=without_codec_staging_launcher_hooks(self,source)
+        without_early_recording_launcher_hooks(self,source)
         self.assertEqual(len(EARLY_RECORDING_LAUNCHER_HOOKS),10)
         for index,(hook,_) in enumerate(EARLY_RECORDING_LAUNCHER_HOOKS):
             for disposition,replacement in [('missing',''),('duplicated',hook+hook)]:
                 with self.subTest(hook=index,disposition=disposition),self.assertRaises(AssertionError):
-                    without_product_launcher_hooks(self,source.replace(hook,replacement,1))
+                    without_early_recording_launcher_hooks(self,source.replace(hook,replacement,1))
         changes=[
             ('source.setEventHandler { interruptedSignal = number }',
              'source.setEventHandler { interruptedSignal = nil }'),
@@ -49,8 +53,30 @@ class ProductSourceBindingTests(unittest.TestCase):
              'while Date() < deadline || interruptedSignal == nil {'),
         ]
         for original,altered in changes:
+            self.assertIn(original,source)
             with self.subTest(altered=altered),self.assertRaises(AssertionError):
-                without_product_launcher_hooks(self,source.replace(original,altered,1))
+                without_early_recording_launcher_hooks(self,source.replace(original,altered,1))
+
+    def test_staging_launcher_hooks_require_exact_literals_once(self):
+        source=(ROOT/'scripts/launch-smoke-app.swift').read_text()
+        without_product_launcher_hooks(self,source)
+        self.assertEqual(len(CODEC_STAGING_LAUNCHER_HOOKS),4)
+        for index,(hook,_) in enumerate(CODEC_STAGING_LAUNCHER_HOOKS):
+            self.assertEqual(source.count(hook),1)
+            for disposition,replacement in [('missing',''),('duplicated',hook+hook),
+                    ('changed',hook.replace('PICSHOT_CODEC_STAGING_MODE','PICSHOT_CODEC_STAGING_OTHER',1))]:
+                with self.subTest(hook=index,disposition=disposition),self.assertRaises(AssertionError):
+                    without_product_launcher_hooks(self,source.replace(hook,replacement,1))
+        identity_hook=CODEC_STAGING_LAUNCHER_HOOKS[2][0]
+        for original,altered in [
+            ('report["launchedIdentityMatches"] = launchedIdentityMatches()',
+             'report["launchedIdentityMatches"] = true'),
+            ('report["expectedExecutablePath"] = expectedExecutablePath',
+             'report["expectedExecutablePath"] = launchedExecutablePath'),
+        ]:
+            with self.subTest(altered=altered),self.assertRaises(AssertionError):
+                without_product_launcher_hooks(self,source.replace(identity_hook,
+                    identity_hook.replace(original,altered,1),1))
 
     def test_non_early_launcher_changes_still_fail_the_historical_hash(self):
         source=(ROOT/'scripts/launch-smoke-app.swift').read_text()
@@ -148,7 +174,8 @@ class InstalledExtractionDirectoryTests(unittest.TestCase):
         self.repo = self.root / "physical-repository"
         (self.repo / "scripts").mkdir(parents=True)
         self.scripts = ('ui-preview', 'codec-attribution', 'image-backing-attribution',
-                        'recording-recovery-smoke', 'gif-attribution', 'smoke')
+                        'recording-recovery-smoke', 'gif-attribution', 'smoke',
+                        'codec-fidelity-installed')
         for script in self.scripts:
             shutil.copyfile(ROOT / f'scripts/{script}.sh', self.repo / f'scripts/{script}.sh')
         self.tools = self.root / "tools"
@@ -156,9 +183,13 @@ class InstalledExtractionDirectoryTests(unittest.TestCase):
         stub = self.tools / "ditto"
         stub.write_text("""#!/bin/sh
 printf '%s\\n' "$@" > "$PICSHOT_TEST_DITTO_ARGUMENTS"
-exit 97
+exit "${PICSHOT_TEST_DITTO_EXIT:-97}"
 """)
         stub.chmod(0o755)
+        self.archive = self.root / 'candidate package.zip'
+        self.archive.write_bytes(b'stubbed extraction input')
+        self.evidence = self.root / 'new-fidelity-evidence'
+        self.source = 'a' * 40
         self.arguments = self.root / "ditto-arguments"
         self.environment = dict(os.environ, PATH=str(self.tools) + os.pathsep + os.environ['PATH'],
                                 PICSHOT_TEST_DITTO_ARGUMENTS=str(self.arguments))
@@ -168,12 +199,18 @@ exit 97
 
     def run_preflight(self, script, root=None):
         self.arguments.unlink(missing_ok=True)
-        return subprocess.run(['bash', str((root or self.repo) / f'scripts/{script}.sh')],
+        command = ['bash', str((root or self.repo) / f'scripts/{script}.sh')]
+        if script == 'codec-fidelity-installed':
+            command.extend([str(self.archive), str(self.evidence), self.source])
+        return subprocess.run(command,
             cwd=self.root, env=self.environment, capture_output=True, text=True, timeout=10)
 
     def extraction_root(self, script):
         arguments = self.arguments.read_text().splitlines()
-        self.assertEqual(arguments[:3], ['-x', '-k', 'dist/PicShot-0.19.0-macos-' + os.uname().machine + '.zip'])
+        archive = str(self.archive) if script == 'codec-fidelity-installed' else (
+            'dist/PicShot-0.19.1-macos-' + os.uname().machine + '.zip')
+        self.assertEqual(len(arguments), 4)
+        self.assertEqual(arguments[:3], ['-x', '-k', archive])
         destination = Path(arguments[3])
         return destination.parent if script == 'smoke' else destination
 
@@ -218,6 +255,29 @@ exit 97
                 self.assertFalse(self.arguments.exists(), 'Extraction invoked through redirected dist')
                 self.assertEqual(marker.read_text(), 'preserve')
                 self.assertEqual(list(outside.iterdir()), [marker])
+
+    def test_fidelity_installer_uses_exact_owned_app_and_cleans_on_signing_failure(self):
+        signing_arguments = self.root / 'codesign-arguments'
+        stub = self.tools / 'codesign'
+        stub.write_text('''#!/bin/sh
+printf '%s\\n' "$@" > "$PICSHOT_TEST_CODESIGN_ARGUMENTS"
+exit 98
+''')
+        stub.chmod(0o755)
+        self.environment.update(PICSHOT_TEST_DITTO_EXIT='0',
+            PICSHOT_TEST_CODESIGN_ARGUMENTS=str(signing_arguments))
+        alias = self.root / 'repository-alias'
+        alias.symlink_to(self.repo, target_is_directory=True)
+        for repo in (self.repo, alias):
+            with self.subTest(repo=repo):
+                result = self.run_preflight('codec-fidelity-installed', repo)
+                self.assertEqual(result.returncode, 98, result.stderr)
+                destination = self.extraction_root('codec-fidelity-installed')
+                self.assertEqual(destination.parent, self.repo / 'dist')
+                self.assertEqual(signing_arguments.read_text().splitlines(),
+                    ['--verify', '--deep', '--strict', str(destination / 'PicShot.app')])
+                self.assertFalse(destination.exists())
+                self.assertFalse(self.evidence.exists())
 
     def test_every_installer_extractor_is_covered(self):
         extractors = {p.stem for p in (ROOT / 'scripts').glob('*.sh')

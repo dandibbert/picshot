@@ -1,0 +1,67 @@
+# PROPOSED insertion in the ordinary full build job, after its existing ordinary
+# installed codec-attribution step. Do not replace any prior gate or QA path.
+# Chosen production scope: WebP bytes-only, AVIF legacy; diagnostic source hashing off.
+# Add 120 minutes to the existing complete envelopes: ARM 318, Intel 346 (<360).
+# Allowance: portable/default checks 3m + wrapper 106m + five uploads 10m + reserve1m.
+# No per-cell/helper/fixture/native/default/model/resource limit changes.
+- name: Verify installed production staging routes and portable fidelity contract
+  timeout-minutes: 3
+  run: |
+    PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_codec_fidelity_only.py -v
+    PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p test_codec_fidelity_only.py -v
+    python3 scripts/check-codec-staging-defaults.py dist/evidence/codec-attribution --source "$GITHUB_SHA" --webp verifiedBytesOnly --avif legacyPreview --report dist/codec-fidelity-metadata/default-routes.json
+- name: Verify actual staged final and preview pixels from installed ZIP
+  timeout-minutes: 106
+  run: >-
+    python3 scripts/run-bounded-command.py --timeout-seconds 6240 --max-log-bytes 1048576
+    --log dist/codec-fidelity-metadata/outer.log --report dist/codec-fidelity-metadata/outer.json
+    -- bash scripts/codec-fidelity-installed.sh
+    "${{ github.workspace }}/dist/PicShot-0.19.1-macos-${{ matrix.arch }}.zip"
+    "${{ github.workspace }}/dist/codec-fidelity-standalone" "${{ github.sha }}"
+- name: Preserve standalone fidelity reports and actual default-route evidence
+  if: always()
+  timeout-minutes: 2
+  uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+  with:
+    name: PicShot-Fidelity-Only-Reports-${{ matrix.arch }}-${{ github.sha }}
+    path: dist/codec-fidelity-standalone/upload/fidelity-only-reports.zip
+    if-no-files-found: warn
+    compression-level: 0
+- name: Preserve small fidelity specimens separately
+  if: always()
+  timeout-minutes: 2
+  uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+  with:
+    name: PicShot-Fidelity-Only-Small-${{ matrix.arch }}-${{ github.sha }}
+    path: dist/codec-fidelity-standalone/upload/small-specimens.zip
+    if-no-files-found: warn
+    compression-level: 0
+- name: Preserve large control fidelity specimens separately
+  if: always()
+  timeout-minutes: 2
+  uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+  with:
+    name: PicShot-Fidelity-Only-Large-Control-${{ matrix.arch }}-${{ github.sha }}
+    path: dist/codec-fidelity-standalone/upload/large-control-specimens.zip
+    if-no-files-found: warn
+    compression-level: 0
+- name: Preserve large candidate fidelity specimens separately
+  if: always()
+  timeout-minutes: 2
+  uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+  with:
+    name: PicShot-Fidelity-Only-Large-Candidate-${{ matrix.arch }}-${{ github.sha }}
+    path: dist/codec-fidelity-standalone/upload/large-candidate-specimens.zip
+    if-no-files-found: warn
+    compression-level: 0
+- name: Preserve ordinary default-route and outer-command evidence separately
+  if: always()
+  timeout-minutes: 2
+  uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+  with:
+    name: PicShot-Fidelity-Only-Default-Routes-${{ matrix.arch }}-${{ github.sha }}
+    path: |
+      dist/codec-fidelity-metadata/default-routes.json
+      dist/codec-fidelity-metadata/outer.log
+      dist/codec-fidelity-metadata/outer.json
+    if-no-files-found: warn

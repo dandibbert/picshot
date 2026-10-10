@@ -24,3 +24,13 @@ bash scripts/codec-staging-comparison.sh --phase avif-confirmation "$PWD/dist/Pi
 ```
 
 The evidence root must be new, so original failed reports cannot be overwritten. Available JSON/logs are preserved on failure in `upload/avif-confirmation-reports.zip`, with the existing aggregate 28 MiB cap. Source/package/outer-command evidence is uploaded separately. No installer or app binary is published by this job. Full product fidelity and installed acceptance remain later work for the actual chosen format scope.
+
+## Build 183 result and production decision
+
+[Build 183 / run 38043596302](https://github.com/dandibbert/picshot/actions/runs/38043596302), source `1b60ac2292d7a186f7ab001d56403d1a58905801`, completed the one authorized reversed candidate→control pair. The same-product-source rebuild verified all 678 protected files before and after packaging/measurement. The observation exited normally with comparison status 3 after 13.626 seconds; it did not time out. Both archived evidence hashes and ZIP CRCs were independently verified.
+
+The fixed latency gates rejected cold first export (candidate **0.492621 s**, control **0.420878 s**, limit **0.470878 s**), warm median (**0.466612 / 0.388176 / 0.438176 s**) and warm p95 (**0.477383 / 0.398636 / 0.448636 s**). All memory guards passed. Because warm p95 also failed in the original opposite-order observation, the unchanged checker reports `reject-consistent-gate-excess`. This is a bounded qualification decision; the different rebuild/host observations do not establish the cause or general AVIF performance.
+
+The next production candidate therefore retains the legacy AVIF staging route and applies bytes-only staging to WebP alone. No additional AVIF experiment is planned for this batch. Independent fidelity and complete exact-source installed acceptance for that chosen scope remain mandatory; build 183 itself is not an installer acceptance or delivery.
+
+Independent terminal receipt SHA-256: `7aed3a577209064fa2038ac8ceae51c3a759ec2b5f7992d1e6842b67458b9a75`. Exactly two fresh app processes and ten distinct helpers completed with confirmed cleanup, candidate before control. All ten source/staged/final digests and byte counts match; the new main/helper/Info identities remained stable within this pair and differ from build 182, as expected for the rebuild.

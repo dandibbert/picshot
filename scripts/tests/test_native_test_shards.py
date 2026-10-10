@@ -400,7 +400,28 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
         inventory = self.current_source_inventory()
         plan = shards.make_plan(inventory, '', 'a' * 40, process_count=4)
         record = self.execute_pin_inventory_guard(plan)
-        self.assertEqual((record['discoveredCount'], record['discoveredClassCount']), (1945, 218))
+        self.assertEqual((record['discoveredCount'], record['discoveredClassCount']), (1954, 220))
+        staging = json.loads((Path(__file__).parents[1] / 'codec-staging-native-additions.json').read_text())
+        self.assertEqual(len(staging), 9)
+        self.assertEqual(staging, sorted(set(staging)))
+        staging_classes = {'PicShotTests.CodecStagingComparisonTests': 3,
+                           'PicShotTests.ImageExportPNGStagingTests': 6}
+        for cls, count in staging_classes.items():
+            expected = [name for name in staging if name.split('/')[0] == cls]
+            self.assertEqual(len(expected), count)
+            self.assertEqual([name for name in inventory if name.split('/')[0] == cls], expected)
+        before_staging = [name for name in inventory if name not in staging]
+        self.assertEqual(len(before_staging), 1945)
+        self.assertEqual(len({name.split('/')[0] for name in before_staging}), 218)
+        self.assertEqual(hashlib.sha256(('\n'.join(before_staging) + '\n').encode()).hexdigest(),
+                         '11d1789bc19d0ad0f0b5b2e482e21c4aca16a5f08cef246b4706cdc584f21772')
+        self.assertTrue(set(before_staging).isdisjoint(staging))
+        self.assertEqual(inventory, sorted(before_staging + staging))
+        old_plan = shards.make_plan(before_staging, '', 'a' * 40, process_count=4)
+        self.assertEqual([len(shard['tests']) for shard in old_plan['shards']], [529, 432, 490, 494])
+        self.assertEqual([len(shard['tests']) for shard in plan['shards']], [529, 432, 493, 500])
+        for old_shard, shard in zip(old_plan['shards'], plan['shards']):
+            self.assertEqual([name for name in shard['tests'] if name not in staging], old_shard['tests'])
         additions = json.loads((Path(__file__).parents[1] / 'recording-controls-native-additions.json').read_text())
         self.assertEqual(len(additions), 61)
         self.assertEqual(additions, sorted(set(additions)))
@@ -409,7 +430,7 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
         self.assertEqual(len(settings), 48)
         self.assertEqual(settings, sorted(set(settings)))
         self.assertTrue(set(settings).issubset(inventory))
-        accepted = [name for name in inventory if name not in settings]
+        accepted = [name for name in before_staging if name not in settings]
         self.assertEqual(len(accepted), 1897)
         self.assertEqual(hashlib.sha256(('\n'.join(accepted) + '\n').encode()).hexdigest(),
                          '57360d46e241f23de466cb09e0e8cdcd55197fbd3ad93be82f229b0557546075')
@@ -419,13 +440,23 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
                          '1b5d454926a5ad3d3408ad8827e5fcec619755d284d208d9c13b0e144627cf9b')
         selection = re.search(r"--selection-regex '([^']+)'", self.step(
             'Plan exhaustive and focused native test processes'))[1]
-        focused = shards.make_plan(inventory, selection, 'a' * 40, process_count=2)
-        self.assertEqual(len(focused['selectedTests']), 1413)
-        self.assertTrue(set(additions + settings).issubset(focused['selectedTests']))
+        for count, sizes in [(2, [774, 648]), (4, [432, 294, 342, 354])]:
+            with self.subTest(process_count=count):
+                focused = shards.make_plan(inventory, selection, 'a' * 40, process_count=count)
+                old_focused = shards.make_plan(before_staging, selection, 'a' * 40, process_count=count)
+                self.assertEqual(len(old_focused['selectedTests']), 1413)
+                self.assertEqual(len(focused['selectedTests']), 1422)
+                self.assertEqual(focused['selectedTests'], sorted(old_focused['selectedTests'] + staging))
+                self.assertTrue(set(additions + settings + staging).issubset(focused['selectedTests']))
+                self.assertEqual([len(shard['tests']) for shard in focused['shards']], sizes)
+                for old_shard, shard in zip(old_focused['shards'], focused['shards']):
+                    self.assertEqual([name for name in shard['tests'] if name not in staging], old_shard['tests'])
 
     def test_pin_preflight_rejects_stale_missing_extra_and_renamed_inventory(self):
         inventory = self.current_source_inventory()
         alternatives = [
+            [name for name in inventory if name.split('/')[0] not in
+             {'PicShotTests.CodecStagingComparisonTests', 'PicShotTests.ImageExportPNGStagingTests'}],
             [name for name in inventory if not name.startswith('PicShotTests.RecordingInput')],
             inventory[:-1],
             sorted(inventory + ['PicShotTests.RecordingInputEffectsTests/testUnexpected']),
@@ -465,8 +496,8 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
         self.assertEqual([self.scalar(full, arch) for arch in ['arm64', 'x86_64']], [30, 30])
         self.assertEqual([self.scalar(focused, arch) for arch in ['arm64', 'x86_64']], [16, 30])
         budgets = self.checked_serial_budgets()
-        # Add only early-witness orchestration: 20-minute gate + 2-minute upload.
-        self.assertEqual([budgets[arch]['jobMinutes'] for arch in ['arm64', 'x86_64']], [176 + 22, 204 + 22])
+        # Retain early witness22m plus standalone installed fidelity120m.
+        self.assertEqual([budgets[arch]['jobMinutes'] for arch in ['arm64', 'x86_64']], [176 + 22 + 120, 204 + 22 + 120])
         self.assertEqual([budgets[arch]['regressionMinutes'] for arch in ['arm64', 'x86_64']], [16, 16])
         self.assertEqual(budgets['arm64']['regressionRequiredSeconds'], 920)
         self.assertEqual(budgets['arm64']['focusedRequiredSeconds'], 920)
@@ -489,6 +520,21 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
         discovery = self.step('Plan exhaustive and focused native test processes')
         discovery_minutes = re.search(r'^        timeout-minutes: (.+)$', discovery, re.M)[1]
         discovery_seconds = int(re.search(r'run-bounded-command\.py --timeout-seconds (\d+)', discovery)[1])
+        fidelity_steps = [
+            'Verify installed production staging routes and portable fidelity contract',
+            'Verify actual staged final and preview pixels from installed ZIP',
+            'Preserve standalone fidelity reports and actual default-route evidence',
+            'Preserve small fidelity specimens separately',
+            'Preserve large control fidelity specimens separately',
+            'Preserve large candidate fidelity specimens separately',
+            'Preserve ordinary default-route and outer-command evidence separately']
+        fidelity_minutes = [int(re.search(r'^        timeout-minutes: (\d+)$', self.step(name), re.M)[1])
+                            for name in fidelity_steps]
+        if fidelity_minutes != [3, 106, 2, 2, 2, 2, 2]:
+            raise ValueError('Installed fidelity stage or upload allowance changed')
+        if '--timeout-seconds 6240' not in self.step(fidelity_steps[1]):
+            raise ValueError('Installed fidelity wrapper deadline changed')
+        added_fidelity_allowance = sum(fidelity_minutes) + 1
         budgets = {}
         for arch in ['arm64', 'x86_64']:
             env = self.environment(arch)
@@ -508,7 +554,7 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
             # and the separate method-then-class pin regression stage.
             previous_full = 30 if arch == 'arm64' else 16
             required_job = (160 + max(0, focused_minutes - 16)
-                            + max(0, full_minutes - previous_full) + regression_minutes)
+                            + max(0, full_minutes - previous_full) + regression_minutes + 22 + added_fidelity_allowance)
             if job_minutes < required_job:
                 raise ValueError(f'{arch} job does not preserve the prior allowance plus native stage increases')
             # Discovery is outside both execution stages. Its 2-minute stage
@@ -546,9 +592,9 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
             self.checked_serial_budgets()
 
     def test_intel_job_preserves_allowance_for_both_stage_increases(self):
-        for arch, values in [('x86_64', [160, 174, 187, 188, 203]), ('arm64', [160, 175])]:
+        for arch, values in [('x86_64', [160, 174, 187, 188, 203, 226, 345]), ('arm64', [160, 175, 198, 317])]:
             for minutes in values:
-                intel, arm = (minutes, 176) if arch == 'x86_64' else (204, minutes)
+                intel, arm = (minutes, 318) if arch == 'x86_64' else (346, minutes)
                 changed, count = re.subn(r'^    timeout-minutes: .+$',
                     f"    timeout-minutes: ${{{{ matrix.arch == 'x86_64' && {intel} || {arm} }}}}",
                     self.build, count=1, flags=re.M)

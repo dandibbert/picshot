@@ -24,8 +24,8 @@ enum CodecExportProcessError: LocalizedError {
     }
 }
 
-/// The legacy route exists only for explicit matched diagnostic configurations.
-/// There is no user preference or ambient environment override.
+/// The actual staging operation after applying the per-format production policy
+/// or an explicit diagnostic override. No user or ambient environment override.
 enum CodecPNGStagingMode: String, Codable, Sendable {
     case verifiedBytesOnly, legacyPreview
 }
@@ -38,20 +38,29 @@ struct CodecProcessConfiguration: @unchecked Sendable {
     let arguments: [String]
     let wallSeconds: TimeInterval
     let residentLimitBytes: UInt64
-    let pngStagingMode: CodecPNGStagingMode
+    /// Nil selects the production policy; a concrete mode is a diagnostic override.
+    let pngStagingMode: CodecPNGStagingMode?
     let collectStagedPNGIdentityForDiagnostics: Bool
     let stagedPNGForDiagnostics: (@Sendable (URL) throws -> Void)?
     static var production: Self { Self(executable: { try CodecHelperExecutable.verified() }) }
     init(executable: @escaping @Sendable () throws -> URL,
          arguments: [String] = [],
          wallSeconds: TimeInterval = 300, residentLimitBytes: UInt64 = 1_073_741_824,
-         pngStagingMode: CodecPNGStagingMode = .verifiedBytesOnly,
+         pngStagingMode: CodecPNGStagingMode? = nil,
          collectStagedPNGIdentityForDiagnostics: Bool = false,
          stagedPNGForDiagnostics: (@Sendable (URL) throws -> Void)? = nil) {
         self.executable = executable; self.arguments = arguments
         self.wallSeconds = wallSeconds; self.residentLimitBytes = residentLimitBytes
         self.pngStagingMode = pngStagingMode; self.stagedPNGForDiagnostics = stagedPNGForDiagnostics
         self.collectStagedPNGIdentityForDiagnostics = collectStagedPNGIdentityForDiagnostics
+    }
+
+    func resolvedPNGStagingMode(for format: CodecExportFormat) -> CodecPNGStagingMode {
+        if let pngStagingMode { return pngStagingMode }
+        switch format {
+        case .webp: return .verifiedBytesOnly
+        case .avif: return .legacyPreview
+        }
     }
 }
 
@@ -269,9 +278,10 @@ actor CodecExportProcessService {
                 var limits = ImageExportLimits.standard
                 limits.maximumSourcePixels = CodecExportLimits.stillPixels
                 limits.maximumEncodedBytes = CodecExportLimits.stillInputBytes
-                job.update { $0.pngStagingMode = configuration.pngStagingMode.rawValue }
+                let stagingMode = configuration.resolvedPNGStagingMode(for: options.format)
+                job.update { $0.pngStagingMode = stagingMode.rawValue }
                 let stagedBytes: Data
-                switch configuration.pngStagingMode {
+                switch stagingMode {
                 case .verifiedBytesOnly:
                     let png = try ImageExportService.encodePNGForCodecStaging(snapshot: snapshot,
                                                         cancellation: job.cancellation, limits: limits)
