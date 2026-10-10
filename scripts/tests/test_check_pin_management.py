@@ -68,11 +68,12 @@ class PinManagementCheckerTests(unittest.TestCase):
                                   dispatchRoute='owned-nextEvent-sendEvent', targetPointVisible=True))
             for direction,boundary in [('earlier',False),('earlier',True),('later',False),('later',False),('later',True)]:
                 order['menuEvents'].append(dict(itemID='pin-group-order-'+direction, boundary=boundary, enabled=not boundary,
-                    opened=True, activated=not boundary, postedKeyCount=1 if boundary else 3, timeoutSeconds=2,
+                    activated=not boundary, postedKeyCount=1 if boundary else 3, timeoutSeconds=2,
                     windowNumber=100, dispatchRoute='owned-mouseDown/native-menu-tracking', disabledDismissedWithEscape=boundary,
                     lastPostedKeyCode=53 if boundary else 36, trackingBeginCount=1, trackingEndCount=1,
                     trackingIdentityVerified=True, trackingBeginElapsedSeconds=0.01, trackingEndElapsedSeconds=0.30 if boundary else 0.26,
                     trackingEndedBeforeClickReturn=not boundary, delegateCloseObserved=not boundary,
+                    delegateOpenObserved=True, delegateOpenIdentityVerified=True, delegateOpenElapsedSeconds=0.02,
                     delegateCloseIdentityVerified=not boundary, delegateCloseElapsedSeconds=None if boundary else 0.25,
                     clickReturnElapsedSeconds=0.28, lifecycleObservation='exact-root-menu-begin-end-notifications'))
             self.r['flows'].append(dict(appearance=mode,text=text,renames=renames,order=order))
@@ -119,6 +120,10 @@ class PinManagementCheckerTests(unittest.TestCase):
             for row in flow['order']['menuEvents']:
                 if row['boundary']:
                     row.update(delegateCloseObserved=True, delegateCloseIdentityVerified=True, delegateCloseElapsedSeconds=0.29)
+        self.check()
+        for flow in self.r['flows']:
+            for row in flow['order']['menuEvents']:
+                row.update(delegateOpenObserved=False, delegateOpenIdentityVerified=False, delegateOpenElapsedSeconds=None)
         self.check()
 
     def test_every_dictionary_rejects_unknown_and_missing_fields(self):
@@ -176,10 +181,12 @@ class PinManagementCheckerTests(unittest.TestCase):
                     'clickReturnElapsedSeconds', 'trackingBeginElapsedSeconds', 'trackingEndElapsedSeconds',
                     'delegateCloseObserved', 'delegateCloseIdentityVerified', 'delegateCloseElapsedSeconds', 'lifecycleObservation', 'lastPostedKeyCode']:
             self.reject(lambda r,key=key:r['flows'][0]['order']['menuEvents'][0].pop(key))
-        for key in ['clickReturnElapsedSeconds', 'trackingBeginElapsedSeconds', 'trackingEndElapsedSeconds', 'delegateCloseElapsedSeconds']:
+        for key in ['delegateOpenObserved', 'delegateOpenIdentityVerified', 'delegateOpenElapsedSeconds']:
+            self.reject(lambda r,key=key:r['flows'][0]['order']['menuEvents'][0].pop(key))
+        for key in ['clickReturnElapsedSeconds', 'trackingBeginElapsedSeconds', 'trackingEndElapsedSeconds', 'delegateCloseElapsedSeconds', 'delegateOpenElapsedSeconds']:
             for value in [None, True, False, '0.2', float('nan'), float('inf'), -0.1, 0, 2.000001]:
                 self.reject(lambda r,key=key,value=value:r['flows'][0]['order']['menuEvents'][0].update({key:value}))
-        for key in ['trackingIdentityVerified', 'delegateCloseIdentityVerified', 'delegateCloseObserved']:
+        for key in ['trackingIdentityVerified', 'delegateCloseIdentityVerified', 'delegateCloseObserved', 'delegateOpenIdentityVerified']:
             for value in [False, None, 1, 'true']:
                 self.reject(lambda r,key=key,value=value:r['flows'][0]['order']['menuEvents'][0].update({key:value}))
         for key in ['trackingBeginCount', 'trackingEndCount']:
@@ -187,6 +194,8 @@ class PinManagementCheckerTests(unittest.TestCase):
                 self.reject(lambda r,key=key,value=value:r['flows'][0]['order']['menuEvents'][0].update({key:value}))
         for value in [None, 1, 'true']:
             self.reject(lambda r,value=value:r['flows'][0]['order']['menuEvents'][0].update(trackingEndedBeforeClickReturn=value))
+            self.reject(lambda r,value=value:r['flows'][0]['order']['menuEvents'][0].update(delegateOpenObserved=value))
+        self.reject(lambda r:r['flows'][0]['order']['menuEvents'][0].update(delegateOpenObserved=False))
         for mutation in [lambda r:r['flows'][0]['order']['menuEvents'][0].update(trackingEndedBeforeClickReturn=False),
                          lambda r:r['flows'][0]['order']['menuEvents'][1].update(trackingEndedBeforeClickReturn=True),
                          lambda r:r['flows'][0]['order']['menuEvents'][0].update(trackingBeginElapsedSeconds=0.27),

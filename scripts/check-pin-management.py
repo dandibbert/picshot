@@ -196,9 +196,9 @@ def validate_order(order, group):
     need(states == [[a,b,c], [b,a,c], [b,a,c], [a,b,c], [a,c,b], [a,c,b]], 'one-step native order/boundary transition')
     need(o['pickerOrder'] == states[-1], 'picker order detached from stored order')
     for row, (direction, boundary) in zip(array(o['menuEvents'], 5), [('earlier',False), ('earlier',True), ('later',False), ('later',False), ('later',True)]):
-        fields(row, 'itemID boundary enabled opened activated postedKeyCount timeoutSeconds windowNumber dispatchRoute disabledDismissedWithEscape lastPostedKeyCode trackingBeginCount trackingEndCount trackingIdentityVerified trackingBeginElapsedSeconds trackingEndElapsedSeconds trackingEndedBeforeClickReturn delegateCloseObserved delegateCloseIdentityVerified delegateCloseElapsedSeconds clickReturnElapsedSeconds lifecycleObservation')
+        fields(row, 'itemID boundary enabled activated postedKeyCount timeoutSeconds windowNumber dispatchRoute disabledDismissedWithEscape lastPostedKeyCode trackingBeginCount trackingEndCount trackingIdentityVerified trackingBeginElapsedSeconds trackingEndElapsedSeconds trackingEndedBeforeClickReturn delegateOpenObserved delegateOpenIdentityVerified delegateOpenElapsedSeconds delegateCloseObserved delegateCloseIdentityVerified delegateCloseElapsedSeconds clickReturnElapsedSeconds lifecycleObservation')
         need(row['itemID'] == 'pin-group-order-' + direction and row['boundary'] is boundary and row['enabled'] is (not boundary), 'order action/boundary state')
-        yes(row, 'opened trackingIdentityVerified')
+        yes(row, 'trackingIdentityVerified')
         need(row['activated'] is (not boundary) and row['disabledDismissedWithEscape'] is boundary, 'disabled native menu action fired')
         integer(row['postedKeyCount'], 1, 40); integer(row['windowNumber'], 1)
         need(integer(row['lastPostedKeyCode']) == (53 if boundary else 36), 'owned Escape/Return key absent')
@@ -211,6 +211,13 @@ def validate_order(order, group):
         need(0 < returned <= 2 and 0 < began <= ended <= 2, 'tracking/return exceeded original deadline or reordered')
         before = row['trackingEndedBeforeClickReturn']
         need(type(before) is bool and (ended <= returned if before else returned <= ended), 'tracking end observation ordering')
+        opened = row['delegateOpenObserved']
+        need(type(opened) is bool, 'invalid delegate open observation')
+        if opened:
+            yes(row, 'delegateOpenIdentityVerified')
+            need(0 < number(row['delegateOpenElapsedSeconds']) <= 2, 'late delegate open')
+        else:
+            need(row['delegateOpenIdentityVerified'] is False and row['delegateOpenElapsedSeconds'] is None, 'unobserved delegate open fabricated')
         observed = row['delegateCloseObserved']
         need(type(observed) is bool and (boundary or observed), 'enabled selection lacks delegate close')
         if observed:
