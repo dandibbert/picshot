@@ -189,6 +189,10 @@ private enum PinDraftError: LocalizedError {
     init(content: PinTextContent, onSave: @escaping (PinTextContent, PinTextContent) throws -> Void) throws {
         guard Self.isEditable(content) else { throw RichPinError.invalidContent }
         originalContent = content; self.onSave = onSave; history = PinTextDraftHistory(content.plainText)
+        // Configure lazy layout before installing the full draft. This changes
+        // viewport work only, never the stored text, input limit, or undo model.
+        textView.layoutManager?.allowsNonContiguousLayout = true
+        textView.layoutManager?.backgroundLayoutEnabled = false
         textView.string = content.plainText; textView.isRichText = false; textView.importsGraphics = false
         textView.allowsUndo = false; textView.isEditable = true; textView.isSelectable = true
         textView.font = .systemFont(ofSize: 14); textView.textColor = .textColor; textView.backgroundColor = .textBackgroundColor

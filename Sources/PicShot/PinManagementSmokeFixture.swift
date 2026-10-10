@@ -345,6 +345,42 @@ import PicShotCore
         try required(context.makeImage(), "Snapshot missing").writePNG(to: directory.appendingPathComponent(name))
         let visible = try required(window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame, "Display absent")
         try require(visible.insetBy(dx: -1, dy: -1).contains(window.frame), "Window outside visible display")
+        // Keep failure geometry before any assertion can discard the snapshot.
+        // Native button frames, alignment rectangles and cell drawing rectangles
+        // are separate evidence; acceptance below still checks the full frames.
+        var geometry: [[String: Any]] = [], intersections: [[String: Any]] = []
+        let fullFrames = controls.map { $0.convert($0.bounds, to: root) }
+        let alignmentFrames = controls.map { control in
+            root.convert(control.alignmentRect(forFrame: control.frame), from: control.superview)
+        }
+        for (index, control) in controls.enumerated() {
+            let frame = fullFrames[index], point = CGPoint(x: frame.midX, y: frame.midY)
+            let hit = root.hitTest(root.convert(point, to: root.superview))
+            let insets = control.alignmentRectInsets
+            let drawing = control.convert(control.cell?.drawingRect(forBounds: control.bounds) ?? control.bounds, to: root)
+            geometry.append(["id": control.identifier?.rawValue ?? "button.\(index)", "frame": rect(frame),
+                "alignmentRect": rect(alignmentFrames[index]), "cellDrawingRect": rect(drawing),
+                "alignmentInsets": ["top": insets.top, "left": insets.left, "bottom": insets.bottom, "right": insets.right],
+                "centerHitClass": hit.map { NSStringFromClass(type(of: $0)) } ?? "none",
+                "centerHitID": hit?.identifier?.rawValue ?? "none",
+                "centerHitIsControlOrDescendant": hit === control || hit?.isDescendant(of: control) == true])
+            for previous in 0..<index {
+                let overlap = fullFrames[previous].insetBy(dx: 0.5, dy: 0.5).intersection(frame.insetBy(dx: 0.5, dy: 0.5))
+                if !overlap.isNull && !overlap.isEmpty {
+                    let alignmentOverlap = alignmentFrames[previous].intersection(alignmentFrames[index])
+                    intersections.append(["firstID": controls[previous].identifier?.rawValue ?? "button.\(previous)",
+                        "secondID": control.identifier?.rawValue ?? "button.\(index)", "fullFrameIntersection": rect(overlap),
+                        "alignmentIntersects": !alignmentOverlap.isNull && !alignmentOverlap.isEmpty,
+                        "alignmentIntersection": alignmentOverlap.isNull ? [] : rect(alignmentOverlap)])
+                }
+            }
+        }
+        let geometryData = try JSONSerialization.data(withJSONObject: ["category": category, "appearance": mode,
+            "contentBounds": rect(root.bounds), "controls": geometry, "intersections": intersections], options: [.sortedKeys])
+        try require(geometryData.count <= 32_768, "Failure geometry byte budget exceeded")
+        FileHandle.standardError.write(Data("Pin management snapshot geometry: ".utf8))
+        FileHandle.standardError.write(geometryData); FileHandle.standardError.write(Data([10]))
+        let failureGeometry = " | geometry=" + String(decoding: geometryData, as: UTF8.self)
         var rows: [[String: Any]] = [], frames: [CGRect] = []
         for (index, control) in controls.enumerated() {
             let frame = control.convert(control.bounds, to: root), point = CGPoint(x: frame.midX, y: frame.midY)
@@ -352,10 +388,10 @@ import PicShotCore
             let fieldEditor = (control as? NSTextField)?.currentEditor()
             let editorHit = fieldEditor.map { hit === $0 || hit?.isDescendant(of: $0) == true } ?? false
             let size = control.cell?.cellSize ?? .zero
-            try require(root.bounds.insetBy(dx: -0.5, dy: -0.5).contains(frame) && frame.width >= 18 && frame.height >= 18, "Control clipped")
-            try require(hit === control || hit?.isDescendant(of: control) == true || editorHit, "Control obscured")
-            try require(frame.width + 1 >= size.width && frame.height + 1 >= size.height, "Control text does not fit")
-            try require(frames.allSatisfy { !$0.insetBy(dx: 0.5, dy: 0.5).intersects(frame.insetBy(dx: 0.5, dy: 0.5)) }, "Controls overlap")
+            try require(root.bounds.insetBy(dx: -0.5, dy: -0.5).contains(frame) && frame.width >= 18 && frame.height >= 18, "Control clipped" + failureGeometry)
+            try require(hit === control || hit?.isDescendant(of: control) == true || editorHit, "Control obscured" + failureGeometry)
+            try require(frame.width + 1 >= size.width && frame.height + 1 >= size.height, "Control text does not fit" + failureGeometry)
+            try require(frames.allSatisfy { !$0.insetBy(dx: 0.5, dy: 0.5).intersects(frame.insetBy(dx: 0.5, dy: 0.5)) }, "Controls overlap" + failureGeometry)
             rows.append(["id": control.identifier?.rawValue ?? "button.\(index)", "frame": rect(frame), "minimumSize": [size.width, size.height], "hitTest": true])
             frames.append(frame)
         }

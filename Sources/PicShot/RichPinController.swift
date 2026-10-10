@@ -177,6 +177,10 @@ actor RichPinFrameDecoder {
         let content: NSView
         switch kind {
         case .text:
+            // Keep layout demand-driven in this scroll view; text storage still
+            // owns every run for selection, copying, and existing saved pins.
+            textView.layoutManager?.allowsNonContiguousLayout = true
+            textView.layoutManager?.backgroundLayoutEnabled = false
             textView.isEditable = false; textView.isSelectable = true; textView.isRichText = true
             textView.isAutomaticLinkDetectionEnabled = false; textView.isAutomaticDataDetectionEnabled = false
             textView.textContainerInset = NSSize(width: 8, height: 8)

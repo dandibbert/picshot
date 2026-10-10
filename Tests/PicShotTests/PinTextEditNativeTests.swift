@@ -149,43 +149,160 @@ import PicShotCore
             var previousPhase = ProcessInfo.processInfo.systemUptime
             func recordPhase(_ phase: String) {
                 let now = ProcessInfo.processInfo.systemUptime
-                let line = "PinTextEdit native UTF8 phase: \(phase) elapsedSeconds=\(now - previousPhase)\n"
+                let elapsed = now - previousPhase
+                let line = "PinTextEdit native UTF8 phase: \(phase) elapsedSeconds=\(elapsed)\n"
                 FileHandle.standardError.write(Data(line.utf8)); previousPhase = now
+                let limit = ["maximum-emoji-draft-cancelled", "pin-closed-and-cleaned"].contains(phase) ? 0.25 : 2.0
+                XCTAssertLessThanOrEqual(elapsed, limit, "Visible maximum-text action blocked: \(phase)")
+            }
+            func displayEnd(of view: NSTextView) throws {
+                let window = try XCTUnwrap(view.window), layout = try XCTUnwrap(view.layoutManager)
+                let container = try XCTUnwrap(view.textContainer)
+                XCTAssertTrue(layout.allowsNonContiguousLayout); XCTAssertFalse(layout.backgroundLayoutEnabled)
+                let text = view.string as NSString
+                _ = try XCTUnwrap(text.length > 0 ? true : nil)
+                let end = text.rangeOfComposedCharacterSequence(at: text.length - 1)
+                window.contentView?.layoutSubtreeIfNeeded()
+                view.scrollRangeToVisible(end)
+                // Demand the final glyphs and paint the actual viewport within
+                // the timed action, so deferred layout cannot hide a freeze.
+                layout.ensureLayout(forCharacterRange: end)
+                let glyphs = layout.glyphRange(forCharacterRange: end, actualCharacterRange: nil)
+                XCTAssertGreaterThan(glyphs.length, 0)
+                let rect = layout.boundingRect(forGlyphRange: glyphs, in: container)
+                    .offsetBy(dx: view.textContainerOrigin.x, dy: view.textContainerOrigin.y)
+                view.setNeedsDisplay(view.visibleRect); window.displayIfNeeded()
+                XCTAssertGreaterThan(rect.width, 0); XCTAssertGreaterThan(rect.height, 0)
+                XCTAssertGreaterThan(view.visibleRect.minY, view.bounds.minY)
+                XCTAssertTrue(view.visibleRect.contains(rect), "Final composed character must be visible after scrolling")
+            }
+            func copyEntireDraft(_ view: NSTextView, to board: NSPasteboard, expected: String) {
+                let selection = view.selectedRange()
+                defer { view.setSelectedRange(selection) }
+                view.setSelectedRange(NSRange(location: 0, length: (view.string as NSString).length))
+                board.declareTypes([.string], owner: nil)
+                XCTAssertTrue(view.writeSelection(to: board, type: .string))
+                XCTAssertEqual(board.string(forType: .string), expected)
             }
             let original = PinTextContent(text: String(repeating: "🐱", count: PinTextContent.maximumUTF8Bytes / 4))
+            XCTAssertEqual(original.plainText.utf8.count, 262_144)
             let pin = try makePin(original, phase: recordPhase)
             defer {
                 previousPhase = ProcessInfo.processInfo.systemUptime
                 pin.close(); recordPhase("pin-closed-and-cleaned")
+                XCTAssertNil(pin.richDocument); XCTAssertNil(pin.window?.contentView)
+                XCTAssertNil(pin.textEditController); XCTAssertNil(pin.onUpdateText)
             }
+            let board = NSPasteboard.withUniqueName(); defer { board.releaseGlobally() }
+            try displayEnd(of: pin.textDisplayView)
+            recordPhase("maximum-emoji-pin-end-scrolled-and-displayed")
+            XCTAssertEqual(pin.textDisplayView.string, original.plainText)
+            pin.copyText(to: board)
+            recordPhase("maximum-emoji-pin-copied-in-full")
+            // RTF re-decoding is a fidelity oracle, not product copy latency.
+            let readbackStart = ProcessInfo.processInfo.systemUptime
+            XCTAssertEqual(board.string(forType: .string), original.plainText)
+            let rtf = try XCTUnwrap(board.data(forType: .rtf))
+            let copied = try NSAttributedString(data: rtf, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil)
+            XCTAssertEqual(copied.string, original.plainText)
+            previousPhase = ProcessInfo.processInfo.systemUptime
+            FileHandle.standardError.write(Data("PinTextEdit native UTF8 oracle: RTF-readback elapsedSeconds=\(previousPhase - readbackStart)\n".utf8))
             var calls = 0; pin.onUpdateText = { _, _ in calls += 1 }
             try activate("pin-text-edit", on: pin)
             recordPhase("editor-created-and-presented")
-            let editor = try XCTUnwrap(pin.textEditController); try show(try XCTUnwrap(editor.window))
+            let editor = try XCTUnwrap(pin.textEditController), window = try XCTUnwrap(editor.window)
+            try show(window)
             recordPhase("editor-shown-and-displayed")
+            try displayEnd(of: editor.textView)
+            recordPhase("maximum-emoji-draft-end-scrolled-and-displayed")
+            copyEntireDraft(editor.textView, to: board, expected: original.plainText)
+            recordPhase("maximum-emoji-draft-copied-in-full")
             editor.textView.setSelectedRange(NSRange(location: (original.plainText as NSString).length, length: 0))
             editor.textView.insertText("a", replacementRange: NSRange(location: NSNotFound, length: 0))
+            window.displayIfNeeded()
             recordPhase("over-limit-insert-rejected")
             XCTAssertEqual(editor.textView.string, original.plainText); XCTAssertFalse(editor.errorLabel.stringValue.isEmpty)
             editor.textView.insertText("\0", replacementRange: NSRange(location: 0, length: 2))
+            window.displayIfNeeded()
             recordPhase("invalid-input-rejected")
             XCTAssertEqual(editor.textView.string, original.plainText); XCTAssertFalse(editor.errorLabel.stringValue.isEmpty)
             replace(editor.textView, with: "")
+            window.displayIfNeeded()
             recordPhase("maximum-emoji-draft-cleared")
             try PortableSettingsUIPreviewFixture.click(editor.saveButton)
+            window.displayIfNeeded()
             recordPhase("empty-save-refused")
             XCTAssertFalse(editor.completed); XCTAssertFalse(editor.errorLabel.stringValue.isEmpty); XCTAssertEqual(calls, 0)
             XCTAssertEqual(pin.richDocument?.text, original)
             replace(editor.textView, with: original.plainText)
+            window.displayIfNeeded()
             recordPhase("maximum-emoji-draft-restored")
+            try displayEnd(of: editor.textView)
+            recordPhase("maximum-emoji-restored-end-scrolled-and-displayed")
             editor.textView.setSelectedRange(NSRange(location: (original.plainText as NSString).length, length: 0))
             editor.textView.setMarkedText("拼", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+            try displayEnd(of: editor.textView)
             recordPhase("maximum-emoji-composition-marked")
             XCTAssertTrue(editor.textView.hasMarkedText())
             editor.textView.insertText("字", replacementRange: NSRange(location: NSNotFound, length: 0))
+            try displayEnd(of: editor.textView)
             recordPhase("over-limit-composition-rolled-back")
             XCTAssertFalse(editor.textView.hasMarkedText()); XCTAssertEqual(editor.textView.string, original.plainText)
             XCTAssertFalse(editor.errorLabel.stringValue.isEmpty); XCTAssertEqual(calls, 0)
+
+            // Exercise AppKit's pasteboard import without touching the user's
+            // general clipboard. Pasting near the limit must preserve all bytes.
+            let nearLimit = String(original.plainText.dropLast())
+            XCTAssertEqual(nearLimit.utf8.count, PinTextContent.maximumUTF8Bytes - 4)
+            board.clearContents(); XCTAssertTrue(board.setString(nearLimit, forType: .string))
+            editor.textView.setSelectedRange(NSRange(location: 0, length: (editor.textView.string as NSString).length))
+            XCTAssertTrue(editor.textView.readSelection(from: board, type: .string))
+            try displayEnd(of: editor.textView)
+            recordPhase("near-limit-emoji-paste-displayed")
+            XCTAssertEqual(editor.textView.string, nearLimit); XCTAssertEqual(editor.history.current.text, nearLimit)
+            board.clearContents(); XCTAssertTrue(board.setString("🐱", forType: .string))
+            editor.textView.setSelectedRange(NSRange(location: (nearLimit as NSString).length, length: 0))
+            XCTAssertTrue(editor.textView.readSelection(from: board, type: .string))
+            try displayEnd(of: editor.textView)
+            recordPhase("maximum-emoji-paste-displayed")
+            XCTAssertEqual(editor.textView.string, original.plainText)
+            XCTAssertEqual(editor.history.current.text, original.plainText)
+            copyEntireDraft(editor.textView, to: board, expected: original.plainText)
+            recordPhase("maximum-emoji-pasted-draft-copied-in-full")
+            // An oversized whole-document paste must leave the draft, selection
+            // and both history directions intact.
+            board.clearContents(); XCTAssertTrue(board.setString(original.plainText + "a", forType: .string))
+            editor.textView.setSelectedRange(NSRange(location: 0, length: (original.plainText as NSString).length))
+            let selection = editor.textView.selectedRange(), current = editor.history.current
+            let undo = editor.history.undoStates, redo = editor.history.redoStates
+            _ = editor.textView.readSelection(from: board, type: .string)
+            window.displayIfNeeded()
+            recordPhase("oversized-emoji-paste-rejected")
+            XCTAssertEqual(editor.textView.string, original.plainText); XCTAssertEqual(editor.textView.selectedRange(), selection)
+            XCTAssertEqual(editor.history.current, current); XCTAssertEqual(editor.history.undoStates, undo); XCTAssertEqual(editor.history.redoStates, redo)
+            XCTAssertFalse(editor.errorLabel.stringValue.isEmpty); XCTAssertEqual(pin.richDocument?.text, original)
+            editor.textView.setSelectedRange(NSRange(location: (original.plainText as NSString).length, length: 0))
+            editor.textView.setMarkedText("拼", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+            try displayEnd(of: editor.textView)
+            recordPhase("maximum-emoji-cancel-composition-displayed")
+            XCTAssertTrue(editor.textView.hasMarkedText())
+            try PortableSettingsUIPreviewFixture.click(editor.cancelButton)
+            recordPhase("maximum-emoji-draft-cancelled")
+            XCTAssertTrue(editor.completed); XCTAssertNil(pin.textEditController); XCTAssertNil(pin.window?.attachedSheet)
+            XCTAssertNil(window.contentView); XCTAssertEqual(editor.textView.string, "")
+            XCTAssertEqual(editor.history.current.text, ""); XCTAssertEqual(editor.history.retainedHistoryBytes, 0)
+            XCTAssertNil(editor.onDismiss); XCTAssertEqual(calls, 0); XCTAssertEqual(pin.richDocument?.text, original)
+            try displayEnd(of: pin.textDisplayView)
+            recordPhase("maximum-emoji-pin-after-cancel-displayed")
+            pin.copyText(to: board); XCTAssertEqual(board.string(forType: .string), original.plainText)
+            recordPhase("maximum-emoji-pin-after-cancel-copied-in-full")
+            try activate("pin-text-edit", on: pin)
+            let reopened = try XCTUnwrap(pin.textEditController)
+            try show(try XCTUnwrap(reopened.window)); try displayEnd(of: reopened.textView)
+            recordPhase("maximum-emoji-draft-reopened-and-displayed")
+            XCTAssertEqual(reopened.textView.string, original.plainText); XCTAssertEqual(reopened.history.current.text, original.plainText)
+            XCTAssertTrue(reopened.history.undoStates.isEmpty); XCTAssertTrue(reopened.history.redoStates.isEmpty)
+            XCTAssertEqual(pin.richDocument?.text, original); XCTAssertEqual(calls, 0)
         }
     }
 
