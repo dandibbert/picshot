@@ -156,14 +156,21 @@ import PicShotCore
         let before = f.store.index, manifest = try Data(contentsOf: f.directory.appendingPathComponent("index.json"))
         let assets = try assetBytes(f.directory)
         var errors: [Error] = [], changes = 0, publications = 0
-        f.controller.presentError = { errors.append($0) }
+        var handlerModalStates: [Bool] = []
+        f.controller.onChangeError = {
+            errors.append($0)
+            handlerModalStates.append(NSApp.modalWindow != nil)
+        }
         f.controller.onSessionChange = { changes += 1 }
         let subscription = f.store.$index.dropFirst().sink { _ in publications += 1 }
         defer { subscription.cancel() }
         f.store.failureInjector = { if $0 == .beforeIndexCommit { throw Failure.write } }
         let earlier = try orderItem("earlier", in: f.controller)
+        XCTAssertNil(NSApp.modalWindow, "Injected failure starts without a modal dialog")
         try invoke(earlier)
         XCTAssertEqual(errors.count, 1); XCTAssertEqual(errors.first as? Failure, .write)
+        XCTAssertEqual(handlerModalStates, [false], "The injected handler receives the error without inherited modal presentation")
+        XCTAssertNil(NSApp.modalWindow, "Injected error handling must not leave a modal dialog")
         XCTAssertEqual(changes, 0); XCTAssertEqual(publications, 0)
         XCTAssertEqual(f.store.index, before); XCTAssertEqual(f.controller.selectedPinIDs, selected)
         XCTAssertEqual(try Data(contentsOf: f.directory.appendingPathComponent("index.json")), manifest)

@@ -8,7 +8,7 @@ import PicShotCore
 @MainActor final class PinGroupsController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate {
     var onOpenPin: ((UUID) -> Void)?
     var onSessionChange: (() -> Void)?
-    var presentError: @MainActor (Error) -> Void = { showError($0) }
+    var onChangeError: @MainActor (Error) -> Void = { showError($0) }
     private let store: PinSessionStore
     private let transforms: PinGroupTransformController?
     private var transformSubscription: AnyCancellable?
@@ -291,7 +291,7 @@ import PicShotCore
 
     @discardableResult private func change(_ operation: () throws -> Void) -> Bool {
         do { try operation(); reload(); onSessionChange?(); return true }
-        catch { presentError(error); return false }
+        catch { self.onChangeError(error); return false }
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
