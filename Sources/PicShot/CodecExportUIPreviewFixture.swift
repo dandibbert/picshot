@@ -7,7 +7,7 @@ import PicShotCodecCore
 /// captures the live desktop, reads the clipboard, or opens a personal file.
 @MainActor
 enum CodecExportUIPreviewFixture {
-    static func verify(evidenceDirectory: URL) async throws -> [String: Any] {
+    static func verify(evidenceDirectory: URL, service: CodecExportProcessService = .shared) async throws -> [String: Any] {
         _ = NSApplication.shared
         try FileManager.default.createDirectory(at: evidenceDirectory, withIntermediateDirectories: true)
         let originalAppearance = NSApp.appearance
@@ -36,7 +36,7 @@ enum CodecExportUIPreviewFixture {
                     bundledEncoder: { snapshot, options in
                         try await ImageExportService.encodeBundled(snapshot: snapshot, options: options,
                             prepare: { frozen, request in
-                                try await CodecExportProcessService.shared.prepare(snapshot: frozen, options: request) { fraction in
+                                try await service.prepare(snapshot: frozen, options: request) { fraction in
                                     guard fraction < 1, change.claim() else { return }
                                     let dispatched = DispatchSemaphore(value: 0)
                                     Task { @MainActor in
@@ -109,7 +109,7 @@ enum CodecExportUIPreviewFixture {
                 let resultName = "codec-ui-result." + format.filenameExtension
                 try saved.write(to: evidenceDirectory.appendingPathComponent(resultName), options: .atomic)
                 try FileManager.default.removeItem(at: output)
-                let state = await CodecExportProcessService.shared.snapshot()
+                let state = await service.snapshot()
                 let metrics = try CodecExportResourceFixture.finished(state, expectSuccess: true)
                 formats.append(["format": format.title, "appearance": mode, "encodedBytes": artifact.byteCount,
                     "sha256": digest(saved), "sourceSHA256": sourceDigest, "sourceUnchanged": true,

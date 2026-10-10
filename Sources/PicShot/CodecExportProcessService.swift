@@ -24,6 +24,12 @@ enum CodecExportProcessError: LocalizedError {
     }
 }
 
+/// The legacy route exists only for explicit matched diagnostic configurations.
+/// There is no user preference or ambient environment override.
+enum CodecPNGStagingMode: String, Codable, Sendable {
+    case verifiedBytesOnly, legacyPreview
+}
+
 /// Production always resolves the current signed app's own executable. Explicit
 /// injected configurations are for process/protocol tests, never an automatic
 /// development fallback or an environment-controlled executable override.
@@ -32,12 +38,20 @@ struct CodecProcessConfiguration: @unchecked Sendable {
     let arguments: [String]
     let wallSeconds: TimeInterval
     let residentLimitBytes: UInt64
+    let pngStagingMode: CodecPNGStagingMode
+    let collectStagedPNGIdentityForDiagnostics: Bool
+    let stagedPNGForDiagnostics: (@Sendable (URL) throws -> Void)?
     static var production: Self { Self(executable: { try CodecHelperExecutable.verified() }) }
     init(executable: @escaping @Sendable () throws -> URL,
          arguments: [String] = [],
-         wallSeconds: TimeInterval = 300, residentLimitBytes: UInt64 = 1_073_741_824) {
+         wallSeconds: TimeInterval = 300, residentLimitBytes: UInt64 = 1_073_741_824,
+         pngStagingMode: CodecPNGStagingMode = .verifiedBytesOnly,
+         collectStagedPNGIdentityForDiagnostics: Bool = false,
+         stagedPNGForDiagnostics: (@Sendable (URL) throws -> Void)? = nil) {
         self.executable = executable; self.arguments = arguments
         self.wallSeconds = wallSeconds; self.residentLimitBytes = residentLimitBytes
+        self.pngStagingMode = pngStagingMode; self.stagedPNGForDiagnostics = stagedPNGForDiagnostics
+        self.collectStagedPNGIdentityForDiagnostics = collectStagedPNGIdentityForDiagnostics
     }
 }
 
@@ -83,6 +97,10 @@ struct CodecExportProcessMetrics: Codable, Equatable, Sendable {
     var lastStage = "admission"
     var elapsedSeconds: TimeInterval = 0
     var childLaunched = false
+    var childProcessIdentifier: Int32?
+    var helperExecutablePath: String?
+    var pngStagingMode: String?
+    var sourceSHA256: String?
     var childExitConfirmed = false
     var terminationStatus: Int32?
     var terminationReason: String?
@@ -220,6 +238,7 @@ actor CodecExportProcessService {
                   configuration.residentLimitBytes > 0, configuration.residentLimitBytes <= CodecExportLimits.residentBytes else { throw CodecExportProcessError.invalidProtocol }
             job.update { $0.lastStage = "executableValidation" }
             let executable = try autoreleasepool { try configuration.executable() }
+            job.update { $0.helperExecutablePath = executable.path }
             guard ProcessInfo.processInfo.systemUptime < started + configuration.wallSeconds else { throw CodecExportProcessError.timedOut }
             job.update { $0.lastStage = "destinationPreparation" }
             let destination: URL?
@@ -250,12 +269,33 @@ actor CodecExportProcessService {
                 var limits = ImageExportLimits.standard
                 limits.maximumSourcePixels = CodecExportLimits.stillPixels
                 limits.maximumEncodedBytes = CodecExportLimits.stillInputBytes
-                let png = try ImageExportService.encode(snapshot: snapshot, options: ImageExportOptions(),
+                job.update { $0.pngStagingMode = configuration.pngStagingMode.rawValue }
+                let stagedBytes: Data
+                switch configuration.pngStagingMode {
+                case .verifiedBytesOnly:
+                    let png = try ImageExportService.encodePNGForCodecStaging(snapshot: snapshot,
                                                         cancellation: job.cancellation, limits: limits)
-                try job.checkCancellation()
-                try png.data.write(to: inputURL, options: .withoutOverwriting)
-                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: inputURL.path)
-                job.update { $0.sourceBytes = Int64(png.data.count) }
+                    try job.checkCancellation()
+                    try png.write(to: inputURL, options: .withoutOverwriting)
+                    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: inputURL.path)
+                    job.update { $0.sourceBytes = Int64(png.count) }
+                    stagedBytes = png
+                case .legacyPreview:
+                    // Preserve the original artifact and uses through staging;
+                    // do not force its lifetime longer for the diagnostic control.
+                    let png = try ImageExportService.encode(snapshot: snapshot, options: ImageExportOptions(),
+                                                        cancellation: job.cancellation, limits: limits)
+                    try job.checkCancellation()
+                    try png.data.write(to: inputURL, options: .withoutOverwriting)
+                    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: inputURL.path)
+                    job.update { $0.sourceBytes = Int64(png.data.count) }
+                    stagedBytes = png.data
+                }
+                if configuration.collectStagedPNGIdentityForDiagnostics {
+                    let sourceHash = SHA256.hash(data: stagedBytes).map { String(format: "%02x", $0) }.joined()
+                    job.update { $0.sourceSHA256 = sourceHash }
+                }
+                try configuration.stagedPNGForDiagnostics?(inputURL)
             }
             try job.checkCancellation()
             guard ProcessInfo.processInfo.systemUptime < started + configuration.wallSeconds else { throw CodecExportProcessError.timedOut }
@@ -277,6 +317,7 @@ actor CodecExportProcessService {
             do { try process.run() }
             catch { reader.closeWriters(output: output, errors: errors); throw error }
             job.setProcess(process)
+            job.update { $0.childProcessIdentifier = process.processIdentifier }
             // Observe the child before sending its request. Small encodes can
             // finish before the first 50 ms supervisor iteration.
             sample(job: job, child: process.processIdentifier)

@@ -12,12 +12,12 @@ enum CodecExportAttributionFixture {
         case exportOnly = "export-only", decodeOnly = "decode-only", combined
     }
     enum Profile: String, CaseIterable, Sendable {
-        case installed = "installed-768x576", quickTest = "unit-160x120"
-        var width: Int { self == .installed ? 768 : 160 }
+        case installed = "installed-768x576", quickTest = "unit-160x120", stagingLarge = "staging-2048x1536", stagingCheck = "staging-768x576"
+        var width: Int { self == .stagingLarge ? 2048 : self == .installed || self == .stagingCheck ? 768 : 160 }
         var height: Int { width * 3 / 4 }
         var warmupCycles: Int { 2 }
         var measuredCycles: Int { self == .installed ? 12 : 3 }
-        var deadlineSeconds: TimeInterval { self == .installed ? 480 : 90 }
+        var deadlineSeconds: TimeInterval { self == .quickTest ? 90 : 480 }
     }
     // Reject accidentally mixing modes, formats, or preparation in one process.
     private static var invocationClaimed = false
@@ -27,6 +27,7 @@ enum CodecExportAttributionFixture {
     /// The launcher must use a new process for preparation and every matrix cell.
     static func runIfRequested(evidenceDirectory: URL,
                               environment: [String: String] = ProcessInfo.processInfo.environment) async throws -> [String: Any]? {
+        if let report = try await CodecStagingComparisonFixture.runIfRequested(evidenceDirectory: evidenceDirectory, environment: environment) { return report }
         if let report = try await ImageDecodeLargeAttributionFixture.runIfRequested(evidenceDirectory: evidenceDirectory, environment: environment) {
             return report
         }
@@ -87,7 +88,8 @@ enum CodecExportAttributionFixture {
     }
 
     static func verify(evidenceDirectory: URL, mode: Mode, format: ImageExportFormat,
-                       profile: Profile = .installed, inputDirectory: URL? = nil) async throws -> [String: Any] {
+                       profile: Profile = .installed, inputDirectory: URL? = nil,
+                       service: CodecExportProcessService = .shared, sampleBacking: Bool = false) async throws -> [String: Any] {
         try claimInvocation()
         guard evidenceDirectory.isFileURL, format == .webp || format == .avif,
               (mode == .decodeOnly) == (inputDirectory != nil) else { throw failure("Invalid mode, format, or input directory") }
@@ -113,7 +115,7 @@ enum CodecExportAttributionFixture {
             "sampleIntervalSeconds": GIFResourceMemorySampler.interval, "cooperativeDeadlineSeconds": profile.deadlineSeconds,
             "captureStarted": false, "networkAttempted": false, "dependenciesInstalled": false, "mockedCodec": false,
             "scope": "Production encodeBundled, signed codec helper, helper-derived preview, and exclusive same-byte publication; decode-only uses independently materialized ImageIO pixels from a separately prepared immutable input",
-            "exportOnlyScope": "No independent WebP/AVIF ImageIO validation; production PNG source staging, its PNG preview, and helper-preview PNG decoding remain part of export",
+            "exportOnlyScope": "No independent WebP/AVIF ImageIO validation; production PNG source staging and helper-preview PNG decoding remain part of export; an explicitly injected legacy service also constructs the unused staging preview",
             "memoryScope": "Parent Mach RSS and physical footprint sampled continuously at 50 ms plus named boundaries; excludes other processes, GPU, and WindowServer; sampled peaks can miss instantaneous peaks",
             "backingMemoryScope": ImageBackingTaskVMReading.scope,
             "controllerScope": "Service-level attribution matching CodecExportResourceFixture; zero export controllers created. Active controller counts detect contamination, not UI lifetime or all native allocations",
@@ -126,10 +128,10 @@ enum CodecExportAttributionFixture {
         var cycles: [CodecAttributionCycle] = []
         cycles.reserveCapacity(profile.warmupCycles + profile.measuredCycles)
         let counters = CodecAttributionCounters()
-        let wholeSampler = GIFResourceMemorySampler()
+        let wholeSampler = GIFResourceMemorySampler(includeBacking: sampleBacking)
         defer { wholeSampler.stop() }
         do {
-            let initialState = await CodecExportProcessService.shared.snapshot()
+            let initialState = await service.snapshot()
             try require(!initialState.active && initialState.lastJob == nil, "Codec work already occurred in this process")
             try await drain(deadline: deadline)
             let input = try inputDirectory.map { try validatedInput(directory: $0, format: format, profile: profile) }
@@ -143,14 +145,14 @@ enum CodecExportAttributionFixture {
             report["backingBeforeWarmup"] = try object(ImageBackingMemoryReading.current())
             for index in 1...profile.warmupCycles {
                 cycles.append(try await cycle(index: index, isWarmup: true, mode: mode, format: format,
-                    profile: profile, input: input, directory: directory, deadline: deadline, counters: counters))
+                    profile: profile, input: input, directory: directory, deadline: deadline, counters: counters, service: service, sampleBacking: sampleBacking))
             }
             let baseline = try observedMemory()
             report["baselineAfterWarmup"] = try object(baseline)
             report["backingBaselineAfterWarmup"] = try object(ImageBackingMemoryReading.current())
             for index in 1...profile.measuredCycles {
                 cycles.append(try await cycle(index: index, isWarmup: false, mode: mode, format: format,
-                    profile: profile, input: input, directory: directory, deadline: deadline, counters: counters))
+                    profile: profile, input: input, directory: directory, deadline: deadline, counters: counters, service: service, sampleBacking: sampleBacking))
             }
             // Delayed releases remain inside continuous sampling, before JSON.
             try await Task.sleep(nanoseconds: 500_000_000)
@@ -195,7 +197,7 @@ enum CodecExportAttributionFixture {
             wholeSampler.stop()
             report["status"] = "failed"; report["error"] = error.localizedDescription
             report["completedCycles"] = try? cycles.map { try object($0) }
-            report["lastProcess"] = try? object(await CodecExportProcessService.shared.snapshot())
+            report["lastProcess"] = try? object(await service.snapshot())
             report["fixtureEncodingTasksActive"] = counters.activeTasks
             try? files.removeItem(at: directory)
             report["temporaryDirectoryRemoved"] = !files.fileExists(atPath: directory.path)
@@ -206,15 +208,16 @@ enum CodecExportAttributionFixture {
 
     private static func cycle(index: Int, isWarmup: Bool, mode: Mode, format: ImageExportFormat,
                               profile: Profile, input: CodecAttributionInput?, directory: URL,
-                              deadline: TimeInterval, counters: CodecAttributionCounters) async throws -> CodecAttributionCycle {
+                              deadline: TimeInterval, counters: CodecAttributionCounters, service: CodecExportProcessService,
+                              sampleBacking: Bool) async throws -> CodecAttributionCycle {
         try check(deadline)
-        let sampler = GIFResourceMemorySampler()
+        let sampler = GIFResourceMemorySampler(includeBacking: sampleBacking)
         defer { sampler.stop() }
         let started = ProcessInfo.processInfo.systemUptime
         // Only scalars and a weak ownership witness cross this async scope.
         // Source/snapshot/encoded bytes/preview/data providers are dropped there.
         let result = try await workload(mode: mode, format: format, profile: profile, input: input,
-                                        directory: directory, deadline: deadline, counters: counters, sampler: sampler)
+                                        directory: directory, deadline: deadline, counters: counters, sampler: sampler, service: service, providerIdentity: sampleBacking)
         var boundaries = result.boundaries
         boundaries.append(try boundary("afterWorkloadScope", sampler: sampler))
         try await drain(deadline: deadline)
@@ -226,7 +229,7 @@ enum CodecExportAttributionFixture {
             try await mainQueueDrain()
             sampler.sample(); settledSamples.append(try observedMemory())
         }
-        let state = await CodecExportProcessService.shared.snapshot()
+        let state = await service.snapshot()
         let ownedFiles = try FileManager.default.contentsOfDirectory(atPath: directory.path).count
         try require(result.payload.value == nil && !state.active && ownedFiles == 0 &&
                     ImageExportController.activeSessionCount == 0 && ImageExportService.queue.operationCount == 0 &&
@@ -242,30 +245,36 @@ enum CodecExportAttributionFixture {
             encodedBytes: result.encodedBytes, encodedSHA256: result.encodedSHA256, sourceSHA256: result.sourceSHA256, independentDecode: result.decode,
             sameByteSave: mode != .decodeOnly, payloadReleased: true, activeControllers: ImageExportController.activeSessionCount,
             queuedOrRunningJobs: ImageExportService.queue.operationCount, fixtureEncodingTasksActive: counters.activeTasks,
-            helperActive: state.active, ownedTemporaryFiles: ownedFiles, elapsedSeconds: ProcessInfo.processInfo.systemUptime - started)
+            helperActive: state.active, ownedTemporaryFiles: ownedFiles, exportSeconds: result.exportSeconds, elapsedSeconds: ProcessInfo.processInfo.systemUptime - started)
     }
 
     private static func workload(mode: Mode, format: ImageExportFormat, profile: Profile, input: CodecAttributionInput?,
                                  directory: URL, deadline: TimeInterval, counters: CodecAttributionCounters,
-                                 sampler: GIFResourceMemorySampler) async throws -> CodecAttributionWorkload {
+                                 sampler: GIFResourceMemorySampler, service: CodecExportProcessService, providerIdentity: Bool) async throws -> CodecAttributionWorkload {
         var boundaries: [CodecAttributionBoundary] = []
         boundaries.reserveCapacity(8)
         boundaries.append(try boundary("beforeSource", sampler: sampler))
         let source = try autoreleasepool { try CodecExportResourceFixture.fixture(width: profile.width, height: profile.height) }
         boundaries.append(try boundary("afterSyntheticSourceCreation", sampler: sampler))
-        let sourceSHA256 = try autoreleasepool { digest(try CodecExportResourceFixture.raster(source)) }
-        boundaries.append(try boundary("afterSourceRasterDigest", sampler: sampler))
+        let sourceSHA256 = try autoreleasepool {
+            if providerIdentity { return try CodecStagingComparisonFixture.sourceIdentity(source) }
+            return digest(try CodecExportResourceFixture.raster(source))
+        }
+        boundaries.append(try boundary(providerIdentity ? "afterSourceProviderDigestWithoutDraw" : "afterSourceRasterDigest", sampler: sampler))
         let payload = CodecAttributionPayload(source: source)
         let weak = CodecAttributionWeakPayload(payload)
         if mode != .decodeOnly { payload.snapshot = try autoreleasepool { try ImageExportSnapshot(image: source) } }
         boundaries.append(try boundary("afterSourceAndOptionalSnapshot", sampler: sampler))
         var helper: CodecExportProcessMetrics?
+        var exportSeconds: Double?
         if mode != .decodeOnly {
             try check(deadline)
             counters.exports += 1
-            try await encode(payload: payload, format: format, counters: counters)
+            let exportStarted = ProcessInfo.processInfo.systemUptime
+            try await encode(payload: payload, format: format, counters: counters, service: service)
+            exportSeconds = ProcessInfo.processInfo.systemUptime - exportStarted
             boundaries.append(try boundary("afterProductionExportAndHelperExit", sampler: sampler))
-            helper = try finished(await CodecExportProcessService.shared.snapshot())
+            helper = try finished(await service.snapshot())
         }
         let bytes: Int
         let encodedSHA256: String
@@ -306,15 +315,15 @@ enum CodecExportAttributionFixture {
             boundaries.append(try boundary("afterOutputUnlink", sampler: sampler))
         }
         return CodecAttributionWorkload(boundaries: boundaries, payload: weak, helper: helper, encodedBytes: bytes,
-                                        encodedSHA256: encodedSHA256, sourceSHA256: sourceSHA256, decode: decode)
+                                        encodedSHA256: encodedSHA256, sourceSHA256: sourceSHA256, decode: decode, exportSeconds: exportSeconds)
     }
 
     private static func encode(payload: CodecAttributionPayload, format: ImageExportFormat,
-                               counters: CodecAttributionCounters) async throws {
+                               counters: CodecAttributionCounters, service: CodecExportProcessService) async throws {
         guard let snapshot = payload.snapshot else { throw failure("Missing owned snapshot") }
         counters.startedTasks += 1; counters.activeTasks += 1
         defer { counters.completedTasks += 1; counters.activeTasks -= 1 }
-        let task = Task { try await ImageExportService.encodeBundled(snapshot: snapshot, options: options(format)) }
+        let task = Task { try await ImageExportService.encodeBundled(snapshot: snapshot, options: options(format), service: service) }
         payload.artifact = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
     }
 
@@ -445,11 +454,11 @@ private struct CodecAttributionCycle: Encodable {
     let memory: GIFResourceMemoryStatistics; let settledSamples: [GIFResourceMemoryReading]; let settled: GIFResourceMemoryReading
     let helper: CodecExportProcessMetrics?; let encodedBytes: Int; let encodedSHA256: String; let sourceSHA256: String; let independentDecode: CodecAttributionDecode?
     let sameByteSave: Bool; let payloadReleased: Bool; let activeControllers: Int; let queuedOrRunningJobs: Int
-    let fixtureEncodingTasksActive: Int; let helperActive: Bool; let ownedTemporaryFiles: Int; let elapsedSeconds: TimeInterval
+    let fixtureEncodingTasksActive: Int; let helperActive: Bool; let ownedTemporaryFiles: Int; let exportSeconds: Double?; let elapsedSeconds: TimeInterval
 }
 private struct CodecAttributionWorkload {
     let boundaries: [CodecAttributionBoundary]; let payload: CodecAttributionWeakPayload
-    let helper: CodecExportProcessMetrics?; let encodedBytes: Int; let encodedSHA256: String; let sourceSHA256: String; let decode: CodecAttributionDecode?
+    let helper: CodecExportProcessMetrics?; let encodedBytes: Int; let encodedSHA256: String; let sourceSHA256: String; let decode: CodecAttributionDecode?; let exportSeconds: Double?
 }
 @MainActor private final class CodecAttributionCounters {
     var exports = 0, decodes = 0, startedTasks = 0, completedTasks = 0, activeTasks = 0

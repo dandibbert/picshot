@@ -448,6 +448,19 @@ struct GIFResourceMemoryStatistics: Encodable, Equatable, Sendable {
     private(set) var boundarySampleCount = 0
     private(set) var peakResidentBytes: UInt64?
     private(set) var peakPhysicalFootprintBytes: UInt64?
+    // Opt-in codec comparison only; nil/zero samples mean unobserved.
+    private(set) var peakVolatileResidentBytes: UInt64?
+    private(set) var peakVolatileLedgerBytes: Int64?
+    private(set) var backingSampleCount = 0
+
+    mutating func recordBacking(_ reading: ImageBackingMemoryReading) {
+        guard reading.purgeable.kernelReturn == 0,
+              let resident = reading.purgeable.bytes["purgeable_volatile_resident"],
+              let ledger = reading.purgeable.ledgerBytes["ledger_purgeable_volatile"] else { return }
+        backingSampleCount += 1
+        peakVolatileResidentBytes = max(peakVolatileResidentBytes ?? resident, resident)
+        peakVolatileLedgerBytes = max(peakVolatileLedgerBytes ?? ledger, ledger)
+    }
 
     mutating func record(_ reading: GIFResourceMemoryReading, isTimer: Bool = false) {
         if isTimer { timerTickCount += 1 } else { boundarySampleCount += 1 }
@@ -517,8 +530,10 @@ final class GIFResourceMemorySampler: @unchecked Sendable {
     private let queue = DispatchQueue(label: "PicShot.GIFResourceSmoke.Memory")
     private var timer: DispatchSourceTimer?
     private var statistics = GIFResourceMemoryStatistics()
+    private let includeBacking: Bool
 
-    init() {
+    init(includeBacking: Bool = false) {
+        self.includeBacking = includeBacking
         sample()
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + Self.interval, repeating: Self.interval, leeway: .milliseconds(5))
@@ -528,7 +543,9 @@ final class GIFResourceMemorySampler: @unchecked Sendable {
     }
     func sample(isTimer: Bool = false) {
         let reading = GIFResourceMemoryReading.current()
+        let backing = includeBacking ? ImageBackingMemoryReading.current() : nil
         lock.lock(); defer { lock.unlock() }; statistics.record(reading, isTimer: isTimer)
+        if let backing { statistics.recordBacking(backing) }
     }
     func stop() {
         // Called only by the export owner, never the sampling queue.

@@ -124,6 +124,28 @@ enum ImageExportService {
     static func encode(snapshot: ImageExportSnapshot, options: ImageExportOptions,
                        cancellation: ImageExportCancellation = ImageExportCancellation(),
                        limits: ImageExportLimits = .standard) throws -> ImageExportArtifact {
+        let encoded = try encodeNative(snapshot: snapshot, options: options, cancellation: cancellation,
+                                       limits: limits, includePreview: true)
+        guard let preview = encoded.preview else { throw ImageExportError.invalidOutput }
+        return ImageExportArtifact(data: encoded.data, options: options, width: snapshot.image.width, height: snapshot.image.height,
+                                   pageCount: encoded.pages, firstPreview: preview, sourceURL: snapshot.sourceURL)
+    }
+
+    /// Private helper input needs the full-fidelity PNG bytes and metadata checks,
+    /// but no thumbnail. The final codec artifact still supplies its own verified,
+    /// byte-derived preview. Keep the exact PNG options used by ordinary encode.
+    static func encodePNGForCodecStaging(snapshot: ImageExportSnapshot,
+                        cancellation: ImageExportCancellation = ImageExportCancellation(),
+                        limits: ImageExportLimits = .standard) throws -> Data {
+        try encodeNative(snapshot: snapshot, options: ImageExportOptions(),
+                         cancellation: cancellation, limits: limits, includePreview: false).data
+    }
+
+    /// Both paths share the same bounded writer and metadata verifier. Keep the
+    /// buffer's final data use after the optional preview, as in ordinary encode.
+    private static func encodeNative(snapshot: ImageExportSnapshot, options: ImageExportOptions,
+                        cancellation: ImageExportCancellation,
+                        limits: ImageExportLimits, includePreview: Bool) throws -> (data: Data, pages: Int, preview: CGImage?) {
         try limits.validate(); try options.validate(); try cancellation.check()
         guard !options.format.usesBundledCodec else { throw ImageExportError.unavailable(options.format.title + "（需要已签名的独立编码进程）") }
         let image = snapshot.image
@@ -165,10 +187,14 @@ enum ImageExportService {
         try cancellation.check()
         guard !buffer.data.isEmpty else { throw ImageExportError.invalidOutput }
         try verify(data: buffer.data, options: options, width: image.width, height: image.height, expectedPages: pages, limits: limits)
-        let preview = try preview(data: buffer.data, format: options.format, page: 0, limits: limits)
+        let firstPreview: CGImage?
+        if includePreview {
+            firstPreview = try preview(data: buffer.data, format: options.format, page: 0, limits: limits)
+        } else {
+            firstPreview = nil
+        }
         try cancellation.check()
-        return ImageExportArtifact(data: buffer.data, options: options, width: image.width, height: image.height,
-                                   pageCount: pages, firstPreview: preview, sourceURL: snapshot.sourceURL)
+        return (buffer.data, pages, firstPreview)
     }
 
     /// Reopens the actual compressed/container bytes. Never renders the source
@@ -290,7 +316,7 @@ enum ImageExportService {
     }
 }
 
-private final class ImageExportBuffer {
+final class ImageExportBuffer {
     private(set) var data = Data()
     private(set) var failure: Error?
     let maximumBytes: Int

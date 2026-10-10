@@ -75,7 +75,7 @@ jobs:
           compression-level: 6
 
   build:
-    if: ${{ !contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') && !contains(github.event.head_commit.message || '', '[codec-attribution]') && !contains(github.event.head_commit.message || '', '[runner-only]') && !contains(github.event.head_commit.message || '', '[scroll-memory]') && !contains(github.event.head_commit.message || '', '[manual-hash]') && !contains(github.event.head_commit.message || '', '[recording-wait]') && !contains(github.event.head_commit.message || '', '[multiwindow-memory]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-documents]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
+    if: ${{ !contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') && !contains(github.event.head_commit.message || '', '[codec-attribution]') && !contains(github.event.head_commit.message || '', '[codec-staging]') && !contains(github.event.head_commit.message || '', '[runner-only]') && !contains(github.event.head_commit.message || '', '[scroll-memory]') && !contains(github.event.head_commit.message || '', '[manual-hash]') && !contains(github.event.head_commit.message || '', '[recording-wait]') && !contains(github.event.head_commit.message || '', '[multiwindow-memory]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-documents]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
     strategy:
       fail-fast: false
       matrix:
@@ -3213,3 +3213,146 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
+
+  codec-staging-comparison:
+    # ARM-first hypothesis test, not an accepted installer or an Intel verdict.
+    if: ${{ contains(github.event.head_commit.message || '', '[codec-staging]') }}
+    runs-on: macos-15
+    # Every cell retains its existing 300s helper / 480s fixture / 600s launcher
+    # bounds. Independent AB/BA and fidelity processes need separate envelopes;
+    # any failed benefit gate stops the later matrix and preserves raw evidence.
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Package exact signed app for staging comparison
+        timeout-minutes: 25
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 1440 --max-log-bytes 4194304
+          --log dist/staging-package.log --report dist/staging-package-report.json
+          -- env PICSHOT_PACKAGE_APP_ONLY=1 bash scripts/package.sh
+      - name: Compile staging and existing codec regression tests
+        timeout-minutes: 10
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 540 --max-log-bytes 4194304
+          --log dist/staging-test-build.log --report dist/staging-test-build-report.json
+          -- swift build --build-tests
+      - name: Build actual debug executables for native tests
+        timeout-minutes: 16
+        run: |
+          python3 scripts/run-bounded-command.py --timeout-seconds 420 --max-log-bytes 4194304 --log dist/staging-app-build.log --report dist/staging-app-build-report.json -- swift build --product PicShot
+          python3 scripts/run-bounded-command.py --timeout-seconds 420 --max-log-bytes 4194304 --log dist/staging-helper-build.log --report dist/staging-helper-build-report.json -- swift build --product PicShotCodecHelper
+      - name: Check staging bytes cancellation and evidence contract
+        timeout-minutes: 8
+        run: |
+          set -o pipefail
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_check_codec_staging_comparison.py -v
+          PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p test_check_codec_staging_comparison.py -v
+          python3 scripts/run-bounded-command.py --timeout-seconds 420 --max-log-bytes 4194304 --log dist/staging-native-tests.log --report dist/staging-native-tests-report.json -- swift test --skip-build --filter 'ImageExportPNGStaging|ImageExportService|ImageExportController|CodecExportAttribution|CodecExportProcess|CodecHelperLifecycle|CodecStagingComparison|GIFResourceSmoke'
+      - name: Upload staging compilation and native regression evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Staging-Native-arm64-${{ github.sha }}
+          path: |
+            dist/staging-*.log
+            dist/staging-*-report.json
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Compare four fresh export-only processes before further work
+        timeout-minutes: 43
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 2500 --max-log-bytes 1048576
+          --log dist/staging-export-phase.log --report dist/staging-export-phase-report.json
+          -- bash scripts/codec-staging-comparison.sh --phase export
+          "${{ github.workspace }}/dist/PicShot.app" "${{ github.workspace }}/dist/evidence/codec-staging"
+      - name: Preserve first export-only comparison immediately
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Staging-Export-arm64-${{ github.sha }}
+          path: |
+            dist/evidence/codec-staging/upload/export-reports.zip
+            dist/staging-export-phase.log
+            dist/staging-export-phase-report.json
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 0
+      - name: Compare actual controller drawing and bounded large workloads
+        timeout-minutes: 124
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 7350 --max-log-bytes 1048576
+          --log dist/staging-product-phase.log --report dist/staging-product-phase-report.json
+          -- bash scripts/codec-staging-comparison.sh --phase product
+          "${{ github.workspace }}/dist/PicShot.app" "${{ github.workspace }}/dist/evidence/codec-staging"
+      - name: Preserve controller and large-image comparison
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Staging-Product-arm64-${{ github.sha }}
+          path: |
+            dist/evidence/codec-staging/upload/product-reports.zip
+            dist/staging-product-phase.log
+            dist/staging-product-phase-report.json
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 0
+      - name: Verify matching output pixels in independent processes and interruption cleanup
+        timeout-minutes: 104
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 6120 --max-log-bytes 1048576
+          --log dist/staging-fidelity-phase.log --report dist/staging-fidelity-phase-report.json
+          -- bash scripts/codec-staging-comparison.sh --phase fidelity
+          "${{ github.workspace }}/dist/PicShot.app" "${{ github.workspace }}/dist/evidence/codec-staging"
+      - name: Summarize exact bounded staging comparison
+        timeout-minutes: 2
+        run: >-
+          bash scripts/codec-staging-comparison.sh --phase summary
+          "${{ github.workspace }}/dist/PicShot.app" "${{ github.workspace }}/dist/evidence/codec-staging"
+      - name: Preserve final comparison reports without publishing installer
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Staging-Fidelity-arm64-${{ github.sha }}
+          path: |
+            dist/evidence/codec-staging/upload/fidelity-reports.zip
+            dist/staging-fidelity-phase.log
+            dist/staging-fidelity-phase-report.json
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 0
+      - name: Preserve independent final staging decision
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Staging-Summary-arm64-${{ github.sha }}
+          path: dist/evidence/codec-staging/upload/summary-reports.zip
+          if-no-files-found: ignore
+          retention-days: 14
+          compression-level: 0
+      - name: Preserve small actual source and output specimens
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Staging-Small-Media-arm64-${{ github.sha }}
+          path: dist/evidence/codec-staging/upload/small-specimens.zip
+          if-no-files-found: ignore
+          retention-days: 14
+          compression-level: 0
+      - name: Preserve actual large control specimens
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Staging-Large-Control-Media-arm64-${{ github.sha }}
+          path: dist/evidence/codec-staging/upload/large-control-specimens.zip
+          if-no-files-found: ignore
+          retention-days: 14
+          compression-level: 0
+      - name: Preserve actual large candidate specimens
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Staging-Large-Candidate-Media-arm64-${{ github.sha }}
+          path: dist/evidence/codec-staging/upload/large-candidate-specimens.zip
+          if-no-files-found: ignore
+          retention-days: 14
+          compression-level: 0
