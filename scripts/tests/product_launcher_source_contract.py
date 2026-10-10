@@ -25,7 +25,21 @@ CODEC_STAGING_LAUNCHER_HOOKS = (
 )
 
 
+def without_pin_ui_diagnostic_launcher_hooks(test, source):
+    # Reverse only the literal reviewed opt-in observer additions. Existing
+    # staging/early/product reversals and their historical hashes stay intact.
+    import json
+    from pathlib import Path
+    hooks = json.loads(Path(__file__).with_name("pin_ui_diagnostic_launcher_reverse.json").read_text())
+    for hook, replacement in hooks:
+        test.assertEqual(source.count(hook), 1,
+                         "Missing, duplicated or changed pin UI diagnostic launcher hook")
+        source = source.replace(hook, replacement, 1)
+    return source
+
+
 def without_codec_staging_launcher_hooks(test, source):
+    source = without_pin_ui_diagnostic_launcher_hooks(test, source)
     for hook, replacement in CODEC_STAGING_LAUNCHER_HOOKS:
         test.assertEqual(source.count(hook), 1,
                          "Missing, duplicated or changed codec-staging launcher hook")

@@ -12,10 +12,59 @@ import PicShotCore
         "native-group-order-boundaries-selection", "light-dark-complete-layout", "finite-owned-retirement"]
     private static let deadlineSeconds = 120.0
     private static let route = "PortableSettingsUIPreviewFixture.click/owned-hitTest-mouseDown"
+    private static var diagnostic: PhaseDiagnostic?
+    private static func trace(_ phase: String, _ fields: [String: Any] = [:]) { diagnostic?.record(phase, fields) }
+
+    // Opt-in synthetic-fixture observation only. Direct descriptor writes retain
+    // the last entered call even when a nested AppKit tracking loop never returns.
+    // No user content, new input, waiting, acceptance predicate or timeout changes.
+    @MainActor private final class PhaseDiagnostic {
+        private let handle: FileHandle
+        private let started = ProcessInfo.processInfo.systemUptime
+        private var bytes = 0, rows = 0
+        private var writeSeconds = 0.0
+        private var failed = false
+        init?(directory: String) {
+            let url = URL(fileURLWithPath: directory, isDirectory: true).appendingPathComponent("pin-phases.jsonl")
+            guard FileManager.default.createFile(atPath: url.path, contents: nil),
+                  let file = try? FileHandle(forWritingTo: url) else { return nil }
+            handle = file
+            record("diagnosticOpened", ["pid": Int(ProcessInfo.processInfo.processIdentifier),
+                "sourceCommit": Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String ?? "unknown",
+                "maximumBytes": 262_144, "maximumRows": 2_048, "maximumRowBytes": 2_048,
+                "syntheticDataOnly": true, "synchronousWritesAssessedAsOverhead": true])
+        }
+        func record(_ phase: String, _ fields: [String: Any]) {
+            guard !failed, rows < 2_048 else { return }
+            var row = fields
+            row["phase"] = phase; row["sequence"] = rows
+            row["uptimeSeconds"] = ProcessInfo.processInfo.systemUptime
+            row["elapsedSeconds"] = ProcessInfo.processInfo.systemUptime - started
+            row["priorWriteSeconds"] = writeSeconds
+            guard var data = try? JSONSerialization.data(withJSONObject: row, options: [.sortedKeys]),
+                  data.count < 2_048, bytes + data.count + 1 <= 262_144 else {
+                failed = true; FileHandle.standardError.write(Data("Pin diagnostic reached its finite byte/row bound\n".utf8)); return
+            }
+            data.append(10)
+            let begin = ProcessInfo.processInfo.systemUptime
+            do { try handle.write(contentsOf: data); bytes += data.count; rows += 1 }
+            catch { failed = true; FileHandle.standardError.write(Data("Pin diagnostic descriptor write failed\n".utf8)) }
+            writeSeconds += ProcessInfo.processInfo.systemUptime - begin
+        }
+        func close() {
+            record("diagnosticClosed", ["writtenBytesBeforeClose": bytes, "writtenRowsBeforeClose": rows, "writeFailed": failed])
+            try? handle.close()
+        }
+    }
 
     @discardableResult static func run(reportURL: URL) async throws -> [String: Any] {
         _ = NSApplication.shared
         let start = Date(), directory = reportURL.deletingLastPathComponent(), files = FileManager.default
+        if let path = ProcessInfo.processInfo.environment["PICSHOT_PIN_UI_DIAGNOSTIC_DIRECTORY"] {
+            diagnostic = PhaseDiagnostic(directory: path)
+        }
+        defer { diagnostic?.close(); diagnostic = nil }
+        trace("fixtureEntered")
         try files.createDirectory(at: directory, withIntermediateDirectories: true)
         let temporary = try SaveWorkflowUIPreviewFixture.makeTemporaryRoot(name: "PicShot-PinManagement-" + UUID().uuidString)
         let previousAppearance = NSApp.appearance
@@ -38,17 +87,22 @@ import PicShotCore
             var flows: [[String: Any]] = []
             for (mode, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
                 try require(Date().timeIntervalSince(start) < deadlineSeconds, "Overall deadline exceeded")
+                trace("appearanceFlowEnter", ["appearance": mode])
                 NSApp.appearance = NSAppearance(named: appearance)
                 flows.append(try await flow(mode, temporary.appendingPathComponent(mode), directory, &owners, &visuals, &actions))
+                trace("appearanceFlowReturn", ["appearance": mode])
             }
             report["flows"] = flows
+            trace("resourceCyclesEnter")
             report["resourceCycles"] = try await cycles(temporary.appendingPathComponent("cycles"), &owners, deadline: start.addingTimeInterval(deadlineSeconds))
+            trace("resourceCyclesReturn")
             try await until({ owners.allSatisfy(\.released) }, "Owned controller/window/content retained")
             report["ownership"] = ["controllerCount": owners.count, "retainedControllers": owners.filter { $0.controller != nil }.count,
                 "retainedWindows": owners.filter { $0.window != nil }.count, "retainedContentViews": owners.filter { $0.content != nil }.count,
                 "releaseDeadlineSeconds": 4, "allOwnedWindowsClosed": true]
             report["checks"] = checks.sorted(); report["status"] = "passed"
         } catch {
+            trace("fixtureCaughtError", ["type": String(describing: type(of: error))])
             report["status"] = "failed"; report["error"] = error.localizedDescription
             for owner in owners { owner.controller?.close() }
         }
@@ -63,7 +117,9 @@ import PicShotCore
         report["fileSHA256"] = Dictionary(uniqueKeysWithValues: zip(names, fileData).map { ($0.0, hash($0.1)) })
         let encoded = try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
         try require(encoded.count <= 262_144, "Report exceeds 256 KiB")
+        trace("reportWriteEnter")
         try encoded.write(to: reportURL, options: .atomic)
+        trace("reportWriteReturn")
         try require(report["status"] as? String == "passed", report["error"] as? String ?? "Native fixture failed")
         try require(Date().timeIntervalSince(start) < deadlineSeconds, "Overall deadline exceeded")
         return report
@@ -158,14 +214,20 @@ import PicShotCore
         text.onUpdateText = savedCallback
         try await until({ text.textEditController == nil && text.window?.attachedSheet == nil }, "Rejected draft retained")
 
+        trace("textRenameEnter", ["appearance": mode])
         let textRename = try await rename(kind: "text", id: textID, store: store, window: text.window,
             open: { text.renamePin() }, current: { text.renameController }, title: { text.pinTitle },
             getCallback: { text.onRename }, setCallback: { text.onRename = $0 }, mode, directory, &owners, &visuals, &actions)
+        trace("textRenameReturn", ["appearance": mode])
+        trace("imageRenameEnter", ["appearance": mode])
         let imageRename = try await rename(kind: "image", id: imageID, store: store, window: image.window,
             open: { image.renamePin() }, current: { image.renameController }, title: { image.pinTitle },
             getCallback: { image.onRename }, setCallback: { image.onRename = $0 }, mode, directory, &owners, &visuals, &actions)
+        trace("imageRenameReturn", ["appearance": mode])
         try require(try entryHash(store, htmlID) == htmlBefore && htmlPin.richDocument?.text == html, "HTML content changed")
+        trace("orderFlowEnter", ["appearance": mode])
         let order = try await orderFlow(store, group.id, mode, directory, &owners, &visuals)
+        trace("orderFlowReturn", ["appearance": mode])
         let textBeforeClose = try required(store.entry(id: textID), "Text before close absent")
         text.close()
         try await until({ session.richControllers[textID] == nil }, "Close did not retire managed text")
@@ -245,14 +307,18 @@ import PicShotCore
 
     private static func orderFlow(_ store: PinSessionStore, _ active: UUID, _ mode: String, _ directory: URL,
                                  _ owners: inout [WeakOwner], _ visuals: inout [[String: Any]]) async throws -> [String: Any] {
+        trace("groupManagerInitEnter", ["appearance": mode])
         let manager = PinGroupsController(store: store); owners.append(WeakOwner(manager)); defer { manager.close() }
+        trace("groupManagerInitReturn", ["appearance": mode])
         let window = try required(manager.window, "Group window absent")
         window.setFrame(NSRect(origin: window.frame.origin, size: NSSize(width: 680, height: 600)), display: true)
         window.center(); manager.showWindow(nil); try show(window)
         let table: NSTableView = try control("pin-group-entries", window)
         let order: NSPopUpButton = try control("pin-group-order", window)
         let picker: NSPopUpButton = try control("pin-group-picker", window)
+        trace("groupSelectionEnter", ["appearance": mode])
         let selection = try PortableSettingsUIPreviewFixture.clickRow(1, in: table)
+        trace("groupSelectionReturn", ["appearance": mode])
         let selected = manager.selectedPinIDs
         try require(selected.count == 1, "Native selected pin absent")
         var states = [store.groups.map { $0.id.uuidString }], menuEvents: [[String: Any]] = [], callbackCount = 0
@@ -260,6 +326,7 @@ import PicShotCore
         let beforeEntries = try digest(store.entries), initialActive = store.index.activeGroupID
         for (item, boundary) in [("earlier", false), ("earlier", true), ("later", false), ("later", false), ("later", true)] {
             let orderBefore = store.groups.map { $0.id.uuidString }, callbacksBefore = callbackCount
+            trace("groupPopupEnter", ["appearance": mode, "item": item, "boundary": boundary, "index": menuEvents.count])
             do { menuEvents.append(try await popup(order, id: "pin-group-order-" + item, boundary: boundary)) }
             catch {
                 let state: [String: Any] = ["requestedItem": "pin-group-order-" + item, "boundary": boundary,
@@ -271,6 +338,7 @@ import PicShotCore
                 try require(data.count <= 16_384, "Order failure state byte budget exceeded")
                 throw failure(error.localizedDescription + " | orderState=" + String(decoding: data, as: UTF8.self))
             }
+            trace("groupPopupReturn", ["appearance": mode, "item": item, "boundary": boundary, "completedCount": menuEvents.count])
             try require(store.index.activeGroupID == active && manager.selectedPinIDs == selected && table.selectedRow == 1,
                         "Group order lost active group/selected pin")
             try require(try digest(store.entries) == beforeEntries, "Group order changed pins")
@@ -278,7 +346,9 @@ import PicShotCore
         }
         try require(callbackCount == 3 && initialActive == active, "Group boundary invoked mutation")
         let controls = descendants(window.contentView).compactMap { $0 as? NSButton }.filter { !$0.isHiddenOrHasHiddenAncestor }
+        trace("groupSnapshotEnter", ["appearance": mode])
         visuals.append(try snapshot(window, "order", mode, directory, controls: controls))
+        trace("groupSnapshotReturn", ["appearance": mode])
         let identities = try required(selection["eventIdentity"] as? [String: Any], "Table identity absent")
         let expected = try required(identities["expected"] as? [String: Any], "Expected table event absent")
         let dequeued = try required(identities["dequeued"] as? [String: Any], "Dequeued table event absent")
@@ -439,7 +509,9 @@ import PicShotCore
             probe.stopTrackingObservations()
             menu.delegate = previous
         }
+        trace("popupMouseDownEnter", ["item": id, "boundary": boundary, "windowNumber": window.windowNumber])
         try PortableSettingsUIPreviewFixture.click(button)
+        trace("popupMouseDownReturn", ["item": id, "boundary": boundary, "windowNumber": window.windowNumber])
         try await probe.observeTrackingAfterClick()
         let receipt = try JSONSerialization.data(withJSONObject: probe.evidence, options: [.sortedKeys])
         try require(receipt.count <= 32_768, "Order probe receipt byte budget exceeded")
@@ -467,7 +539,9 @@ import PicShotCore
     private static func click(_ button: NSButton, _ name: String, _ mode: String, _ actions: inout [[String: Any]]) throws {
         let number = try required(button.window?.windowNumber, "Action window absent"), id = button.identifier?.rawValue ?? ""
         try require(number > 0 && !id.isEmpty, "Action identity absent")
+        trace("buttonMouseDownEnter", ["appearance": mode, "action": name, "controlID": id, "windowNumber": number])
         try PortableSettingsUIPreviewFixture.click(button)
+        trace("buttonMouseDownReturn", ["appearance": mode, "action": name, "controlID": id, "windowNumber": number])
         actions.append(["appearance": mode, "action": name, "controlID": id, "windowNumber": number, "route": route, "hitTest": true])
     }
     private static func replace(_ view: NSTextView, with text: String) throws {
@@ -612,6 +686,14 @@ import PicShotCore
         }
         private func record(_ kind: String, code: UInt16? = nil) {
             guard events.count < 96 else { omittedEvents += 1; return }
+            PinManagementSmokeFixture.trace("menuProbeEvent", ["event": kind, "probeElapsedSeconds": ProcessInfo.processInfo.systemUptime - started,
+                "requestedItem": target?.identifier?.rawValue ?? "none", "boundary": boundary,
+                "menuIdentity": menu.map { String(describing: ObjectIdentifier($0)) } ?? "none",
+                "delegateIsProbe": (menu?.delegate as AnyObject?) === self,
+                "windowNumber": window?.windowNumber ?? -1,
+                "opened": opened, "closed": closed, "entered": entered, "timedOut": timedOut,
+                "trackingBeginCount": trackingBeginCount, "trackingEndCount": trackingEndCount,
+                "posted": posted, "syntheticKeyCode": code.map(Int.init) ?? -1])
             events.append(["event": kind, "elapsedSeconds": ProcessInfo.processInfo.systemUptime - started,
                 "highlightedItem": highlighted?.identifier?.rawValue ?? "none", "highlightIsTarget": highlighted === target,
                 "entered": entered, "posted": posted, "syntheticKeyCode": code.map(Int.init) ?? -1])

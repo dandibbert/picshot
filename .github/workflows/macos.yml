@@ -7,8 +7,8 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[shortcut-isolation]') && 'shortcut-isolation' || contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && 'intel154-fresh-diagnostic' || contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && 'native-timeout-diagnostic' || contains(github.event.head_commit.message || '', '[installed-diagnostic]') && 'installed-diagnostic' || contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-product-resource' || contains(github.event.head_commit.message || '', '[seed-render-crop]') && 'seed-render-crop' || contains(github.event.head_commit.message || '', '[effect-context]') && 'effect-context' || contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && 'renderer-scope-controls' || contains(github.event.head_commit.message || '', '[renderer-storage]') && 'renderer-storage' || contains(github.event.head_commit.message || '', '[drawing-pair]') && 'drawing-pair' || contains(github.event.head_commit.message || '', '[editable-observation]') && 'editable-observation' || contains(github.event.head_commit.message || '', '[callout-retirement]') && 'callout-retirement' || contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-documents' || contains(github.event.head_commit.message || '', '[multiwindow-memory]') && 'multiwindow-memory' || contains(github.event.head_commit.message || '', '[recording-wait]') && 'recording-wait' || contains(github.event.head_commit.message || '', '[manual-hash]') && 'manual-hash' || contains(github.event.head_commit.message || '', '[scroll-memory]') && 'scroll-memory' || contains(github.event.head_commit.message || '', '[decode-exit-latch]') && 'decode-exit-latch' || contains(github.event.head_commit.message || '', '[decode-timing-v3]') && 'decode-timing-v3' || contains(github.event.head_commit.message || '', '[decode-large]') && 'decode-large' || contains(github.event.head_commit.message || '', '[pin-workflows]') && 'pins-010' || contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
-  cancel-in-progress: ${{ !contains(github.event.head_commit.message || '', '[shortcut-isolation]') && !contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && !(contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]')) && !contains(github.event.head_commit.message || '', '[seed-render-crop]') && !contains(github.event.head_commit.message || '', '[effect-context]') && !contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && !contains(github.event.head_commit.message || '', '[renderer-storage]') && !contains(github.event.head_commit.message || '', '[drawing-pair]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
+  group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') && 'pin-ui-diagnostic' || contains(github.event.head_commit.message || '', '[shortcut-isolation]') && 'shortcut-isolation' || contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && 'intel154-fresh-diagnostic' || contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && 'native-timeout-diagnostic' || contains(github.event.head_commit.message || '', '[installed-diagnostic]') && 'installed-diagnostic' || contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-product-resource' || contains(github.event.head_commit.message || '', '[seed-render-crop]') && 'seed-render-crop' || contains(github.event.head_commit.message || '', '[effect-context]') && 'effect-context' || contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && 'renderer-scope-controls' || contains(github.event.head_commit.message || '', '[renderer-storage]') && 'renderer-storage' || contains(github.event.head_commit.message || '', '[drawing-pair]') && 'drawing-pair' || contains(github.event.head_commit.message || '', '[editable-observation]') && 'editable-observation' || contains(github.event.head_commit.message || '', '[callout-retirement]') && 'callout-retirement' || contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-documents' || contains(github.event.head_commit.message || '', '[multiwindow-memory]') && 'multiwindow-memory' || contains(github.event.head_commit.message || '', '[recording-wait]') && 'recording-wait' || contains(github.event.head_commit.message || '', '[manual-hash]') && 'manual-hash' || contains(github.event.head_commit.message || '', '[scroll-memory]') && 'scroll-memory' || contains(github.event.head_commit.message || '', '[decode-exit-latch]') && 'decode-exit-latch' || contains(github.event.head_commit.message || '', '[decode-timing-v3]') && 'decode-timing-v3' || contains(github.event.head_commit.message || '', '[decode-large]') && 'decode-large' || contains(github.event.head_commit.message || '', '[pin-workflows]') && 'pins-010' || contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
+  cancel-in-progress: ${{ !contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') && !contains(github.event.head_commit.message || '', '[shortcut-isolation]') && !contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && !(contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]')) && !contains(github.event.head_commit.message || '', '[seed-render-crop]') && !contains(github.event.head_commit.message || '', '[effect-context]') && !contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && !contains(github.event.head_commit.message || '', '[renderer-storage]') && !contains(github.event.head_commit.message || '', '[drawing-pair]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
 jobs:
   runner-check:
     if: ${{ contains(github.event.head_commit.message || '', '[runner-only]') }}
@@ -150,8 +150,117 @@ jobs:
         if-no-files-found: error
         retention-days: 14
 
+  pin-ui-diagnostic:
+    if: ${{ contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') }}
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 2
+      - name: Preserve exact diagnostic source and original fixture scope
+        timeout-minutes: 2
+        run: |
+          mkdir -p dist/evidence/pin-ui-diagnostic
+          python3 - <<'PYIDENTITY'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True, timeout=20).strip()
+          expected = '9cd0f983b73f48d76f3bddd4006ce12f8c94c533'
+          parent = git('rev-parse', 'HEAD^')
+          if parent != expected:
+              raise SystemExit('Diagnostic must directly descend from exact failed205 source')
+          changed = git('diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD').splitlines()
+          allowed = {'.github/workflows/macos.yml', 'Sources/PicShot/PinManagementSmokeFixture.swift',
+                     'scripts/launch-smoke-app.swift', 'scripts/tests/product_launcher_source_contract.py',
+                     'scripts/tests/pin_ui_diagnostic_launcher_reverse.json',
+                     'scripts/tests/test_pin_ui_diagnostic_launcher.py', 'docs/VERIFICATION.md'}
+          if not set(changed) <= allowed:
+              raise SystemExit('Diagnostic contains unrelated source changes: ' + repr(changed))
+          Path('dist/evidence/pin-ui-diagnostic/source.json').write_text(json.dumps({
+              'source': os.environ['GITHUB_SHA'], 'tree': git('rev-parse', 'HEAD^{tree}'),
+              'baselineSource': expected, 'changedPaths': changed, 'productAcceptance': False,
+              'sameFullInstalledUISequence': True, 'fixtureMenuDeadlineSeconds': 2,
+              'launcherDeadlineSeconds': 600, 'liveScreenCapture': False,
+              'sourceFiles': {p: hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in changed}
+          }, indent=2) + '\n')
+          PYIDENTITY
+      - name: Type-check only the opt-in launcher and exact source contracts
+        timeout-minutes: 2
+        run: |
+          swiftc -typecheck scripts/launch-smoke-app.swift
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_pin_ui_diagnostic_launcher.py -v
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_editable_product_source_binding.py -k launcher -v
+      - name: Prepare the unchanged official codec dependencies
+        timeout-minutes: 15
+        run: python3 scripts/run-bounded-command.py --timeout-seconds 840 --log dist/native-dependencies-preflight.log --report dist/native-dependencies-preflight-report.json -- python3 scripts/build-native-codecs.py --arch arm64
+      - name: Package the same signed installed application
+        timeout-minutes: 30
+        run: |
+          mkdir -p dist
+          set -o pipefail
+          bash scripts/package.sh 2>&1 | tee dist/package.log
+      - name: Diagnose the same installed full UI sequence with owned sampling
+        timeout-minutes: 12
+        run: |
+          set -o pipefail
+          export PICSHOT_PIN_UI_DIAGNOSTIC_DIRECTORY="$PWD/dist/evidence/pin-ui-diagnostic"
+          bash scripts/ui-preview.sh 2>&1 | tee dist/ui-preview.log
+      - name: Classify the retained diagnostic trace without accepting the installer
+        if: always()
+        timeout-minutes: 1
+        run: |
+          python3 - <<'PYTRACE'
+          import json, math, os
+          from pathlib import Path
+          root = Path('dist/evidence/pin-ui-diagnostic')
+          root.mkdir(parents=True, exist_ok=True)
+          result = {'productAcceptance': False, 'status': 'incomplete'}
+          try:
+              data = (root / 'pin-phases.jsonl').read_bytes()
+              rows = [json.loads(line) for line in data.splitlines()]
+              launcher = json.loads(Path('dist/evidence/ui/preview.json.launcher.json').read_text())
+              if not (0 < len(data) < 262144 and 0 < len(rows) < 2048):
+                  raise ValueError('trace missing or at finite cap')
+              if not all(len(line) <= 2048 for line in data.splitlines()):
+                  raise ValueError('trace row exceeds finite cap')
+              first = rows[0]
+              if not (first['phase'] == 'diagnosticOpened' and first['sourceCommit'] == os.environ['GITHUB_SHA']
+                      and type(first['pid']) is int and first['pid'] > 0 and first['pid'] == launcher['processIdentifier']):
+                  raise ValueError('trace header is not bound to exact launched app')
+              for index, row in enumerate(rows):
+                  if type(row['sequence']) is not int or row['sequence'] != index or not all(type(row[k]) in (int, float) and math.isfinite(row[k]) and row[k] >= 0
+                          for k in ['uptimeSeconds', 'elapsedSeconds', 'priorWriteSeconds']):
+                      raise ValueError('trace sequence or clock invalid')
+                  if index and any(row[k] < rows[index - 1][k] for k in ['uptimeSeconds', 'elapsedSeconds', 'priorWriteSeconds']):
+                      raise ValueError('trace clocks reordered')
+              result.update(status='partial-trace-verified', rows=len(rows), bytes=len(data),
+                  lastPhase=rows[-1]['phase'], lastElapsedSeconds=rows[-1]['elapsedSeconds'],
+                  measuredPriorWriteSeconds=rows[-1]['priorWriteSeconds'],
+                  ownedExitConfirmed=launcher['ownedExitConfirmed'], launcherStatus=launcher['status'],
+                  completeTraceObserved=rows[-1]['phase'] == 'diagnosticClosed',
+                  scope='Only actual retained prefix; absence of later events does not prove their nonoccurrence')
+          except Exception as error:
+              result['error'] = str(error)
+          (root / 'trace-audit.json').write_text(json.dumps(result, indent=2) + '\n')
+          print(json.dumps(result), flush=True)
+          PYTRACE
+      - name: Preserve owned lifecycle, stack samples and durable phase receipts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Pin-UI-Diagnostic-arm64-${{ github.sha }}
+          path: |
+            dist/*.log
+            dist/*report.json
+            dist/evidence/ui/
+            dist/evidence/pin-ui-diagnostic/
+          if-no-files-found: error
+          retention-days: 14
+
   build:
-    if: ${{ !contains(github.event.head_commit.message || '', '[shortcut-isolation]') && !contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') && !contains(github.event.head_commit.message || '', '[codec-attribution]') && !contains(github.event.head_commit.message || '', '[codec-staging]') && !contains(github.event.head_commit.message || '', '[codec-avif-confirmation]') && !contains(github.event.head_commit.message || '', '[runner-only]') && !contains(github.event.head_commit.message || '', '[scroll-memory]') && !contains(github.event.head_commit.message || '', '[manual-hash]') && !contains(github.event.head_commit.message || '', '[recording-wait]') && !contains(github.event.head_commit.message || '', '[multiwindow-memory]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-documents]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
+    if: ${{ !contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') && !contains(github.event.head_commit.message || '', '[shortcut-isolation]') && !contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') && !contains(github.event.head_commit.message || '', '[codec-attribution]') && !contains(github.event.head_commit.message || '', '[codec-staging]') && !contains(github.event.head_commit.message || '', '[codec-avif-confirmation]') && !contains(github.event.head_commit.message || '', '[runner-only]') && !contains(github.event.head_commit.message || '', '[scroll-memory]') && !contains(github.event.head_commit.message || '', '[manual-hash]') && !contains(github.event.head_commit.message || '', '[recording-wait]') && !contains(github.event.head_commit.message || '', '[multiwindow-memory]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-documents]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
     strategy:
       fail-fast: false
       matrix:
