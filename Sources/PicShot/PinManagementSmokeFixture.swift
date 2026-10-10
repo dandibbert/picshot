@@ -428,28 +428,36 @@ import PicShotCore
         try require(item.isEnabled != boundary, "Order boundary enabled state incorrect")
         let probe = MenuProbe(menu: menu, window: window, item: item, boundary: boundary), previous = menu.delegate
         probe.previous = previous; menu.delegate = probe
+        probe.startTrackingObservations()
         let timer = Timer(timeInterval: 0.03, repeats: true) { [weak probe] _ in MainActor.assumeIsolated { probe?.tick() } }
         RunLoop.main.add(timer, forMode: .eventTracking)
         defer {
             timer.invalidate()
-            if probe.opened && !probe.closed { menu.cancelTracking() }
+            if probe.opened && !probe.trackingComplete { menu.cancelTracking() }
+            probe.stopTrackingObservations()
             menu.delegate = previous
         }
         try PortableSettingsUIPreviewFixture.click(button)
-        try await probe.observeCloseAfterClick()
+        try await probe.observeTrackingAfterClick()
         let receipt = try JSONSerialization.data(withJSONObject: probe.evidence, options: [.sortedKeys])
         try require(receipt.count <= 32_768, "Order probe receipt byte budget exceeded")
         FileHandle.standardError.write(Data("Pin management menu probe: ".utf8))
         FileHandle.standardError.write(receipt); FileHandle.standardError.write(Data([10]))
-        try require(probe.opened && probe.closed && !probe.timedOut && probe.activated == !boundary,
+        try require(probe.opened && probe.trackingComplete && (boundary || probe.closed) && !probe.timedOut && probe.activated == !boundary,
                     "Native order tracking failed | probe=" + String(decoding: receipt, as: UTF8.self))
-        return ["itemID": id, "boundary": boundary, "enabled": !boundary, "opened": probe.opened, "closed": probe.closed,
+        return ["itemID": id, "boundary": boundary, "enabled": !boundary, "opened": probe.opened,
             "activated": probe.activated, "postedKeyCount": probe.posted, "timeoutSeconds": 2, "windowNumber": window.windowNumber,
-            "dispatchRoute": "owned-mouseDown/native-menu-tracking", "disabledDismissedWithEscape": boundary,
-            "closeMenuIdentityVerified": probe.closeMenuIdentityVerified,
-            "closedBeforeClickReturn": probe.closedBeforeClickReturn,
+            "dispatchRoute": "owned-mouseDown/native-menu-tracking", "disabledDismissedWithEscape": boundary && probe.lastPostedKeyCode == 53 && probe.posted == 1,
+            "lastPostedKeyCode": Int(try required(probe.lastPostedKeyCode, "Owned menu key absent")),
+            "trackingBeginCount": probe.trackingBeginCount, "trackingEndCount": probe.trackingEndCount,
+            "trackingIdentityVerified": probe.trackingIdentityVerified,
+            "trackingBeginElapsedSeconds": try required(probe.trackingBeginElapsed, "Menu tracking begin time absent"),
+            "trackingEndElapsedSeconds": try required(probe.trackingEndElapsed, "Menu tracking end time absent"),
+            "trackingEndedBeforeClickReturn": probe.trackingEndedBeforeClickReturn,
+            "delegateCloseObserved": probe.closed, "delegateCloseIdentityVerified": probe.closeMenuIdentityVerified,
+            "delegateCloseElapsedSeconds": probe.closedElapsed.map { $0 as Any } ?? NSNull(),
             "clickReturnElapsedSeconds": try required(probe.clickReturnElapsed, "Menu click return time absent"),
-            "closedElapsedSeconds": try required(probe.closedElapsed, "Menu close callback time absent")]
+            "lifecycleObservation": "exact-root-menu-begin-end-notifications"]
     }
 
     private static func click(_ button: NSButton, _ name: String, _ mode: String, _ actions: inout [[String: Any]]) throws {
@@ -517,6 +525,13 @@ import PicShotCore
         private(set) var closeMenuIdentityVerified = false
         private(set) var closedBeforeClickReturn = false
         private(set) var clickReturnElapsed: TimeInterval?, closedElapsed: TimeInterval?
+        private(set) var trackingBeginCount = 0, trackingEndCount = 0
+        private(set) var trackingIdentityVerified = false, trackingEndedBeforeClickReturn = false
+        private(set) var trackingBeginElapsed: TimeInterval?, trackingEndElapsed: TimeInterval?
+        private(set) var lastPostedKeyCode: UInt16?
+        private var trackingBeginIdentityVerified = false
+        private var trackingObservers: [NSObjectProtocol] = []
+        var trackingComplete: Bool { trackingBeginCount == 1 && trackingEndCount == 1 && trackingIdentityVerified }
         private var highlighted: NSMenuItem?, entered = false
         private var events: [[String: Any]] = [], omittedEvents = 0
         var evidence: [String: Any] {
@@ -530,24 +545,60 @@ import PicShotCore
              "closedBeforeClickReturn": closedBeforeClickReturn, "closeMenuIdentityVerified": closeMenuIdentityVerified,
              "clickReturnElapsedSeconds": clickReturnElapsed.map { $0 as Any } ?? NSNull(),
              "closedElapsedSeconds": closedElapsed.map { $0 as Any } ?? NSNull(),
+             "trackingBeginCount": trackingBeginCount, "trackingEndCount": trackingEndCount,
+             "trackingIdentityVerified": trackingIdentityVerified, "trackingEndedBeforeClickReturn": trackingEndedBeforeClickReturn,
+             "trackingBeginElapsedSeconds": trackingBeginElapsed.map { $0 as Any } ?? NSNull(),
+             "trackingEndElapsedSeconds": trackingEndElapsed.map { $0 as Any } ?? NSNull(),
              "applicationIsActive": NSApp.isActive, "events": events]
         }
-        // Escape can return from mouseDown before the owned menu's close
-        // callback. Observe that callback within the original deadline; never
-        // replace it with a flag or start a second timeout window.
-        func observeCloseAfterClick() async throws {
+        func startTrackingObservations() {
+            guard let menu, trackingObservers.isEmpty else { timedOut = true; return }
+            for name in [NSMenu.didBeginTrackingNotification, NSMenu.didEndTrackingNotification] {
+                let token = NotificationCenter.default.addObserver(forName: name, object: menu, queue: nil) { [weak self] note in
+                    MainActor.assumeIsolated { self?.observeTracking(note) }
+                }
+                trackingObservers.append(token)
+            }
+        }
+        func stopTrackingObservations() {
+            for token in trackingObservers { NotificationCenter.default.removeObserver(token) }
+            trackingObservers.removeAll()
+        }
+        private func observeTracking(_ note: Notification) {
+            let now = ProcessInfo.processInfo.systemUptime
+            guard let actual = note.object as? NSMenu, actual === menu,
+                  (actual.delegate as AnyObject?) === self, now <= deadline else {
+                timedOut = true; record("foreignOrLateTrackingRejected"); return
+            }
+            if note.name == NSMenu.didBeginTrackingNotification {
+                trackingBeginCount += 1
+                guard trackingBeginCount == 1 && trackingEndCount == 0 else {
+                    timedOut = true; record("duplicateOrReorderedBeginRejected"); return
+                }
+                trackingBeginIdentityVerified = true; trackingBeginElapsed = now - started; record("trackingBegan")
+            } else if note.name == NSMenu.didEndTrackingNotification {
+                trackingEndCount += 1
+                guard trackingBeginCount == 1 && trackingEndCount == 1 && trackingBeginIdentityVerified else {
+                    timedOut = true; record("duplicateOrReorderedEndRejected"); return
+                }
+                trackingIdentityVerified = true; trackingEndElapsed = now - started; record("trackingEnded")
+            } else { timedOut = true; record("unknownTrackingRejected") }
+        }
+        // The documented root-menu end notification covers Escape cancellation
+        // without an action. Enabled selections also retain the delegate-close
+        // requirement. Both observations use the original pre-click deadline.
+        func observeTrackingAfterClick() async throws {
             clickReturnElapsed = ProcessInfo.processInfo.systemUptime - started
-            closedBeforeClickReturn = closed; record("clickReturned")
-            while opened && !closed && !timedOut {
+            closedBeforeClickReturn = closed; trackingEndedBeforeClickReturn = trackingComplete; record("clickReturned")
+            while opened && (!trackingComplete || (!boundary && !closed)) && !timedOut {
                 let remaining = deadline - ProcessInfo.processInfo.systemUptime
                 if remaining <= 0 { break }
                 try await Task.sleep(nanoseconds: max(1, UInt64(min(0.01, remaining) * 1_000_000_000)))
             }
-            // Judge the observed callback clock, not a later task-resumption
-            // time. menuDidClose rejects a callback after the original deadline.
-            if !closed || (closedElapsed ?? TimeInterval.infinity) > 2 ||
+            // Judge actual event timestamps, not a later task-resumption time.
+            if !trackingComplete || (!boundary && !closed) ||
                 (clickReturnElapsed ?? TimeInterval.infinity) > 2 {
-                timedOut = true; record("closeObservationFailed"); menu?.cancelTracking()
+                timedOut = true; record("trackingObservationFailed"); menu?.cancelTracking()
             }
         }
         private func record(_ kind: String, code: UInt16? = nil) {
@@ -586,7 +637,8 @@ import PicShotCore
             let text = boundary ? "\u{1b}" : (select ? "\r" : "\u{f701}")
             guard let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                 windowNumber: window.windowNumber, context: nil, characters: text, charactersIgnoringModifiers: text, isARepeat: false, keyCode: code) else { timedOut = true; record("eventCreationFailed"); menu?.cancelTracking(); return }
-            entered = boundary || select; posted += 1; record("postedKey", code: code); NSApp.postEvent(event, atStart: true)
+            entered = boundary || select; posted += 1; lastPostedKeyCode = code
+            record("postedKey", code: code); NSApp.postEvent(event, atStart: true)
         }
     }
 }

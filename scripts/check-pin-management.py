@@ -196,16 +196,28 @@ def validate_order(order, group):
     need(states == [[a,b,c], [b,a,c], [b,a,c], [a,b,c], [a,c,b], [a,c,b]], 'one-step native order/boundary transition')
     need(o['pickerOrder'] == states[-1], 'picker order detached from stored order')
     for row, (direction, boundary) in zip(array(o['menuEvents'], 5), [('earlier',False), ('earlier',True), ('later',False), ('later',False), ('later',True)]):
-        fields(row, 'itemID boundary enabled opened closed activated postedKeyCount timeoutSeconds windowNumber dispatchRoute disabledDismissedWithEscape closeMenuIdentityVerified closedBeforeClickReturn clickReturnElapsedSeconds closedElapsedSeconds')
+        fields(row, 'itemID boundary enabled opened activated postedKeyCount timeoutSeconds windowNumber dispatchRoute disabledDismissedWithEscape lastPostedKeyCode trackingBeginCount trackingEndCount trackingIdentityVerified trackingBeginElapsedSeconds trackingEndElapsedSeconds trackingEndedBeforeClickReturn delegateCloseObserved delegateCloseIdentityVerified delegateCloseElapsedSeconds clickReturnElapsedSeconds lifecycleObservation')
         need(row['itemID'] == 'pin-group-order-' + direction and row['boundary'] is boundary and row['enabled'] is (not boundary), 'order action/boundary state')
-        yes(row, 'opened closed closeMenuIdentityVerified')
+        yes(row, 'opened trackingIdentityVerified')
         need(row['activated'] is (not boundary) and row['disabledDismissedWithEscape'] is boundary, 'disabled native menu action fired')
         integer(row['postedKeyCount'], 1, 40); integer(row['windowNumber'], 1)
+        need(integer(row['lastPostedKeyCode']) == (53 if boundary else 36), 'owned Escape/Return key absent')
+        need(not boundary or row['postedKeyCount'] == 1, 'Escape cancellation repeated input')
         need(integer(row['timeoutSeconds']) == 2 and row['dispatchRoute'] == 'owned-mouseDown/native-menu-tracking', 'native menu route/bound')
-        returned, closed = number(row['clickReturnElapsedSeconds']), number(row['closedElapsedSeconds'])
-        need(0 < returned <= 2 and 0 < closed <= 2, 'menu close/return exceeded original deadline')
-        before = row['closedBeforeClickReturn']
-        need(type(before) is bool and (closed <= returned if before else returned <= closed), 'menu close observation ordering')
+        need(row['lifecycleObservation'] == 'exact-root-menu-begin-end-notifications', 'native lifecycle substituted')
+        need(integer(row['trackingBeginCount']) == integer(row['trackingEndCount']) == 1, 'missing/duplicate tracking lifecycle')
+        returned = number(row['clickReturnElapsedSeconds'])
+        began, ended = number(row['trackingBeginElapsedSeconds']), number(row['trackingEndElapsedSeconds'])
+        need(0 < returned <= 2 and 0 < began <= ended <= 2, 'tracking/return exceeded original deadline or reordered')
+        before = row['trackingEndedBeforeClickReturn']
+        need(type(before) is bool and (ended <= returned if before else returned <= ended), 'tracking end observation ordering')
+        observed = row['delegateCloseObserved']
+        need(type(observed) is bool and (boundary or observed), 'enabled selection lacks delegate close')
+        if observed:
+            yes(row, 'delegateCloseIdentityVerified')
+            need(0 < number(row['delegateCloseElapsedSeconds']) <= 2, 'late delegate close')
+        else:
+            need(row['delegateCloseIdentityVerified'] is False and row['delegateCloseElapsedSeconds'] is None, 'unobserved delegate callback fabricated')
     row = fields(o['rowSelection'], 'requestedRow selectedRowAfter windowNumber ownedWindowIsKey sameQuartzTimestamp expectedQuartzTimestamp dequeuedQuartzTimestamp eventType dispatchRoute targetPointVisible')
     yes(row, 'ownedWindowIsKey sameQuartzTimestamp targetPointVisible')
     need(integer(row['requestedRow']) == integer(row['selectedRowAfter']) == integer(row['eventType']) == 1, 'native row/type mismatch')
