@@ -158,7 +158,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           fetch-depth: 2
-      - name: Preserve exact diagnostic source and original fixture scope
+      - name: Preserve exact reproduction source and unchanged product scope
         timeout-minutes: 2
         run: |
           mkdir -p dist/evidence/pin-ui-diagnostic
@@ -167,16 +167,15 @@ jobs:
           from pathlib import Path
           def git(*args):
               return subprocess.check_output(['git', *args], text=True, timeout=20).strip()
-          expected = '9cd0f983b73f48d76f3bddd4006ce12f8c94c533'
+          expected = 'e84b7a2d6a6f55ac4d3d7f3e096b30897b273346'
           parent = git('rev-parse', 'HEAD^')
           if parent != expected:
-              raise SystemExit('Diagnostic must directly descend from exact failed205 source')
+              raise SystemExit('Reproduction must directly descend from exact diagnosed206 source')
           changed = git('diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD').splitlines()
           allowed = {'.github/workflows/macos.yml', 'Sources/PicShot/PinManagementSmokeFixture.swift',
-                     'scripts/launch-smoke-app.swift', 'scripts/tests/product_launcher_source_contract.py',
-                     'scripts/tests/pin_ui_diagnostic_launcher_reverse.json',
-                     'scripts/tests/test_pin_ui_diagnostic_launcher.py', 'docs/VERIFICATION.md'}
-          if not set(changed) <= allowed:
+                     'scripts/check-pin-management.py', 'scripts/tests/test_check_pin_management.py',
+                     'docs/VERIFICATION.md'}
+          if set(changed) != allowed:
               raise SystemExit('Diagnostic contains unrelated source changes: ' + repr(changed))
           Path('dist/evidence/pin-ui-diagnostic/source.json').write_text(json.dumps({
               'source': os.environ['GITHUB_SHA'], 'tree': git('rev-parse', 'HEAD^{tree}'),
@@ -192,6 +191,8 @@ jobs:
           swiftc -typecheck scripts/launch-smoke-app.swift
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_pin_ui_diagnostic_launcher.py -v
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_editable_product_source_binding.py -k launcher -v
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_check_pin_management.py -v
+          PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p test_check_pin_management.py -v
       - name: Prepare the unchanged official codec dependencies
         timeout-minutes: 15
         run: python3 scripts/run-bounded-command.py --timeout-seconds 840 --log dist/native-dependencies-preflight.log --report dist/native-dependencies-preflight-report.json -- python3 scripts/build-native-codecs.py --arch arm64
@@ -201,7 +202,7 @@ jobs:
           mkdir -p dist
           set -o pipefail
           bash scripts/package.sh 2>&1 | tee dist/package.log
-      - name: Diagnose the same installed full UI sequence with owned sampling
+      - name: Reproduce the corrected installed full UI sequence with owned sampling
         timeout-minutes: 12
         run: |
           set -o pipefail

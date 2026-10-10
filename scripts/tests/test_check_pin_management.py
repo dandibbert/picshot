@@ -75,7 +75,13 @@ class PinManagementCheckerTests(unittest.TestCase):
                     trackingEndedBeforeClickReturn=not boundary, delegateCloseObserved=not boundary,
                     delegateOpenObserved=True, delegateOpenIdentityVerified=True, delegateOpenElapsedSeconds=0.02,
                     delegateCloseIdentityVerified=not boundary, delegateCloseElapsedSeconds=None if boundary else 0.25,
-                    clickReturnElapsedSeconds=0.28, lifecycleObservation='exact-root-menu-begin-end-notifications'))
+                    clickReturnElapsedSeconds=0.28, lifecycleObservation='exact-root-menu-begin-end-notifications',
+                    highlightObservation='exact-owned-menu-current-state', returnHighlightVerified=not boundary,
+                    returnHighlightElapsedSeconds=None if boundary else 0.20,
+                    returnHighlightedItemID=None if boundary else 'pin-group-order-'+direction,
+                    returnTargetEnabled=not boundary, returnTargetHighlighted=not boundary, returnTargetMenuIdentityVerified=not boundary,
+                    delegateHighlightEvents=[dict(itemID=None, elapsedSeconds=0.05, ownedMenuIdentityVerified=True),
+                                             dict(itemID='pin-group-order-'+direction, elapsedSeconds=0.10, ownedMenuIdentityVerified=True)]))
             self.r['flows'].append(dict(appearance=mode,text=text,renames=renames,order=order))
             for name,control in C.ACTION_PAIRS:
                 self.r['actions'].append(dict(appearance=mode,action=name,controlID=control,windowNumber=100,
@@ -124,6 +130,24 @@ class PinManagementCheckerTests(unittest.TestCase):
         for flow in self.r['flows']:
             for row in flow['order']['menuEvents']:
                 row.update(delegateOpenObserved=False, delegateOpenIdentityVerified=False, delegateOpenElapsedSeconds=None)
+        self.check()
+        # Current-state Return witnesses work without any highlight delegate
+        # callback, including the fourth popup that previously exhausted Down.
+        for flow in self.r['flows']:
+            for row in flow['order']['menuEvents']:
+                row['delegateHighlightEvents'] = []
+        self.check()
+        # These are about-to-highlight events, not a proxy for current state:
+        # null, an earlier/later item other than the Return target, and equal
+        # timestamps are all valid. Exercise the inclusive 96-row/time bounds.
+        for flow in self.r['flows']:
+            for row in flow['order']['menuEvents']:
+                opposite = 'pin-group-order-later' if row['itemID'].endswith('earlier') else 'pin-group-order-earlier'
+                row['delegateHighlightEvents'] = [dict(itemID=None if index % 2 else opposite,
+                    elapsedSeconds=2, ownedMenuIdentityVerified=True) for index in range(96)]
+                row.update(trackingEndElapsedSeconds=2, clickReturnElapsedSeconds=2, delegateCloseElapsedSeconds=2)
+                if not row['boundary']:
+                    row.update(returnHighlightElapsedSeconds=2, postedKeyCount=40)
         self.check()
 
     def test_every_dictionary_rejects_unknown_and_missing_fields(self):
@@ -183,11 +207,19 @@ class PinManagementCheckerTests(unittest.TestCase):
             self.reject(lambda r,key=key:r['flows'][0]['order']['menuEvents'][0].pop(key))
         for key in ['delegateOpenObserved', 'delegateOpenIdentityVerified', 'delegateOpenElapsedSeconds']:
             self.reject(lambda r,key=key:r['flows'][0]['order']['menuEvents'][0].pop(key))
-        for key in ['clickReturnElapsedSeconds', 'trackingBeginElapsedSeconds', 'trackingEndElapsedSeconds', 'delegateCloseElapsedSeconds', 'delegateOpenElapsedSeconds']:
-            for value in [None, True, False, '0.2', float('nan'), float('inf'), -0.1, 0, 2.000001]:
+        for mode in range(2):
+            for index in range(5):
+                for key in ['highlightObservation', 'returnHighlightVerified', 'returnHighlightElapsedSeconds', 'returnHighlightedItemID',
+                            'returnTargetEnabled', 'returnTargetHighlighted', 'returnTargetMenuIdentityVerified', 'delegateHighlightEvents']:
+                    with self.subTest(mode=mode, event=index, missing=key):
+                        self.reject(lambda r:r['flows'][mode]['order']['menuEvents'][index].pop(key))
+        for key in ['clickReturnElapsedSeconds', 'trackingBeginElapsedSeconds', 'trackingEndElapsedSeconds', 'delegateCloseElapsedSeconds',
+                    'delegateOpenElapsedSeconds', 'returnHighlightElapsedSeconds']:
+            for value in [None, True, False, '0.2', float('nan'), float('inf'), float('-inf'), -0.1, 0, 2.000001]:
                 self.reject(lambda r,key=key,value=value:r['flows'][0]['order']['menuEvents'][0].update({key:value}))
-        for key in ['trackingIdentityVerified', 'delegateCloseIdentityVerified', 'delegateCloseObserved', 'delegateOpenIdentityVerified']:
-            for value in [False, None, 1, 'true']:
+        for key in ['trackingIdentityVerified', 'delegateCloseIdentityVerified', 'delegateCloseObserved', 'delegateOpenIdentityVerified',
+                    'returnHighlightVerified', 'returnTargetEnabled', 'returnTargetHighlighted', 'returnTargetMenuIdentityVerified']:
+            for value in [False, None, 0, 1, 'true']:
                 self.reject(lambda r,key=key,value=value:r['flows'][0]['order']['menuEvents'][0].update({key:value}))
         for key in ['trackingBeginCount', 'trackingEndCount']:
             for value in [0, 2, True, 1.0, None, '1']:
@@ -205,6 +237,42 @@ class PinManagementCheckerTests(unittest.TestCase):
                          lambda r:r['flows'][0]['order']['menuEvents'][1].update(delegateCloseElapsedSeconds=0.3),
                          lambda r:r['flows'][0]['order']['menuEvents'][1].update(delegateCloseIdentityVerified=True),
                          lambda r:r['flows'][0]['order']['menuEvents'][0].update(lifecycleObservation='mouseDown-return')]:self.reject(mutation)
+        for value in [None, True, 1, '', 'delegate-about-to-highlight', 'exact-root-menu-begin-end-notifications']:
+            self.reject(lambda r:r['flows'][0]['order']['menuEvents'][0].update(highlightObservation=value))
+        for value in [None, True, 1, '', 'pin-group-order-later', 'foreign-menu-item']:
+            self.reject(lambda r:r['flows'][0]['order']['menuEvents'][0].update(returnHighlightedItemID=value))
+        for key in ['returnHighlightVerified', 'returnTargetEnabled', 'returnTargetHighlighted', 'returnTargetMenuIdentityVerified']:
+            for value in [True, None, 0, 1, 'false']:
+                self.reject(lambda r:r['flows'][0]['order']['menuEvents'][1].update({key:value}))
+        for value in [0.20, 0, False, True, '0.2', float('nan'), float('inf')]:
+            self.reject(lambda r:r['flows'][0]['order']['menuEvents'][1].update(returnHighlightElapsedSeconds=value))
+        for value in [0.005, 0.255]:
+            self.reject(lambda r,value=value:r['flows'][0]['order']['menuEvents'][0].update(returnHighlightElapsedSeconds=value))
+        for value in ['pin-group-order-earlier', '', False, 0]:
+            self.reject(lambda r:r['flows'][0]['order']['menuEvents'][1].update(returnHighlightedItemID=value))
+        # A valid-looking delegate observation cannot replace a missing current
+        # Return witness, and an enabled-style witness cannot exist on Escape.
+        self.reject(lambda r:r['flows'][0]['order']['menuEvents'][0].update(returnHighlightVerified=False,
+            returnHighlightElapsedSeconds=None, returnHighlightedItemID=None, returnTargetEnabled=False,
+            returnTargetHighlighted=False, returnTargetMenuIdentityVerified=False))
+        self.reject(lambda r:r['flows'][0]['order']['menuEvents'][1].update(returnHighlightVerified=True,
+            returnHighlightElapsedSeconds=0.20, returnHighlightedItemID='pin-group-order-earlier', returnTargetEnabled=True,
+            returnTargetHighlighted=True, returnTargetMenuIdentityVerified=True))
+        for value in [None, {}, (), 'events', True, 96, [None], [[]]]:
+            self.reject(lambda r:r['flows'][0]['order']['menuEvents'][0].update(delegateHighlightEvents=value))
+        raw = dict(itemID='pin-group-order-earlier', elapsedSeconds=0.10, ownedMenuIdentityVerified=True)
+        self.reject(lambda r:r['flows'][0]['order']['menuEvents'][0].update(delegateHighlightEvents=[copy.deepcopy(raw) for _ in range(97)]))
+        for key in raw:
+            self.reject(lambda r:r['flows'][0]['order']['menuEvents'][0]['delegateHighlightEvents'][0].pop(key))
+        self.reject(lambda r:r['flows'][0]['order']['menuEvents'][0]['delegateHighlightEvents'][0].update(unrecognized=True))
+        for value in [True, False, 1, {}, [], '', 'foreign-menu-item']:
+            self.reject(lambda r:r['flows'][0]['order']['menuEvents'][0]['delegateHighlightEvents'][0].update(itemID=value))
+        for value in [None, True, False, '0.2', float('nan'), float('inf'), float('-inf'), -0.1, 0, 2.000001]:
+            self.reject(lambda r:r['flows'][0]['order']['menuEvents'][0]['delegateHighlightEvents'][0].update(elapsedSeconds=value))
+        for value in [False, None, 0, 1, 'true']:
+            self.reject(lambda r:r['flows'][0]['order']['menuEvents'][0]['delegateHighlightEvents'][0].update(ownedMenuIdentityVerified=value))
+        self.reject(lambda r:r['flows'][0]['order']['menuEvents'][0]['delegateHighlightEvents'].reverse())
+        self.reject(lambda r:r['flows'][0]['order']['menuEvents'][1]['delegateHighlightEvents'].reverse())
 
     def test_reject_group_order_selection_and_boundary_tampering(self):
         for mutation in [lambda r:r['flows'][0]['order']['states'][1].reverse(),lambda r:r['flows'][0]['order'].update(callbacks=4),

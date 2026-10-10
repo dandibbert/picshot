@@ -196,8 +196,29 @@ def validate_order(order, group):
     need(states == [[a,b,c], [b,a,c], [b,a,c], [a,b,c], [a,c,b], [a,c,b]], 'one-step native order/boundary transition')
     need(o['pickerOrder'] == states[-1], 'picker order detached from stored order')
     for row, (direction, boundary) in zip(array(o['menuEvents'], 5), [('earlier',False), ('earlier',True), ('later',False), ('later',False), ('later',True)]):
-        fields(row, 'itemID boundary enabled activated postedKeyCount timeoutSeconds windowNumber dispatchRoute disabledDismissedWithEscape lastPostedKeyCode trackingBeginCount trackingEndCount trackingIdentityVerified trackingBeginElapsedSeconds trackingEndElapsedSeconds trackingEndedBeforeClickReturn delegateOpenObserved delegateOpenIdentityVerified delegateOpenElapsedSeconds delegateCloseObserved delegateCloseIdentityVerified delegateCloseElapsedSeconds clickReturnElapsedSeconds lifecycleObservation')
+        fields(row, 'itemID boundary enabled activated postedKeyCount timeoutSeconds windowNumber dispatchRoute disabledDismissedWithEscape lastPostedKeyCode trackingBeginCount trackingEndCount trackingIdentityVerified trackingBeginElapsedSeconds trackingEndElapsedSeconds trackingEndedBeforeClickReturn delegateOpenObserved delegateOpenIdentityVerified delegateOpenElapsedSeconds delegateCloseObserved delegateCloseIdentityVerified delegateCloseElapsedSeconds clickReturnElapsedSeconds lifecycleObservation highlightObservation returnHighlightVerified returnHighlightElapsedSeconds returnHighlightedItemID returnTargetEnabled returnTargetHighlighted returnTargetMenuIdentityVerified delegateHighlightEvents')
         need(row['itemID'] == 'pin-group-order-' + direction and row['boundary'] is boundary and row['enabled'] is (not boundary), 'order action/boundary state')
+        need(row['highlightObservation'] == 'exact-owned-menu-current-state', 'native current highlight substituted')
+        for key in ('returnHighlightVerified', 'returnTargetEnabled', 'returnTargetHighlighted', 'returnTargetMenuIdentityVerified'):
+            need(row[key] is (not boundary), 'missing/fabricated Return highlight witness: ' + key)
+        if boundary:
+            need(row['returnHighlightElapsedSeconds'] is None and row['returnHighlightedItemID'] is None, 'boundary Return highlight fabricated')
+        else:
+            need(0 < number(row['returnHighlightElapsedSeconds']) <= 2, 'missing/late Return highlight')
+            need(row['returnHighlightedItemID'] == row['itemID'], 'Return highlighted wrong target')
+        # About-to-highlight delegate observations are preserved independently;
+        # neither their presence nor their last item proves the current highlight.
+        highlights = row['delegateHighlightEvents']
+        need(type(highlights) is list and len(highlights) <= 96, 'delegate highlight array/bound')
+        previous_highlight = 0
+        for highlight in highlights:
+            fields(highlight, 'itemID elapsedSeconds ownedMenuIdentityVerified')
+            need(highlight['itemID'] is None or (type(highlight['itemID']) is str and
+                 highlight['itemID'] in ('pin-group-order-earlier', 'pin-group-order-later')), 'foreign delegate highlight item')
+            yes(highlight, 'ownedMenuIdentityVerified')
+            elapsed = number(highlight['elapsedSeconds'])
+            need(0 < elapsed <= 2 and previous_highlight <= elapsed, 'late/reordered delegate highlight')
+            previous_highlight = elapsed
         yes(row, 'trackingIdentityVerified')
         need(row['activated'] is (not boundary) and row['disabledDismissedWithEscape'] is boundary, 'disabled native menu action fired')
         integer(row['postedKeyCount'], 1, 40); integer(row['windowNumber'], 1)
@@ -225,6 +246,9 @@ def validate_order(order, group):
             need(0 < number(row['delegateCloseElapsedSeconds']) <= 2, 'late delegate close')
         else:
             need(row['delegateCloseIdentityVerified'] is False and row['delegateCloseElapsedSeconds'] is None, 'unobserved delegate callback fabricated')
+        if not boundary:
+            need(began <= row['returnHighlightElapsedSeconds'] <= min(ended, returned, row['delegateCloseElapsedSeconds']),
+                 'Return highlight witness outside actual owned tracking/close interval')
     row = fields(o['rowSelection'], 'requestedRow selectedRowAfter windowNumber ownedWindowIsKey sameQuartzTimestamp expectedQuartzTimestamp dequeuedQuartzTimestamp eventType dispatchRoute targetPointVisible')
     yes(row, 'ownedWindowIsKey sameQuartzTimestamp targetPointVisible')
     need(integer(row['requestedRow']) == integer(row['selectedRowAfter']) == integer(row['eventType']) == 1, 'native row/type mismatch')

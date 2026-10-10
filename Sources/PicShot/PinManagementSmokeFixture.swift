@@ -496,7 +496,7 @@ import PicShotCore
         menu.delegate?.menuNeedsUpdate?(menu)
         let item = try required(menu.items.first { $0.identifier?.rawValue == id }, "Order item absent")
         try require(item.isEnabled != boundary, "Order boundary enabled state incorrect")
-        let probe = MenuProbe(menu: menu, window: window, item: item, boundary: boundary), previous = menu.delegate
+        let probe = MenuProbe(menu: menu, window: window, button: button, item: item, boundary: boundary), previous = menu.delegate
         probe.previous = previous; menu.delegate = probe
         probe.startTrackingObservations()
         let timer = Timer(timeInterval: 0.03, repeats: true) { [weak probe] _ in MainActor.assumeIsolated { probe?.tick() } }
@@ -504,7 +504,7 @@ import PicShotCore
         defer {
             timer.invalidate()
             if probe.timedOut || ((probe.trackingBeginCount > 0 || probe.opened) && !probe.trackingComplete) {
-                menu.cancelTracking()
+                probe.cancelOwnedTracking(reason: "deferred-failure-cleanup")
             }
             probe.stopTrackingObservations()
             menu.delegate = previous
@@ -532,6 +532,14 @@ import PicShotCore
             "delegateOpenElapsedSeconds": probe.openedElapsed.map { $0 as Any } ?? NSNull(),
             "delegateCloseObserved": probe.closed, "delegateCloseIdentityVerified": probe.closeMenuIdentityVerified,
             "delegateCloseElapsedSeconds": probe.closedElapsed.map { $0 as Any } ?? NSNull(),
+            "highlightObservation": "exact-owned-menu-current-state",
+            "returnHighlightVerified": probe.returnHighlightVerified,
+            "returnHighlightElapsedSeconds": probe.returnHighlightElapsed.map { $0 as Any } ?? NSNull(),
+            "returnHighlightedItemID": probe.returnHighlightedItemID.map { $0 as Any } ?? NSNull(),
+            "returnTargetEnabled": probe.returnTargetEnabled,
+            "returnTargetHighlighted": probe.returnTargetHighlighted,
+            "returnTargetMenuIdentityVerified": probe.returnTargetMenuIdentityVerified,
+            "delegateHighlightEvents": probe.delegateHighlightEvents,
             "clickReturnElapsedSeconds": try required(probe.clickReturnElapsed, "Menu click return time absent"),
             "lifecycleObservation": "exact-root-menu-begin-end-notifications"]
     }
@@ -597,6 +605,7 @@ import PicShotCore
     }
     @MainActor private final class MenuProbe: NSObject, NSMenuDelegate {
         weak var menu: NSMenu?; weak var window: NSWindow?; weak var target: NSMenuItem?
+        weak var button: NSPopUpButton?
         weak var previous: NSMenuDelegate?
         let boundary: Bool; private let started: TimeInterval, deadline: TimeInterval
         var opened = false, closed = false, activated = false, timedOut = false, posted = 0
@@ -614,6 +623,14 @@ import PicShotCore
         var trackingComplete: Bool { trackingBeginCount == 1 && trackingEndCount == 1 && trackingIdentityVerified }
         var trackingActive: Bool { trackingBeginCount == 1 && trackingEndCount == 0 && trackingBeginIdentityVerified }
         private var highlighted: NSMenuItem?, entered = false
+        private(set) var returnHighlightVerified = false, returnTargetEnabled = false
+        private(set) var returnTargetHighlighted = false, returnTargetMenuIdentityVerified = false
+        private(set) var returnHighlightElapsed: TimeInterval?, returnHighlightedItemID: String?
+        private(set) var delegateHighlightEvents: [[String: Any]] = []
+        private var cancellationIssued = false, cancellationCallCount = 0
+        private var cancellationReason: String?
+        private var ownedTrackingEndObserved = false
+        private var ownedTrackingEndElapsed: TimeInterval?
         private var events: [[String: Any]] = [], omittedEvents = 0
         var evidence: [String: Any] {
             ["requestedItem": target?.identifier?.rawValue ?? "none", "boundary": boundary,
@@ -623,6 +640,21 @@ import PicShotCore
              "elapsedSeconds": ProcessInfo.processInfo.systemUptime - started, "timeoutSeconds": 2,
              "maximumPostedEvents": 40, "maximumTraceEvents": 96, "omittedTraceEvents": omittedEvents,
              "windowNumber": window?.windowNumber ?? -1, "windowIsKey": window?.isKeyWindow ?? false,
+             "nativeHighlightedItem": menu?.highlightedItem?.identifier?.rawValue ?? "none",
+             "nativeHighlightIsTarget": target != nil && menu?.highlightedItem === target,
+             "nativeTargetIsHighlighted": target?.isHighlighted ?? false,
+             "popupSelectedItem": button?.selectedItem?.identifier?.rawValue ?? "none",
+             "popupSelectedItemIndex": button?.indexOfSelectedItem ?? -1,
+             "returnHighlightVerified": returnHighlightVerified,
+             "returnHighlightElapsedSeconds": returnHighlightElapsed.map { $0 as Any } ?? NSNull(),
+             "returnHighlightedItemID": returnHighlightedItemID.map { $0 as Any } ?? NSNull(),
+             "returnTargetEnabled": returnTargetEnabled, "returnTargetHighlighted": returnTargetHighlighted,
+             "returnTargetMenuIdentityVerified": returnTargetMenuIdentityVerified,
+             "delegateHighlightEvents": delegateHighlightEvents,
+             "failureCancellationIssued": cancellationIssued, "failureCancellationCallCount": cancellationCallCount,
+             "failureCancellationReason": cancellationReason.map { $0 as Any } ?? NSNull(),
+             "ownedTrackingEndObserved": ownedTrackingEndObserved,
+             "ownedTrackingEndElapsedSeconds": ownedTrackingEndElapsed.map { $0 as Any } ?? NSNull(),
              "closedBeforeClickReturn": closedBeforeClickReturn, "closeMenuIdentityVerified": closeMenuIdentityVerified,
              "openMenuIdentityVerified": openMenuIdentityVerified,
              "openedElapsedSeconds": openedElapsed.map { $0 as Any } ?? NSNull(),
@@ -650,9 +682,15 @@ import PicShotCore
         private func observeTracking(_ note: Notification) {
             let now = ProcessInfo.processInfo.systemUptime
             guard let actual = note.object as? NSMenu, actual === menu,
-                  (actual.delegate as AnyObject?) === self, now <= deadline else {
-                timedOut = true; record("foreignOrLateTrackingRejected"); return
+                  (actual.delegate as AnyObject?) === self else {
+                timedOut = true; record("foreignTrackingRejected"); return
             }
+            // Keep actual owned cleanup evidence even when it is too late to
+            // satisfy the original input/lifecycle deadline. Never clear failure.
+            if note.name == NSMenu.didEndTrackingNotification {
+                ownedTrackingEndObserved = true; ownedTrackingEndElapsed = now - started
+            }
+            guard now <= deadline else { timedOut = true; record("lateTrackingRejected"); return }
             if note.name == NSMenu.didBeginTrackingNotification {
                 trackingBeginCount += 1
                 guard trackingBeginCount == 1 && trackingEndCount == 0 else {
@@ -681,8 +719,16 @@ import PicShotCore
             // Judge actual event timestamps, not a later task-resumption time.
             if !trackingComplete || (!boundary && !closed) ||
                 (clickReturnElapsed ?? TimeInterval.infinity) > 2 {
-                timedOut = true; record("trackingObservationFailed"); menu?.cancelTracking()
+                timedOut = true; record("trackingObservationFailed"); cancelOwnedTracking(reason: "tracking-observation-failed")
             }
+        }
+        func cancelOwnedTracking(reason: String) {
+            guard !cancellationIssued, !trackingComplete, let menu,
+                  (menu.delegate as AnyObject?) === self else { return }
+            cancellationIssued = true; cancellationCallCount += 1; cancellationReason = reason
+            record("cancelWithoutAnimationEnter")
+            menu.cancelTrackingWithoutAnimation()
+            record("cancelWithoutAnimationReturn")
         }
         private func record(_ kind: String, code: UInt16? = nil) {
             guard events.count < 96 else { omittedEvents += 1; return }
@@ -691,6 +737,16 @@ import PicShotCore
                 "menuIdentity": menu.map { String(describing: ObjectIdentifier($0)) } ?? "none",
                 "delegateIsProbe": (menu?.delegate as AnyObject?) === self,
                 "windowNumber": window?.windowNumber ?? -1,
+                "nativeHighlightedItem": menu?.highlightedItem?.identifier?.rawValue ?? "none",
+                "nativeHighlightIsTarget": target != nil && menu?.highlightedItem === target,
+                "nativeTargetEnabled": target?.isEnabled ?? false,
+                "nativeTargetIsHighlighted": target?.isHighlighted ?? false,
+                "delegateHighlightedItem": highlighted?.identifier?.rawValue ?? "none",
+                "popupSelectedItem": button?.selectedItem?.identifier?.rawValue ?? "none",
+                "popupSelectedItemIndex": button?.indexOfSelectedItem ?? -1,
+                "failureCancellationIssued": cancellationIssued, "failureCancellationCallCount": cancellationCallCount,
+                "failureCancellationReason": cancellationReason.map { $0 as Any } ?? NSNull(),
+                "ownedTrackingEndObserved": ownedTrackingEndObserved,
                 "opened": opened, "closed": closed, "entered": entered, "timedOut": timedOut,
                 "trackingBeginCount": trackingBeginCount, "trackingEndCount": trackingEndCount,
                 "posted": posted, "syntheticKeyCode": code.map(Int.init) ?? -1])
@@ -698,8 +754,8 @@ import PicShotCore
                 "highlightedItem": highlighted?.identifier?.rawValue ?? "none", "highlightIsTarget": highlighted === target,
                 "entered": entered, "posted": posted, "syntheticKeyCode": code.map(Int.init) ?? -1])
         }
-        init(menu: NSMenu, window: NSWindow, item: NSMenuItem, boundary: Bool) {
-            self.menu = menu; self.window = window; target = item; self.boundary = boundary
+        init(menu: NSMenu, window: NSWindow, button: NSPopUpButton, item: NSMenuItem, boundary: Bool) {
+            self.menu = menu; self.window = window; self.button = button; target = item; self.boundary = boundary
             let now = ProcessInfo.processInfo.systemUptime; started = now; deadline = now + 2
             super.init(); record("created")
         }
@@ -719,23 +775,43 @@ import PicShotCore
             let now = ProcessInfo.processInfo.systemUptime
             closeMenuIdentityVerified = true; closedElapsed = now - started; closed = true
             if now > deadline { timedOut = true }
-            activated = !boundary && entered && highlighted === target
+            activated = !boundary && entered && returnHighlightVerified
             record("didClose"); previous?.menuDidClose?(menu)
         }
         func menu(_ menu: NSMenu, willHighlight item: NSMenuItem?) {
-            if let item { highlighted = item }; record(item == nil ? "willHighlightNil" : "willHighlightItem")
+            let now = ProcessInfo.processInfo.systemUptime
+            guard menu === self.menu, (menu.delegate as AnyObject?) === self, now <= deadline,
+                  delegateHighlightEvents.count < 96 else {
+                timedOut = true; record("foreignLateOrExcessHighlightRejected"); return
+            }
+            highlighted = item
+            delegateHighlightEvents.append(["itemID": (item?.identifier?.rawValue).map { $0 as Any } ?? NSNull(),
+                "elapsedSeconds": now - started, "ownedMenuIdentityVerified": true])
+            record(item == nil ? "willHighlightNil" : "willHighlightItem")
             previous?.menu?(menu, willHighlight: item)
         }
         func tick() {
             record("tick")
-            guard !closed else { return }
-            if timedOut { menu?.cancelTracking(); return }
-            if ProcessInfo.processInfo.systemUptime >= deadline || posted >= 40 { timedOut = true; record("timeout"); menu?.cancelTracking(); return }
-            guard trackingActive, !entered, let window else { return }
-            let select = highlighted === target, code: UInt16 = boundary ? 53 : (select ? 36 : 125)
+            guard !trackingComplete else { return }
+            if timedOut { cancelOwnedTracking(reason: "latched-failure"); return }
+            if ProcessInfo.processInfo.systemUptime >= deadline || posted >= 40 {
+                timedOut = true; record("timeout"); cancelOwnedTracking(reason: "original-time-or-event-limit"); return
+            }
+            guard !closed, trackingActive, !entered, let window, let menu, let target else { return }
+            let ownedTarget = button?.menu === menu && target.menu === menu && (menu.delegate as AnyObject?) === self
+            guard ownedTarget else { timedOut = true; record("target-menu-identity-rejected"); cancelOwnedTracking(reason: "target-menu-identity"); return }
+            let select = menu.highlightedItem === target && target.isHighlighted && target.isEnabled
+            let code: UInt16 = boundary ? 53 : (select ? 36 : 125)
             let text = boundary ? "\u{1b}" : (select ? "\r" : "\u{f701}")
             guard let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-                windowNumber: window.windowNumber, context: nil, characters: text, charactersIgnoringModifiers: text, isARepeat: false, keyCode: code) else { timedOut = true; record("eventCreationFailed"); menu?.cancelTracking(); return }
+                windowNumber: window.windowNumber, context: nil, characters: text, charactersIgnoringModifiers: text, isARepeat: false, keyCode: code) else { timedOut = true; record("eventCreationFailed"); cancelOwnedTracking(reason: "event-creation"); return }
+            if !boundary && select {
+                returnHighlightVerified = true; returnHighlightElapsed = ProcessInfo.processInfo.systemUptime - started
+                returnHighlightedItemID = target.identifier?.rawValue
+                returnTargetEnabled = target.isEnabled; returnTargetHighlighted = target.isHighlighted
+                returnTargetMenuIdentityVerified = ownedTarget
+                record("nativeReturnHighlightVerified")
+            }
             entered = boundary || select; posted += 1; lastPostedKeyCode = code
             record("postedKey", code: code); NSApp.postEvent(event, atStart: true)
         }
