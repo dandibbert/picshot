@@ -176,7 +176,7 @@ final class AnnotationInspector: EditorFloatingSurface {
         let scope = NSMenuItem(title: "仅用于以后新建，不改现有标注", action: nil, keyEquivalent: "")
         scope.identifier = .init("annotation.savedStyles.scope")
         scope.isEnabled = false; styleMenu.menu?.addItem(scope)
-        fixedWidth(styleMenu, 54)
+        fixedWidth(styleMenu, 60)
         numberControls.onEdit = { [weak self] edit in self?.onEdit?(edit) }
         hint.font = .systemFont(ofSize: 10); hint.textColor = .secondaryLabelColor
         hint.lineBreakMode = .byTruncatingTail; hint.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
