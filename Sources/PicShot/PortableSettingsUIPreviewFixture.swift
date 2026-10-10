@@ -303,7 +303,22 @@ import PicShotCore
             guard owned.type == .leftMouseDown && owned.windowNumber == window.windowNumber &&
                   owned.timestamp == down.timestamp && owned.locationInWindow == down.locationInWindow else {
                 NSApp.postEvent(owned, atStart: true)
-                throw failure("Dequeued event does not match the owned table click; unrelated event restored")
+                func eventFields(_ event: NSEvent) -> [String: Any] {
+                    ["type": Int(event.type.rawValue), "windowNumber": event.windowNumber,
+                     "timestamp": event.timestamp, "location": [event.locationInWindow.x, event.locationInWindow.y],
+                     "eventNumber": event.eventNumber, "clickCount": event.clickCount,
+                     "modifierFlags": event.modifierFlags.rawValue]
+                }
+                let comparison: [String: Any] = ["expected": eventFields(down), "dequeued": eventFields(owned),
+                    "sameObject": owned === down, "sameType": owned.type == down.type,
+                    "sameWindow": owned.windowNumber == window.windowNumber,
+                    "sameTimestamp": owned.timestamp == down.timestamp,
+                    "sameLocation": owned.locationInWindow == down.locationInWindow,
+                    "timestampDifference": owned.timestamp - down.timestamp,
+                    "ownedWindowIsKey": window.isKeyWindow, "unexpectedEventRestored": true]
+                let evidence = try JSONSerialization.data(withJSONObject: comparison, options: [.sortedKeys])
+                throw failure("Dequeued event does not match the owned table click; unrelated event restored: " +
+                              String(decoding: evidence, as: UTF8.self))
             }
             NSApp.postEvent(up, atStart: true)
             beforeDispatch?(owned, hit)
