@@ -13,6 +13,8 @@ import PicShotCore
 /// Actual owned AppKit windows, responders, field editors, marked text and events.
 /// No global event delivery, real screen capture, input monitoring or TCC changes.
 @MainActor final class LocalAnnotationShortcutNativeTests: XCTestCase {
+    private var interactionTrace: LocalShortcutInteractionTrace?
+
     func testOwnedCanvasRoutesPhysicalRemapShiftAndRejectsRepeatAndGlobalModifiers() throws {
         try withApplicationLoop { [self] in
             let settings = try LocalAnnotationShortcutSettings.defaults.replacing(.rectangle, with: .init(keyCode: 15))
@@ -191,6 +193,21 @@ import PicShotCore
         try withApplicationLoop { [self] in
             let view = LocalAnnotationShortcutSettingsView(settings: .defaults), window = try hostDraft(view)
             defer { window.close() }
+            // Diagnostic only: observe the same immediate sequence without sleeps,
+            // retries, changed assertions or a different AppKit dispatch route.
+            let trace = LocalShortcutInteractionTrace(view: view)
+            interactionTrace = trace
+            let previousChange = view.onChange, previousStatus = view.captureButton.onStatus
+            view.onChange = { previousChange?(); trace.record("draft-onChange") }
+            view.captureButton.onStatus = { message, error in
+                previousStatus?(message, error)
+                trace.record(error ? "recorder-status-error" : "recorder-status")
+            }
+            defer {
+                view.onChange = previousChange; view.captureButton.onStatus = previousStatus
+                interactionTrace = nil; trace.emit(test: name)
+            }
+            trace.record("sequence-start")
             view.selectTool(.rectangle)
             try nativeClick(view.captureButton); XCTAssertTrue(view.captureButton.isRecording)
             try send(window, code: 15, characters: "r")
@@ -370,18 +387,50 @@ import PicShotCore
         catch { window.close(); throw error }
     }
     private func key(_ window: NSWindow, code: UInt16, characters: String, flags: NSEvent.ModifierFlags = [], repeatKey: Bool = false) throws -> NSEvent {
-        try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags,
+        let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags,
             timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
             characters: characters, charactersIgnoringModifiers: characters, isARepeat: repeatKey, keyCode: code))
+        interactionTrace?.record("created-key", supplied: event)
+        return event
     }
     private func send(_ window: NSWindow, code: UInt16, characters: String, flags: NSEvent.ModifierFlags = []) throws {
         let event = try key(window, code: code, characters: characters, flags: flags)
-        if !window.performKeyEquivalent(with: event) { window.sendEvent(event) }
+        interactionTrace?.record("before-key", supplied: event)
+        let handled = window.performKeyEquivalent(with: event)
+        interactionTrace?.record("after-key-equivalent", supplied: event, detail: handled ? "handled" : "unhandled")
+        if !handled { window.sendEvent(event) }
+        interactionTrace?.record("after-key", supplied: event)
     }
     private func mouse(_ canvas: ImageEditorCanvas, _ type: NSEvent.EventType, _ point: CGPoint) throws -> NSEvent {
         try XCTUnwrap(NSEvent.mouseEvent(with: type, location: canvas.convert(CGPoint(x: point.x * canvas.zoom, y: point.y * canvas.displayScaleY), to: nil), modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: canvas.window?.windowNumber ?? 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
     }
-    private func nativeClick(_ button: NSButton) throws { try PortableSettingsUIPreviewFixture.click(button) }
+    private func nativeClick(_ button: NSButton) throws {
+        guard let trace = interactionTrace else { try PortableSettingsUIPreviewFixture.click(button); return }
+        trace.record("before-click", button: button)
+        // Exact existing PortableSettingsUIPreviewFixture button route, expanded
+        // here only to capture the supplied down/up identities. In particular,
+        // keep direct mouseDown, event numbers, +0.01 release clock and no wait.
+        _ = try XCTUnwrap(button.isEnabled && !button.isHiddenOrHasHiddenAncestor ? true : nil, "Native button unavailable")
+        let point = CGPoint(x: button.bounds.midX, y: button.bounds.midY)
+        let window = try XCTUnwrap(button.window), root = try XCTUnwrap(window.contentView)
+        root.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        let location = button.convert(point, to: nil)
+        let local = root.convert(location, from: nil)
+        let hit = root.hitTest(root.convert(local, to: root.superview))
+        _ = try XCTUnwrap(hit === button || hit?.isDescendant(of: button) == true ? true : nil, "Native mouse target obscured")
+        let down = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: location, modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
+            eventNumber: 1, clickCount: 1, pressure: 1))
+        let up = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseUp, location: location, modifierFlags: [],
+            timestamp: down.timestamp + 0.01, windowNumber: window.windowNumber, context: nil,
+            eventNumber: 2, clickCount: 1, pressure: 0))
+        trace.record("supplied-mouse-down", button: button, supplied: down)
+        trace.record("supplied-mouse-up", button: button, supplied: up)
+        NSApp.postEvent(up, atStart: true)
+        trace.record("before-direct-mouseDown", button: button, supplied: down)
+        button.mouseDown(with: down)
+        trace.record("after-direct-mouseDown", button: button, supplied: down)
+    }
 }
 
 /// Matches the parent SettingsWindow's recorder-first contract. Integration tests
@@ -390,5 +439,67 @@ import PicShotCore
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if let button = firstResponder as? LocalAnnotationShortcutCaptureButton, button.isRecording { button.keyDown(with: event); return true }
         return super.performKeyEquivalent(with: event)
+    }
+}
+
+/// Bounded test-only scalar trace. It never changes a target/action, reads event
+/// characters or spins the run loop. Printing is deferred until the sequence ends
+/// so logging I/O cannot repair the rapid-click timing under investigation.
+@MainActor private final class LocalShortcutInteractionTrace {
+    private weak var view: LocalAnnotationShortcutSettingsView?
+    private var rows: [[String: Any]] = []
+    private var truncated = false
+    init(view: LocalAnnotationShortcutSettingsView) { self.view = view }
+    func record(_ phase: String, button: NSButton? = nil, supplied: NSEvent? = nil, detail: String? = nil) {
+        guard rows.count < 160 else { truncated = true; return }
+        guard let view else { return }
+        let window = view.window, responder = window?.firstResponder
+        var row: [String: Any] = ["index": rows.count, "phase": phase,
+            "observedAt": ProcessInfo.processInfo.systemUptime,
+            "selectedRow": view.tableView.selectedRow, "selectedTool": view.selectedTool?.rawValue ?? "none",
+            "draftBindings": view.draft.bindings.map { ["tool": $0.tool.rawValue, "keyCode": $0.binding.keyCode, "modifiers": $0.binding.modifiers] as [String: Any] },
+            "captureBinding": view.captureButton.binding.map { ["keyCode": $0.keyCode, "modifiers": $0.modifiers] as [String: Any] } ?? [:],
+            "recording": view.captureButton.isRecording, "captureEnabled": view.captureButton.isEnabled,
+            "clearEnabled": view.clearButton.isEnabled, "resetEnabled": view.restoreDefaultsButton.isEnabled,
+            "windowNumber": window?.windowNumber ?? -1, "windowIsKey": window?.isKeyWindow ?? false,
+            "keyWindowNumber": NSApp.keyWindow?.windowNumber ?? -1, "applicationIsActive": NSApp.isActive,
+            "applicationIsRunning": NSApp.isRunning,
+            "firstResponderClass": responder.map { String(describing: type(of: $0)) } ?? "none",
+            "firstResponderIdentifier": (responder as? NSView)?.identifier?.rawValue ?? "none",
+            "currentEvent": eventFields(NSApp.currentEvent), "suppliedEvent": eventFields(supplied)]
+        if let detail { row["detail"] = detail }
+        if let button {
+            row["button"] = button.identifier?.rawValue ?? "unknown"
+            row["action"] = button.action.map(NSStringFromSelector) ?? "none"
+            row["targetClass"] = button.target.map { String(describing: type(of: $0)) } ?? "none"
+            row["buttonHighlighted"] = button.cell?.isHighlighted ?? false
+            row["buttonFrameInWindow"] = NSStringFromRect(button.convert(button.bounds, to: nil))
+        }
+        rows.append(row)
+    }
+    private func eventFields(_ event: NSEvent?) -> [String: Any] {
+        guard let event else { return ["present": false] }
+        var value: [String: Any] = ["present": true, "type": Int(event.type.rawValue),
+            "windowNumber": event.windowNumber, "timestamp": event.timestamp,
+            "quartzTimestamp": event.cgEvent.map { $0.timestamp as Any } ?? NSNull(),
+            "location": [event.locationInWindow.x, event.locationInWindow.y],
+            "modifiers": event.modifierFlags.rawValue]
+        if [.keyDown, .keyUp, .flagsChanged].contains(event.type) {
+            value["keyCode"] = event.keyCode
+            if event.type != .flagsChanged { value["isRepeat"] = event.isARepeat }
+        }
+        if [.leftMouseDown, .leftMouseUp, .leftMouseDragged].contains(event.type) {
+            value["eventNumber"] = event.eventNumber; value["clickCount"] = event.clickCount
+        }
+        return value
+    }
+    func emit(test: String) {
+        let value: [String: Any] = ["test": test, "rows": rows, "truncated": truncated,
+            "maximumRows": 160, "route": "unchanged-direct-button-mouseDown", "ordinaryTextRead": false]
+        guard let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]), data.count <= 262_144 else {
+            XCTFail("Local shortcut interaction trace exceeded its 256 KiB bound or could not encode"); return
+        }
+        print("LocalAnnotationShortcut interaction trace: " + String(decoding: data, as: UTF8.self))
+        XCTAssertFalse(truncated, "Local shortcut interaction trace exhausted its row bound")
     }
 }
