@@ -152,23 +152,16 @@ def validate(report, *, expected_commit, expected_version, expected_build, insta
         f'portable-settings-{category}-{appearance}.png'
         for category in ('configuration', 'annotations', 'review') for appearance in ('light', 'dark')}
     need(set(r['fileSHA256']) == expected_files, 'evidence file set')
-    data = {}
-    for name in expected_files:
-        blob = PNG.file_bytes(evidence_directory, name)
-        need(hashlib.sha256(blob).hexdigest() == r['fileSHA256'][name], 'evidence digest mismatch: ' + name)
-        data[name] = blob
-    check_export(data['portable-settings-export.json'])
+    # Reject invalid report geometry before decoding any evidence raster. A
+    # valid report still rereads, hashes and fully decodes every file below;
+    # nothing is cached across calls or substituted for the decoded pixels.
     for visual in visuals:
         name = f"portable-settings-{visual['category']}-{visual['appearance']}.png"
         need(visual['file'] == name, 'visual file mismatch')
-        width, height, pixels = PNG.png_rgba(data[name])
-        need((width, height) == (visual['pixelWidth'], visual['pixelHeight']) and width >= 550 and height >= 400, 'native PNG extent')
-        need(width * height <= 4_000_000 and len(set(pixels[::4])) > 7, 'blank/oversized native PNG')
-        need(visual['opaqueWindowBackgroundComposited'] is True and all(alpha == 255 for alpha in pixels[3::4]),
-             'transparent native window background')
+        need(visual['opaqueWindowBackgroundComposited'] is True, 'transparent native window background')
         need(contains(visual['visibleFrame'], visual['windowFrame']), 'full window outside usable display')
         bounds = visual['contentBounds']
-        need(bounds[2:] == [width, height], 'snapshot omitted content bounds')
+        need(bounds[2:] == [visual['pixelWidth'], visual['pixelHeight']], 'snapshot omitted content bounds')
         need(visual['fullVisibleFramesChecked'] is True and visual['controlsDoNotOverlap'] is True and
              visual['scrollViewportsChecked'] is True and visual['readableLabelCount'] > 0, 'full visible layout contract')
         if visual['category'] == 'review':
@@ -189,6 +182,18 @@ def validate(report, *, expected_commit, expected_version, expected_build, insta
             need(row['hitTest'] is True and row['readable'] is True and bool(row['title']), 'native hit/readability missing')
             need(not any(overlaps(frame, other) for other in seen), 'full controls overlap')
             seen.append(frame)
+    data = {}
+    for name in expected_files:
+        blob = PNG.file_bytes(evidence_directory, name)
+        need(hashlib.sha256(blob).hexdigest() == r['fileSHA256'][name], 'evidence digest mismatch: ' + name)
+        data[name] = blob
+    check_export(data['portable-settings-export.json'])
+    for visual in visuals:
+        name = f"portable-settings-{visual['category']}-{visual['appearance']}.png"
+        width, height, pixels = PNG.png_rgba(data[name])
+        need((width, height) == (visual['pixelWidth'], visual['pixelHeight']) and width >= 550 and height >= 400, 'native PNG extent')
+        need(width * height <= 4_000_000 and len(set(pixels[::4])) > 7, 'blank/oversized native PNG')
+        need(all(alpha == 255 for alpha in pixels[3::4]), 'transparent native window background')
     for category in ('configuration', 'annotations', 'review'):
         need(data[f'portable-settings-{category}-light.png'] != data[f'portable-settings-{category}-dark.png'], 'light/dark PNGs identical')
 

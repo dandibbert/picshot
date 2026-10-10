@@ -7,6 +7,7 @@ from pathlib import Path
 import struct
 import tempfile
 import unittest
+from unittest import mock
 import zlib
 
 SPEC = importlib.util.spec_from_file_location('portable_check', Path(__file__).resolve().parents[1] / 'check-portable-settings.py')
@@ -99,8 +100,10 @@ class PortableSettingsCheckerTests(unittest.TestCase):
     def reject(self, mutation, pattern=None):
         original = copy.deepcopy(self.report)
         mutation(self.report)
-        with self.assertRaisesRegex(ValueError, pattern or '.'):
-            self.check()
+        with mock.patch.object(CHECK.PNG, 'png_rgba', wraps=CHECK.PNG.png_rgba) as decode:
+            with self.assertRaisesRegex(ValueError, pattern or '.'):
+                self.check()
+            decode.assert_not_called()
         self.report = original
 
     def replace(self, name, data):
@@ -108,7 +111,9 @@ class PortableSettingsCheckerTests(unittest.TestCase):
         self.report['fileSHA256'][name] = hashlib.sha256(data).hexdigest()
 
     def test_accept_complete_synthetic_schema(self):
-        self.check()
+        with mock.patch.object(CHECK.PNG, 'png_rgba', wraps=CHECK.PNG.png_rgba) as decode:
+            self.check()
+            self.assertEqual(decode.call_count, 6, 'Every valid visual must still decode actual PNG pixels')
 
     def test_reject_missing_coverage_or_wrong_bundle(self):
         for mutation in [lambda r: r['checks'].pop(), lambda r: r.update(sourceCommit='old'),
@@ -180,10 +185,13 @@ class PortableSettingsCheckerTests(unittest.TestCase):
     def test_reject_png_corruption_even_with_updated_digest(self):
         name = 'portable-settings-review-dark.png'
         blob = bytearray(self.blobs[name]); blob[30] ^= 1
-        self.replace(name, bytes(blob))
-        with self.assertRaisesRegex(ValueError, 'CRC'): self.check()
-        self.replace(name, png(800, 570, 64, alpha=0))
-        with self.assertRaisesRegex(ValueError, 'transparent'): self.check()
+        with mock.patch.object(CHECK.PNG, 'png_rgba', wraps=CHECK.PNG.png_rgba) as decode:
+            self.replace(name, bytes(blob))
+            with self.assertRaisesRegex(ValueError, 'CRC'): self.check()
+            self.assertEqual(decode.call_count, 6)
+            self.replace(name, png(800, 570, 64, alpha=0))
+            with self.assertRaisesRegex(ValueError, 'transparent'): self.check()
+            self.assertEqual(decode.call_count, 12, 'Changed files must be reread and decoded on the next validation')
 
     def test_reject_evidence_symlink_escape(self):
         with tempfile.TemporaryDirectory() as outside:

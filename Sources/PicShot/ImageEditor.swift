@@ -1177,13 +1177,29 @@ final class ImageEditorCanvas: NSView {
     }
 }
 
-/// The save chevron has an explicit hit frame. A stock popup's ornament
-/// alignment insets otherwise make its frame wider than its width constraint.
+/// The compact toolbar budgets complete control frames, not popup ornaments.
+/// All its popups use the same explicit alignment contract as the save chevron
+/// so adjacent 14/19/32-point targets cannot extend into a neighboring button.
 @MainActor
-final class EditorSaveActionsButton: NSPopUpButton {
+class EditorToolbarPopupButton: NSPopUpButton {
     override var alignmentRectInsets: NSEdgeInsets { NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0) }
     override func alignmentRect(forFrame frame: NSRect) -> NSRect { frame }
     override func frame(forAlignmentRect alignmentRect: NSRect) -> NSRect { alignmentRect }
+}
+
+@MainActor
+final class EditorSaveActionsButton: EditorToolbarPopupButton {}
+
+/// Icon pixels do not define the advertised 32-point action target. Keep the
+/// entire existing button frame clickable, including transparent symbol areas,
+/// without changing drawing, tracking, action dispatch, or enabled-state guards.
+@MainActor
+final class EditorToolbarIconButton: NSButton {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard !isHiddenOrHasHiddenAncestor, alphaValue > 0,
+              bounds.contains(convert(point, from: superview)) else { return nil }
+        return self
+    }
 }
 
 @MainActor
@@ -1249,7 +1265,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     private var undoButton: NSButton!
     private var redoButton: NSButton!
     private var cropButton: NSButton!
-    private let overflow = NSPopUpButton()
+    private let overflow = EditorToolbarPopupButton()
     private let status = NSTextField(labelWithString: "")
     private var fitToWindow = true
     private var layingOut = false
@@ -1485,7 +1501,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
     }
 
     private func iconButton(_ symbol: String, title: String, id: String, action: Selector) -> NSButton {
-        let control = NSButton(image: NSImage(systemSymbolName: symbol, accessibilityDescription: title)?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: EditorFloatingSurface.symbolPointSize, weight: .medium)) ?? NSImage(), target: self, action: action)
+        let control = EditorToolbarIconButton(image: NSImage(systemSymbolName: symbol, accessibilityDescription: title)?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: EditorFloatingSurface.symbolPointSize, weight: .medium)) ?? NSImage(), target: self, action: action)
         control.isBordered = false; control.bezelStyle = .regularSquare; control.imagePosition = .imageOnly
         control.contentTintColor = EditorFloatingSurface.ink; control.imageScaling = .scaleProportionallyDown; control.toolTip = title; control.setAccessibilityLabel(title)
         control.identifier = NSUserInterfaceItemIdentifier(id)
@@ -1495,7 +1511,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         return control
     }
     private func addSubtoolMenu(for family: ImageEditorTool, tools: [ImageEditorTool], identifier: String) {
-        let menu = NSPopUpButton(); menu.pullsDown = true; menu.isBordered = false
+        let menu = EditorToolbarPopupButton(); menu.pullsDown = true; menu.isBordered = false
         menu.addItem(withTitle: "")
         menu.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: "选择\(family.title)子工具")?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold))
         (menu.cell as? NSPopUpButtonCell)?.arrowPosition = .noArrow

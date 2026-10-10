@@ -26,7 +26,11 @@ import XCTest
             defer { controller.close() }
             let window = try PortableSettingsUIPreviewFixture.show(controller, appearance: .aqua)
             try PortableSettingsUIPreviewFixture.select(.annotations, in: controller)
-            try PortableSettingsUIPreviewFixture.clickRow(1, in: controller.annotationToolbarView.tableView)
+            let evidence = ProcessInfo.processInfo.environment["CI"] == "true"
+                ? URL(fileURLWithPath: FileManager.default.currentDirectoryPath).resolvingSymlinksInPath()
+                    .appendingPathComponent("dist/evidence/portable-settings-native-events", isDirectory: true) : nil
+            try PortableSettingsUIPreviewFixture.clickRow(1, in: controller.annotationToolbarView.tableView,
+                                                       failureEvidenceDirectory: evidence)
             try PortableSettingsUIPreviewFixture.click(controller.annotationToolbarView.moveDownButton)
             let draft = controller.annotationToolbarView.draft
             XCTAssertNotEqual(draft, .defaults)

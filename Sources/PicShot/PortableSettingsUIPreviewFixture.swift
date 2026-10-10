@@ -219,14 +219,52 @@ import PicShotCore
         try mouseClick(button, point: CGPoint(x: button.bounds.midX, y: button.bounds.midY))
     }
 
-    static func clickRow(_ row: Int, in table: NSTableView) throws {
+    static func clickRow(_ row: Int, in table: NSTableView, failureEvidenceDirectory: URL? = nil) throws {
+        let window = try required(table.window, "Table target has no window")
+        window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded()
         table.scrollRowToVisible(row); table.layoutSubtreeIfNeeded()
-        let rect = table.rect(ofRow: row)
-        try mouseClick(table, point: CGPoint(x: rect.midX, y: rect.midY))
-        try require(table.selectedRow == row, "Native table row selection failed")
+        let rowFrame = table.rect(ofRow: row), point = CGPoint(x: table.rect(ofRow: row).midX, y: table.rect(ofRow: row).midY)
+        var observation: [String: Any] = ["requestedRow": row, "selectedRowBefore": table.selectedRow,
+            "rowFrameBeforeFinalLayout": rect(rowFrame), "tableBounds": rect(table.bounds),
+            "tableVisibleRect": rect(table.visibleRect), "windowNumber": window.windowNumber]
+        try mouseClick(table, point: point) { down, hit in
+            let actualPoint = table.convert(down.locationInWindow, from: nil)
+            observation["rowFrameAtDispatch"] = rect(table.rect(ofRow: row))
+            observation["pointAtDispatch"] = [actualPoint.x, actualPoint.y]
+            observation["rowAtDispatch"] = table.row(at: actualPoint)
+            observation["selectedRowAtDispatch"] = table.selectedRow
+            observation["windowIsKey"] = window.isKeyWindow
+            observation["applicationIsActive"] = NSApp.isActive
+            observation["applicationIsRunning"] = NSApp.isRunning
+            observation["keyWindowNumber"] = NSApp.keyWindow?.windowNumber ?? -1
+            observation["modalWindowNumber"] = NSApp.modalWindow?.windowNumber ?? -1
+            observation["attachedSheetNumber"] = window.attachedSheet?.windowNumber ?? -1
+            observation["firstResponderClass"] = window.firstResponder.map { String(describing: type(of: $0)) } ?? "none"
+            observation["currentEventIsSuppliedDown"] = NSApp.currentEvent === down
+            observation["targetPointVisible"] = table.visibleRect.contains(actualPoint)
+            observation["numberOfRows"] = table.numberOfRows
+            observation["currentEventType"] = NSApp.currentEvent.map { Int($0.type.rawValue) } ?? -1
+            observation["currentEventWindowNumber"] = NSApp.currentEvent?.windowNumber ?? -1
+            observation["hitClass"] = hit.map { String(describing: type(of: $0)) } ?? "none"
+            observation["hitIdentifier"] = hit?.identifier?.rawValue ?? "none"
+        }
+        observation["selectedRowAfter"] = table.selectedRow
+        observation["rowFrameAfter"] = rect(table.rect(ofRow: row))
+        guard table.selectedRow == row else {
+            observation["status"] = "failed-selection-before-import-or-cancel"
+            if let directory = failureEvidenceDirectory {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                try JSONSerialization.data(withJSONObject: observation, options: [.prettyPrinted, .sortedKeys])
+                    .write(to: directory.appendingPathComponent("table-row-selection.json"), options: .atomic)
+                _ = try? visual(window, category: "row-selection", mode: "failure", directory: directory)
+            }
+            let data = try JSONSerialization.data(withJSONObject: observation, options: [.sortedKeys])
+            throw failure("Native table row selection failed: " + String(decoding: data, as: UTF8.self))
+        }
     }
 
-    private static func mouseClick(_ view: NSView, point: CGPoint) throws {
+    private static func mouseClick(_ view: NSView, point: CGPoint,
+                                   beforeDispatch: ((NSEvent, NSView?) -> Void)? = nil) throws {
         let window = try required(view.window, "Mouse target has no window")
         let root = try required(window.contentView, "Mouse root absent")
         root.layoutSubtreeIfNeeded(); window.displayIfNeeded()
@@ -240,6 +278,7 @@ import PicShotCore
         let up = try required(NSEvent.mouseEvent(with: .leftMouseUp, location: location, modifierFlags: [],
             timestamp: down.timestamp + 0.01, windowNumber: window.windowNumber, context: nil,
             eventNumber: 2, clickCount: 1, pressure: 0), "Mouse-up unavailable")
+        beforeDispatch?(down, hit)
         NSApp.postEvent(up, atStart: true)
         view.mouseDown(with: down)
     }

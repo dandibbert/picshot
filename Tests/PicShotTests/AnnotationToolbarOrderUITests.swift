@@ -5,6 +5,7 @@ import PicShotCore
 
 @MainActor
 final class AnnotationToolbarOrderUITests: XCTestCase {
+    private var retainedToolbarEvidence: String?
     func testDraftMoveSelectionResetAndCancelNeverWritePreferences() throws {
         _ = NSApplication.shared
         let (defaults, name) = try isolatedDefaults(); defer { defaults.removePersistentDomain(forName: name) }
@@ -99,7 +100,7 @@ final class AnnotationToolbarOrderUITests: XCTestCase {
         editor.window?.setContentSize(CGSize(width: 1440, height: 700)); editor.showWindow(nil); try await settle(editor)
         for family in order.families {
             let button = try XCTUnwrap(visibleControls(editor).first { $0.identifier?.rawValue == "editor.tool." + family.rawValue } as? NSButton)
-            button.performClick(nil); XCTAssertEqual(editor.annotationCanvas.tool, family.editorTool)
+            try clickPrimaryTool(button, in: editor); XCTAssertEqual(editor.annotationCanvas.tool, family.editorTool)
         }
         for (menuID, tools) in [("editor.shapeSubtools", [ImageEditorTool.ellipse, .arc, .sector]),
                                 ("editor.lineSubtools", [.line, .polyline]),
@@ -148,6 +149,10 @@ final class AnnotationToolbarOrderUITests: XCTestCase {
         let primary = controls.filter { $0.identifier?.rawValue.hasPrefix("editor.tool.") == true }
         let visibleIDs = primary.compactMap { $0.identifier?.rawValue.components(separatedBy: ".").last }
         let expected = order.rawIDs.filter { visibleIDs.contains($0) }
+        // Measure full frames and both dispatch routes before validation. A
+        // failed assertion must retain unmodified observations and owned pixels.
+        let measurements = toolbarMeasurements(editor, toolbar: toolbar, root: root, controls: controls)
+        let evidence = measurements.failures.isEmpty ? "" : retainToolbarEvidence(measurements.value, root: root)
         XCTAssertEqual(visibleIDs, expected, file: file, line: line)
         if allFamiliesVisible { XCTAssertEqual(visibleIDs, order.rawIDs, file: file, line: line) }
         if order != .defaults {
@@ -161,15 +166,22 @@ final class AnnotationToolbarOrderUITests: XCTestCase {
         }
         for (index, control) in controls.enumerated() {
             let frame = control.convert(control.bounds, to: toolbar)
-            XCTAssertTrue(toolbar.bounds.insetBy(dx: -1, dy: -1).contains(frame), control.identifier?.rawValue ?? "", file: file, line: line)
-            XCTAssertTrue(root.bounds.insetBy(dx: -1, dy: -1).contains(control.convert(control.bounds, to: root)), file: file, line: line)
+            let id = control.identifier?.rawValue ?? String(describing: type(of: control))
+            XCTAssertTrue(toolbar.bounds.insetBy(dx: -1, dy: -1).contains(frame),
+                "toolbar-containment: \(id) fullFrame=\(frame) toolbarBounds=\(toolbar.bounds) \(evidence)", file: file, line: line)
+            XCTAssertTrue(root.bounds.insetBy(dx: -1, dy: -1).contains(control.convert(control.bounds, to: root)),
+                "content-containment: \(id) fullFrame=\(control.convert(control.bounds, to: root)) contentBounds=\(root.bounds) \(evidence)", file: file, line: line)
             let center = CGPoint(x: control.bounds.midX, y: control.bounds.midY)
             let hit = toolbar.hitTest(control.convert(center, to: toolbar.superview))
-            XCTAssertTrue(hit === control || hit?.isDescendant(of: control) == true, control.identifier?.rawValue ?? "", file: file, line: line)
+            XCTAssertTrue(hit === control || hit?.isDescendant(of: control) == true,
+                "toolbar-center-hit: \(id) returned=\(hitDescription(hit)) fullFrame=\(frame) \(evidence)", file: file, line: line)
+            let rootHit = root.hitTest(control.convert(center, to: root.superview))
+            XCTAssertTrue(rootHit === control || rootHit?.isDescendant(of: control) == true,
+                "content-center-hit: \(id) returned=\(hitDescription(rootHit)) fullFrame=\(control.convert(control.bounds, to: root)) \(evidence)", file: file, line: line)
             for later in controls.dropFirst(index + 1) {
                 let overlap = frame.intersection(later.convert(later.bounds, to: toolbar))
                 XCTAssertTrue(overlap.isNull || overlap.width <= 0.5 || overlap.height <= 0.5,
-                    "Overlapping targets: \(control.identifier?.rawValue ?? "") / \(later.identifier?.rawValue ?? "")", file: file, line: line)
+                    "full-frame-overlap: \(id) \(frame) / \(later.identifier?.rawValue ?? "") \(later.convert(later.bounds, to: toolbar)) intersection=\(overlap) \(evidence)", file: file, line: line)
             }
         }
         let overflow = try XCTUnwrap(controls.first { $0.identifier?.rawValue == "editor.more" } as? NSPopUpButton)
@@ -177,6 +189,145 @@ final class AnnotationToolbarOrderUITests: XCTestCase {
         XCTAssertEqual(tools.count, ImageEditorTool.allCases.count, file: file, line: line)
         XCTAssertEqual(Set(tools.map(\.tag)), Set(ImageEditorTool.allCases.indices), file: file, line: line)
         XCTAssertTrue(tools.allSatisfy { $0.target === editor && $0.action != nil && $0.isEnabled }, file: file, line: line)
+    }
+
+    /// AppKit hitTest points are in the receiving view's superview coordinates.
+    /// Full control bounds remain the acceptance rectangle; alignment/cell
+    /// rectangles below are evidence only and never replace that rectangle.
+    private func toolbarMeasurements(_ editor: ImageEditorController, toolbar: NSStackView, root: NSView,
+                                     controls: [NSView]) -> (value: [String: Any], failures: [String]) {
+        func rect(_ value: CGRect) -> [CGFloat] { [value.minX, value.minY, value.width, value.height] }
+        func point(_ value: CGPoint) -> [CGFloat] { [value.x, value.y] }
+        var failures: [String] = [], rows: [[String: Any]] = [], intersections: [[String: Any]] = []
+        for (index, control) in controls.enumerated() {
+            let id = control.identifier?.rawValue ?? "control.\(index)", insets = control.alignmentRectInsets
+            let frame = control.convert(control.bounds, to: toolbar), rootFrame = control.convert(control.bounds, to: root)
+            let center = CGPoint(x: control.bounds.midX, y: control.bounds.midY)
+            let toolbarPoint = control.convert(center, to: toolbar.superview), rootPoint = control.convert(center, to: root.superview)
+            let toolbarHit = toolbar.hitTest(toolbarPoint), rootHit = root.hitTest(rootPoint)
+            let selfHit = control.hitTest(control.convert(center, to: control.superview))
+            let toolbarInside = toolbar.bounds.insetBy(dx: -1, dy: -1).contains(frame)
+            let contentInside = root.bounds.insetBy(dx: -1, dy: -1).contains(rootFrame)
+            let toolbarHits = toolbarHit === control || toolbarHit?.isDescendant(of: control) == true
+            let contentHits = rootHit === control || rootHit?.isDescendant(of: control) == true
+            for (kind, passed) in [("toolbar-containment", toolbarInside), ("content-containment", contentInside),
+                                   ("toolbar-center-hit", toolbarHits), ("content-center-hit", contentHits)] where !passed {
+                failures.append(kind + ": " + id)
+            }
+            var row: [String: Any] = ["id": id, "class": String(describing: type(of: control)),
+                "fullFrameInToolbar": rect(frame), "fullFrameInContent": rect(rootFrame),
+                "frameInSuperview": rect(control.frame), "bounds": rect(control.bounds), "visibleRect": rect(control.visibleRect),
+                "alignmentRectangleInSuperview": rect(control.alignmentRect(forFrame: control.frame)),
+                "alignmentInsetsTopLeftBottomRight": [insets.top, insets.left, insets.bottom, insets.right],
+                "hidden": control.isHidden, "hiddenAncestor": control.isHiddenOrHasHiddenAncestor,
+                "toolbarContainment": toolbarInside, "contentContainment": contentInside,
+                "centerInControl": point(center), "centerInToolbarSuperview": point(toolbarPoint), "centerInContentSuperview": point(rootPoint),
+                "toolbarHit": hitDescription(toolbarHit), "contentHit": hitDescription(rootHit), "selfHit": hitDescription(selfHit),
+                "toolbarHitMatches": toolbarHits, "contentHitMatches": contentHits]
+            if let window = editor.window { row["fullScreenFrame"] = rect(window.convertToScreen(control.convert(control.bounds, to: nil))) }
+            if let button = control as? NSButton {
+                row["enabled"] = button.isEnabled; row["bordered"] = button.isBordered
+                row["symbolAccessibilityLabel"] = button.accessibilityLabel() ?? ""
+                row["cellDrawingRectangle"] = button.cell.map { rect($0.drawingRect(forBounds: button.bounds)) } ?? []
+            }
+            rows.append(row)
+            for later in controls.dropFirst(index + 1) {
+                let overlap = frame.intersection(later.convert(later.bounds, to: toolbar))
+                if !overlap.isNull && overlap.width > 0.5 && overlap.height > 0.5 {
+                    let laterID = later.identifier?.rawValue ?? ""
+                    failures.append("full-frame-overlap: " + id + " / " + laterID)
+                    intersections.append(["first": id, "second": laterID, "intersectionInToolbar": rect(overlap)])
+                }
+            }
+        }
+        return (["status": "measured-before-validation", "test": name, "toolbarOrder": editor.toolbarOrder.rawIDs,
+                 "coordinateSystem": "native AppKit points; hit inputs in receiver superview coordinates",
+                 "contentBounds": rect(root.bounds), "toolbarBounds": rect(toolbar.bounds), "toolbarFrame": rect(toolbar.frame),
+                 "controls": rows, "intersections": intersections, "failures": failures,
+                 "controllerDiagnostics": editor.nativeToolbarDiagnostics()], failures)
+    }
+
+    /// SwiftPM does not reliably retain XCTest attachments, so also save under
+    /// the existing focused/QA artifact directory. Only this test's synthetic
+    /// owned content is cached; no desktop or unrelated window is captured.
+    private func retainToolbarEvidence(_ value: [String: Any], root: NSView) -> String {
+        if let retainedToolbarEvidence { return retainedToolbarEvidence }
+        // At most one attempt per failing method, including retention failures.
+        // Four methods use this path: <= 4 * (4 MiB PNG + 256 KiB JSON).
+        retainedToolbarEvidence = "evidence-retention-failed"
+        let testName = name.map { $0.isLetter || $0.isNumber ? $0 : "_" }
+        let stem = "\(ProcessInfo.processInfo.processIdentifier)-\(String(testName))"
+        let directory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+            .appendingPathComponent("dist/focused-test-shards/annotation-toolbar-evidence", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let data = try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys])
+            guard data.count <= 256 * 1024 else {
+                XCTFail("toolbar-evidence: geometry exceeds 256 KiB cap"); return "evidence-retention-failed"
+            }
+            let jsonURL = directory.appendingPathComponent(stem + ".json"); try data.write(to: jsonURL, options: .atomic)
+            retainedToolbarEvidence = "evidence=" + jsonURL.path
+            let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "public.json")
+            attachment.name = stem + ".json"; attachment.lifetime = .keepAlways; add(attachment)
+            // Match other native fixtures: one raster pixel per AppKit point,
+            // retaining the complete owned window without a Retina multiplier.
+            guard root.bounds.width.isFinite, root.bounds.height.isFinite,
+                  root.bounds.width > 0, root.bounds.height > 0,
+                  root.bounds.width <= 4_000_000, root.bounds.height <= 4_000_000 else {
+                XCTFail("toolbar-evidence: invalid owned content bounds; geometry at \(jsonURL.path)"); return jsonURL.path
+            }
+            let width = Int(root.bounds.width.rounded(.up)), height = Int(root.bounds.height.rounded(.up))
+            guard width > 0, height > 0, width <= 4_000_000 / height,
+                  let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
+                    bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                    colorSpaceName: .deviceRGB, bytesPerRow: width * 4, bitsPerPixel: 32) else {
+                XCTFail("toolbar-evidence: owned content bitmap unavailable; geometry at \(jsonURL.path)"); return jsonURL.path
+            }
+            bitmap.size = root.bounds.size
+            root.effectiveAppearance.performAsCurrentDrawingAppearance { root.cacheDisplay(in: root.bounds, to: bitmap) }
+            guard let png = bitmap.representation(using: .png, properties: [:]) else {
+                XCTFail("toolbar-evidence: owned content PNG unavailable; geometry at \(jsonURL.path)"); return jsonURL.path
+            }
+            guard png.count <= 4 * 1024 * 1024 else {
+                XCTFail("toolbar-evidence: owned content PNG exceeds 4 MiB cap; geometry at \(jsonURL.path)"); return jsonURL.path
+            }
+            let pngURL = directory.appendingPathComponent(stem + ".png"); try png.write(to: pngURL, options: .atomic)
+            let picture = XCTAttachment(data: png, uniformTypeIdentifier: "public.png")
+            picture.name = stem + ".png"; picture.lifetime = .keepAlways; add(picture)
+            print("ANNOTATION_TOOLBAR_EVIDENCE json=\(jsonURL.path) png=\(pngURL.path)")
+            return "evidence=" + jsonURL.path
+        } catch {
+            XCTFail("toolbar-evidence: retention failed: \(error)")
+            return "evidence-retention-failed"
+        }
+    }
+
+    private func hitDescription(_ view: NSView?) -> String {
+        guard let view else { return "nil" }
+        return (view.identifier?.rawValue ?? "unidentified") + " (" + String(describing: type(of: view)) + ")"
+    }
+
+    private func clickPrimaryTool(_ button: NSButton, in editor: ImageEditorController) throws {
+        let window = try XCTUnwrap(editor.window), root = try XCTUnwrap(window.contentView)
+        // The inset corner also belongs to the existing 32-point target, even
+        // when it contains no SF Symbol pixels. Do not use performClick here.
+        let local = CGPoint(x: button.bounds.minX + 3, y: button.bounds.minY + 3)
+        let rootHit = root.hitTest(button.convert(local, to: root.superview))
+        guard rootHit === button || rootHit?.isDescendant(of: button) == true else {
+            let toolbar = try toolbar(in: editor), controls = visibleControls(editor)
+            var evidence = toolbarMeasurements(editor, toolbar: toolbar, root: root, controls: controls).value
+            evidence["cornerHitFailure"] = ["id": button.identifier?.rawValue ?? "", "localPoint": [local.x, local.y], "returned": hitDescription(rootHit)]
+            let path = retainToolbarEvidence(evidence, root: root)
+            XCTFail("primary-corner-hit: \(button.identifier?.rawValue ?? "") returned=\(hitDescription(rootHit)) \(path)")
+            return
+        }
+        let location = button.convert(local, to: nil)
+        let timestamp = ProcessInfo.processInfo.systemUptime
+        let down = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: location, modifierFlags: [], timestamp: timestamp,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        let up = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseUp, location: location, modifierFlags: [], timestamp: timestamp + 0.01,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 0))
+        NSApp.postEvent(up, atStart: true); button.mouseDown(with: down)
     }
 
     private func assertOutputControls(_ editor: ImageEditorController, pinID: String) throws {
