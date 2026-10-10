@@ -457,7 +457,8 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
         self.assertEqual([self.scalar(full, arch) for arch in ['arm64', 'x86_64']], [30, 30])
         self.assertEqual([self.scalar(focused, arch) for arch in ['arm64', 'x86_64']], [16, 30])
         budgets = self.checked_serial_budgets()
-        self.assertEqual([budgets[arch]['jobMinutes'] for arch in ['arm64', 'x86_64']], [176, 204])
+        # Add only early-witness orchestration: 20-minute gate + 2-minute upload.
+        self.assertEqual([budgets[arch]['jobMinutes'] for arch in ['arm64', 'x86_64']], [176 + 22, 204 + 22])
         self.assertEqual([budgets[arch]['regressionMinutes'] for arch in ['arm64', 'x86_64']], [16, 16])
         self.assertEqual(budgets['arm64']['regressionRequiredSeconds'], 920)
         self.assertEqual(budgets['arm64']['focusedRequiredSeconds'], 920)

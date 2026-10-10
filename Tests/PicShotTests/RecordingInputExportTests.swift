@@ -96,6 +96,63 @@ final class RecordingInputExportTests: XCTestCase {
         var reflected = raster()
         paint(&reflected, x: 70, y: 180 - 95 - 10, width: 10, height: 10, color: [230, 170, 40])
         XCTAssertThrowsError(try Oracle.compare(observe(reflected), to: reference), "Vertical reflection must fail")
+
+        // Candidate167's native lossy WebP preserved the fading ring but moved
+        // near-boundary RGB below the hard yellow mask. Exercise only the
+        // paired, lossy-only exception; all original strict tests stay above.
+        var fadeReference = raster(), fadeActual = raster()
+        paint(&fadeReference, x: 70, y: 95, width: 10, height: 10, color: [123, 102, 45])
+        paint(&fadeActual, x: 70, y: 95, width: 10, height: 10, color: [115, 102, 55])
+        let fadeExpected = try observe(fadeReference)
+        func paired(_ actual: [UInt8], reference: [UInt8]? = nil,
+                    format: Oracle.Format = .webpLossy) throws -> Oracle.LossyBoundaryAdjustment? {
+            let reference = reference ?? fadeReference
+            let expected = try observe(reference)
+            return try actual.withUnsafeBufferPointer {
+                try Oracle.compareAnimationPixels($0, reference: reference, expected: expected, format: format).adjustment
+            }
+        }
+        XCTAssertThrowsError(try Oracle.compare(observe(fadeActual), to: fadeExpected), "Raw faded observation must remain strict")
+        let adjustment = try XCTUnwrap(try paired(fadeActual))
+        XCTAssertEqual(adjustment.policy, "same-coordinate-click-yellow-boundary-v1")
+        XCTAssertEqual(adjustment.maximumChannelDifference, 18)
+        XCTAssertEqual(adjustment.maximumUnmatchedReferencePixels, 20)
+        XCTAssertEqual(adjustment.boundaryQualifiedPixelCount, 100)
+        XCTAssertEqual(adjustment.spatiallyPairedReferenceCount, 100)
+        XCTAssertEqual(adjustment.rawObservation.regions["click"]?.yellow.count, 0, "Never relabel the raw observation")
+        XCTAssertEqual(adjustment.referenceYellow.count, 100)
+        XCTAssertEqual(adjustment.adjustedYellow.count, 100)
+        XCTAssertEqual(adjustment.adjustedYellow.x, 74.5)
+        XCTAssertEqual(adjustment.adjustedYellow.y, 99.5)
+        XCTAssertTrue(adjustment.strictFailure.contains("click yellow"))
+        let encoded = try Oracle.object(adjustment) as? [String: Any]
+        XCTAssertNotNil(encoded?["rawObservation"])
+        XCTAssertNotNil(encoded?["adjustedYellow"])
+        for format in [Oracle.Format.gif, .webpLossless] {
+            XCTAssertThrowsError(try paired(fadeActual, format: format), "Non-lossy classification must remain unchanged")
+        }
+        XCTAssertNil(try paired(fadeReference), "A strict pass must not claim boundary recovery")
+        XCTAssertThrowsError(try paired(raster()), "A missing ring has no corresponding color pixels")
+        var lowContrastShift = raster()
+        paint(&lowContrastShift, x: 75, y: 95, width: 10, height: 10, color: [115, 102, 55])
+        XCTAssertThrowsError(try paired(lowContrastShift), "Partial spatial overlap must not exploit the relative count allowance")
+        var laterFade = raster()
+        paint(&laterFade, x: 70, y: 95, width: 10, height: 10, color: [100, 87, 45])
+        XCTAssertThrowsError(try paired(laterFade), "A clearly later/expired fade must not be recovered")
+        XCTAssertThrowsError(try paired(fadeReference, reference: raster()), "Stale effect pixels cannot be removed by the exception")
+        var outsideChannelBound = raster()
+        paint(&outsideChannelBound, x: 70, y: 95, width: 10, height: 10, color: [104, 102, 55])
+        XCTAssertThrowsError(try paired(outsideChannelBound), "A 19-level channel error exceeds the fixed 18-level bound")
+        var interiorReference = raster(), interiorActual = raster()
+        paint(&interiorReference, x: 70, y: 95, width: 10, height: 10, color: [180, 140, 40])
+        paint(&interiorActual, x: 70, y: 95, width: 10, height: 10, color: [162, 158, 58])
+        XCTAssertThrowsError(try paired(interiorActual, reference: interiorReference), "Only reference pixels near a predicate boundary qualify")
+        var changedOtherFeature = fadeActual
+        paint(&changedOtherFeature, x: 120, y: 18, width: 20, height: 15, color: [255, 255, 255])
+        XCTAssertThrowsError(try paired(changedOtherFeature), "Yellow recovery must not suppress another feature's failure")
+        // Nearby authored frames can resemble each other within the existing
+        // visual tolerances. Exact requested/actual-time gates are independent;
+        // this test does not claim universal wrong-frame image discrimination.
     }
 
     func testScalarTimelineRejectsFirstFrameOnlyWrongBoundaryAndMissingResume() throws {
@@ -411,6 +468,28 @@ final class RecordingInputExportTests: XCTestCase {
     }
 
     func testFixtureRequiresAcceptedOriginalReportBeforeLaunchingHelpers() async throws {
+        let valid = ["PICSHOT_SMOKE_TEST": "1", "PICSHOT_SMOKE_REPORT": "/tmp/picshot-owned-smoke/report.json",
+                     "PICSHOT_RECORDING_INPUT_EXPORT_ONLY": "1"]
+        XCTAssertTrue(RecordingInputExportSmokeSelection.isExclusive(valid))
+        XCTAssertTrue(RecordingInputExportSmokeSelection.isExclusive(valid.merging(["PATH": "/usr/bin"]) { _, new in new }))
+        for key in valid.keys {
+            var missing = valid; missing.removeValue(forKey: key)
+            XCTAssertFalse(RecordingInputExportSmokeSelection.isExclusive(missing), "Missing required selector: \(key)")
+            var empty = valid; empty[key] = ""
+            XCTAssertFalse(RecordingInputExportSmokeSelection.isExclusive(empty), "Empty selector: \(key)")
+        }
+        for key in ["PICSHOT_EDITABLE_PRODUCT_MODE", "PICSHOT_DRAWING_RASTER_STRATEGY", "PICSHOT_RENDERER_STORAGE_STRATEGY",
+                    "PICSHOT_EDITABLE_COMPONENT_MODE", "PICSHOT_UI_PREVIEW_ONLY", "PICSHOT_RECORDING_COMPOSITION_ONLY",
+                    "PICSHOT_FUTURE_DIAGNOSTIC_MODE"] {
+            for value in ["", "1", "reference"] {
+                var conflicting = valid; conflicting[key] = value
+                XCTAssertFalse(RecordingInputExportSmokeSelection.isExclusive(conflicting), "Conflicting selector presence: \(key)")
+            }
+        }
+        var wrongValue = valid; wrongValue["PICSHOT_RECORDING_INPUT_EXPORT_ONLY"] = "true"
+        XCTAssertFalse(RecordingInputExportSmokeSelection.isExclusive(wrongValue))
+        wrongValue = valid; wrongValue["PICSHOT_SMOKE_TEST"] = "0"
+        XCTAssertFalse(RecordingInputExportSmokeSelection.isExclusive(wrongValue))
         let directory = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let prior = directory.appendingPathComponent("recording-input.json")

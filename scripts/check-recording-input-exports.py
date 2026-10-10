@@ -64,6 +64,73 @@ def process(job):
     need(job.get("configuredChildResidentLimitBytes") == 1_073_741_824, "Production child RSS cap changed")
 
 
+def boundary_claim_paths(value, path=()):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key == "lossyBoundaryAdjustment":
+                yield path + (key,)
+            yield from boundary_claim_paths(child, path + (key,))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            yield from boundary_claim_paths(child, path + (index,))
+
+
+def lossy_boundary_adjustment(value, frame, route):
+    need(route == "webpLossy" and isinstance(value, dict), "Boundary correction is lossy-WebP-only")
+    fields = {"policy", "maximumChannelDifference", "maximumUnmatchedReferencePixels",
+              "boundaryQualifiedPixelCount", "spatiallyPairedReferenceCount", "rawObservation",
+              "referenceYellow", "adjustedYellow", "strictFailure"}
+    need(set(value) == fields and value["policy"] == "same-coordinate-click-yellow-boundary-v1",
+         "Unknown or incomplete lossy boundary evidence")
+    for key, expected in (("maximumChannelDifference", 18), ("maximumUnmatchedReferencePixels", 20)):
+        need(type(value[key]) is int and value[key] == expected, "Lossy boundary threshold changed")
+    need(isinstance(value["strictFailure"], str) and len(value["strictFailure"]) <= 1024
+         and value["strictFailure"].startswith("Decoded click yellow feature"),
+         "Missing original strict yellow failure")
+    bounds = {"click": (54, 80, 52, 54), "scroll": (194, 100, 44, 42), "shortcut": (118, 12, 84, 32),
+              "camera": (30, 151, 10, 10), "annotation": (273, 153, 10, 10), "clear": (153, 158, 14, 14),
+              "horizontalScroll": (219, 107, 1, 1), "verticalScroll": (229, 119, 1, 1),
+              "oppositeScroll": (240, 107, 1, 1), "postStop": (157, 132, 6, 6)}
+
+    def feature(item, region):
+        x, y, width, height = bounds[region]
+        need(isinstance(item, dict) and set(item) == {"count", "x", "y"}
+             and type(item["count"]) is int and 0 <= item["count"] <= width * height
+             and finite(item["x"]) and finite(item["y"]), "Invalid bounded feature evidence")
+        need((item["x"] == item["y"] == 0) if item["count"] == 0 else
+             (x <= item["x"] <= x + width - 1 and y <= item["y"] <= y + height - 1),
+             "Feature centroid outside its region")
+        return item
+
+    raw = value["rawObservation"]
+    need(isinstance(raw, dict) and set(raw) == {"index", "pts", "regions"}
+         and type(raw["index"]) is int and raw["index"] == frame["sourceIndex"]
+         and finite(raw["pts"]) and abs(raw["pts"] - frame["actualSeconds"]) <= 1 / 600
+         and isinstance(raw["regions"], dict) and set(raw["regions"]) == set(bounds),
+         "Raw boundary observation lost its source-frame binding")
+    for region, observation in raw["regions"].items():
+        need(isinstance(observation, dict) and set(observation) == {"rgb", "yellow", "pink", "mint", "white"},
+             "Raw boundary region is incomplete")
+        need(isinstance(observation["rgb"], list) and len(observation["rgb"]) == 3
+             and all(finite(c) and 0 <= c <= 255 for c in observation["rgb"]), "Invalid raw boundary RGB")
+        for name in ("yellow", "pink", "mint", "white"):
+            feature(observation[name], region)
+    observed = raw["regions"]["click"]["yellow"]
+    reference = feature(value["referenceYellow"], "click")
+    adjusted = feature(value["adjustedYellow"], "click")
+    qualified, paired = value["boundaryQualifiedPixelCount"], value["spatiallyPairedReferenceCount"]
+    need(type(qualified) is int and type(paired) is int
+         and 0 < qualified <= paired <= min(reference["count"], adjusted["count"])
+         and adjusted["count"] == observed["count"] + qualified
+         and reference["count"] - paired <= 20, "Unbounded or inconsistent same-coordinate recovery")
+
+    def matches(actual):
+        return (abs(actual["count"] - reference["count"]) <= max(20, int(reference["count"] * 0.55))
+                and (reference["count"] < 30 or (actual["count"] >= max(10, reference["count"] // 3)
+                     and abs(actual["x"] - reference["x"]) <= 4 and abs(actual["y"] - reference["y"]) <= 4)))
+    need(not matches(observed) and matches(adjusted), "Lossy recovery did not preserve the original feature gates")
+
+
 def timeline(frames, route):
     need(isinstance(frames, list) and len(frames) == 41, f"{route}: not all frames decoded")
     previous, indices, total = -1.0, set(), 0
@@ -85,6 +152,8 @@ def timeline(frames, route):
             if region in {"horizontalScroll", "verticalScroll", "oppositeScroll"}:
                 limit = 65
             need(finite(error) and 0 <= error <= limit, f"{route}: {region} exceeds decoded-reference tolerance")
+        if "lossyBoundaryAdjustment" in item:
+            lossy_boundary_adjustment(item["lossyBoundaryAdjustment"], item, route)
         previous = actual
         indices.add(source_index)
         total += item["delayMS"]
@@ -168,6 +237,10 @@ def validate(root, commit):
     fixture = read(fixture_path)
     native = read(root / "recording-input-export-independent.json")
     original = read(root / "recording-input.json")
+    need(not list(boundary_claim_paths(fixture)) and not list(boundary_claim_paths(original)),
+         "Boundary correction appeared outside independent lossy WebP evidence")
+    need(all(len(path) == 3 and path[0] == "webpLossy" and type(path[1]) is int
+             for path in boundary_claim_paths(native)), "Misplaced lossy boundary correction")
     need(original.get("status") == "passed" and original.get("decodedFrames") == 22
          and original.get("sourceCommit") == commit, "Original159 input evidence is incomplete or mismatched")
     need(fixture.get("schemaVersion") == native.get("schemaVersion") == 1, "Unknown evidence schema")

@@ -76,7 +76,19 @@ enum RecordingInputExportOracle {
         let index: Int, requestedSeconds: Double, actualSeconds: Double
         let sourceIndex: Int, delayMS: Int
         let regionMeanAbsoluteError: [String: Double]
+        var lossyBoundaryAdjustment: LossyBoundaryAdjustment? = nil
     }
+    struct LossyBoundaryAdjustment: Codable {
+        let policy: String
+        let maximumChannelDifference: Int, maximumUnmatchedReferencePixels: Int
+        let boundaryQualifiedPixelCount: Int, spatiallyPairedReferenceCount: Int
+        let rawObservation: Observation
+        let referenceYellow: Feature, adjustedYellow: Feature
+        let strictFailure: String
+    }
+    static let lossyBoundaryPolicy = "same-coordinate-click-yellow-boundary-v1"
+    static let lossyBoundaryChannelLimit = 18
+    static let lossyBoundaryUnmatchedLimit = 20
     enum Format: String { case gif, webpLossless, webpLossy }
 
     static func require(_ value: Bool, _ message: String) throws {
@@ -637,15 +649,90 @@ enum RecordingInputExportOracle {
             throw NSError(domain: "PicShot.RecordingInputExport", code: 6,
                           userInfo: [NSLocalizedDescriptionKey: "Animation actual time is not a decoded selected frame"])
         }
-        let observed = try observation(pixels, index: sourceFrame.index, pts: actualTime.seconds)
-        try compare(observed, to: sourceFrame)
-        let referenceObservation = try reference.withUnsafeBufferPointer { try observation($0, index: sourceFrame.index, pts: actualTime.seconds) }
-        try compare(referenceObservation, to: sourceFrame)
-        let errors = try pixelErrors(pixels, reference: reference,
-                                     limit: format == .webpLossless ? 9 : 18,
-                                     canvasLimit: format == .webpLossless ? 3 : 6)
+        let comparison = try compareAnimationPixels(pixels, reference: reference, expected: sourceFrame, format: format)
         return Comparison(index: index, requestedSeconds: requested.seconds, actualSeconds: actualTime.seconds,
-                          sourceIndex: sourceFrame.index, delayMS: actualDelayMS, regionMeanAbsoluteError: errors)
+                          sourceIndex: sourceFrame.index, delayMS: actualDelayMS, regionMeanAbsoluteError: comparison.errors,
+                          lossyBoundaryAdjustment: comparison.adjustment)
+    }
+
+    /// Raw RGB errors and the independently generated reference remain strict.
+    /// Only lossy WebP may recover click-yellow classification at a quantized
+    /// boundary; this never changes image bytes, RGB means or other features.
+    static func compareAnimationPixels(_ pixels: UnsafeBufferPointer<UInt8>, reference: [UInt8],
+                                       expected: Observation, format: Format) throws
+        -> (errors: [String: Double], adjustment: LossyBoundaryAdjustment?) {
+        let errors = try pixelErrors(pixels, reference: reference,
+            limit: format == .webpLossless ? 9 : 18, canvasLimit: format == .webpLossless ? 3 : 6)
+        let raw = try observation(pixels, index: expected.index, pts: expected.pts)
+        let referenceObservation = try reference.withUnsafeBufferPointer {
+            try observation($0, index: expected.index, pts: expected.pts)
+        }
+        try compare(referenceObservation, to: expected)
+        do {
+            try compare(raw, to: expected)
+            return (errors, nil)
+        } catch {
+            let strictFailure = error.localizedDescription
+            guard format == .webpLossy && strictFailure.hasPrefix("Decoded click yellow feature") else { throw error }
+            let (adjusted, diagnostic) = try lossyClickBoundaryObservation(pixels, reference: reference,
+                raw: raw, referenceObservation: referenceObservation, expected: expected, strictFailure: strictFailure)
+            // Every original color/count/centroid gate is still applied.
+            try compare(adjusted, to: expected)
+            return (errors, diagnostic)
+        }
+    }
+
+    private static func lossyClickBoundaryObservation(_ pixels: UnsafeBufferPointer<UInt8>, reference: [UInt8],
+        raw: Observation, referenceObservation: Observation, expected: Observation, strictFailure: String) throws
+        -> (Observation, LossyBoundaryAdjustment) {
+        guard let region = regions.first(where: { $0.name == "click" }),
+              let click = raw.regions["click"], let referenceClick = referenceObservation.regions["click"],
+              let expectedClick = expected.regions["click"] else {
+            throw NSError(domain: "Missing paired click boundary witness", code: 1)
+        }
+        try require(referenceClick.yellow.count == expectedClick.yellow.count
+            && referenceClick.yellow.x == expectedClick.yellow.x && referenceClick.yellow.y == expectedClick.yellow.y,
+                    "Lossy click boundary reference differs from the independently decoded selected frame")
+        let limit = lossyBoundaryChannelLimit
+        func yellow(_ r: Int, _ g: Int, _ b: Int) -> Bool {
+            r > 120 && g > 90 && r > g + 15 && b < g - 30
+        }
+        var count = 0, qualified = 0, paired = 0
+        var xs = 0.0, ys = 0.0
+        for y in region.y..<(region.y + region.height) {
+            for x in region.x..<(region.x + region.width) {
+                let offset = ((height - 1 - y) * width + x) * 4
+                let r = Int(pixels[offset]), g = Int(pixels[offset + 1]), b = Int(pixels[offset + 2])
+                let rr = Int(reference[offset]), rg = Int(reference[offset + 1]), rb = Int(reference[offset + 2])
+                let actualYellow = yellow(r, g, b), referenceYellow = yellow(rr, rg, rb)
+                // Reuse the existing 18-level lossy RGB allowance as a stricter
+                // per-channel ceiling at the SAME coordinate. No search/shift,
+                // neighborhood averaging or new color threshold is permitted.
+                let nearBoundary = min(rr - 120, rg - 90, rr - rg - 15, rg - rb - 30) <= limit
+                let recovered = !actualYellow && referenceYellow && nearBoundary
+                    && max(abs(r - rr), abs(g - rg), abs(b - rb)) <= limit
+                if recovered { qualified += 1 }
+                if referenceYellow && (actualYellow || recovered) { paired += 1 }
+                if actualYellow || recovered { count += 1; xs += Double(x); ys += Double(y) }
+            }
+        }
+        // The existing absolute 20-pixel allowance also bounds missing spatial
+        // correspondence. The relative 55% count allowance alone is not enough
+        // to establish a matching low-contrast shape.
+        try require(qualified > 0 && referenceClick.yellow.count - paired <= lossyBoundaryUnmatchedLimit,
+                    "Lossy click boundary lacks same-coordinate reference evidence: qualified=\(qualified) paired=\(paired) reference=\(referenceClick.yellow.count)")
+        let adjustedYellow = Feature(count: count, x: count == 0 ? 0 : xs / Double(count),
+                                     y: count == 0 ? 0 : ys / Double(count))
+        var values = raw.regions
+        values["click"] = RegionObservation(rgb: click.rgb, yellow: adjustedYellow,
+            pink: click.pink, mint: click.mint, white: click.white)
+        let adjusted = Observation(index: raw.index, pts: raw.pts, regions: values)
+        let diagnostic = LossyBoundaryAdjustment(policy: lossyBoundaryPolicy,
+            maximumChannelDifference: limit, maximumUnmatchedReferencePixels: lossyBoundaryUnmatchedLimit,
+            boundaryQualifiedPixelCount: qualified, spatiallyPairedReferenceCount: paired,
+            rawObservation: raw, referenceYellow: referenceClick.yellow, adjustedYellow: adjustedYellow,
+            strictFailure: strictFailure)
+        return (adjusted, diagnostic)
     }
     static func pixelErrors(_ pixels: UnsafeBufferPointer<UInt8>, reference: [UInt8],
                             limit: Double, canvasLimit: Double) throws -> [String: Double] {

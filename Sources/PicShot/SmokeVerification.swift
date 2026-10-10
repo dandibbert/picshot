@@ -3,12 +3,58 @@ import Darwin
 import PicShotCore
 import PicShotFormulaRenderCore
 
+enum RecordingInputExportSmokeSelection {
+    static func isExclusive(_ environment: [String: String]) -> Bool {
+        let allowed: Set<String> = ["PICSHOT_SMOKE_TEST", "PICSHOT_SMOKE_REPORT", "PICSHOT_RECORDING_INPUT_EXPORT_ONLY"]
+        return Set(environment.keys.filter { $0.hasPrefix("PICSHOT_") }) == allowed
+            && environment["PICSHOT_SMOKE_TEST"] == "1"
+            && environment["PICSHOT_RECORDING_INPUT_EXPORT_ONLY"] == "1"
+            && environment["PICSHOT_SMOKE_REPORT"]?.isEmpty == false
+    }
+}
+
 @MainActor extension AppDelegate {
     func runSmoke() async {
         guard let report=smoke else{return}
         let url=URL(fileURLWithPath:report);let directory=url.deletingLastPathComponent()
         do{
             try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
+            // Early installed witness only. Keep the original full-smoke calls
+            // below, and require a separate native reader before this can pass.
+            if ProcessInfo.processInfo.environment["PICSHOT_RECORDING_INPUT_EXPORT_ONLY"] != nil {
+                let files = FileManager.default
+                var payload: [String: Any] = [
+                    "schemaVersion": 1, "status": "running", "earlyWitnessOnly": true,
+                    "installerAcceptance": false, "independentValidationRequired": true,
+                    "sourceCommit": Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String ?? "unknown",
+                    "bundlePath": Bundle.main.bundleURL.resolvingSymlinksInPath().path,
+                    "executablePath": Bundle.main.executableURL?.resolvingSymlinksInPath().path ?? "",
+                    "arguments": CommandLine.arguments,
+                    "historyDirectoryPath": history.directory.resolvingSymlinksInPath().path,
+                    "historyDirectoryRemoved": false,
+                    "scope": "Early synthetic installed recording/export witness; full ZIP/DMG acceptance still required"
+                ]
+                do {
+                    guard RecordingInputExportSmokeSelection.isExclusive(ProcessInfo.processInfo.environment) else {
+                        throw PicShotError.message("Recording input export requires exclusive smoke selectors and a report destination")
+                    }
+                    _ = try await RecordingInputSmokeFixture.verify(evidenceDirectory: directory)
+                    _ = try await RecordingInputExportSmokeFixture.verify(evidenceDirectory: directory)
+                    payload["status"] = "exported-awaiting-independent-validation"
+                } catch {
+                    payload["status"] = "failed"; payload["error"] = error.localizedDescription
+                }
+                // Record real cleanup on success, failure and malformed selectors.
+                do {
+                    if files.fileExists(atPath: history.directory.path) { try files.removeItem(at: history.directory) }
+                    payload["historyDirectoryRemoved"] = !files.fileExists(atPath: history.directory.path)
+                } catch {
+                    payload["status"] = "failed"; payload["cleanupError"] = error.localizedDescription
+                }
+                try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
+                    .write(to: url, options: .atomic)
+                NSApp.terminate(nil); return
+            }
             // Separate fresh-process product measurement/certification; never
             // lowers the work or changes checks in the full correctness route.
             let hasProductRequest = ProcessInfo.processInfo.environment.contains { $0.key.hasPrefix("PICSHOT_EDITABLE_PRODUCT_") }

@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 import re
 import unittest
-from product_launcher_source_contract import without_product_launcher_hooks
+from product_launcher_source_contract import EARLY_RECORDING_LAUNCHER_HOOKS, without_product_launcher_hooks
 from product_retirement_source_contract import without_product_retirement_waits, without_provider_test_observer
 
 ROOT=Path(__file__).resolve().parents[2]
@@ -30,6 +30,42 @@ class ProductSourceBindingTests(unittest.TestCase):
         source=(ROOT/'scripts/launch-smoke-app.swift').read_text()
         stripped=without_product_launcher_hooks(self,source)
         self.assertEqual(hashlib.sha256(stripped.encode()).hexdigest(),'a46ab938b151e73ebadd99f2800f31e32ec147a707f9a19815555a7a2f2d8d19')
+
+    def test_early_launcher_hooks_require_exact_literals_once(self):
+        source=(ROOT/'scripts/launch-smoke-app.swift').read_text()
+        self.assertEqual(len(EARLY_RECORDING_LAUNCHER_HOOKS),10)
+        for index,(hook,_) in enumerate(EARLY_RECORDING_LAUNCHER_HOOKS):
+            for disposition,replacement in [('missing',''),('duplicated',hook+hook)]:
+                with self.subTest(hook=index,disposition=disposition),self.assertRaises(AssertionError):
+                    without_product_launcher_hooks(self,source.replace(hook,replacement,1))
+        changes=[
+            ('source.setEventHandler { interruptedSignal = number }',
+             'source.setEventHandler { interruptedSignal = nil }'),
+            ('report["launchedIdentityMatches"] = launchedIdentityMatches()',
+             'report["launchedIdentityMatches"] = true'),
+            ('!recordingInputExportOnly || launchedIdentityMatches()',
+             '!recordingInputExportOnly || true'),
+            ('while Date() < deadline && interruptedSignal == nil {',
+             'while Date() < deadline || interruptedSignal == nil {'),
+        ]
+        for original,altered in changes:
+            with self.subTest(altered=altered),self.assertRaises(AssertionError):
+                without_product_launcher_hooks(self,source.replace(original,altered,1))
+
+    def test_non_early_launcher_changes_still_fail_the_historical_hash(self):
+        source=(ROOT/'scripts/launch-smoke-app.swift').read_text()
+        for original,altered in [
+            ('configuration.activates = true','configuration.activates = false'),
+            ('? 900 : 600','? 900 : 601'),
+            ('Date().addingTimeInterval(3)','Date().addingTimeInterval(4)'),
+            ('_ = launched.forceTerminate()','_ = launched.terminate()'),
+        ]:
+            with self.subTest(altered=altered):
+                self.assertIn(original,source)
+                stripped=without_product_launcher_hooks(self,source.replace(original,altered,1))
+                with self.assertRaises(AssertionError):
+                    self.assertEqual(hashlib.sha256(stripped.encode()).hexdigest(),
+                        'a46ab938b151e73ebadd99f2800f31e32ec147a707f9a19815555a7a2f2d8d19')
 
     def test_dedicated_launcher_has_only_finite_drawing_and_product_variables(self):
         source=(ROOT/'scripts/launch-editable-product.swift').read_text()

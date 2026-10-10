@@ -201,6 +201,51 @@ class RecordingInputExportEvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "looping"):
             self.validate()
 
+    def test_lossy_boundary_evidence_is_bounded_and_exclusive(self):
+        raw = dict(index=6, pts=0.5, regions={name: dict(rgb=[40, 40, 40],
+            **{color: dict(count=0, x=0, y=0) for color in ("yellow", "pink", "mint", "white")})
+            for name in GATE.REGIONS - {"wholeCanvas"}})
+        adjustment = dict(policy="same-coordinate-click-yellow-boundary-v1", maximumChannelDifference=18,
+            maximumUnmatchedReferencePixels=20, boundaryQualifiedPixelCount=100, spatiallyPairedReferenceCount=100,
+            rawObservation=raw, referenceYellow=dict(count=100, x=74.5, y=99.5),
+            adjustedYellow=dict(count=100, x=74.5, y=99.5),
+            strictFailure="Decoded click yellow feature presence/expiry differs at source frame 6")
+        self.native["webpLossy"][10]["lossyBoundaryAdjustment"] = copy.deepcopy(adjustment)
+        self.assertEqual(self.validate()["status"], "passed")
+        self.assertLess(len(json.dumps(self.native, indent=2).encode()), GATE.REPORT_CAP)
+        mutations = [lambda a: a.update(maximumChannelDifference=19),
+                     lambda a: a.update(maximumChannelDifference=True),
+                     lambda a: a.update(maximumUnmatchedReferencePixels=21),
+                     lambda a: a.update(boundaryQualifiedPixelCount=2809),
+                     lambda a: a.update(boundaryQualifiedPixelCount=99),
+                     lambda a: a.update(spatiallyPairedReferenceCount=79),
+                     lambda a: a.update(policy="general-color-tolerance"),
+                     lambda a: a.update(strictFailure=""),
+                     lambda a: a["rawObservation"].update(index=7),
+                     lambda a: a["rawObservation"]["regions"].pop("scroll"),
+                     lambda a: a["rawObservation"]["regions"]["click"]["rgb"].append(40),
+                     lambda a: a["adjustedYellow"].update(x=85),
+                     lambda a: a["rawObservation"]["regions"]["click"]["yellow"].update(count=100, x=74.5, y=99.5)]
+        for mutate in mutations:
+            changed = copy.deepcopy(adjustment)
+            mutate(changed)
+            self.native["webpLossy"][10]["lossyBoundaryAdjustment"] = changed
+            with self.assertRaises(ValueError):
+                self.validate()
+        self.native["webpLossy"][10]["lossyBoundaryAdjustment"] = copy.deepcopy(adjustment)
+        for route in ("gif", "webpLossless"):
+            self.native[route][10]["lossyBoundaryAdjustment"] = copy.deepcopy(adjustment)
+            with self.assertRaisesRegex(ValueError, "Misplaced"):
+                self.validate()
+            del self.native[route][10]["lossyBoundaryAdjustment"]
+        self.fixture["selectedMP4"]["lossyBoundaryAdjustment"] = copy.deepcopy(adjustment)
+        with self.assertRaisesRegex(ValueError, "outside independent"):
+            self.validate()
+        del self.fixture["selectedMP4"]["lossyBoundaryAdjustment"]
+        self.native["selectedPacketTiming"]["lossyBoundaryAdjustment"] = copy.deepcopy(adjustment)
+        with self.assertRaisesRegex(ValueError, "Misplaced"):
+            self.validate()
+
     def test_unconfirmed_child_or_missing_cancellation_rejected(self):
         self.fixture["exports"][1]["process"]["childExitConfirmed"] = False
         with self.assertRaisesRegex(ValueError, "unconfirmed"):

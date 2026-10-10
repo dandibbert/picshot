@@ -88,8 +88,10 @@ jobs:
     # ARM retains its prior 160-minute allowance and 16/30-minute native stages.
     # Individual test, product, cancellation and smoke deadlines stay unchanged.
     # Two exact pin regressions add 16 minutes without reducing any prior gate allowance.
-    # ARM: 160 + 16 = 176; Intel: 188 + 16 = 204.
-    timeout-minutes: ${{ matrix.arch == 'x86_64' && 204 || 176 }}
+    # Early same-ZIP recording witness adds orchestration allowance only:
+    # 20 minutes execution plus 2 for its upload; no existing limit changes.
+    # ARM: 176 + 22 = 198; Intel: 204 + 22 = 226. All prior allowances remain.
+    timeout-minutes: ${{ matrix.arch == 'x86_64' && 226 || 198 }}
     env:
       # Subdivide exhaustive ARM processes; preserve focused isolation.
       NATIVE_TEST_PROCESS_COUNT: '4'
@@ -103,6 +105,8 @@ jobs:
           python3 -m unittest discover -s scripts/tests -p test_recording_input_ui_contract.py -v
           python3 -m unittest discover -s scripts/tests -p test_check_recording_transport_report.py -v
           python3 -m unittest discover -s scripts/tests -p test_recording_input_export_contract.py -v
+          python3 -m unittest discover -s scripts/tests -p test_recording_input_export_early.py -v
+          python3 -O -m unittest discover -s scripts/tests -p test_recording_input_export_early.py -v
           python3 -m unittest discover -s scripts/tests -p test_check_annotation_details_report.py -v
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_check_effect_output_failure_report.py -v
           PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p test_check_effect_output_failure_report.py -v
@@ -141,6 +145,24 @@ jobs:
         with:
           name: PicShot-UI-${{ matrix.arch }}-${{ github.sha }}
           path: dist/evidence/ui/
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Check installed recording exports before slow native gates
+        # 660s launcher (unchanged 600s app + 6s owned cleanup), 330s reader,
+        # 140s bounded identity/extraction commands, 70s cleanup/report reserve
+        # (including existing-wrapper termination grace). Orchestration only.
+        # Total 1200s. Existing reader build/decode limits stay 60/120/90s.
+        timeout-minutes: 20
+        run: python3 scripts/recording-input-export-early.py "$GITHUB_SHA"
+      - name: Upload early installed recording export witness
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Early-Recording-Exports-${{ matrix.arch }}-${{ github.sha }}
+          # Five 4MiB media + eight 128KiB reports + two 2MiB logs = 25MiB
+          # maximum raw payload. Never include the installed app or extra PNG.
+          path: dist/evidence/recording-input-export-early/artifact/
           if-no-files-found: ignore
           retention-days: 14
       - name: Measure codec and image backing in fresh installed processes
@@ -310,12 +332,12 @@ jobs:
               (root/'regression-report.json').write_text(json.dumps(record, indent=2)+'\n')
           PYTHON
       - name: Reproduce recording packet, GIF metadata and panel regressions
-        # Additive early reproduction; all three IDs still execute in the unchanged
+        # Additive early reproduction; all five IDs still execute in the unchanged
         # focused and exhaustive gates. Original 420s process caps are retained.
         timeout-minutes: 16
         run: |
           set -o pipefail
-          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count 2 --selection-regex '^PicShotTests\.(RecordingInputExportTests/testAuthoredInputTrimPreservesAllSelectedPixelsAndPacketBoundaries|RecordingInputExportTests/testInteriorSelectionAndSamplingIncludeExpiryResumeAndFrozenStop|RecordingCommandCoordinatorTests/testExpandCollapseAndDisplayChangesRetainOneOwnerWithoutClosingSession)$' --output dist/recording-regression-plan.json
+          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count 2 --selection-regex '^PicShotTests\.(RecordingInputExportTests/testAuthoredInputTrimPreservesAllSelectedPixelsAndPacketBoundaries|RecordingInputExportTests/testInteriorSelectionAndSamplingIncludeExpiryResumeAndFrozenStop|RecordingInputExportTests/testPixelOracleUsesTopDownRGBAAndDetectsEffectRelocationAndExpiry|RecordingInputExportTests/testFixtureRequiresAcceptedOriginalReportBeforeLaunchingHelpers|RecordingCommandCoordinatorTests/testExpandCollapseAndDisplayChangesRetainOneOwnerWithoutClosingSession)$' --output dist/recording-regression-plan.json
           execution_status=0
           for shard in 0 1; do
             python3 scripts/native-test-shards.py run --plan dist/recording-regression-plan.json --expected-source "$GITHUB_SHA" --index "$shard" --directory dist/evidence/recording-018-regression || execution_status=1
