@@ -106,8 +106,8 @@ import UniformTypeIdentifiers
         content.orientation = .vertical; content.alignment = .leading; content.spacing = 16; content.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(content)
         let footerLine = NSBox(); footerLine.boxType = .separator; footerLine.translatesAutoresizingMaskIntoConstraints = false; root.addSubview(footerLine)
-        let cancel = NSButton(title: "取消", target: self, action: #selector(cancelSettings)); cancel.keyEquivalent = "\u{1b}"
-        let save = NSButton(title: "保存设置", target: self, action: #selector(saveSettings)); save.keyEquivalent = "\r"
+        let cancel = SettingsActionButton(title: "取消", target: self, action: #selector(cancelSettings)); cancel.keyEquivalent = "\u{1b}"
+        let save = SettingsActionButton(title: "保存设置", target: self, action: #selector(saveSettings)); save.keyEquivalent = "\r"
         let footer = NSStackView(views: [cancel, save]); footer.spacing = 10; footer.translatesAutoresizingMaskIntoConstraints = false; root.addSubview(footer)
         let footnote = NSTextField(labelWithString: "更改在保存后生效"); footnote.font = .systemFont(ofSize: 11); footnote.textColor = .secondaryLabelColor
         footnote.translatesAutoresizingMaskIntoConstraints = false; root.addSubview(footnote)
@@ -177,8 +177,8 @@ import UniformTypeIdentifiers
             if !unavailableShortcuts.isEmpty { help += "\n当前不可用，请更换：" + unavailableShortcuts.map(\.title).joined(separator: "、") }
             addNote(help)
         case .configuration:
-            let export = NSButton(title: "导出已保存设置…", target: self, action: #selector(exportConfiguration))
-            let importButton = NSButton(title: "导入并预览…", target: self, action: #selector(importConfiguration))
+            let export = SettingsActionButton(title: "导出已保存设置…", target: self, action: #selector(exportConfiguration))
+            let importButton = SettingsActionButton(title: "导入并预览…", target: self, action: #selector(importConfiguration))
             export.identifier = .init("settings.configuration.export")
             importButton.identifier = .init("settings.configuration.import")
             let actions = NSStackView(views: [export, importButton]); actions.spacing = 10

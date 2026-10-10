@@ -4,8 +4,8 @@ import AppKit
 /// persistence effects; the owner commits only after the primary button succeeds.
 @MainActor final class PortableSettingsReviewController: NSWindowController, NSWindowDelegate {
     let plan: PortableSettingsImportPlan
-    let applyButton = NSButton(title: "导入并保存", target: nil, action: nil)
-    let cancelButton = NSButton(title: "取消", target: nil, action: nil)
+    let applyButton = SettingsActionButton(title: "导入并保存", target: nil, action: nil)
+    let cancelButton = SettingsActionButton(title: "取消", target: nil, action: nil)
     let errorLabel = NSTextField(wrappingLabelWithString: "")
     private let applyPlan: () throws -> Void
     private let finished: (Bool) -> Void

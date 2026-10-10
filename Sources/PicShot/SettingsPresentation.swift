@@ -43,6 +43,14 @@ extension AppAppearancePreference {
     }
 }
 
+/// Stack layout uses the complete interactive frame, including rounded-button
+/// ornament insets, so neighboring settings actions cannot share hit regions.
+@MainActor final class SettingsActionButton: NSButton {
+    override var alignmentRectInsets: NSEdgeInsets { NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0) }
+    override func alignmentRect(forFrame frame: NSRect) -> NSRect { frame }
+    override func frame(forAlignmentRect alignmentRect: NSRect) -> NSRect { alignmentRect }
+}
+
 @MainActor final class SettingsSidebarButton: NSButton {
     var isCurrent = false { didSet { needsDisplay = true; updateLayer() } }
     override var wantsUpdateLayer: Bool { true }

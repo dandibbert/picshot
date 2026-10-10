@@ -250,8 +250,9 @@ import PicShotCore
         try require(visible.insetBy(dx: -1, dy: -1).contains(window.frame), "Full native window is outside usable display: \(window.frame)")
         let views = descendants(root).filter { !$0.isHiddenOrHasHiddenAncestor }
         let buttons = views.compactMap { $0 as? NSButton }
-        var rows: [[String: Any]] = [], frames: [CGRect] = []
+        var rows: [[String: Any]] = [], frames: [(id: String, title: String, frame: CGRect)] = []
         for (index, button) in buttons.enumerated() {
+            let id = button.identifier?.rawValue ?? "button.\(index)"
             let frame = button.convert(button.bounds, to: root)
             let screen = window.convertToScreen(button.convert(button.bounds, to: nil))
             try require(root.bounds.insetBy(dx: -0.5, dy: -0.5).contains(frame) && visible.insetBy(dx: -1, dy: -1).contains(screen),
@@ -262,9 +263,12 @@ import PicShotCore
             let center = CGPoint(x: frame.midX, y: frame.midY)
             let hit = root.hitTest(root.convert(center, to: root.superview))
             try require(hit === button || hit?.isDescendant(of: button) == true, "Control not hit-testable: " + button.title)
-            for other in frames { try require(!frame.insetBy(dx: 0.5, dy: 0.5).intersects(other.insetBy(dx: 0.5, dy: 0.5)), "Visible native controls overlap") }
-            frames.append(frame)
-            rows.append(["id": button.identifier?.rawValue ?? "button.\(index)", "title": button.title,
+            for other in frames {
+                try require(!frame.insetBy(dx: 0.5, dy: 0.5).intersects(other.frame.insetBy(dx: 0.5, dy: 0.5)),
+                    "Visible native controls overlap: \(other.id) [\(other.title)] fullFrame=\(other.frame) and \(id) [\(button.title)] fullFrame=\(frame)")
+            }
+            frames.append((id, button.title, frame))
+            rows.append(["id": id, "title": button.title,
                 "frame": rect(frame), "screenFrame": rect(screen), "enabled": button.isEnabled,
                 "hitTest": true, "readable": true, "minimumSize": [required.width, required.height]])
         }
@@ -295,9 +299,53 @@ import PicShotCore
             "controlsDoNotOverlap": true, "scrollViewportsChecked": true]
     }
 
+    /// Deliberately unvalidated observations survive a strict layout rejection.
+    /// Every rectangle is the actual complete bounds converted to owned content
+    /// and screen coordinates; alignment rectangles are never substituted.
+    private static func rawGeometry(_ window: NSWindow, root: NSView) -> [String: Any] {
+        let views = descendants(root).filter { !$0.isHiddenOrHasHiddenAncestor }
+        let buttons = views.compactMap { $0 as? NSButton }
+        let controls = views.compactMap { $0 as? NSControl }
+        let rows: [[String: Any]] = controls.enumerated().map { index, control in
+            let frame = control.convert(control.bounds, to: root)
+            let screen = window.convertToScreen(control.convert(control.bounds, to: nil))
+            let center = CGPoint(x: frame.midX, y: frame.midY)
+            let hit = root.hitTest(root.convert(center, to: root.superview))
+            var row: [String: Any] = ["id": control.identifier?.rawValue ?? "control.\(index)",
+                "class": String(describing: type(of: control)), "fullFrame": rect(frame),
+                "fullScreenFrame": rect(screen), "visibleRect": rect(control.visibleRect),
+                "enabled": control.isEnabled, "hitTest": hit === control || hit?.isDescendant(of: control) == true]
+            let insets = control.alignmentRectInsets
+            row["alignmentInsetsTopLeftBottomRight"] = [insets.top, insets.left, insets.bottom, insets.right]
+            row["frameInSuperview"] = rect(control.frame)
+            row["alignmentRectangleInSuperview"] = rect(control.alignmentRect(forFrame: control.frame))
+            if let button = control as? NSButton {
+                let buttonIndex = buttons.firstIndex { $0 === button } ?? index
+                row["id"] = button.identifier?.rawValue ?? "button.\(buttonIndex)"
+                row["title"] = button.title
+                let size = button.cell?.cellSize ?? .zero
+                row["minimumSize"] = [size.width, size.height]
+            } else if let label = control as? NSTextField { row["text"] = label.stringValue }
+            return row
+        }
+        var result: [String: Any] = ["windowFrame": rect(window.frame), "contentBounds": rect(root.bounds),
+            "controls": rows, "geometryValidated": false,
+            "scope": "Unvalidated complete frames from this owned synthetic window only; cached content PNG, no desktop capture"]
+        if let visible = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame { result["visibleFrame"] = rect(visible) }
+        return result
+    }
+
     private static func visual(_ window: NSWindow, category: String, mode: String, directory: URL) throws -> [String: Any] {
-        var result = try layout(window)
         let view = try required(window.contentView, "Snapshot content missing")
+        view.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        let stem = "portable-settings-" + category + "-" + mode
+        let name = stem + ".png", geometryName = stem + "-geometry.json"
+        let geometryURL = directory.appendingPathComponent(geometryName)
+        var diagnostic = rawGeometry(window, root: view)
+        diagnostic["category"] = category; diagnostic["appearance"] = mode
+        diagnostic["snapshotFile"] = name; diagnostic["status"] = "layout-not-yet-validated"
+        try JSONSerialization.data(withJSONObject: diagnostic, options: [.prettyPrinted, .sortedKeys])
+            .write(to: geometryURL, options: .atomic)
         let width = Int(view.bounds.width.rounded(.up)), height = Int(view.bounds.height.rounded(.up))
         try require(width > 0 && height > 0 && width <= 4_000_000 / height, "Owned snapshot exceeds pixel bound")
         let bitmap = try required(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
@@ -319,8 +367,21 @@ import PicShotCore
         try require(cached, "Owned cached pixels unavailable")
         let image = try required(context.makeImage(), "Owned composited image missing")
         let data = try required(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]), "Owned PNG unavailable")
-        let name = "portable-settings-" + category + "-" + mode + ".png"
         try data.write(to: directory.appendingPathComponent(name), options: .atomic)
+        // Keep both the full owned PNG and raw frames before applying the gate.
+        // A rejected layout is evidence of failure, never a passed visual row.
+        var result: [String: Any]
+        do {
+            result = try layout(window)
+            diagnostic["status"] = "passed"; diagnostic["geometryValidated"] = true
+        } catch {
+            diagnostic["status"] = "failed"; diagnostic["error"] = error.localizedDescription
+            try? JSONSerialization.data(withJSONObject: diagnostic, options: [.prettyPrinted, .sortedKeys])
+                .write(to: geometryURL, options: .atomic)
+            throw failure(error.localizedDescription + "; owned-window evidence: " + name + ", " + geometryName)
+        }
+        try JSONSerialization.data(withJSONObject: diagnostic, options: [.prettyPrinted, .sortedKeys])
+            .write(to: geometryURL, options: .atomic)
         result["category"] = category; result["appearance"] = mode; result["file"] = name
         result["pixelWidth"] = width; result["pixelHeight"] = height
         result["opaqueWindowBackgroundComposited"] = true; return result

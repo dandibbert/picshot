@@ -54,9 +54,9 @@ extension AnnotationToolbarOrder.Family {
 final class AnnotationToolbarSettingsView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     private(set) var draft: AnnotationToolbarOrder
     let tableView = NSTableView()
-    let moveUpButton = NSButton(title: "上移", target: nil, action: nil)
-    let moveDownButton = NSButton(title: "下移", target: nil, action: nil)
-    let restoreDefaultsButton = NSButton(title: "恢复默认顺序", target: nil, action: nil)
+    let moveUpButton = SettingsActionButton(title: "上移", target: nil, action: nil)
+    let moveDownButton = SettingsActionButton(title: "下移", target: nil, action: nil)
+    let restoreDefaultsButton = SettingsActionButton(title: "恢复默认顺序", target: nil, action: nil)
     let selectionLabel = NSTextField(labelWithString: "")
     var onChange: (() -> Void)?
 
