@@ -111,9 +111,6 @@ enum StatusMenuLayout {
         }
         let manage = menu.addItem(withTitle: "管理贴图组与历史…", action: #selector(managePinGroups), keyEquivalent: ""); manage.target = self; manage.isEnabled = pinSession != nil
         menu.addItem(.separator())
-        let restoreIsolation = menu.addItem(withTitle: "恢复隔离前显示", action: #selector(restorePinVisibilityIsolation), keyEquivalent: "")
-        restoreIsolation.target = self; restoreIsolation.isEnabled = pinSession?.hasVisibilityIsolation == true
-        restoreIsolation.identifier = NSUserInterfaceItemIdentifier("pin-visibility-restore")
         for (title, action) in [("显示当前贴图组", #selector(showPins)), ("恢复当前贴图组（位置、透明度与鼠标）", #selector(restorePins)), ("隐藏当前贴图组", #selector(hideCurrentPins)), ("隐藏所有贴图", #selector(hidePins))] { menu.addItem(withTitle: title, action: action, keyEquivalent: "").target = self }
         return menu
     }

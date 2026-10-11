@@ -8,13 +8,6 @@ import PicShotCore
 @MainActor final class PinGroupsController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate {
     var onOpenPin: ((UUID) -> Void)?
     var onSessionChange: (() -> Void)?
-    var onIsolatePins: ((Set<UUID>) throws -> Void)?
-    var onRestoreIsolatedPins: (() throws -> Void)?
-    var visibilityIsolationAvailable: (() -> Bool)?
-    var visiblePinIDsForIsolation: (() -> Set<UUID>)?
-    var onShowGroup: (() throws -> Void)?
-    // Optional owned-prompt observation for native Cancel coverage; nil in normal use.
-    var onGroupPromptPrepared: ((NSAlert) -> Void)?
     var onChangeError: @MainActor (Error) -> Void = { showError($0) }
     private let store: PinSessionStore
     private let transforms: PinGroupTransformController?
@@ -43,9 +36,7 @@ import PicShotCore
     private let renamePinButton = NSButton(title: "重命名…", target: nil, action: nil)
     private let removePinButton = NSButton(title: "移除保存项…", target: nil, action: nil)
     private let movePicker = NSPopUpButton()
-    private let table = PinGroupEntriesTableView()
-    private let isolateSelectedItem = NSMenuItem(title: "仅显示所选贴图", action: nil, keyEquivalent: "")
-    private let restoreIsolationItem = NSMenuItem(title: "恢复隔离前显示", action: nil, keyEquivalent: "")
+    private let table = NSTableView()
     private let preview = PinGroupPreviewImageView()
     private let details = NSTextField(wrappingLabelWithString: "选择贴图以预览")
     private let status = NSTextField(wrappingLabelWithString: "")
@@ -89,9 +80,7 @@ import PicShotCore
         groupOrderPicker.menu?.addItem(moveGroupEarlierItem)
         groupOrderPicker.menu?.addItem(moveGroupLaterItem)
         let addGroupButton = PinGroupHeaderButton(title: "新建组…", target: self, action: #selector(addGroup))
-        addGroupButton.identifier = NSUserInterfaceItemIdentifier("pin-group-add")
         renameGroupButton.target = self; renameGroupButton.action = #selector(renameGroup)
-        renameGroupButton.identifier = NSUserInterfaceItemIdentifier("pin-group-rename")
         deleteGroupButton.target = self; deleteGroupButton.action = #selector(deleteGroup)
         hiddenToggle.target = self; hiddenToggle.action = #selector(toggleHidden)
         protectedToggle.target = self; protectedToggle.action = #selector(toggleProtected)
@@ -124,14 +113,6 @@ import PicShotCore
         table.target = self; table.doubleAction = #selector(openSelected)
         table.setAccessibilityLabel("此组保存的贴图")
         table.identifier = NSUserInterfaceItemIdentifier("pin-group-entries")
-        let selectionMenu = NSMenu()
-        selectionMenu.autoenablesItems = false; selectionMenu.delegate = self
-        isolateSelectedItem.identifier = NSUserInterfaceItemIdentifier("pin-group-isolate-selected")
-        isolateSelectedItem.target = self; isolateSelectedItem.action = #selector(isolateSelectedPins)
-        restoreIsolationItem.identifier = NSUserInterfaceItemIdentifier("pin-group-restore-isolation")
-        restoreIsolationItem.target = self; restoreIsolationItem.action = #selector(restoreIsolatedPins)
-        selectionMenu.addItem(isolateSelectedItem); selectionMenu.addItem(restoreIsolationItem)
-        table.menu = selectionMenu
         let scroll = NSScrollView(); scroll.documentView = table
         scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true; scroll.borderType = .bezelBorder
 
@@ -299,7 +280,6 @@ import PicShotCore
         groupPicker.toolTip = groupPicker.selectedItem?.title
         movePicker.toolTip = movePicker.selectedItem?.title
         updateTransformControls()
-        updateIsolationControls()
     }
     /// Context menus and reset/hide own the live transform selection. A catalog
     /// reload must never replay old rows into it, including coalesced hide/show events.
@@ -339,40 +319,6 @@ import PicShotCore
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         if menu === groupOrderPicker.menu { updateGroupOrderControls() }
-        if menu === table.menu { updateIsolationControls() }
-    }
-    private var isolationSelection: Set<UUID>? {
-        // Table selection is authoritative. Never revive an archive or use a
-        // transform selection that belongs to another group or hidden window.
-        let ids = Set(table.selectedRowIndexes.compactMap { displayedEntries.indices.contains($0) ? displayedEntries[$0].id : nil })
-        guard !ids.isEmpty, ids == selectedPinIDs, selectionGroupID == store.index.activeGroupID,
-              !store.index.allHidden,
-              store.groups.first(where: { $0.id == store.index.activeGroupID })?.isHidden == false,
-              let visible = visiblePinIDsForIsolation?(), ids.isSubset(of: visible),
-              ids.allSatisfy({ id in
-                  guard let entry = store.entry(id: id) else { return false }
-                  return entry.groupID == store.index.activeGroupID && entry.isVisible
-              }) else { return nil }
-        return ids
-    }
-    private func updateIsolationControls() {
-        isolateSelectedItem.isEnabled = onIsolatePins != nil && isolationSelection != nil
-        restoreIsolationItem.isEnabled = onRestoreIsolatedPins != nil && visibilityIsolationAvailable?() == true
-    }
-    @objc private func isolateSelectedPins() {
-        guard let ids = isolationSelection, let isolate = onIsolatePins else { updateIsolationControls(); return }
-        retainSelectionForIsolationChange { try isolate(ids) }
-    }
-    @objc private func restoreIsolatedPins() {
-        guard visibilityIsolationAvailable?() == true, let restore = onRestoreIsolatedPins else { updateIsolationControls(); return }
-        retainSelectionForIsolationChange(restore)
-    }
-    private func retainSelectionForIsolationChange(_ operation: () throws -> Void) {
-        // Hiding other live windows can prune the transform controller's
-        // selection. Keep the catalog rows, including after its queued revision.
-        tableTracksTransformSelection = false
-        do { try operation() } catch { onChangeError(error) }
-        updateIsolationControls(); updateTransformControls()
     }
     private func updateGroupOrderControls() {
         let id = store.index.activeGroupID
@@ -405,12 +351,7 @@ import PicShotCore
         change { try store.setGroupProtected(id: store.index.activeGroupID, protected: protectedToggle.state == .on) }
     }
     @objc private func toggleRestore() { PinSessionStore.restoreOnLaunch = restoreToggle.state == .on }
-    @objc private func showGroup() {
-        change {
-            if let show = onShowGroup { try show() }
-            else { try store.showActiveGroup() }
-        }
-    }
+    @objc private func showGroup() { change { try store.showActiveGroup() } }
     @objc private func hideAll() { change { try store.setAllHidden(true) } }
     @objc private func addGroup() {
         guard let result = askGroup(title: "新建贴图组", name: "", color: .blue) else { return }
@@ -472,7 +413,6 @@ import PicShotCore
         field.widthAnchor.constraint(equalToConstant: 240).isActive = true
         alert.accessoryView = accessory; alert.addButton(withTitle: "保存"); alert.addButton(withTitle: "取消")
         alert.window.initialFirstResponder = field
-        onGroupPromptPrepared?(alert)
         guard alert.runModal() == .alertFirstButtonReturn,
               PinGroupColor.allCases.indices.contains(colors.indexOfSelectedItem) else { return nil }
         return (field.stringValue, PinGroupColor.allCases[colors.indexOfSelectedItem])
@@ -488,15 +428,6 @@ import PicShotCore
         return NSImage(size: NSSize(width: 12, height: 12), flipped: false) { rect in
             tint.setFill(); NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1)).fill(); return true
         }
-    }
-}
-
-/// A context command always uses the existing selection. Right-clicking an
-/// unselected row must not silently replace a user's multi-selection.
-@MainActor private final class PinGroupEntriesTableView: NSTableView {
-    override func rightMouseDown(with event: NSEvent) {
-        guard let menu else { super.rightMouseDown(with: event); return }
-        NSMenu.popUpContextMenu(menu, with: event, for: self)
     }
 }
 

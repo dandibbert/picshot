@@ -1,4 +1,4 @@
-# Qualify temporary pin visibility isolation and backward-compatible group-name admission.
+# Full pin-management qualification resumes after the bounded preview-layout check.
 name: Native macOS build and verification
 on:
   push:
@@ -11,115 +11,48 @@ concurrency:
   group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') && 'pin-ui-diagnostic' || contains(github.event.head_commit.message || '', '[shortcut-isolation]') && 'shortcut-isolation' || contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && 'intel154-fresh-diagnostic' || contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && 'native-timeout-diagnostic' || contains(github.event.head_commit.message || '', '[installed-diagnostic]') && 'installed-diagnostic' || contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-product-resource' || contains(github.event.head_commit.message || '', '[seed-render-crop]') && 'seed-render-crop' || contains(github.event.head_commit.message || '', '[effect-context]') && 'effect-context' || contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && 'renderer-scope-controls' || contains(github.event.head_commit.message || '', '[renderer-storage]') && 'renderer-storage' || contains(github.event.head_commit.message || '', '[drawing-pair]') && 'drawing-pair' || contains(github.event.head_commit.message || '', '[editable-observation]') && 'editable-observation' || contains(github.event.head_commit.message || '', '[callout-retirement]') && 'callout-retirement' || contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-documents' || contains(github.event.head_commit.message || '', '[multiwindow-memory]') && 'multiwindow-memory' || contains(github.event.head_commit.message || '', '[recording-wait]') && 'recording-wait' || contains(github.event.head_commit.message || '', '[manual-hash]') && 'manual-hash' || contains(github.event.head_commit.message || '', '[scroll-memory]') && 'scroll-memory' || contains(github.event.head_commit.message || '', '[decode-exit-latch]') && 'decode-exit-latch' || contains(github.event.head_commit.message || '', '[decode-timing-v3]') && 'decode-timing-v3' || contains(github.event.head_commit.message || '', '[decode-large]') && 'decode-large' || contains(github.event.head_commit.message || '', '[pin-workflows]') && 'pins-010' || contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
   cancel-in-progress: ${{ !contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') && !contains(github.event.head_commit.message || '', '[shortcut-isolation]') && !contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && !(contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]')) && !contains(github.event.head_commit.message || '', '[seed-render-crop]') && !contains(github.event.head_commit.message || '', '[effect-context]') && !contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && !contains(github.event.head_commit.message || '', '[renderer-storage]') && !contains(github.event.head_commit.message || '', '[drawing-pair]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
 jobs:
-  recover-214-qa:
-    if: ${{ contains(github.event.head_commit.message || '', '[recover-214-qa]') }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      actions: read
+  live-scroll-preview:
+    if: ${{ contains(github.event.head_commit.message || '', '[live-scroll-preview]') }}
+    runs-on: macos-15
+    timeout-minutes: 40
     steps:
-      - name: Verify immutable build 214 evidence and preserve its exact archive bytes
-        timeout-minutes: 3
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          python3 - <<'PYRECOVERY'
-          import hashlib, json, os, resource, subprocess
-          from pathlib import Path
-          repository = 'dandibbert/picshot'
-          artifact_id, run_id = 11687739525, 38098751899
-          source = 'f215a8203b71b0ab8ffee02128003450efc7ce01'
-          size = 34847369
-          digest = '3eea451d587d5b644991d84940d1f94651b4cc4528a83e1802b8205fb5cc7af8'
-          api = f'repos/{repository}/actions/artifacts/{artifact_id}'
-          metadata = json.loads(subprocess.check_output(['gh', 'api', api], timeout=30))
-          origin = metadata.get('workflow_run', {})
-          if not (metadata.get('id') == artifact_id and metadata.get('size_in_bytes') == size
-                  and metadata.get('expired') is False and origin.get('id') == run_id
-                  and origin.get('head_sha') == source and metadata.get('digest') == 'sha256:' + digest):
-              raise SystemExit('Original artifact identity mismatch')
-          root = Path('recovered214'); root.mkdir()
-          archive = root/'original-QA.zip'
-          def cap_download():
-              resource.setrlimit(resource.RLIMIT_FSIZE, (size + 4096, size + 4096))
-          with archive.open('xb') as output:
-              subprocess.run(['gh', 'api', api + '/zip'], stdout=output, check=True,
-                             timeout=120, preexec_fn=cap_download)
-          if archive.stat().st_size != size or hashlib.file_digest(archive.open('rb'), 'sha256').hexdigest() != digest:
-              raise SystemExit('Original archive bytes mismatch')
-          part_size = 8 * 1024 * 1024
-          parts = []
-          with archive.open('rb') as original:
-              for index in range(5):
-                  data = original.read(part_size)
-                  if not data:
-                      break
-                  part = root/f'part-{index:02d}.bin'; part.write_bytes(data)
-                  parts.append({'name': part.name, 'index': index, 'offset': index * part_size,
-                                'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()})
-              if original.read(1):
-                  raise SystemExit('Unexpected trailing original bytes')
-          if len(parts) != 5 or sum(p['bytes'] for p in parts) != size:
-              raise SystemExit('Incomplete split')
-          record = {'schemaVersion': 1, 'operation': 'byte-preserving-artifact-transport-only',
-                    'repository': repository, 'sourceCommit': source, 'sourceRun': run_id,
-                    'sourceArtifact': artifact_id, 'originalArchiveBytes': size,
-                    'originalArchiveSHA256': digest, 'parts': parts,
-                    'recoveryCommit': os.environ['GITHUB_SHA'], 'recoveryRun': os.environ['GITHUB_RUN_ID'],
-                    'productOrTestsExecuted': False, 'acceptanceClaim': False}
-          (root/'manifest.json').write_text(json.dumps(record, indent=2) + '\n')
-          print(json.dumps(record, sort_keys=True))
-          PYRECOVERY
-      - name: Preserve original QA part 00
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: PicShot-QA214-Original-Part-00
-          path: |
-            recovered214/part-00.bin
-            recovered214/manifest.json
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 0
-      - name: Preserve original QA part 01
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: PicShot-QA214-Original-Part-01
-          path: |
-            recovered214/part-01.bin
-            recovered214/manifest.json
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 0
-      - name: Preserve original QA part 02
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: PicShot-QA214-Original-Part-02
-          path: |
-            recovered214/part-02.bin
-            recovered214/manifest.json
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 0
-      - name: Preserve original QA part 03
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: PicShot-QA214-Original-Part-03
-          path: |
-            recovered214/part-03.bin
-            recovered214/manifest.json
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 0
-      - name: Preserve original QA part 04
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: PicShot-QA214-Original-Part-04
-          path: |
-            recovered214/part-04.bin
-            recovered214/manifest.json
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 0
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+    - name: Build native dependencies
+      timeout-minutes: 15
+      run: python3 scripts/run-bounded-command.py --timeout-seconds 840 --log dist/live-scroll-dependencies.log --report dist/live-scroll-dependencies.json -- python3 scripts/build-native-codecs.py --arch arm64
+    - name: Compile live scrolling app and focused tests
+      timeout-minutes: 10
+      run: |
+        python3 scripts/run-bounded-command.py --timeout-seconds 540 --log dist/live-scroll-build.log --report dist/live-scroll-build.json -- swift build --build-tests
+    - name: Test live scrolling matcher storage stream and geometry
+      timeout-minutes: 8
+      run: |
+        python3 scripts/run-bounded-command.py --timeout-seconds 420 --log dist/live-scroll-tests.log --report dist/live-scroll-tests.json -- swift test --skip-build --filter LiveScroll
+    - name: Package exact signed preview application
+      timeout-minutes: 15
+      env:
+        PICSHOT_PACKAGE_APP_ONLY: '1'
+      run: python3 scripts/run-bounded-command.py --timeout-seconds 840 --log dist/live-scroll-package.log --report dist/live-scroll-package.json -- bash scripts/package.sh
+    - name: Demonstrate actual native scrolling and growing preview
+      timeout-minutes: 5
+      env:
+        PICSHOT_LIVE_SCROLL_DEMO_ONLY: '1'
+      run: |
+        mkdir -p dist/live-scroll-demo
+        swift scripts/launch-smoke-app.swift "$PWD/dist/PicShot.app" "$PWD/dist/live-scroll-demo/demo.json"
+        python3 -c 'import json; r=json.load(open("dist/live-scroll-demo/demo.json")); assert r["status"] == "passed", r'
+    - name: Preserve focused usability evidence
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Live-Scroll-Preview-${{ github.sha }}
+        path: |
+          dist/live-scroll-*.log
+          dist/live-scroll-*.json
+          dist/live-scroll-demo/
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 6
 
   runner-check:
     if: ${{ contains(github.event.head_commit.message || '', '[runner-only]') }}
@@ -209,7 +142,7 @@ jobs:
         python3 -m unittest discover -s scripts/tests -p test_native_test_shards.py -v
         python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/native-test-discovery.log --report dist/native-test-discovery-report.json -- swift test list --skip-build
         python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count 4 --output dist/native-tests-plan.json
-        python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count 2 --selection-regex '^PicShotTests\.(RecordingInputExportTests/testAuthoredInputTrimPreservesAllSelectedPixelsAndPacketBoundaries|RecordingInputExportTests/testInteriorSelectionAndSamplingIncludeExpiryResumeAndFrozenStop|RecordingInputExportTests/testPixelOracleUsesTopDownRGBAAndDetectsEffectRelocationAndExpiry|RecordingInputExportTests/testFixtureRequiresAcceptedOriginalReportBeforeLaunchingHelpers|RecordingCommandCoordinatorTests/testExpandCollapseAndDisplayChangesRetainOneOwnerWithoutClosingSession|AnnotationToolbarOrderUITests/[^/]+|PortableSettingsUITests/[^/]+|AnnotationStylePresetTests/[^/]+|LocalAnnotationShortcutTests/[^/]+|LocalAnnotationShortcutNativeTests/[^/]+|PortableAnnotationPreferencesTests/[^/]+|PinManagementCoordinatorTests/[^/]+|PinTextEditNativeTests/[^/]+|PinTextDraftHistoryTests/[^/]+|PinTextUpdateStoreTests/[^/]+|PinGroupOrderStoreTests/[^/]+|PinGroupOrderNativeTests/[^/]+|PinGroupNameStoreTests/[^/]+|PinVisibilityIsolationCoordinatorTests/[^/]+|PinIsolationSurfaceTests/[^/]+|PinIsolationMenuTests/[^/]+)$|^PicShotCoreTests\.(PinGroupOrderTests|PinGroupNameTests|PinVisibilityIsolationTests)/[^/]+$' --output dist/recording-regression-plan.json
+        python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count 2 --selection-regex '^PicShotTests\.(RecordingInputExportTests/testAuthoredInputTrimPreservesAllSelectedPixelsAndPacketBoundaries|RecordingInputExportTests/testInteriorSelectionAndSamplingIncludeExpiryResumeAndFrozenStop|RecordingInputExportTests/testPixelOracleUsesTopDownRGBAAndDetectsEffectRelocationAndExpiry|RecordingInputExportTests/testFixtureRequiresAcceptedOriginalReportBeforeLaunchingHelpers|RecordingCommandCoordinatorTests/testExpandCollapseAndDisplayChangesRetainOneOwnerWithoutClosingSession|AnnotationToolbarOrderUITests/[^/]+|PortableSettingsUITests/[^/]+|AnnotationStylePresetTests/[^/]+|LocalAnnotationShortcutTests/[^/]+|LocalAnnotationShortcutNativeTests/[^/]+|PortableAnnotationPreferencesTests/[^/]+|PinManagementCoordinatorTests/[^/]+|PinTextEditNativeTests/[^/]+|PinTextDraftHistoryTests/[^/]+|PinTextUpdateStoreTests/[^/]+|PinGroupOrderStoreTests/[^/]+|PinGroupOrderNativeTests/[^/]+)$|^PicShotCoreTests\.PinGroupOrderTests/[^/]+$' --output dist/recording-regression-plan.json
 
     - name: Isolate one exact native method and conditionally the shortcut group
       timeout-minutes: 18
@@ -378,7 +311,7 @@ jobs:
           retention-days: 14
 
   build:
-    if: ${{ !contains(github.event.head_commit.message || '', '[recover-214-qa]') && !contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') && !contains(github.event.head_commit.message || '', '[shortcut-isolation]') && !contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') && !contains(github.event.head_commit.message || '', '[codec-attribution]') && !contains(github.event.head_commit.message || '', '[codec-staging]') && !contains(github.event.head_commit.message || '', '[codec-avif-confirmation]') && !contains(github.event.head_commit.message || '', '[runner-only]') && !contains(github.event.head_commit.message || '', '[scroll-memory]') && !contains(github.event.head_commit.message || '', '[manual-hash]') && !contains(github.event.head_commit.message || '', '[recording-wait]') && !contains(github.event.head_commit.message || '', '[multiwindow-memory]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-documents]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
+    if: ${{ !contains(github.event.head_commit.message || '', '[live-scroll-preview]') && !contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') && !contains(github.event.head_commit.message || '', '[shortcut-isolation]') && !contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') && !contains(github.event.head_commit.message || '', '[codec-attribution]') && !contains(github.event.head_commit.message || '', '[codec-staging]') && !contains(github.event.head_commit.message || '', '[codec-avif-confirmation]') && !contains(github.event.head_commit.message || '', '[runner-only]') && !contains(github.event.head_commit.message || '', '[scroll-memory]') && !contains(github.event.head_commit.message || '', '[manual-hash]') && !contains(github.event.head_commit.message || '', '[recording-wait]') && !contains(github.event.head_commit.message || '', '[multiwindow-memory]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-documents]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
     strategy:
       fail-fast: false
       matrix:
@@ -430,12 +363,6 @@ jobs:
         run: |
           python3 -m unittest discover -s scripts/tests -p test_check_pin_management.py -v
           python3 -O -m unittest discover -s scripts/tests -p test_check_pin_management.py -v
-      - name: Check bounded pin-isolation receipts and QA transport
-        timeout-minutes: 2
-        run: |
-          python3 -m unittest discover -s scripts/tests -p test_check_pin_isolation.py -v
-          python3 -O -m unittest discover -s scripts/tests -p test_check_pin_isolation.py -v
-          python3 -m unittest discover -s scripts/tests -p test_prepare_qa_parts.py -v
       - name: Check installed drawing default product and source contracts
         timeout-minutes: 4
         run: |
@@ -457,9 +384,9 @@ jobs:
           python3 scripts/run-bounded-command.py --timeout-seconds 840
           --log dist/native-dependencies-preflight.log --report dist/native-dependencies-preflight-report.json
           -- python3 scripts/build-native-codecs.py --arch ${{ matrix.arch }}
-      # Compile and discover before packaging; the early native selection adds
-      # pin-isolation and group-name cases to all previous recording/settings IDs.
-      # Existing process deadlines and later installer gates are preserved.
+      # Native test-host readiness is the current blocker. Run the same existing
+      # compilation, discovery and 17-method reproduction before release packaging.
+      # No command, selector, deadline or later installer gate is removed.
       # Keep compilation outside the eight-minute execution gates. Inner
       # deadlines leave time for process cleanup and report/log publication.
       - name: Compile debug app
@@ -492,14 +419,14 @@ jobs:
           python3 -m unittest discover -s scripts/tests -p test_native_test_shards.py -v
           python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/native-test-discovery.log --report dist/native-test-discovery-report.json -- swift test list --skip-build
           python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$NATIVE_TEST_PROCESS_COUNT" --output dist/native-tests-plan.json
-          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$FOCUSED_TEST_PROCESS_COUNT" --selection-regex 'PinVisibilityIsolation|PinIsolationMenu|PinIsolationSurface|AnnotationStyle|LocalAnnotationShortcut|PortableAnnotationPreferences|PortableSettings|AnnotationToolbarOrder|DrawingRaster|EditableProductResource|EditableProductRetirement|EditableComponent|PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|AnnotationEditing|CaptureAspectRatio|CaptureRatio|MultiWindow|ImageOutputDecoration|EditorOutput|PinOriginalCurrent|ManualScroll|ScrollPreview|ScrollSequencePreview|AnnotationFreehand|AnnotationTextLine|NumberedCallout|AutomaticMosaic|RepeatedRegion|AutomaticPinOCR|PinOCR|TextResultSourceSelection|PinManagement|PinWorkflow|LaTeXPin|PinLaTeX|PinGroup|PinDesktop|EditorToolbarHierarchy|SaveWorkflow|OwnedVideoExportStage|ImageBacking|Codec|NativeExport|AnimatedWebP|WebPContainer|RecordingWebP|CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingInput|RecordingHotKey|RecordingTransport|RecordingCommandCoordinator|SettingsAndMenuTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' --output dist/focused-tests-plan.json
+          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$FOCUSED_TEST_PROCESS_COUNT" --selection-regex 'AnnotationStyle|LocalAnnotationShortcut|PortableAnnotationPreferences|PortableSettings|AnnotationToolbarOrder|DrawingRaster|EditableProductResource|EditableProductRetirement|EditableComponent|PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|AnnotationEditing|CaptureAspectRatio|CaptureRatio|MultiWindow|ImageOutputDecoration|EditorOutput|PinOriginalCurrent|ManualScroll|ScrollPreview|ScrollSequencePreview|AnnotationFreehand|AnnotationTextLine|NumberedCallout|AutomaticMosaic|RepeatedRegion|AutomaticPinOCR|PinOCR|TextResultSourceSelection|PinManagement|PinWorkflow|LaTeXPin|PinLaTeX|PinGroup|PinDesktop|EditorToolbarHierarchy|SaveWorkflow|OwnedVideoExportStage|ImageBacking|Codec|NativeExport|AnimatedWebP|WebPContainer|RecordingWebP|CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingInput|RecordingHotKey|RecordingTransport|RecordingCommandCoordinator|SettingsAndMenuTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' --output dist/focused-tests-plan.json
       - name: Reproduce settings interaction and recording regressions
         # Additive early reproduction preserves the five recording and twelve settings UI IDs,
         # adding current style/local-key/import regressions. Keep each 420s process cap.
         timeout-minutes: 16
         run: |
           set -o pipefail
-          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count 2 --selection-regex '^PicShotTests\.(RecordingInputExportTests/testAuthoredInputTrimPreservesAllSelectedPixelsAndPacketBoundaries|RecordingInputExportTests/testInteriorSelectionAndSamplingIncludeExpiryResumeAndFrozenStop|RecordingInputExportTests/testPixelOracleUsesTopDownRGBAAndDetectsEffectRelocationAndExpiry|RecordingInputExportTests/testFixtureRequiresAcceptedOriginalReportBeforeLaunchingHelpers|RecordingCommandCoordinatorTests/testExpandCollapseAndDisplayChangesRetainOneOwnerWithoutClosingSession|AnnotationToolbarOrderUITests/[^/]+|PortableSettingsUITests/[^/]+|AnnotationStylePresetTests/[^/]+|LocalAnnotationShortcutTests/[^/]+|LocalAnnotationShortcutNativeTests/[^/]+|PortableAnnotationPreferencesTests/[^/]+|PinManagementCoordinatorTests/[^/]+|PinTextEditNativeTests/[^/]+|PinTextDraftHistoryTests/[^/]+|PinTextUpdateStoreTests/[^/]+|PinGroupOrderStoreTests/[^/]+|PinGroupOrderNativeTests/[^/]+|PinGroupNameStoreTests/[^/]+|PinVisibilityIsolationCoordinatorTests/[^/]+|PinIsolationSurfaceTests/[^/]+|PinIsolationMenuTests/[^/]+)$|^PicShotCoreTests\.(PinGroupOrderTests|PinGroupNameTests|PinVisibilityIsolationTests)/[^/]+$' --output dist/recording-regression-plan.json
+          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count 2 --selection-regex '^PicShotTests\.(RecordingInputExportTests/testAuthoredInputTrimPreservesAllSelectedPixelsAndPacketBoundaries|RecordingInputExportTests/testInteriorSelectionAndSamplingIncludeExpiryResumeAndFrozenStop|RecordingInputExportTests/testPixelOracleUsesTopDownRGBAAndDetectsEffectRelocationAndExpiry|RecordingInputExportTests/testFixtureRequiresAcceptedOriginalReportBeforeLaunchingHelpers|RecordingCommandCoordinatorTests/testExpandCollapseAndDisplayChangesRetainOneOwnerWithoutClosingSession|AnnotationToolbarOrderUITests/[^/]+|PortableSettingsUITests/[^/]+|AnnotationStylePresetTests/[^/]+|LocalAnnotationShortcutTests/[^/]+|LocalAnnotationShortcutNativeTests/[^/]+|PortableAnnotationPreferencesTests/[^/]+|PinManagementCoordinatorTests/[^/]+|PinTextEditNativeTests/[^/]+|PinTextDraftHistoryTests/[^/]+|PinTextUpdateStoreTests/[^/]+|PinGroupOrderStoreTests/[^/]+|PinGroupOrderNativeTests/[^/]+)$|^PicShotCoreTests\.PinGroupOrderTests/[^/]+$' --output dist/recording-regression-plan.json
           execution_status=0
           for shard in 0 1; do
             python3 scripts/native-test-shards.py run --plan dist/recording-regression-plan.json --expected-source "$GITHUB_SHA" --index "$shard" --directory dist/evidence/recording-018-regression || execution_status=1
@@ -692,16 +619,16 @@ jobs:
               plan_path = Path('dist/native-tests-plan.json')
               plan = native.checked_plan(plan_path, source)
               inventory = plan['discoveredTests']
-              native.need(len(inventory) == 2115 and len({case.split('/')[0] for case in inventory}) == 238
+              native.need(len(inventory) == 2047 and len({case.split('/')[0] for case in inventory}) == 232
                   and hashlib.sha256(('\n'.join(inventory)+'\n').encode()).hexdigest() ==
-                      '8f490647a2e76684db387b302d8665e21a04bfd98dfac155ee6e4151e33b7842'
+                      '926ac5674df90163b949fe461f0d4589ef72c8fc3215fa00b927564aae57cb44'
                   and plan['selectedTests'] == inventory and plan['selectionRegex'] == ''
                   and plan['processCount'] == 4 and plan['timeoutSecondsPerProcess'] == 420
-                  and [len(shard['tests']) for shard in plan['shards']] == [620, 454, 522, 519],
+                  and [len(shard['tests']) for shard in plan['shards']] == [579, 442, 522, 504],
                   'Complete native inventory or original process grouping changed')
               native.need([case for case in inventory if case.startswith('PicShotTests.PinAnchoredEditingTests/')] == class_ids,
                   'Pin class inventory differs from the four original methods')
-              record.update(planSHA256=digest(plan_path), discoveredCount=2115, discoveredClassCount=238,
+              record.update(planSHA256=digest(plan_path), discoveredCount=2047, discoveredClassCount=232,
                   discoverySHA256=digest(Path('dist/native-test-discovery.log')),
                   fixtureSHA256=digest(Path('Tests/PicShotTests/PinAnchoredEditingTests.swift')))
               for label, expected in (('method', [method]), ('class', class_ids)):
@@ -852,96 +779,6 @@ jobs:
             dist/focused-test-shards/
             dist/evidence/
           retention-days: 14
-      - name: Prepare bounded QA transfer parts
-        id: qa_parts
-        if: always()
-        continue-on-error: true
-        timeout-minutes: 3
-        env:
-          QA_PART_ARCH: ${{ matrix.arch }}
-        run: >-
-          python3 scripts/prepare-qa-parts.py --input dist
-          --source "$GITHUB_SHA" --build "$GITHUB_RUN_NUMBER" --arch "$QA_PART_ARCH"
-      - name: Upload QA transfer part 00
-        if: ${{ always() && steps.qa_parts.outcome == 'success' && hashFiles('dist/qa-parts/part-00/manifest.json') != '' }}
-        continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: PicShot-QA-Part-00-${{ matrix.arch }}-${{ github.sha }}
-          path: dist/qa-parts/part-00/
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 0
-      - name: Upload QA transfer part 01
-        if: ${{ always() && steps.qa_parts.outcome == 'success' && hashFiles('dist/qa-parts/part-01/manifest.json') != '' }}
-        continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: PicShot-QA-Part-01-${{ matrix.arch }}-${{ github.sha }}
-          path: dist/qa-parts/part-01/
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 0
-      - name: Upload QA transfer part 02
-        if: ${{ always() && steps.qa_parts.outcome == 'success' && hashFiles('dist/qa-parts/part-02/manifest.json') != '' }}
-        continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: PicShot-QA-Part-02-${{ matrix.arch }}-${{ github.sha }}
-          path: dist/qa-parts/part-02/
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 0
-      - name: Upload QA transfer part 03
-        if: ${{ always() && steps.qa_parts.outcome == 'success' && hashFiles('dist/qa-parts/part-03/manifest.json') != '' }}
-        continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: PicShot-QA-Part-03-${{ matrix.arch }}-${{ github.sha }}
-          path: dist/qa-parts/part-03/
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 0
-      - name: Upload QA transfer part 04
-        if: ${{ always() && steps.qa_parts.outcome == 'success' && hashFiles('dist/qa-parts/part-04/manifest.json') != '' }}
-        continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: PicShot-QA-Part-04-${{ matrix.arch }}-${{ github.sha }}
-          path: dist/qa-parts/part-04/
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 0
-      - name: Upload QA transfer part 05
-        if: ${{ always() && steps.qa_parts.outcome == 'success' && hashFiles('dist/qa-parts/part-05/manifest.json') != '' }}
-        continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: PicShot-QA-Part-05-${{ matrix.arch }}-${{ github.sha }}
-          path: dist/qa-parts/part-05/
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 0
-      - name: Upload QA transfer part 06
-        if: ${{ always() && steps.qa_parts.outcome == 'success' && hashFiles('dist/qa-parts/part-06/manifest.json') != '' }}
-        continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: PicShot-QA-Part-06-${{ matrix.arch }}-${{ github.sha }}
-          path: dist/qa-parts/part-06/
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 0
-      - name: Upload QA transfer part 07
-        if: ${{ always() && steps.qa_parts.outcome == 'success' && hashFiles('dist/qa-parts/part-07/manifest.json') != '' }}
-        continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: PicShot-QA-Part-07-${{ matrix.arch }}-${{ github.sha }}
-          path: dist/qa-parts/part-07/
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 0
       - name: Check split installer transfer budgets
         run: |
           python3 - <<'PYTHON'

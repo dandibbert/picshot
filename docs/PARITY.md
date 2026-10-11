@@ -1,3 +1,5 @@
+> Current priority update (2026-10-11): continuous real-time scrolling capture usability is the first active repair, followed by action chains/scripts and video recording-region movement; memory work continues alongside. Cloud synchronization is no longer requested. Historical accepted counts below retain their original scope until the next accepted-version audit. Candidate216 pin-isolation/name work is parked in its preserved commit, not accepted or included in the live-scrolling candidate.
+
 # PicShot feature and acceptance ledger
 
 **Target: an original native macOS equivalent of the complete PixPin feature set, including premium capabilities. This is not a completed parity claim.**

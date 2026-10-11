@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import PicShotCore
 
 /// Nonactivating controls are excluded by the passive capture driver. Closing means Stop,
 /// retaining the accepted sequence. A paused move always needs a separate explicit Resume.
@@ -72,7 +73,7 @@ final class ManualScrollRegionMover: NSObject, NSWindowDelegate {
     private var token: UUID?
     private var observer: NSObjectProtocol?
 
-    func choose(screen: NSScreen, region: CGRect) async throws -> CGRect {
+    func choose(screen: NSScreen, region: CGRect, movementAxis: ScrollAxis? = nil) async throws -> CGRect {
         guard token == nil else { throw CaptureError.busy }
         try Task.checkCancellation()
         let current = UUID(); token = current
@@ -86,7 +87,7 @@ final class ManualScrollRegionMover: NSObject, NSWindowDelegate {
                 panel.level = .screenSaver; panel.backgroundColor = .clear; panel.isOpaque = false
                 panel.hasShadow = false; panel.hidesOnDeactivate = false
                 panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-                let view = ManualScrollRegionMoveView(frame: CGRect(origin: .zero, size: screen.frame.size), region: region)
+                let view = ManualScrollRegionMoveView(frame: CGRect(origin: .zero, size: screen.frame.size), region: region, movementAxis: movementAxis)
                 view.finished = { [weak self] result in self?.finish(result, token: current) }
                 panel.contentView = view; self.panel = panel
                 observer = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
@@ -120,13 +121,14 @@ private final class ManualRegionPanel: NSPanel { override var canBecomeKey: Bool
 final class ManualScrollRegionMoveView: NSView {
     private(set) var region: CGRect
     var finished: ((Result<CGRect, Error>) -> Void)?
+    private let movementAxis: ScrollAxis?
     private var dragStart: CGPoint?
     private var originalOrigin: CGPoint?
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
 
-    init(frame: CGRect, region: CGRect) {
-        self.region = region; super.init(frame: frame)
+    init(frame: CGRect, region: CGRect, movementAxis: ScrollAxis? = nil) {
+        self.region = region; self.movementAxis = movementAxis; super.init(frame: frame)
         setAccessibilityLabel("移动固定尺寸选区。拖动改变位置，回车确认，Escape取消。尺寸、显示器和目标窗口不变。")
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -146,8 +148,8 @@ final class ManualScrollRegionMoveView: NSView {
     override func mouseDragged(with event: NSEvent) {
         guard let start = dragStart, let origin = originalOrigin else { return }
         let current = convert(event.locationInWindow, from: nil)
-        region.origin = CGPoint(x: max(0, min(bounds.width - region.width, origin.x + current.x - start.x)),
-                                y: max(0, min(bounds.height - region.height, origin.y + current.y - start.y)))
+        region.origin = CGPoint(x: max(0, min(bounds.width - region.width, origin.x + (movementAxis == .vertical ? 0 : current.x - start.x))),
+                                y: max(0, min(bounds.height - region.height, origin.y + (movementAxis == .horizontal ? 0 : current.y - start.y))))
         needsDisplay = true
     }
     override func mouseUp(with event: NSEvent) { mouseDragged(with: event); dragStart = nil; originalOrigin = nil }

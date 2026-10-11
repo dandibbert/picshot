@@ -217,15 +217,12 @@ import PicShotCore
     }
 
     func testMinimumWindowGeometryAndNativeHitTargetsInBothThemesAfterReorder() throws {
-        try Self.withApplicationLoop { [self] in
+        try withApplicationLoop { [self] in
             let trace = GroupOrderLayoutTrace()
             let f = try fixture(includeTransforms: true); defer { f.close() }
             trace.capture(f.controller, store: f.store, phase: "original.constructed")
             // Maximum permitted names must not expand or obscure the compact header.
-            for (position, id) in f.groupIDs.enumerated() {
-                let name = String(repeating: "长", count: 47) + ["甲", "乙", "丙", "丁"][position]
-                try f.store.renameGroup(id: id, name: name, color: nil)
-            }
+            for id in f.groupIDs { try f.store.renameGroup(id: id, name: String(repeating: "长", count: 48), color: nil) }
             f.controller.reload(); f.controller.showWindow(nil)
             let window = try XCTUnwrap(f.controller.window)
             trace.capture(f.controller, store: f.store, phase: "original.shown")
@@ -506,17 +503,12 @@ import PicShotCore
     private func fixture(includeTransforms: Bool = false) throws -> PinGroupOrderFixture {
         try requireDisplay()
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PicShot-GroupOrder-" + UUID().uuidString)
+        let store = try PinSessionStore(directory: directory)
         do {
-            // Load names saved by older versions: equal names still ensure every
-            // operation depends on identity, without creating a new duplicate.
-            let first = PinGroup(name: "同名", color: .blue)
-            let selected = PinGroup(name: "同名", color: .purple)
-            let last = PinGroup(name: "尾组", color: .green)
-            var legacy = PinSessionIndex(); legacy.groups += [first, selected, last]
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            try JSONEncoder().encode(legacy).write(to: directory.appendingPathComponent("index.json"), options: .atomic)
-            let store = try PinSessionStore(directory: directory)
-            XCTAssertEqual(store.index, legacy)
+            // Equal names ensure every operation depends on identity, not visible text.
+            let first = try store.createGroup(name: "同名", color: .blue)
+            let selected = try store.createGroup(name: "同名", color: .purple)
+            let last = try store.createGroup(name: "尾组", color: .green)
             try store.setGroupProtected(id: selected.id, protected: true)
             try store.setGroupHidden(id: last.id, hidden: true)
             let context = try XCTUnwrap(CGContext(data: nil, width: 32, height: 16, bitsPerComponent: 8, bytesPerRow: 0,
@@ -656,9 +648,8 @@ import PicShotCore
 
     /// Same owned-loop admission used by LocalAnnotationShortcutNativeTests.
     /// Reuse a running application and never stop or reconfigure another host.
-    static func withApplicationLoop(_ body: @escaping @MainActor () throws -> Void) throws {
-        _ = NSApplication.shared
-        guard NSScreen.main != nil else { throw XCTSkip("Native group-order tests require WindowServer") }
+    private func withApplicationLoop(_ body: @escaping @MainActor () throws -> Void) throws {
+        try requireDisplay()
         if NSApp.isRunning { try body(); return }
         _ = try XCTUnwrap(NSApp.modalWindow == nil && NSApp.delegate == nil ? true : nil,
             "Standalone group-order host unexpectedly has a modal window or delegate")

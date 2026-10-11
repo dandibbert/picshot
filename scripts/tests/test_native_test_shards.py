@@ -400,19 +400,7 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
         inventory = self.current_source_inventory()
         plan = shards.make_plan(inventory, '', 'a' * 40, process_count=4)
         record = self.execute_pin_inventory_guard(plan)
-        self.assertEqual((record['discoveredCount'], record['discoveredClassCount']), (2115, 238))
-        isolation = json.loads((Path(__file__).parents[1] / 'pin-isolation-native-additions.json').read_text())
-        self.assertEqual(len(isolation), 68)
-        self.assertEqual(isolation, sorted(set(isolation)))
-        self.assertTrue(set(isolation).issubset(inventory))
-        expanded_inventory, expanded_plan = inventory, plan
-        inventory = [name for name in expanded_inventory if name not in isolation]
-        self.assertEqual(len(inventory), 2047)
-        self.assertEqual(hashlib.sha256(('\n'.join(inventory) + '\n').encode()).hexdigest(),
-                         '926ac5674df90163b949fe461f0d4589ef72c8fc3215fa00b927564aae57cb44')
-        plan = shards.make_plan(inventory, '', 'a' * 40, process_count=4)
-        for old_shard, expanded_shard in zip(plan['shards'], expanded_plan['shards']):
-            self.assertEqual([name for name in expanded_shard['tests'] if name not in isolation], old_shard['tests'])
+        self.assertEqual((record['discoveredCount'], record['discoveredClassCount']), (2047, 232))
         pins = json.loads((Path(__file__).parents[1] / 'pin-management-native-additions.json').read_text())
         self.assertEqual(len(pins), 49)
         self.assertEqual(pins, sorted(set(pins)))

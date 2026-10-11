@@ -95,7 +95,7 @@ struct PinImageState {
     mutating func reset() { current = original; isModified = false }
 }
 
-@MainActor final class PinController: NSWindowController, NSWindowDelegate, NSMenuDelegate, NSMenuItemValidation {
+@MainActor final class PinController: NSWindowController, NSWindowDelegate, NSMenuDelegate {
     /// Original capture, kept compatible with the application's pin bookkeeping.
     let image: CGImage
     var onClose: (() -> Void)?
@@ -174,31 +174,9 @@ struct PinImageState {
 
     var onToggleGroupSelection: (() -> Void)?
     var onShowGroupTransform: (() -> Void)?
-    var onIsolateThisPin: (() -> Void)?
-    var onIsolateSelectedPins: (() -> Void)?
-    var onRestoreVisibilityIsolation: (() -> Void)?
-    var canIsolateSelectedPins: (() -> Bool)?
-    var hasVisibilityIsolation: (() -> Bool)?
-    private(set) var isVisibilityIsolated = false
-    private var visibilityIsolationWasVisible = false
-    private var visibilityIsolationRecognitionWasVisible = false
-    private var visibilityIsolationBarcodeWasVisible = false
-    private var visibilityIsolationBarcodeWasRecognizing = false
-    /// An anchored annotation editor can be visible while its pin is ordered out.
-    /// The session must include that surface in its baseline and busy preflight.
-    var hasVisibleSurfaceForVisibilityIsolation: Bool {
-        !closed && !temporarilyHidden && !isVisibilityIsolated &&
-            [window, annotationEditor?.window, renameController?.window, imageExportController?.window,
-             recognitionWindow?.window, barcodeWindow?.window].contains { $0?.isVisible == true }
-    }
-    /// Admission is checked before any window, editor, or recognition state changes.
-    var canHideForVisibilityIsolation: Bool {
-        !closed && !temporarilyHidden && !isVisibilityIsolated && window != nil &&
-            annotationEditor == nil && renameController == nil && !exportInProgress && !annotationVisibilityIsPending
-    }
     private(set) var isGroupSelected = false
     var canParticipateInGroupTransform: Bool {
-        !closed && !temporarilyHidden && !isVisibilityIsolated && annotationEditor == nil && renameController == nil && !exportInProgress && !locked && window?.ignoresMouseEvents != true
+        !closed && !temporarilyHidden && annotationEditor == nil && renameController == nil && !exportInProgress && !locked && window?.ignoresMouseEvents != true
     }
     func setGroupSelected(_ selected: Bool) {
         isGroupSelected = selected
@@ -208,31 +186,6 @@ struct PinImageState {
     }
     @objc private func toggleGroupSelection() { onToggleGroupSelection?() }
     @objc private func showGroupTransform() { onShowGroupTransform?() }
-    @objc private func isolateThisPin() {
-        guard visibilityIsolationActionEnabled(#selector(isolateThisPin)) == true else { return }
-        onIsolateThisPin?()
-    }
-    @objc private func isolateSelectedPins() {
-        guard visibilityIsolationActionEnabled(#selector(isolateSelectedPins)) == true else { return }
-        onIsolateSelectedPins?()
-    }
-    @objc private func restoreVisibilityIsolation() {
-        guard visibilityIsolationActionEnabled(#selector(restoreVisibilityIsolation)) == true else { return }
-        onRestoreVisibilityIsolation?()
-    }
-    private func visibilityIsolationActionEnabled(_ action: Selector?) -> Bool? {
-        if action == #selector(isolateThisPin) { return canHideForVisibilityIsolation && onIsolateThisPin != nil }
-        if action == #selector(isolateSelectedPins) {
-            return canHideForVisibilityIsolation && onIsolateSelectedPins != nil && canIsolateSelectedPins?() == true
-        }
-        if action == #selector(restoreVisibilityIsolation) {
-            return !closed && onRestoreVisibilityIsolation != nil && hasVisibilityIsolation?() == true
-        }
-        return nil
-    }
-    func validateMenuItem(_ item: NSMenuItem) -> Bool {
-        visibilityIsolationActionEnabled(item.action) ?? item.isEnabled
-    }
 
     func applySavedTitle(_ title: String) {
         guard PinSessionIndex.validName(title, limit: 120) else { return }
@@ -240,7 +193,7 @@ struct PinImageState {
     }
 
     @objc func renamePin() {
-        guard !closed, !temporarilyHidden, !isVisibilityIsolated, onRename != nil,
+        guard !closed, !temporarilyHidden, onRename != nil,
               annotationEditor == nil, !exportInProgress, let window else { return }
         if let renameController {
             renameController.window?.makeKeyAndOrderFront(nil); return
@@ -304,7 +257,7 @@ struct PinImageState {
     private(set) var ocrSourceReadCount = 0
     private(set) lazy var ocrSession = PinOCRSession(revision: pixelRevision, scheduler: ocrScheduler,
         imageProvider: { [weak self] in
-            guard let self, !self.closed, !self.temporarilyHidden, !self.isVisibilityIsolated else { return nil }
+            guard let self, !self.closed, !self.temporarilyHidden else { return nil }
             self.ocrSourceReadCount += 1
             return self.state.current
         }, recognize: recognizeForSelection)
@@ -319,9 +272,6 @@ struct PinImageState {
     private(set) var barcodeWindow: BarcodeResultController?
     private var barcodeTask: Task<Void, Never>?
     private var barcodeGeneration = UUID()
-    /// One cancelled provider may still be draining. Repeated isolate/reveal
-    /// cycles must not enqueue additional providers or retain additional rasters.
-    private var barcodeIsolationDrainGeneration: UUID?
     private var barcodeControl: NSButton?
     private(set) var barcodeSelectionEnabled = false
     private(set) var barcodeIsRecognizing = false
@@ -406,15 +356,6 @@ struct PinImageState {
         select.toolTip = "组合移动 / 缩放请使用菜单；直接拖动或拉伸仍只改变当前贴图"
         let transform = menu.addItem(withTitle: "组合移动 / 缩放…", action: #selector(showGroupTransform), keyEquivalent: "")
         transform.target = self; transform.identifier = NSUserInterfaceItemIdentifier("pin-group-transform")
-        for (title, action, identifier) in [
-            ("仅显示此贴图", #selector(isolateThisPin), "pin-visibility-isolate-this"),
-            ("仅显示组合选择的贴图", #selector(isolateSelectedPins), "pin-visibility-isolate-selected"),
-            ("恢复隔离前显示", #selector(restoreVisibilityIsolation), "pin-visibility-restore")
-        ] {
-            let item = addItem(title, action: action, to: menu)
-            item.identifier = NSUserInterfaceItemIdentifier(identifier)
-            item.isEnabled = false
-        }
         menu.addItem(.separator())
         let recognition = NSMenu(title: "识别")
         let selection = addItem("选择图片文字", action: #selector(toggleTextSelection), key: "t", to: recognition)
@@ -479,7 +420,6 @@ struct PinImageState {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         for item in menu.items {
-            if let enabled = visibilityIsolationActionEnabled(item.action) { item.isEnabled = enabled }
             if item.action == #selector(renamePin) {
                 item.isEnabled = !closed && onRename != nil && annotationEditor == nil && !exportInProgress
             }
@@ -535,7 +475,7 @@ struct PinImageState {
     }
 
     @objc func showAnnotations() {
-        guard !closed, !temporarilyHidden, !isVisibilityIsolated, !exportInProgress else { return }
+        guard !closed, !temporarilyHidden, !exportInProgress else { return }
         if let annotationEditor { annotationEditor.showWindow(nil); annotationEditor.window?.makeKeyAndOrderFront(nil); return }
         guard let projectedAnchor = annotationPresentation else { return }
         let payload: EditableCapturePayload?
@@ -596,7 +536,7 @@ struct PinImageState {
     }
 
     override func showWindow(_ sender: Any?) {
-        guard !closed, !isVisibilityIsolated else { return }
+        guard !closed else { return }
         let wasHidden = temporarilyHidden || window?.isVisible != true
         temporarilyHidden = false
         if wasHidden { automaticSelectionDismissed = false }
@@ -611,71 +551,16 @@ struct PinImageState {
 
     /// Bring forward the currently visible surface without showing a second copy behind the editor.
     func bringForward() {
-        guard !closed, !isVisibilityIsolated else { return }
+        guard !closed else { return }
         showWindow(nil)
         let surface = annotationEditor?.window ?? window
         surface?.makeKeyAndOrderFront(nil); surface?.orderFrontRegardless()
-    }
-
-    /// A reversible display-only transition. The window, pixels, editable layers,
-    /// selection, and saved presentation remain owned by this controller throughout.
-    func setVisibilityIsolated(_ isolated: Bool) throws {
-        guard isolated != isVisibilityIsolated else { return }
-        if isolated {
-            guard canHideForVisibilityIsolation else {
-                throw PicShotError.message("此贴图正在编辑或导出，暂时无法隔离显示。请先完成或取消当前操作。")
-            }
-            visibilityIsolationWasVisible = window?.isVisible == true
-            visibilityIsolationRecognitionWasVisible = recognitionWindow?.window?.isVisible == true
-            visibilityIsolationBarcodeWasVisible = barcodeWindow?.window?.isVisible == true
-            visibilityIsolationBarcodeWasRecognizing = barcodeIsRecognizing
-            isVisibilityIsolated = true
-            // Do not use suspendOCR(): it destroys the selection and result panel.
-            recognitionGeneration = UUID(); recognitionTask?.cancel(); recognitionTask = nil
-            ocrSession.suspend()
-            if barcodeIsRecognizing {
-                if barcodeIsolationDrainGeneration == nil { barcodeIsolationDrainGeneration = barcodeGeneration }
-                barcodeGeneration = UUID(); barcodeTask?.cancel()
-                barcodeIsRecognizing = false
-            }
-            recognitionWindow?.window?.orderOut(nil); barcodeWindow?.window?.orderOut(nil)
-            window?.orderOut(nil)
-        } else {
-            let revealPin = visibilityIsolationWasVisible
-            let revealRecognition = visibilityIsolationRecognitionWasVisible
-            let revealBarcode = visibilityIsolationBarcodeWasVisible
-            let restartBarcode = visibilityIsolationBarcodeWasRecognizing
-            clearVisibilityIsolation()
-            guard !closed, !temporarilyHidden else { return }
-            if revealPin { window?.orderFront(nil) }
-            if revealRecognition { recognitionWindow?.window?.orderFront(nil) }
-            if revealBarcode { barcodeWindow?.window?.orderFront(nil) }
-            if restartBarcode && barcodeSelectionEnabled { beginBarcodeRecognition() }
-            if canRecognize && (revealPin || revealRecognition) {
-                ocrSession.resume()
-                if textSelectionEnabled {
-                    let generation = textSelectionGeneration, key = ocrSession.key
-                    ocrSession.request(.selection) { [weak self] result in
-                        guard let self, self.canRecognize, self.textSelectionEnabled,
-                              self.textSelectionGeneration == generation, self.ocrSession.key == key else { return }
-                        if case .success(let result) = result { self.installSelection(result, key: key, focus: false) }
-                    }
-                }
-                refreshAutomaticOCR()
-            }
-        }
-    }
-    private func clearVisibilityIsolation() {
-        isVisibilityIsolated = false; visibilityIsolationWasVisible = false
-        visibilityIsolationRecognitionWasVisible = false; visibilityIsolationBarcodeWasVisible = false
-        visibilityIsolationBarcodeWasRecognizing = false
     }
 
     /// Fallback (non-session) pins remain reusable while all auxiliary editing windows are dismissed.
     func hideTemporarily() {
         guard !closed else { return }
         temporarilyHidden = true
-        clearVisibilityIsolation()
         dismissRename()
         revealAnnotations(); suspendOCR()
         imageExportController?.cancelExport(); imageExportController = nil
@@ -789,7 +674,7 @@ struct PinImageState {
     }
 
     private var canRecognize: Bool {
-        !closed && !temporarilyHidden && !isVisibilityIsolated && !annotationsHidden && !annotationVisibilityIsPending && !ocrModeTransition && annotationEditor == nil && !exportInProgress && window?.ignoresMouseEvents != true
+        !closed && !temporarilyHidden && !annotationsHidden && !annotationVisibilityIsPending && !ocrModeTransition && annotationEditor == nil && !exportInProgress && window?.ignoresMouseEvents != true
     }
     private var automaticOCREligible: Bool {
         canRecognize && window?.isVisible == true && !canvas.isCropping && !barcodeSelectionEnabled
@@ -900,7 +785,7 @@ struct PinImageState {
     func setBarcodeSelectionEnabled(_ enabled: Bool) {
         if enabled {
             if annotationsHidden || annotationVisibilityIsPending { revealAnnotations() }
-            guard !closed, !temporarilyHidden, !isVisibilityIsolated, annotationEditor == nil, !exportInProgress,
+            guard !closed, !temporarilyHidden, annotationEditor == nil, !exportInProgress,
                   window?.ignoresMouseEvents != true, !barcodeSelectionEnabled else { return }
             suspendOCR()
         }
@@ -926,21 +811,12 @@ struct PinImageState {
             NSLayoutConstraint.activate([control.topAnchor.constraint(equalTo: root.topAnchor, constant: 5),
                                          control.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -5)])
         }
-        barcodeControl = control
-        beginBarcodeRecognition()
-    }
-    private func beginBarcodeRecognition() {
-        guard !closed, !temporarilyHidden, !isVisibilityIsolated, barcodeSelectionEnabled else { return }
-        barcodeIsRecognizing = true; barcodeStatus = "识别中"
-        // The existing provider's completion starts the latest visible demand.
-        guard barcodeIsolationDrainGeneration == nil else { return }
+        barcodeControl = control; barcodeIsRecognizing = true; barcodeStatus = "识别中"
         let generation = barcodeGeneration, revision = pixelRevision, source = state.current, provider = recognizeCodes
         barcodeTask = Task { [weak self] in
-            defer { self?.finishIsolatedBarcodeRecognition(generation: generation) }
             do {
-                try Task.checkCancellation()
                 let document = try await provider(source)
-                guard !Task.isCancelled, let self, !self.closed, !self.temporarilyHidden, !self.isVisibilityIsolated, self.barcodeSelectionEnabled,
+                guard !Task.isCancelled, let self, !self.closed, !self.temporarilyHidden, self.barcodeSelectionEnabled,
                       self.barcodeGeneration == generation, self.pixelRevision == revision else { return }
                 self.barcodeTask = nil; self.barcodeIsRecognizing = false
                 self.barcodeSelectionOverlay.document = document
@@ -983,11 +859,6 @@ struct PinImageState {
                 self.barcodeControl?.title = "识别失败 · 退出"; self.barcodeControl?.toolTip = error.localizedDescription
             }
         }
-    }
-    private func finishIsolatedBarcodeRecognition(generation: UUID) {
-        guard barcodeIsolationDrainGeneration == generation else { return }
-        barcodeIsolationDrainGeneration = nil; barcodeTask = nil
-        if barcodeIsRecognizing { beginBarcodeRecognition() }
     }
 
     @objc private func toggleDirectCopy() {
@@ -1177,7 +1048,7 @@ struct PinImageState {
     @objc private func savePin() { save(original: false) }
     @objc private func saveOriginal() { save(original: true) }
     private func save(original: Bool) {
-        guard !closed, !temporarilyHidden, !isVisibilityIsolated, let window else { return }
+        guard !closed, !temporarilyHidden, let window else { return }
         if exportInProgress { imageExportController?.window?.makeKeyAndOrderFront(nil); return }
         ocrModeTransition = true
         defer { ocrModeTransition = false; refreshAutomaticOCR() }
@@ -1261,7 +1132,7 @@ struct PinImageState {
     /// Leaves a way back from click-through, extreme opacity, or a removed display.
     /// Zoom and lock are preserved; only recovery restores opacity and mouse interaction.
     func restore(screens: [CGRect]? = nil) {
-        guard !closed, !isVisibilityIsolated else { return }
+        guard !closed else { return }
         let screens = screens ?? NSScreen.screens.map(\.visibleFrame)
         var value = presentation.normalized(screens: screens.map { PinWindowFrame($0) })
         value.clickThrough = false; value.opacity = 1
@@ -1272,9 +1143,6 @@ struct PinImageState {
     func windowDidResize(_ notification: Notification) { updateLayout(); updateTitle(); presentationDidChange() }
     func windowWillClose(_ notification: Notification) {
         guard !closed else { return }; closed = true
-        clearVisibilityIsolation()
-        onIsolateThisPin = nil; onIsolateSelectedPins = nil; onRestoreVisibilityIsolation = nil
-        canIsolateSelectedPins = nil; hasVisibilityIsolation = nil
         dismissRename(); onRename = nil
         revealAnnotations(); transientEditableCapture = nil; loadEditableCapture = nil; editableWorkAdmission = nil; hasEditableCapture = false
         onEditablePixelChange = nil; onAnnotationError = nil
@@ -1282,7 +1150,6 @@ struct PinImageState {
         imageExportController?.cancelExport(); imageExportController = nil
         disableTextSelection(); ocrSession.close(); textSelectionOverlay.releaseResources()
         setBarcodeSelectionEnabled(false); barcodeSelectionOverlay.releaseResources()
-        barcodeIsolationDrainGeneration = nil
         recognitionGeneration = UUID(); recognitionTask?.cancel(); recognitionTask = nil
         dismissAnnotations(restoringPin: false)
         recognitionWindow?.onClose = nil; recognitionWindow?.close(); recognitionWindow = nil

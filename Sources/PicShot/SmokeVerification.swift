@@ -19,6 +19,17 @@ enum RecordingInputExportSmokeSelection {
         let url=URL(fileURLWithPath:report);let directory=url.deletingLastPathComponent()
         do{
             try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
+            if ProcessInfo.processInfo.environment["PICSHOT_LIVE_SCROLL_DEMO_ONLY"] == "1" {
+                var payload = try await LiveScrollUsabilityDemoFixture.verify(evidenceDirectory: directory)
+                payload["sourceCommit"] = Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String ?? "unknown"
+                payload["version"] = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
+                payload["build"] = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
+                payload["bundlePath"] = Bundle.main.bundleURL.resolvingSymlinksInPath().path
+                payload["installerAcceptance"] = false
+                try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]).write(to: url)
+                try? FileManager.default.removeItem(at: history.directory)
+                NSApp.terminate(nil); return
+            }
             // Early installed witness only. Keep the original full-smoke calls
             // below, and require a separate native reader before this can pass.
             if ProcessInfo.processInfo.environment["PICSHOT_RECORDING_INPUT_EXPORT_ONLY"] != nil {
@@ -217,7 +228,6 @@ enum RecordingInputExportSmokeSelection {
                 let portableSettingsUI=try await PortableSettingsUIPreviewFixture.verify(evidenceDirectory:directory)
                 try await AnnotationPreferencesUIPreviewFixture.run(reportURL: directory.appendingPathComponent("annotation-preferences.json"))
                 try await PinManagementSmokeFixture.run(reportURL: directory.appendingPathComponent("pin-management.json"))
-                _ = try await PinIsolationMenuNativeFixture.verify(evidenceDirectory: directory.appendingPathComponent("pin-isolation"))
                 let pinOCRWorkflow=try await PinOCRWorkflowSmokeFixture.verify(evidenceDirectory:directory.appendingPathComponent("pin-ocr"),includeResourceCycles:false)
                 let automaticMosaicWorkflow=try await AutomaticMosaicWorkflowSmokeFixture.verify(evidenceDirectory:directory.appendingPathComponent("automatic-mosaic"),includeResourceCycles:false)
                 let annotationDetails=try await AnnotationDetailAcceptanceFixture.verify(evidenceDirectory:directory.appendingPathComponent("annotation-details"),includeResourceCycles:false)
@@ -286,7 +296,6 @@ enum RecordingInputExportSmokeSelection {
             let portableSettingsUI=try await PortableSettingsUIPreviewFixture.verify(evidenceDirectory:directory)
             try await AnnotationPreferencesUIPreviewFixture.run(reportURL: directory.appendingPathComponent("annotation-preferences.json"))
                 try await PinManagementSmokeFixture.run(reportURL: directory.appendingPathComponent("pin-management.json"))
-                _ = try await PinIsolationMenuNativeFixture.verify(evidenceDirectory: directory.appendingPathComponent("pin-isolation"))
             let pinOCRWorkflow=try await PinOCRWorkflowSmokeFixture.verify(evidenceDirectory:directory.appendingPathComponent("pin-ocr"),includeResourceCycles:true)
             let automaticMosaicWorkflow=try await AutomaticMosaicWorkflowSmokeFixture.verify(evidenceDirectory:directory.appendingPathComponent("automatic-mosaic"),includeResourceCycles:true)
             let annotationDetails=try await AnnotationDetailAcceptanceFixture.verify(evidenceDirectory:directory.appendingPathComponent("annotation-details"),includeResourceCycles:true)

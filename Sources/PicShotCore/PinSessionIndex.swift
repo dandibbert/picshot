@@ -176,7 +176,6 @@ public struct PinSessionEntry: Codable, Identifiable, Equatable, Sendable {
 public enum PinSessionError: LocalizedError, Equatable {
     case invalidManifest, unsupportedVersion, unsafePath, capacityExceeded, missingGroup, missingPin
     case invalidName, tooManyGroups, cannotDeleteDefault, invalidImage, stalePinContent, invalidGroupOffset
-    case duplicateGroupName
     public var errorDescription: String? {
         switch self {
         case .invalidManifest: return "贴图会话文件已损坏。原文件未被覆盖，请检查或备份后重新建立会话。"
@@ -186,7 +185,6 @@ public enum PinSessionError: LocalizedError, Equatable {
         case .missingGroup: return "找不到此贴图组，请刷新后重试。"
         case .missingPin: return "找不到此贴图，请刷新后重试。"
         case .invalidName: return "请输入非空名称（组名最多 48 字，贴图名称最多 120 字）。"
-        case .duplicateGroupName: return "已存在同名贴图组。组名不区分大小写，且忽略首尾空白，请使用其他名称。"
         case .tooManyGroups: return "最多可创建 32 个贴图组。"
         case .cannotDeleteDefault: return "默认组不能删除。"
         case .invalidImage: return "图片无法保存或读取。每张贴图最多支持 3200 万像素。"
@@ -325,35 +323,16 @@ public struct PinSessionIndex: Codable, Equatable, Sendable {
         !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && name.count <= limit &&
             name.unicodeScalars.allSatisfy { !CharacterSet.controlCharacters.contains($0) }
     }
-    /// Only new names must be unique. Loading older sessions preserves duplicate
-    /// names, stable identities and content without silently renaming any group.
-    /// Comparison keeps accents and interior whitespace, and is independent of
-    /// the user's locale. The key never replaces the user's display spelling.
-    private static func groupNameKey(_ name: String) -> String {
-        name.trimmingCharacters(in: .whitespacesAndNewlines)
-            .precomposedStringWithCanonicalMapping
-            .folding(options: [.caseInsensitive], locale: Locale(identifier: "en_US_POSIX"))
-            .precomposedStringWithCanonicalMapping
-    }
     @discardableResult public mutating func createGroup(name: String, color: PinGroupColor = .blue) throws -> PinGroup {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard Self.validName(name, limit: 48) else { throw PinSessionError.invalidName }
         guard groups.count < 32 else { throw PinSessionError.tooManyGroups }
-        let key = Self.groupNameKey(name)
-        guard !groups.contains(where: { Self.groupNameKey($0.name) == key }) else { throw PinSessionError.duplicateGroupName }
         let group = PinGroup(name: name, color: color); groups.append(group); return group
     }
     public mutating func renameGroup(id: UUID, name: String, color: PinGroupColor? = nil) throws {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard Self.validName(name, limit: 48) else { throw PinSessionError.invalidName }
         guard let i = groups.firstIndex(where: { $0.id == id }) else { throw PinSessionError.missingGroup }
-        let key = Self.groupNameKey(name)
-        // Retaining an existing normalized name must allow color-only edits even
-        // when another legacy group has that name. A genuinely new name is unique.
-        if key != Self.groupNameKey(groups[i].name),
-           groups.contains(where: { $0.id != id && Self.groupNameKey($0.name) == key }) {
-            throw PinSessionError.duplicateGroupName
-        }
         groups[i].name = name; if let color { groups[i].color = color }
     }
     /// Moves an existing group one slot in the persisted array. The default group

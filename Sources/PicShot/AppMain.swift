@@ -11,7 +11,7 @@ import ImageIO
     @MainActor static func main(){if GIFHelperMain.runIfRequested(){return};if RecordingRecoveryFixture.runIfRequested(){return};let app=NSApplication.shared;let delegate=AppDelegate();app.delegate=delegate;app.setActivationPolicy(AppLaunchPresentation.usesMenuBarOnly(isSmoke:delegate.smoke != nil) ? .accessory:.regular);app.run();withExtendedLifetime(delegate){}}
 }
 
-@MainActor final class AppDelegate:NSObject,NSApplicationDelegate,NSMenuItemValidation {
+@MainActor final class AppDelegate:NSObject,NSApplicationDelegate {
     let history:HistoryStore
     let capture=CaptureService()
     let advancedCapture=AdvancedCaptureController()
@@ -43,6 +43,7 @@ import ImageIO
     private var captureTask:Task<Void,Never>?
     private var activePresetOperation: UUID?
     private weak var activeScrollCapture: ScrollCaptureController?
+    private var activeLiveScroll: LiveScrollSessionController?
     let pendingCaptureRecovery = PendingCaptureRecovery()
     private var pendingCaptureController: PendingCaptureController?
     /// Encoded providers stay retained by their editor CGImages; record that cost
@@ -124,6 +125,7 @@ import ImageIO
         do{try pinSession?.prepareForTermination()}catch{NSLog("Could not save pin presentation before exit: %@",error.localizedDescription)}
     }
     func applicationShouldTerminate(_ sender:NSApplication)->NSApplication.TerminateReply {
+        if let activeLiveScroll { activeLiveScroll.show(); return .terminateCancel }
         // A failed disk write has no durable copy. Quit must not silently release
         // the only owner; Save or explicit Discard in the panel resolves it first.
         if pendingCaptureRecovery.blocksCapture { showPendingCapture(); return .terminateCancel }
@@ -177,6 +179,7 @@ import ImageIO
         app.addItem(withTitle:"设置…",action:#selector(settings),keyEquivalent:",").target=self;app.addItem(.separator());app.addItem(withTitle:"退出 PicShot",action:#selector(NSApplication.terminate(_:)),keyEquivalent:"q")
         let captureItem=NSMenuItem();menu.addItem(captureItem);let captureMenu=NSMenu(title:"截图");captureItem.submenu=captureMenu
         for (title,action) in [("区域截图",#selector(region)),("界面元素截图…",#selector(elementCapture)),("跨屏区域截图（系统选区）",#selector(systemRegion)),("窗口截图",#selector(windowCapture)),("多窗口合成…",#selector(captureMultipleWindows)),("当前屏幕",#selector(full)),("所有屏幕合成",#selector(allScreens))] {captureMenu.addItem(withTitle:title,action:action,keyEquivalent:"").target=self}
+        captureMenu.addItem(withTitle:"导入图片拼接与精细裁剪…",action:#selector(openScrollImporter),keyEquivalent:"").target=self
         captureMenu.addItem(withTitle:"截图预设",action:nil,keyEquivalent:"").submenu=capturePresetsMenu()
         captureMenu.addItem(.separator());captureMenu.addItem(withTitle:"取消当前截图",action:#selector(cancelCapture),keyEquivalent:".").target=self
         let editItem=NSMenuItem();menu.addItem(editItem);let edit=NSMenu(title:"编辑");editItem.submenu=edit
@@ -190,7 +193,6 @@ import ImageIO
         wm.addItem(withTitle:"动态 GIF / WebP 贴图…",action:#selector(importAnimationPin),keyEquivalent:"").target=self
         wm.addItem(withTitle:"LaTeX 公式贴图…",action:#selector(createFormulaPin),keyEquivalent:"").target=self
         wm.addItem(withTitle:"颜色贴图…",action:#selector(createColorPin),keyEquivalent:"").target=self
-        wm.addItem(withTitle:"恢复隔离前显示",action:#selector(restorePinVisibilityIsolation),keyEquivalent:"").target=self
         wm.addItem(withTitle:"显示当前贴图组",action:#selector(showPins),keyEquivalent:"").target=self
         wm.addItem(withTitle:"恢复当前贴图组",action:#selector(restorePins),keyEquivalent:"").target=self
         wm.addItem(withTitle:"隐藏当前贴图组",action:#selector(hideCurrentPins),keyEquivalent:"").target=self
@@ -218,7 +220,7 @@ import ImageIO
     }
     @objc func full(){startCapture(.fullScreen)}
     @objc func allScreens(){startCapture(.allScreens)}
-    @objc func cancelCapture(){captureTask?.cancel();if pendingCaptureRecovery.blocksCapture{showPendingCapture()}}
+    @objc func cancelCapture(){activeLiveScroll?.cancel();captureTask?.cancel();if pendingCaptureRecovery.blocksCapture{showPendingCapture()}}
     func startCapture(_ mode:CaptureMode){
         let options=ScreenshotPreferences.options
         runCaptureForEditing { [capture] in try await capture.captureForEditing(mode:mode,options:options) }
@@ -260,6 +262,7 @@ import ImageIO
     /// before hiding windows, delaying, or calling a screenshot API.
     private func canStartCapture() -> Bool {
         if pendingCaptureRecovery.blocksCapture { showPendingCapture(); return false }
+        if let activeLiveScroll { activeLiveScroll.show(); return false }
         if let activeScrollCapture { activeScrollCapture.showWindow(nil); return false }
         guard frozenEditorAdmission.shouldStart(isBusy: busy || captureTask != nil,
             isClosed: { $0.isClosed }, focus: { self.focusEditor($0) }) else { return false }
@@ -470,6 +473,11 @@ import ImageIO
                 }
                 try pinSession.add(originalImage: payload.originalImage, currentImage: current, editable: payload)
             }, baseProvenance: baseProvenance)
+        c.onLongCapture = { [weak self] selected in
+            guard let self, !self.busy, self.activeLiveScroll == nil, !self.pendingCaptureRecovery.blocksCapture else { return false }
+            self.beginLiveScroll(presentation: selected)
+            return true
+        }
         c.onClose = { [weak self, weak c] in
             guard let self, let c else { return }
             self.frozenEditorAdmission.editorDidClose(c)
@@ -538,13 +546,6 @@ import ImageIO
         do{try pinSession?.showCurrentGroup()}catch{showError(error)}
         pins.forEach{$0.showWindow(nil)}
     }
-    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        if menuItem.action == #selector(restorePinVisibilityIsolation) { return pinSession?.hasVisibilityIsolation == true }
-        return true
-    }
-    @objc func restorePinVisibilityIsolation(){
-        do { try pinSession?.restoreVisibilityIsolation() } catch { showError(error) }
-    }
     @objc func restorePins(){
         do{try pinSession?.recoverCurrentGroup()}catch{showError(error)}
         pins.forEach{$0.restore()}
@@ -563,11 +564,6 @@ import ImageIO
         let controller=PinGroupsController(store:pinSession.store, transforms:pinSession.groupTransforms)
         controller.onSessionChange={ [weak pinSession] in do{try pinSession?.reconcileVisiblePins()}catch{showError(error)}}
         controller.onOpenPin={ [weak pinSession] id in do{try pinSession?.openPin(id:id)}catch{showError(error)}}
-        controller.onIsolatePins = { [weak pinSession] ids in try pinSession?.isolatePins(ids) }
-        controller.onRestoreIsolatedPins = { [weak pinSession] in try pinSession?.restoreVisibilityIsolation() }
-        controller.visibilityIsolationAvailable = { [weak pinSession] in pinSession?.hasVisibilityIsolation == true }
-        controller.visiblePinIDsForIsolation = { [weak pinSession] in pinSession?.visiblePinIDsForIsolation ?? [] }
-        controller.onShowGroup = { [weak pinSession] in try pinSession?.showCurrentGroup() }
         pinGroupsController=controller;retain(controller);controller.showWindow(nil);NSApp.activate(ignoringOtherApps:true)
     }
     func pinRich(_ prepared: PreparedRichPin) throws {
@@ -706,6 +702,23 @@ import ImageIO
     }
     @objc func scroll(){
         guard canStartCapture() else{return}
+        beginLiveScroll()
+    }
+    private func beginLiveScroll(presentation: FrozenCapturePresentation? = nil) {
+        mainWindow?.orderOut(nil)
+        let controller = LiveScrollSessionController(onComplete: { [weak self] image in
+            guard let self else { throw CaptureError.cancelled }
+            try self.completeCapture(CapturedImage(image: image, presentation: nil), title: "长截图")
+        }, onImport: { [weak self] in self?.openScrollImporter() })
+        controller.onClose = { [weak self, weak controller] in
+            guard let self, self.activeLiveScroll === controller else { return }
+            self.activeLiveScroll = nil
+        }
+        activeLiveScroll = controller
+        controller.start(presentation: presentation)
+    }
+    @objc func openScrollImporter() {
+        guard activeLiveScroll == nil else { return }
         let c=ScrollCaptureController{[weak self] image in
             do{try self?.completeCapture(CapturedImage(image:image,presentation:nil),title:"长截图")}catch{showError(error)}
         }

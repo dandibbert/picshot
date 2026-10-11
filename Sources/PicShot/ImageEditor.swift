@@ -1391,6 +1391,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         inspector.onMosaicAdd = { [weak self] in self?.beginLinkedMosaicCorrection() }
     }
     var onClose: (() -> Void)?
+    var onLongCapture: ((FrozenCapturePresentation) -> Bool)?
     private(set) var isClosed = false
     /// Current/history/cache/frozen rasters once per identity, with a reserved
     /// redraw raster when the cache is empty. This is not total process memory.
@@ -1695,6 +1696,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         cropButton = iconButton("checkmark", title: "应用裁剪 · Return", id: "editor.applyCrop", action: #selector(applyCrop))
         toolbar.addArrangedSubview(cropButton)
         if presentation != nil {
+            toolbar.addArrangedSubview(iconButton("rectangle.expand.vertical", title: "长截图 · 继续滚动选区", id: "editor.longCapture", action: #selector(beginLongCapture)))
             let button = iconButton("aspectratio", title: "截图区域比例与像素尺寸", id: "editor.captureRatio", action: #selector(toggleCaptureRatio))
             ratioButton = button; toolbar.addArrangedSubview(button)
         }
@@ -1760,7 +1762,10 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         overflow.menu?.addItem(.separator())
         addMenu("撤销 · ⌘Z", action: #selector(undoEdit)); addMenu("重做 · ⇧⌘Z", action: #selector(redoEdit))
         addMenu("应用裁剪 · Return", action: #selector(applyCrop))
-        if presentation != nil { addMenu("截图区域比例与像素尺寸…", action: #selector(toggleCaptureRatio)) }
+        if presentation != nil {
+            addMenu("长截图 · 继续滚动选区", action: #selector(beginLongCapture))
+            addMenu("截图区域比例与像素尺寸…", action: #selector(toggleCaptureRatio))
+        }
         addMenu("取消裁剪（恢复完整底图）", action: #selector(restoreFullCrop))
         addMenu("圆角 · 边框 · 阴影…", action: #selector(editOutputDecoration))
         addMenu("自动马赛克…", action: #selector(chooseAutomaticMosaicTool))
@@ -1776,7 +1781,7 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
         // Normally these stay on the compact toolbar. On an exceptionally
         // narrow display their named menu actions remain available and enabled
         // by the same output guards as the visible buttons.
-        let fallbackIDs = ["editor.translate", "editor.ocr", "editor.pin", "editor.applyToPin", "editor.save"]
+        let fallbackIDs = ["editor.longCapture", "editor.translate", "editor.ocr", "editor.pin", "editor.applyToPin", "editor.save"]
         for id in fallbackIDs {
             if let button = toolbar.views.compactMap({ $0 as? NSButton }).first(where: { $0.identifier?.rawValue == id }),
                let action = button.action {
@@ -2235,6 +2240,17 @@ final class ImageEditorController: NSWindowController, NSWindowDelegate {
                 if self?.isClosed == false { self?.updateStatus() }
             })
         outputDecorationPalette = palette; updateStatus(); palette.show(relativeTo: anchor)
+    }
+    @objc private func beginLongCapture() {
+        guard let presentation, let onLongCapture, !outputProjectionIsPending, !automaticMosaicBlocksOutput else { return }
+        if !canvas.annotations.isEmpty || inlineBox != nil {
+            let alert = NSAlert()
+            alert.messageText = "用此选区开始长截图？"
+            alert.informativeText = "将重新捕获正在滚动的页面，本次截图的标注不会带入。"
+            alert.addButton(withTitle: "开始长截图"); alert.addButton(withTitle: "返回编辑")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
+        if onLongCapture(presentation) { close() }
     }
     @objc private func copyResult() {
         let workflow = saveWorkflow, copy = copyAction
