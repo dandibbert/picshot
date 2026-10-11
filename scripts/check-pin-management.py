@@ -188,8 +188,14 @@ def validate_mouse_dispatch(row):
         'route elapsedSeconds eventType windowNumber eventNumber clickCount modifierFlags '
         'expectedQuartzTimestamp dequeuedQuartzTimestamp currentQuartzTimestamp '
         'expectedLocation dequeuedLocation currentLocation currentEventType currentWindowNumber '
-        'currentEventNumber currentClickCount currentModifierFlags ownedWindowIsKey hitTestVerified')
+        'currentEventNumber currentClickCount currentModifierFlags ownedWindowIsKey hitTestVerified '
+        'expectedWindowMode windowModeVerifiedAtDispatch buttonWindowIdentityVerified ownedWindowIsVisible '
+        'ownedWindowCanBecomeKey ownedWindowIsPanel ownedWindowHasNonactivatingStyle')
     need(mouse['route'] == 'owned-nextEvent-sendEvent', 'native popup mouse dispatch bypass')
+    need(mouse['expectedWindowMode'] == 'key-window', 'popup mouse window mode mismatch')
+    yes(mouse, 'windowModeVerifiedAtDispatch buttonWindowIdentityVerified ownedWindowIsVisible ownedWindowCanBecomeKey')
+    for key in ('ownedWindowIsPanel', 'ownedWindowHasNonactivatingStyle'):
+        need(mouse[key] is False, 'unexpected popup window state: ' + key)
     need(0 < number(mouse['elapsedSeconds']) <= 2 and
          mouse['elapsedSeconds'] <= number(row['trackingBeginElapsedSeconds']), 'popup mouse dispatch outside tracking deadline/order')
     need(integer(mouse['eventType']) == integer(mouse['currentEventType']) == 1, 'popup mouse event type mismatch')
@@ -220,7 +226,8 @@ def validate_order(order, group):
     need(states == [[a,b,c], [b,a,c], [b,a,c], [a,b,c], [a,c,b], [a,c,b]], 'one-step native order/boundary transition')
     need(o['pickerOrder'] == states[-1], 'picker order detached from stored order')
     for row, (direction, boundary) in zip(array(o['menuEvents'], 5), [('earlier',False), ('earlier',True), ('later',False), ('later',False), ('later',True)]):
-        fields(row, 'itemID boundary enabled activated postedKeyCount timeoutSeconds windowNumber dispatchRoute mouseDispatch disabledDismissedWithEscape lastPostedKeyCode trackingBeginCount trackingEndCount trackingIdentityVerified trackingBeginElapsedSeconds trackingEndElapsedSeconds trackingEndedBeforeClickReturn delegateOpenObserved delegateOpenIdentityVerified delegateOpenElapsedSeconds delegateCloseObserved delegateCloseIdentityVerified delegateCloseElapsedSeconds clickReturnElapsedSeconds lifecycleObservation highlightObservation returnHighlightVerified returnHighlightElapsedSeconds returnHighlightedItemID returnTargetEnabled returnTargetHighlighted returnTargetMenuIdentityVerified delegateHighlightEvents')
+        fields(row, 'itemID boundary enabled activated postedKeyCount timeoutSeconds windowNumber expectedWindowMode dispatchRoute mouseDispatch disabledDismissedWithEscape lastPostedKeyCode trackingBeginCount trackingEndCount trackingIdentityVerified trackingBeginElapsedSeconds trackingEndElapsedSeconds trackingEndedBeforeClickReturn delegateOpenObserved delegateOpenIdentityVerified delegateOpenElapsedSeconds delegateCloseObserved delegateCloseIdentityVerified delegateCloseElapsedSeconds clickReturnElapsedSeconds lifecycleObservation highlightObservation returnHighlightVerified returnHighlightElapsedSeconds returnHighlightedItemID returnTargetEnabled returnTargetHighlighted returnTargetMenuIdentityVerified delegateHighlightEvents')
+        need(row['expectedWindowMode'] == 'key-window', 'order menu window mode mismatch')
         need(row['itemID'] == 'pin-group-order-' + direction and row['boundary'] is boundary and row['enabled'] is (not boundary), 'order action/boundary state')
         need(row['highlightObservation'] == 'exact-owned-menu-current-state', 'native current highlight substituted')
         for key in ('returnHighlightVerified', 'returnTargetEnabled', 'returnTargetHighlighted', 'returnTargetMenuIdentityVerified'):

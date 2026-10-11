@@ -69,13 +69,17 @@ class PinManagementCheckerTests(unittest.TestCase):
             for direction,boundary in [('earlier',False),('earlier',True),('later',False),('later',False),('later',True)]:
                 order['menuEvents'].append(dict(itemID='pin-group-order-'+direction, boundary=boundary, enabled=not boundary,
                     activated=not boundary, postedKeyCount=1 if boundary else 3, timeoutSeconds=2,
-                    windowNumber=100, dispatchRoute='owned-nextEvent-sendEvent/native-menu-tracking', disabledDismissedWithEscape=boundary,
+                    windowNumber=100, expectedWindowMode='key-window',
+                    dispatchRoute='owned-nextEvent-sendEvent/native-menu-tracking', disabledDismissedWithEscape=boundary,
                     mouseDispatch=dict(route='owned-nextEvent-sendEvent', elapsedSeconds=0.005,
                         eventType=1, windowNumber=100, eventNumber=1, clickCount=1, modifierFlags=0,
                         expectedQuartzTimestamp=12345, dequeuedQuartzTimestamp=12345, currentQuartzTimestamp=12345,
                         expectedLocation=[240.5, 420], dequeuedLocation=[240.5, 420], currentLocation=[240.5, 420],
                         currentEventType=1, currentWindowNumber=100, currentEventNumber=1, currentClickCount=1,
-                        currentModifierFlags=0, ownedWindowIsKey=True, hitTestVerified=True),
+                        currentModifierFlags=0, ownedWindowIsKey=True, hitTestVerified=True,
+                        expectedWindowMode='key-window', windowModeVerifiedAtDispatch=True,
+                        buttonWindowIdentityVerified=True, ownedWindowIsVisible=True, ownedWindowCanBecomeKey=True,
+                        ownedWindowIsPanel=False, ownedWindowHasNonactivatingStyle=False),
                     lastPostedKeyCode=53 if boundary else 36, trackingBeginCount=1, trackingEndCount=1,
                     trackingIdentityVerified=True, trackingBeginElapsedSeconds=0.01, trackingEndElapsedSeconds=0.30 if boundary else 0.26,
                     trackingEndedBeforeClickReturn=not boundary, delegateCloseObserved=not boundary,
@@ -342,6 +346,44 @@ class PinManagementCheckerTests(unittest.TestCase):
             self.reject(lambda r:r['flows'][0]['order']['menuEvents'][0]['delegateHighlightEvents'][0].update(ownedMenuIdentityVerified=value))
         self.reject(lambda r:r['flows'][0]['order']['menuEvents'][0]['delegateHighlightEvents'].reverse())
         self.reject(lambda r:r['flows'][0]['order']['menuEvents'][1]['delegateHighlightEvents'].reverse())
+
+    def test_reject_menu_window_mode_schema_and_value_mutations(self):
+        # Require the pin-management key-window contract independently at both
+        # levels, on every enabled selection and disabled boundary in both modes.
+        for mode in range(2):
+            for index in range(5):
+                def event(r): return r['flows'][mode]['order']['menuEvents'][index]
+                for nested in (False, True):
+                    def witness(r): return event(r)['mouseDispatch'] if nested else event(r)
+                    with self.subTest(mode=mode, event=index, mouse=nested, change='missing'):
+                        self.reject(lambda r:witness(r).pop('expectedWindowMode'))
+                    with self.subTest(mode=mode, event=index, mouse=nested, change='unknown'):
+                        self.reject(lambda r:witness(r).update(unrecognized=True))
+                    for value in [None, True, False, 0, 1, [], {}, '', 'KEY-WINDOW',
+                                  'key-window ', 'visible-nonactivating-panel']:
+                        with self.subTest(mode=mode, event=index, mouse=nested, invalid=value):
+                            self.reject(lambda r:witness(r).update(expectedWindowMode=value))
+                # Agreement on the shared helper's panel mode is still wrong
+                # for this group-order gate; matching labels cannot substitute.
+                def panel_mode(r):
+                    event(r)['expectedWindowMode'] = 'visible-nonactivating-panel'
+                    event(r)['mouseDispatch']['expectedWindowMode'] = 'visible-nonactivating-panel'
+                with self.subTest(mode=mode, event=index, change='matching-panel-modes'):
+                    self.reject(panel_mode)
+
+    def test_reject_menu_window_state_mutations(self):
+        expected = dict(windowModeVerifiedAtDispatch=True, buttonWindowIdentityVerified=True,
+                        ownedWindowIsVisible=True, ownedWindowCanBecomeKey=True,
+                        ownedWindowIsPanel=False, ownedWindowHasNonactivatingStyle=False)
+        for mode in range(2):
+            for index in range(5):
+                def mouse(r): return r['flows'][mode]['order']['menuEvents'][index]['mouseDispatch']
+                for key, required in expected.items():
+                    with self.subTest(mode=mode, event=index, missing=key):
+                        self.reject(lambda r:mouse(r).pop(key))
+                    for value in [not required, None, 0, 1, 0.0, 1.0, 'true', 'false', [], {}]:
+                        with self.subTest(mode=mode, event=index, field=key, invalid=value):
+                            self.reject(lambda r:mouse(r).update({key:value}))
 
     def test_reject_group_order_selection_and_boundary_tampering(self):
         for mutation in [lambda r:r['flows'][0]['order']['states'][1].reverse(),lambda r:r['flows'][0]['order'].update(callbacks=4),
