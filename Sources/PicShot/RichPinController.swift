@@ -33,9 +33,24 @@ actor RichPinFrameDecoder {
     var onClose: (() -> Void)?
     var onToggleGroupSelection: (() -> Void)?
     var onShowGroupTransform: (() -> Void)?
+    var onIsolateThisPin: (() -> Void)?
+    var onIsolateSelectedPins: (() -> Void)?
+    var onRestoreVisibilityIsolation: (() -> Void)?
+    var canIsolateSelectedPins: (() -> Bool)?
+    var hasVisibilityIsolation: (() -> Bool)?
+    private(set) var isVisibilityIsolated = false
+    private var visibilityIsolationWasVisible = false
+    private var visibilityIsolationWasPlaying = false
+    var hasVisibleSurfaceForVisibilityIsolation: Bool {
+        !closed && !isVisibilityIsolated && (latexPopover?.isShown == true ||
+            [window, textEditController?.window, renameController?.window, latexSavePanel].contains { $0?.isVisible == true })
+    }
+    var canHideForVisibilityIsolation: Bool {
+        !closed && !isVisibilityIsolated && window != nil && !hasActiveTextDraft && !hasActiveLaTeXEditorOrRender
+    }
     private(set) var isGroupSelected = false
     var canParticipateInGroupTransform: Bool {
-        !closed && !locked && !hasActiveLaTeXEditorOrRender && !hasActiveTextDraft && window?.ignoresMouseEvents != true
+        !closed && !isVisibilityIsolated && !locked && !hasActiveLaTeXEditorOrRender && !hasActiveTextDraft && window?.ignoresMouseEvents != true
     }
     func setGroupSelected(_ selected: Bool) {
         isGroupSelected = selected
@@ -45,6 +60,28 @@ actor RichPinFrameDecoder {
     }
     @objc private func toggleGroupSelection() { onToggleGroupSelection?() }
     @objc private func showGroupTransform() { onShowGroupTransform?() }
+    @objc private func isolateThisPin() {
+        guard visibilityIsolationActionEnabled(#selector(isolateThisPin)) == true else { return }
+        onIsolateThisPin?()
+    }
+    @objc private func isolateSelectedPins() {
+        guard visibilityIsolationActionEnabled(#selector(isolateSelectedPins)) == true else { return }
+        onIsolateSelectedPins?()
+    }
+    @objc private func restoreVisibilityIsolation() {
+        guard visibilityIsolationActionEnabled(#selector(restoreVisibilityIsolation)) == true else { return }
+        onRestoreVisibilityIsolation?()
+    }
+    private func visibilityIsolationActionEnabled(_ action: Selector?) -> Bool? {
+        if action == #selector(isolateThisPin) { return canHideForVisibilityIsolation && onIsolateThisPin != nil }
+        if action == #selector(isolateSelectedPins) {
+            return canHideForVisibilityIsolation && onIsolateSelectedPins != nil && canIsolateSelectedPins?() == true
+        }
+        if action == #selector(restoreVisibilityIsolation) {
+            return !closed && onRestoreVisibilityIsolation != nil && hasVisibilityIsolation?() == true
+        }
+        return nil
+    }
     var onPresentationChange: ((PinPresentation) -> Void)?
     var onDesktopVisibilityChange: ((PinDesktopVisibility) -> Void)? {
         didSet { desktopVisibilityMenu.onSelect = onDesktopVisibilityChange }
@@ -77,6 +114,7 @@ actor RichPinFrameDecoder {
     private var locked = false
     private var textScale = 1.0
     private var playing = false
+    var isAnimationPlaying: Bool { playing }
     private(set) var latexModel: LaTeXPinModel?
     private var latexPopover: NSPopover?
     private(set) var latexSavePanel: NSSavePanel?
@@ -248,6 +286,14 @@ actor RichPinFrameDecoder {
         select.toolTip = "组合移动 / 缩放请使用菜单；直接拖动或拉伸仍只改变当前贴图"
         let transform = menu.addItem(withTitle: "组合移动 / 缩放…", action: #selector(showGroupTransform), keyEquivalent: "")
         transform.target = self; transform.identifier = NSUserInterfaceItemIdentifier("pin-group-transform")
+        for (title, action, identifier) in [
+            ("仅显示此贴图", #selector(isolateThisPin), "pin-visibility-isolate-this"),
+            ("仅显示组合选择的贴图", #selector(isolateSelectedPins), "pin-visibility-isolate-selected"),
+            ("恢复隔离前显示", #selector(restoreVisibilityIsolation), "pin-visibility-restore")
+        ] {
+            let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
+            item.target = self; item.identifier = NSUserInterfaceItemIdentifier(identifier); item.isEnabled = false
+        }
         menu.addItem(.separator())
         func item(_ title: String, _ action: Selector, in targetMenu: NSMenu? = nil) -> NSMenuItem {
             let result = (targetMenu ?? menu).addItem(withTitle: title, action: action, keyEquivalent: "")
@@ -301,6 +347,7 @@ actor RichPinFrameDecoder {
     }
     func menuNeedsUpdate(_ menu: NSMenu) {
         for item in menu.items {
+            if let enabled = visibilityIsolationActionEnabled(item.action) { item.isEnabled = enabled }
             if item.action == #selector(toggleGroupSelection) {
                 item.isHidden = onToggleGroupSelection == nil
                 item.state = isGroupSelected ? .on : .off
@@ -318,6 +365,7 @@ actor RichPinFrameDecoder {
         }
     }
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if let enabled = visibilityIsolationActionEnabled(item.action) { return enabled }
         if item.action == #selector(editPlainText) {
             return !closed && onUpdateText != nil && renameController == nil && richDocument?.text.map(PinTextEditController.isEditable) == true
         }
@@ -332,7 +380,7 @@ actor RichPinFrameDecoder {
         guard !closed else { return }; pinTitle = title; window?.title = title
     }
     @objc func editPlainText() {
-        guard !closed, kind == .text, let window, onUpdateText != nil, renameController == nil,
+        guard !closed, !isVisibilityIsolated, kind == .text, let window, onUpdateText != nil, renameController == nil,
               let content = richDocument?.text, PinTextEditController.isEditable(content) else { return }
         if let editor = textEditController { editor.presentSheet(for: window); return }
         let generation = UUID(); textDraftGeneration = generation
@@ -354,7 +402,7 @@ actor RichPinFrameDecoder {
         } catch { statusMessage = error.localizedDescription; window.contentView?.toolTip = statusMessage }
     }
     @objc func renamePin() {
-        guard !closed, kind == .text, let window, onRename != nil, textEditController == nil else { return }
+        guard !closed, !isVisibilityIsolated, kind == .text, let window, onRename != nil, textEditController == nil else { return }
         if let editor = renameController { editor.presentSheet(for: window); return }
         let expected = pinTitle, generation = UUID(); textDraftGeneration = generation
         let editor = PinRenameController(title: expected) { [weak self] title in
@@ -422,7 +470,7 @@ actor RichPinFrameDecoder {
         }
     }
     @objc func editLaTeX() {
-        guard !closed, let model = latexModel else { return }
+        guard !closed, !isVisibilityIsolated, let model = latexModel else { return }
         if latexPopover?.isShown == true { return }
         let popover = NSPopover(); popover.behavior = .semitransient; popover.delegate = self
         popover.contentViewController = NSHostingController(rootView: LaTeXPinEditorView(model: model, dismiss: { [weak self, weak popover] in
@@ -454,7 +502,7 @@ actor RichPinFrameDecoder {
     @objc private func undoLaTeX() { latexModel?.undo(); editLaTeX() }
     @objc private func copyLaTeXFormat(_ item: NSMenuItem) {
         let formats: [FormulaRenderFormat] = [.png, .svg, .mathML, .pdf]
-        guard formats.indices.contains(item.tag) else { return }
+        guard !closed, !isVisibilityIsolated, formats.indices.contains(item.tag) else { return }
         let format = formats[item.tag]
         if format == .png { copyLaTeXPNG(); return }
         latexModel?.export(format) { data in
@@ -477,7 +525,7 @@ actor RichPinFrameDecoder {
     /// Retained asynchronous chooser: close/hide/genuine desktop changes cancel it.
     /// The same-mode preference path leaves the chooser and draft untouched.
     func beginLaTeXSave(_ format: FormulaRenderFormat) {
-        guard !closed, !latexSaveInProgress, latexModel?.working == false,
+        guard !closed, !isVisibilityIsolated, !latexSaveInProgress, latexModel?.working == false,
               let window, window.attachedSheet == nil else { return }
         let panel = NSSavePanel(); panel.nameFieldStringValue = "公式." + format.fileExtension
         panel.isReleasedWhenClosed = false; panel.hidesOnDeactivate = false
@@ -545,7 +593,7 @@ actor RichPinFrameDecoder {
     /// Picker approval and native publication/cancellation fixtures share this route.
     /// Bind the approved physical destination before any renderer or queue delay.
     func saveLaTeX(_ format: FormulaRenderFormat, to url: URL) throws {
-        guard !closed, !latexSaveInProgress, latexModel?.working == false else { throw CancellationError() }
+        guard !closed, !isVisibilityIsolated, !latexSaveInProgress, latexModel?.working == false else { throw CancellationError() }
         guard let lease = LaTeXPinSaveLease.acquire() else {
             throw PicShotError.message("公式保存任务达到保护上限，请完成或取消现有任务后重试。")
         }
@@ -639,7 +687,7 @@ actor RichPinFrameDecoder {
     }
     @objc private func togglePlayback() { if playing { pausePlayback() } else { startPlayback() } }
     func startPlayback() {
-        guard !closed, !playing, let decoder else { return }
+        guard !closed, !isVisibilityIsolated, !playing, let decoder else { return }
         playing = true
         playback = Task { [weak self, decoder] in
             do {
@@ -661,6 +709,34 @@ actor RichPinFrameDecoder {
         }
     }
     func pausePlayback() { playing = false; playback?.cancel(); playback = nil }
+    override func showWindow(_ sender: Any?) {
+        guard !closed, !isVisibilityIsolated else { return }
+        super.showWindow(sender)
+    }
+    /// Orders out the same surface without replacing content, dismissing a draft,
+    /// changing presentation, or releasing the bounded animation decoder.
+    func setVisibilityIsolated(_ isolated: Bool) throws {
+        guard isolated != isVisibilityIsolated else { return }
+        if isolated {
+            guard canHideForVisibilityIsolation else {
+                throw PicShotError.message("此贴图正在编辑或导出，暂时无法隔离显示。请先完成或取消当前操作。")
+            }
+            visibilityIsolationWasVisible = window?.isVisible == true
+            visibilityIsolationWasPlaying = playing
+            isVisibilityIsolated = true
+            pausePlayback()
+            window?.orderOut(nil)
+        } else {
+            let reveal = visibilityIsolationWasVisible, resume = visibilityIsolationWasPlaying
+            clearVisibilityIsolation()
+            guard !closed else { return }
+            if reveal { window?.orderFront(nil) }
+            if resume { startPlayback() }
+        }
+    }
+    private func clearVisibilityIsolation() {
+        isVisibilityIsolated = false; visibilityIsolationWasVisible = false; visibilityIsolationWasPlaying = false
+    }
     @objc private func changeOpacity(_ sender: NSMenuItem) { window?.alphaValue = min(1, max(0.15, Double(sender.tag) / 100)); presentationDidChange() }
     @objc private func toggleLock() {
         locked.toggle(); window?.isMovable = !locked
@@ -705,6 +781,9 @@ actor RichPinFrameDecoder {
     override func close() { finishClose(); super.close() }
     private func finishClose() {
         guard !closed else { return }; closed = true
+        clearVisibilityIsolation()
+        onIsolateThisPin = nil; onIsolateSelectedPins = nil; onRestoreVisibilityIsolation = nil
+        canIsolateSelectedPins = nil; hasVisibilityIsolation = nil
         let callback = onClose
         onClose = nil; onPresentationChange = nil; onToggleGroupSelection = nil; onShowGroupTransform = nil; onRichChange = nil
         onUpdateText = nil; onRename = nil; dismissTextEditors()

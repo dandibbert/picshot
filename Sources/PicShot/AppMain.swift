@@ -11,7 +11,7 @@ import ImageIO
     @MainActor static func main(){if GIFHelperMain.runIfRequested(){return};if RecordingRecoveryFixture.runIfRequested(){return};let app=NSApplication.shared;let delegate=AppDelegate();app.delegate=delegate;app.setActivationPolicy(AppLaunchPresentation.usesMenuBarOnly(isSmoke:delegate.smoke != nil) ? .accessory:.regular);app.run();withExtendedLifetime(delegate){}}
 }
 
-@MainActor final class AppDelegate:NSObject,NSApplicationDelegate {
+@MainActor final class AppDelegate:NSObject,NSApplicationDelegate,NSMenuItemValidation {
     let history:HistoryStore
     let capture=CaptureService()
     let advancedCapture=AdvancedCaptureController()
@@ -190,6 +190,7 @@ import ImageIO
         wm.addItem(withTitle:"动态 GIF / WebP 贴图…",action:#selector(importAnimationPin),keyEquivalent:"").target=self
         wm.addItem(withTitle:"LaTeX 公式贴图…",action:#selector(createFormulaPin),keyEquivalent:"").target=self
         wm.addItem(withTitle:"颜色贴图…",action:#selector(createColorPin),keyEquivalent:"").target=self
+        wm.addItem(withTitle:"恢复隔离前显示",action:#selector(restorePinVisibilityIsolation),keyEquivalent:"").target=self
         wm.addItem(withTitle:"显示当前贴图组",action:#selector(showPins),keyEquivalent:"").target=self
         wm.addItem(withTitle:"恢复当前贴图组",action:#selector(restorePins),keyEquivalent:"").target=self
         wm.addItem(withTitle:"隐藏当前贴图组",action:#selector(hideCurrentPins),keyEquivalent:"").target=self
@@ -537,6 +538,13 @@ import ImageIO
         do{try pinSession?.showCurrentGroup()}catch{showError(error)}
         pins.forEach{$0.showWindow(nil)}
     }
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(restorePinVisibilityIsolation) { return pinSession?.hasVisibilityIsolation == true }
+        return true
+    }
+    @objc func restorePinVisibilityIsolation(){
+        do { try pinSession?.restoreVisibilityIsolation() } catch { showError(error) }
+    }
     @objc func restorePins(){
         do{try pinSession?.recoverCurrentGroup()}catch{showError(error)}
         pins.forEach{$0.restore()}
@@ -555,6 +563,11 @@ import ImageIO
         let controller=PinGroupsController(store:pinSession.store, transforms:pinSession.groupTransforms)
         controller.onSessionChange={ [weak pinSession] in do{try pinSession?.reconcileVisiblePins()}catch{showError(error)}}
         controller.onOpenPin={ [weak pinSession] id in do{try pinSession?.openPin(id:id)}catch{showError(error)}}
+        controller.onIsolatePins = { [weak pinSession] ids in try pinSession?.isolatePins(ids) }
+        controller.onRestoreIsolatedPins = { [weak pinSession] in try pinSession?.restoreVisibilityIsolation() }
+        controller.visibilityIsolationAvailable = { [weak pinSession] in pinSession?.hasVisibilityIsolation == true }
+        controller.visiblePinIDsForIsolation = { [weak pinSession] in pinSession?.visiblePinIDsForIsolation ?? [] }
+        controller.onShowGroup = { [weak pinSession] in try pinSession?.showCurrentGroup() }
         pinGroupsController=controller;retain(controller);controller.showWindow(nil);NSApp.activate(ignoringOtherApps:true)
     }
     func pinRich(_ prepared: PreparedRichPin) throws {

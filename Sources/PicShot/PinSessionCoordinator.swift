@@ -1,7 +1,7 @@
 import AppKit
 import PicShotCore
 
-/// Owns exactly one controller per live pin. Hidden/inactive groups have no controllers
+/// Owns exactly one controller per live pin. Persistently hidden/inactive groups have no controllers
 /// or decoded full-size images. The store owns only disk assets and bounded thumbnails.
 @MainActor final class PinSessionCoordinator {
     static let maximumLivePins = 20
@@ -12,8 +12,8 @@ import PicShotCore
     lazy var groupTransforms = PinGroupTransformController(session: self)
     var groupTransformEligibleIDs: Set<UUID> {
         let visible = Set(store.visibleEntries.map(\.id))
-        let images = liveControllers.filter { $0.value.canParticipateInGroupTransform && (!presentWindows || $0.value.window?.isVisible == true) }.keys
-        let rich = richControllers.filter { $0.value.canParticipateInGroupTransform && (!presentWindows || $0.value.window?.isVisible == true) }.keys
+        let images = liveControllers.filter { $0.value.canParticipateInGroupTransform && !$0.value.isVisibilityIsolated && (!presentWindows || $0.value.window?.isVisible == true) }.keys
+        let rich = richControllers.filter { $0.value.canParticipateInGroupTransform && !$0.value.isVisibilityIsolated && (!presentWindows || $0.value.window?.isVisible == true) }.keys
         return visible.intersection(Set(images).union(rich))
     }
     private(set) var liveControllers: [UUID: PinController] = [:]
@@ -30,6 +30,7 @@ import PicShotCore
     private var pendingPresentations: [UUID: PinPresentation] = [:]
     private var presentationSaveTask: Task<Void, Never>?
     private var terminated = false
+    private(set) var visibilityIsolation = PinVisibilityIsolation()
 
     init(store: PinSessionStore, presentWindows: Bool = true,
          desktopVisibilityService: PinDesktopVisibilityService? = nil,
@@ -114,6 +115,7 @@ import PicShotCore
         }
         connect(controller, id: entry.id)
         present(controller)
+        registerCreatedPinForIsolation(entry.id)
         return entry.id
     }
 
@@ -124,7 +126,7 @@ import PicShotCore
         let controller = try RichPinController(asset: prepared.asset, data: prepared.data, title: prepared.title, renderedImage: prepared.kind == .latex ? prepared.poster : nil)
         do {
             let entry = try store.add(rich: prepared, presentation: controller.presentation, protecting: livePinIDs, revealingGroup: true)
-            connect(controller, id: entry.id); present(controller); return entry.id
+            connect(controller, id: entry.id); present(controller); registerCreatedPinForIsolation(entry.id); return entry.id
         } catch { controller.close(); throw error }
     }
     private func checkAnimationCapacity(kind: PinContentKind) throws {
@@ -155,11 +157,13 @@ import PicShotCore
             guard let self, let controller, self.richControllers[id] === controller, !self.terminated else { throw CancellationError() }
             try self.store.updateText(id: id, content: content, expectedContent: expectedContent)
         }
+        connectIsolationActions(controller, id: id)
         controller.onToggleGroupSelection = { [weak self] in self?.groupTransforms.toggleSelection(id: id) }
         controller.onShowGroupTransform = { [weak self] in self?.groupTransforms.showEditor() }
         controller.onClose = { [weak self, weak controller] in
             guard let self, let controller, self.richControllers[id] === controller else { return }
             self.richControllers.removeValue(forKey: id); self.pendingPresentations.removeValue(forKey: id)
+            self.visibilityIsolation.remove(id: id)
             self.groupTransforms.pinChanged(id: id)
             do {
                 if self.store.visibleEntries.contains(where: { $0.id == id }) { try self.store.archive(id: id, presentation: controller.presentation) }
@@ -184,7 +188,9 @@ import PicShotCore
 
     func showCurrentGroup() throws {
         guard !terminated else { return }
-        try store.showActiveGroup(); try reconcileVisiblePins()
+        try store.showActiveGroup()
+        try restoreVisibilityIsolation()
+        try reconcileVisiblePins()
     }
     func hideCurrentGroup() throws {
         guard !terminated else { return }
@@ -226,6 +232,8 @@ import PicShotCore
     func openPin(id: UUID) throws {
         guard !terminated else { throw PinSessionError.missingPin }
         try store.reopen(id: id)
+        // Explicit reopen ends the temporary mode; only then may normal group loading occur.
+        if visibilityIsolation.groupID == store.index.activeGroupID { try restoreVisibilityIsolation() }
         var firstError: Error?
         do { try reconcileVisiblePins() } catch { firstError = error }
         // Reopening is faithful to the saved presentation. Recover is a separate action.
@@ -239,6 +247,7 @@ import PicShotCore
     /// already deleted the pin; hiding/moving/switching merely releases its live window.
     func reconcileVisiblePins() throws {
         guard !terminated else { return }
+        reconcileIsolationContext()
         groupTransforms.reconcile()
         let entries = store.visibleEntries
         let desired = Set(entries.map(\.id))
@@ -246,7 +255,7 @@ import PicShotCore
         for id in Array(livePinIDs) where !desired.contains(id) {
             do { try closePreservingSession(id: id) } catch { firstError = firstError ?? error }
         }
-        for entry in entries where !livePinIDs.contains(entry.id) {
+        for entry in entries where !visibilityIsolation.isActive && !livePinIDs.contains(entry.id) {
             do { try load(entry) } catch { firstError = firstError ?? error }
         }
         for entry in entries {
@@ -279,6 +288,7 @@ import PicShotCore
     func prepareForTermination() throws {
         guard !terminated else { return }
         groupTransforms.reset()
+        visibilityIsolation.invalidate()
         terminated = true
         var firstError: Error?
         for id in Array(livePinIDs) {
@@ -367,11 +377,13 @@ import PicShotCore
         }
         precondition(liveControllers[id] == nil)
         liveControllers[id] = controller
+        connectIsolationActions(controller, id: id)
         controller.onToggleGroupSelection = { [weak self] in self?.groupTransforms.toggleSelection(id: id) }
         controller.onShowGroupTransform = { [weak self] in self?.groupTransforms.showEditor() }
         controller.onClose = { [weak self, weak controller] in
             guard let self, let controller, self.liveControllers[id] === controller else { return }
             self.liveControllers.removeValue(forKey: id)
+            self.visibilityIsolation.remove(id: id)
             self.groupTransforms.pinChanged(id: id)
             self.pendingPresentations.removeValue(forKey: id)
             do {
@@ -408,6 +420,7 @@ import PicShotCore
         }
     }
     private func closePreservingSession(id: UUID) throws {
+        visibilityIsolation.remove(id: id)
         groupTransforms.pinChanged(id: id)
         if let controller = richControllers[id] {
             defer {
@@ -436,5 +449,150 @@ import PicShotCore
         controller.applyPresentation(value)
         controller.onPresentationChange?(controller.presentation)
         present(controller)
+    }
+}
+
+extension PinSessionCoordinator {
+    /// Isolation owns UUIDs only and leaves the existing bounded live controllers in place.
+    /// No persistent visibility, presentation, content or group membership is changed.
+    var hasVisibilityIsolation: Bool { visibilityIsolation.isActive }
+    var visiblePinIDsForIsolation: Set<UUID> {
+        let allowed = Set(store.visibleEntries.map(\.id))
+        let images = liveControllers.filter { !$0.value.isVisibilityIsolated && (!presentWindows || $0.value.hasVisibleSurfaceForVisibilityIsolation) }.keys
+        let rich = richControllers.filter { !$0.value.isVisibilityIsolated && (!presentWindows || $0.value.hasVisibleSurfaceForVisibilityIsolation) }.keys
+        return allowed.intersection(Set(images).union(rich))
+    }
+    var canIsolateSelectedPins: Bool {
+        let ids = groupTransforms.selectedIDs
+        return !ids.isEmpty && ids.isSubset(of: visiblePinIDsForIsolation)
+    }
+
+    func isolatePins(_ selectedIDs: Set<UUID>) throws {
+        guard !terminated else { throw PinSessionError.missingPin }
+        reconcileIsolationContext()
+        let allowed = Set(store.visibleEntries.map(\.id))
+        var candidate = visibilityIsolation
+        let change = try candidate.begin(groupID: store.index.activeGroupID,
+            liveIDs: livePinIDs, visibleIDs: visiblePinIDsForIsolation,
+            persistentlyVisibleIDs: allowed, selectedIDs: selectedIDs)
+        // Admit the entire operation before touching a surface. A refused hide must
+        // leave active editor drafts, export jobs and the previous baseline intact.
+        guard change.hideIDs.isEmpty || groupTransforms.editor == nil else {
+            throw PicShotError.message("请先完成或取消贴图组编辑，再临时隔离显示；当前编辑已保留。")
+        }
+        for id in change.hideIDs {
+            guard liveControllers[id]?.canHideForVisibilityIsolation == true || richControllers[id]?.canHideForVisibilityIsolation == true else {
+                throw PicShotError.message("请先完成或取消将被隐藏贴图的编辑或导出；当前内容和显示状态已保留。")
+            }
+        }
+        try applyVisibilityChange(change)
+        visibilityIsolation = candidate
+        groupTransforms.reconcile()
+    }
+
+    func restoreVisibilityIsolation() throws {
+        guard !terminated else { return }
+        reconcileIsolationContext()
+        guard visibilityIsolation.isActive else { return }
+        var candidate = visibilityIsolation
+        let change = try candidate.restore(groupID: store.index.activeGroupID,
+            liveIDs: livePinIDs, visibleIDs: visiblePinIDsForIsolation,
+            persistentlyVisibleIDs: Set(store.visibleEntries.map(\.id)))
+        try applyVisibilityChange(change)
+        visibilityIsolation = candidate
+        groupTransforms.reconcile()
+    }
+
+    private func applyVisibilityChange(_ change: PinVisibilityIsolationChange) throws {
+        var applied: [(UUID, Bool)] = []
+        do {
+            for id in change.hideIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
+                try setIsolated(true, id: id); applied.append((id, true))
+            }
+            for id in change.revealIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
+                try setIsolated(false, id: id); applied.append((id, false))
+            }
+        } catch {
+            // All methods are main-actor synchronous, so no foreign edit can enter
+            // between admission and rollback. Never publish a half-applied baseline.
+            for (id, hidden) in applied.reversed() { try? setIsolated(!hidden, id: id) }
+            throw error
+        }
+    }
+    private func setIsolated(_ hidden: Bool, id: UUID) throws {
+        if let controller = liveControllers[id] { try controller.setVisibilityIsolated(hidden) }
+        else if let controller = richControllers[id] { try controller.setVisibilityIsolated(hidden) }
+        else { throw PinSessionError.missingPin }
+    }
+    private func reconcileIsolationContext() {
+        guard visibilityIsolation.isActive else { return }
+        let index = store.index
+        guard visibilityIsolation.groupID == index.activeGroupID, !index.allHidden,
+              index.groups.first(where: { $0.id == index.activeGroupID })?.isHidden == false else {
+            visibilityIsolation.invalidate(); return
+        }
+        // The index has already passed store validation; prune only live permitted
+        // IDs. Reconciliation never admits old unloaded entries into the baseline.
+        do {
+            try visibilityIsolation.prune(groupID: index.activeGroupID, liveIDs: livePinIDs,
+                persistentlyVisibleIDs: Set(store.visibleEntries.map(\.id)))
+        } catch { onError?(error) }
+    }
+    private func registerCreatedPinForIsolation(_ id: UUID) {
+        guard visibilityIsolation.isActive else { return }
+        reconcileIsolationContext()
+        guard visibilityIsolation.isActive else { return }
+        do {
+            try visibilityIsolation.registerCreatedPins(groupID: store.index.activeGroupID,
+                liveIDs: livePinIDs, visibleIDs: visiblePinIDsForIsolation,
+                persistentlyVisibleIDs: Set(store.visibleEntries.map(\.id)), createdIDs: [id])
+        } catch { onError?(error) }
+    }
+    private func isolationAction(_ operation: () throws -> Void) {
+        do { try operation() } catch { onError?(error) }
+    }
+    private func connectIsolationActions(_ controller: PinController, id: UUID) {
+        controller.onIsolateThisPin = { [weak self, weak controller] in
+            guard let self, let controller, self.liveControllers[id] === controller else { return }
+            self.isolationAction { try self.isolatePins([id]) }
+        }
+        controller.onIsolateSelectedPins = { [weak self, weak controller] in
+            guard let self, let controller, self.liveControllers[id] === controller else { return }
+            self.isolationAction { try self.isolatePins(self.groupTransforms.selectedIDs) }
+        }
+        controller.onRestoreVisibilityIsolation = { [weak self, weak controller] in
+            guard let self, let controller, self.liveControllers[id] === controller else { return }
+            self.isolationAction { try self.restoreVisibilityIsolation() }
+        }
+        controller.canIsolateSelectedPins = { [weak self, weak controller] in
+            guard let self, let controller, self.liveControllers[id] === controller else { return false }
+            return self.canIsolateSelectedPins
+        }
+        controller.hasVisibilityIsolation = { [weak self, weak controller] in
+            guard let self, let controller, self.liveControllers[id] === controller else { return false }
+            return self.hasVisibilityIsolation
+        }
+    }
+    private func connectIsolationActions(_ controller: RichPinController, id: UUID) {
+        controller.onIsolateThisPin = { [weak self, weak controller] in
+            guard let self, let controller, self.richControllers[id] === controller else { return }
+            self.isolationAction { try self.isolatePins([id]) }
+        }
+        controller.onIsolateSelectedPins = { [weak self, weak controller] in
+            guard let self, let controller, self.richControllers[id] === controller else { return }
+            self.isolationAction { try self.isolatePins(self.groupTransforms.selectedIDs) }
+        }
+        controller.onRestoreVisibilityIsolation = { [weak self, weak controller] in
+            guard let self, let controller, self.richControllers[id] === controller else { return }
+            self.isolationAction { try self.restoreVisibilityIsolation() }
+        }
+        controller.canIsolateSelectedPins = { [weak self, weak controller] in
+            guard let self, let controller, self.richControllers[id] === controller else { return false }
+            return self.canIsolateSelectedPins
+        }
+        controller.hasVisibilityIsolation = { [weak self, weak controller] in
+            guard let self, let controller, self.richControllers[id] === controller else { return false }
+            return self.hasVisibilityIsolation
+        }
     }
 }

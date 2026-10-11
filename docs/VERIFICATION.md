@@ -1,3 +1,11 @@
+## 0.22 candidate: temporary pin visibility and group-name admission (native verification pending)
+
+This candidate adds one transient, UUID-only visible-set baseline for already-loaded managed pins. Isolation and restore preserve controller identity, image/text content, presentation and group membership. Hidden or archived entries are never loaded by isolation. Explicitly new pins stay visible and join the restoration set; closed/deleted/moved entries are pruned. Explicit Show/reopen ends isolation, while group changes and hide commands invalidate it. A hide that would interrupt an owned editor or export is refused before any surface changes. Retaining the existing bounded live controllers is intentional; this is not a memory-reduction claim.
+
+New group creation and rename reject conflicting trimmed, NFC-normalized, fixed-locale case-folded names. Accent marks and internal spaces remain significant. Existing duplicate group records remain loadable without migration or ID changes; retaining an unchanged normalized name remains permitted. The original PIN-14 requirement and current accepted ARM 64 Code / 56 Partial / 4 Missing ledger are unchanged until native acceptance.
+
+Authored coverage includes pure-value lifecycle combinations, native surface/coordinator ownership and draft refusal, real compact menus in both themes, duplicate-name persistence rollback and Cancel. The authored native inventory is 2,115 methods in 238 classes, retaining all 2,047 accepted 214 methods and adding 68. Its sorted-ID digest is `8f490647a2e76684db387b302d8665e21a04bfd98dfac155ee6e4151e33b7842`; ordinary four-process groups remain bounded at 420 seconds and now contain 620/454/522/519 methods. These tests have not yet run on macOS at this checkpoint. All accepted 214 behavior and resource limits remain required. The final QA upload is preserved; a transport-only helper additionally emits byte-preserving gzip/tar parts capped at 8 MiB each. Its 17 portable tests and a reconstruction of all 1,230 retained 214 evidence files passed locally; this does not establish application acceptance. The narrowly identified unused quick-save thumbnail remains an unmeasured future lead; it does not explain the existing 4K cold/peak memory cost.
+
 # Verification evidence and release boundary
 
 ## Build 214 pin management acceptance
