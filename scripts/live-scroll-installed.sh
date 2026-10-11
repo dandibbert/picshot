@@ -6,13 +6,15 @@ test "$#" -eq 3
 archive="$1"
 evidence="$2"
 source_sha="$3"
-mkdir -p "$evidence" dist
-evidence=$(cd "$evidence" && pwd -P)
+mkdir -p dist
+test "$(cd dist && pwd -P)" = "$PWD/dist"
 work=$(mktemp -d "$PWD/dist/live-scroll-installed.XXXXXXXX")
 trap 'rm -rf "$work"' EXIT
 ditto -x -k "$archive" "$work"
 app="$work/PicShot.app"
 codesign --verify --deep --strict "$app"
+mkdir -p "$evidence"
+evidence=$(cd "$evidence" && pwd -P)
 python3 - "$app" "$archive" "$evidence/package-identity.json" "$source_sha" <<'PY'
 import hashlib,json,os,pathlib,platform,plistlib,subprocess,sys
 app,archive,output=map(pathlib.Path,sys.argv[1:4]); source=sys.argv[4]

@@ -1,5 +1,47 @@
 """Remove only the literal counted opt-in product, early and staging hooks."""
 
+# Reverse only the eight reviewed live-scroll launcher additions. Missing,
+# duplicated or altered hooks fail; existing historical hashes are not refreshed.
+LIVE_SCROLL_LAUNCHER_HOOKS = (('let liveScrollDiagnostic = '
+  'ProcessInfo.processInfo.environment["PICSHOT_LIVE_SCROLL_RESOURCE_MODE"] != nil\n'
+  '    || ProcessInfo.processInfo.environment["PICSHOT_LIVE_SCROLL_DEMO_ONLY"] == "1"\n',
+  ''),
+ ('"PICSHOT_LIVE_SCROLL_RESOURCE_MODE", "PICSHOT_LIVE_SCROLL_RESOURCE_INPUT", '
+  '"PICSHOT_LIVE_SCROLL_DEMO_ONLY", "PICSHOT_LIVE_SCROLL_TARGET", ',
+  ''),
+ ('if liveScrollDiagnostic || recordingInputExportOnly || pinUIDiagnostic != nil {\n',
+  'if recordingInputExportOnly || pinUIDiagnostic != nil {\n'),
+ ('    if liveScrollDiagnostic || recordingInputExportOnly || '
+  'ProcessInfo.processInfo.environment["PICSHOT_CODEC_STAGING_MODE"] != nil || '
+  'ProcessInfo.processInfo.environment["PICSHOT_EDITABLE_PRODUCT_MODE"] != nil ||\n',
+  '    if recordingInputExportOnly || '
+  'ProcessInfo.processInfo.environment["PICSHOT_CODEC_STAGING_MODE"] != nil || '
+  'ProcessInfo.processInfo.environment["PICSHOT_EDITABLE_PRODUCT_MODE"] != nil ||\n'),
+ ('        if recordingInputExportOnly || liveScrollDiagnostic {\n'
+  '            report["earlyWitnessOnly"] = recordingInputExportOnly\n'
+  '            report["liveScrollDiagnosticOnly"] = liveScrollDiagnostic\n',
+  '        if recordingInputExportOnly {\n            report["earlyWitnessOnly"] = true\n'),
+ ('        if (liveScrollDiagnostic || recordingInputExportOnly || '
+  'ProcessInfo.processInfo.environment["PICSHOT_CODEC_STAGING_MODE"] != nil) && '
+  '!launchedIdentityMatches() {\n',
+  '        if (recordingInputExportOnly || '
+  'ProcessInfo.processInfo.environment["PICSHOT_CODEC_STAGING_MODE"] != nil) && '
+  '!launchedIdentityMatches() {\n'),
+ ('"Owned smoke launch interrupted\\n"', '"Early recording witness launch interrupted\\n"'),
+ ('if let launched, !launched.isTerminated, !(recordingInputExportOnly || liveScrollDiagnostic) || '
+  'launchedIdentityMatches(),\n',
+  'if let launched, !launched.isTerminated, !recordingInputExportOnly || '
+  'launchedIdentityMatches(),\n'))
+
+
+def without_live_scroll_launcher_hooks(test, source):
+    for hook, replacement in LIVE_SCROLL_LAUNCHER_HOOKS:
+        test.assertEqual(source.count(hook), 1,
+                         "Missing, duplicated or changed live-scroll launcher hook")
+        source = source.replace(hook, replacement, 1)
+    return source
+
+
 # Reverse only candidate182's four reviewed staging additions before applying
 # the older exact reversals. The historical launcher byte hash stays unchanged.
 CODEC_STAGING_LAUNCHER_HOOKS = (
@@ -26,6 +68,7 @@ CODEC_STAGING_LAUNCHER_HOOKS = (
 
 
 def without_pin_ui_diagnostic_launcher_hooks(test, source):
+    source = without_live_scroll_launcher_hooks(test, source)
     # Reverse only the literal reviewed opt-in observer additions. Existing
     # staging/early/product reversals and their historical hashes stay intact.
     import json
@@ -40,6 +83,10 @@ def without_pin_ui_diagnostic_launcher_hooks(test, source):
 
 def without_codec_staging_launcher_hooks(test, source):
     source = without_pin_ui_diagnostic_launcher_hooks(test, source)
+    return without_staging_only_launcher_hooks(test, source)
+
+
+def without_staging_only_launcher_hooks(test, source):
     for hook, replacement in CODEC_STAGING_LAUNCHER_HOOKS:
         test.assertEqual(source.count(hook), 1,
                          "Missing, duplicated or changed codec-staging launcher hook")
