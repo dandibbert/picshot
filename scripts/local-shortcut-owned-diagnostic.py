@@ -251,6 +251,16 @@ def validate_process(directory, report, identity):
     need(not cases['unexpectedIDs'], 'Unexpected native methods ran')
     need(all(sequence in (['started'], ['started', 'passed'], ['started', 'failed'])
              for sequence in cases['observedEvents'].values()), 'Duplicate, skipped or invalid method events')
+    # The historical assessor conservatively calls every nonzero exit incomplete.
+    # Distinguish a complete, normally exited assertion failure without accepting
+    # it or changing timeout, ownership, output or exact-selection requirements.
+    failed = sorted(name for name, sequence in cases['observedEvents'].items()
+                    if sequence == ['started', 'failed'])
+    if (report['status'] == 'exited' and report['rootReturnCode'] == 1 and failed
+            and not cases['missingIDs'] and not cases['unexpectedIDs']
+            and all(sequence in (['started', 'passed'], ['started', 'failed'])
+                    for sequence in cases['observedEvents'].values())):
+        cases.update(status='failed', failedIDs=failed)
     return cases
 
 

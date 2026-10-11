@@ -246,6 +246,28 @@ class ShortcutOwnedDiagnosticTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 M.validate_process(args.directory, bad, identity)
 
+    def test_normal_complete_assertion_failure_is_failed_while_missing_or_abnormal_remains_incomplete(self):
+        args = self.args('pin-layout')
+        identity, _ = self.launch(args)
+        good = self.report(args, identity)
+        log = args.directory / 'xctest.log'
+        failed_log = log.read_text().replace('passed (0.1 seconds)', 'failed (0.1 seconds)')
+        good['rootReturnCode'] = good['root']['returnCode'] = 1
+        for content, code, expected in ((failed_log, 1, 'failed'),
+                (failed_log.splitlines()[0] + '\n', 1, 'incomplete'),
+                (failed_log, -6, 'incomplete')):
+            log.write_text(content)
+            report = copy.deepcopy(good)
+            report['rootReturnCode'] = report['root']['returnCode'] = code
+            report['logIdentity'] = M.O.file_identity(log)
+            M.save(args.directory / 'process.json', report)
+            result = M.validate_process(args.directory, report, identity)
+            self.assertEqual(result['status'], expected)
+            if expected == 'failed':
+                self.assertEqual(result['failedIDs'], [M.PIN_LAYOUT_METHOD])
+                self.assertEqual(result['missingIDs'], [])
+                self.assertEqual(result['observedEvents'][M.PIN_LAYOUT_METHOD], ['started', 'failed'])
+
     def test_group0_requires_replayed_single_success_and_identical_bundle(self):
         single = self.args()
         identity, _ = self.launch(single)

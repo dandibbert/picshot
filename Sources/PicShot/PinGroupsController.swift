@@ -37,7 +37,7 @@ import PicShotCore
     private let removePinButton = NSButton(title: "移除保存项…", target: nil, action: nil)
     private let movePicker = NSPopUpButton()
     private let table = NSTableView()
-    private let preview = NSImageView()
+    private let preview = PinGroupPreviewImageView()
     private let details = NSTextField(wrappingLabelWithString: "选择贴图以预览")
     private let status = NSTextField(wrappingLabelWithString: "")
     private var displayedEntries: [PinSessionEntry] = []
@@ -428,6 +428,14 @@ import PicShotCore
         return NSImage(size: NSSize(width: 12, height: 12), flipped: false) { rect in
             tint.setFill(); NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1)).fill(); return true
         }
+    }
+}
+
+// The preview scales into its allocated column. A stored thumbnail's pixel
+// dimensions must not become a minimum window size when selection changes.
+@MainActor private final class PinGroupPreviewImageView: NSImageView {
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
     }
 }
 

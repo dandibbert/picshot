@@ -273,7 +273,7 @@ import PicShotCore
         let initial = PinTextContent(text: PinManagementSmokeFixture.initialText)
         let text = try store.add(rich: PreparedRichPin(document: PinRichDocument(text: initial), title: "文字便笺"))
         let html = PinTextContent(runs: [PinTextRun(text: "Keep bold", bold: true), PinTextRun(text: " 与 HTML", italic: true)], importedHTML: true)
-        _ = try store.add(rich: PreparedRichPin(document: PinRichDocument(text: html), title: "HTML 参考"))
+        let htmlEntry = try store.add(rich: PreparedRichPin(document: PinRichDocument(text: html), title: "HTML 参考"))
         let image = try store.add(image: ImageEditorRenderer.makeSampleImage(), title: "图片参考")
         // Same model-visible order as the installed draft-save/rename sequence.
         try store.updateText(id: text.id, content: PinTextContent(text: PinManagementSmokeFixture.savedText), expectedContent: initial)
@@ -360,6 +360,143 @@ import PicShotCore
         // Diagnostic failure is preserved. Never resize again to make this pass.
         XCTAssertEqual(window.frame.size, NSSize(width: 680, height: 600))
         try assertActionRowHitTargets(manager)
+        try exercisePreviewTransitions(manager, store: store, sampleID: image.id, textID: text.id, htmlID: htmlEntry.id,
+            appearance: appearance, trace: trace)
+    }
+
+    private func exercisePreviewTransitions(_ manager: PinGroupsController, store: PinSessionStore,
+        sampleID: UUID, textID: UUID, htmlID: UUID, appearance: NSAppearance.Name, trace: GroupOrderLayoutTrace) throws {
+        let window = try XCTUnwrap(manager.window), root = try XCTUnwrap(window.contentView)
+        let table = try XCTUnwrap(descendants(root).first { $0.identifier?.rawValue == "pin-group-entries" } as? NSTableView)
+        let preview = try XCTUnwrap(descendants(root).compactMap { $0 as? NSImageView }.first { !$0.isDescendant(of: table) })
+        let previewStack = try XCTUnwrap(descendants(root).compactMap { $0 as? NSStackView }.first { $0.views.contains { $0 === preview } })
+        let details = try XCTUnwrap(previewStack.views.compactMap { $0 as? NSTextField }.first)
+        var targets: [(name: String, id: UUID, color: [CGFloat]?)] = []
+        for (name, width, height, color) in [
+            ("portrait", 240, 960, [CGFloat(0.92), 0.08, 0.12]),
+            ("landscape", 960, 240, [CGFloat(0.08), 0.82, 0.16]),
+            ("small", 24, 12, [CGFloat(0.10), 0.20, 0.94])
+        ] {
+            let context = try XCTUnwrap(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            context.setFillColor(CGColor(srgbRed: color[0], green: color[1], blue: color[2], alpha: 1))
+            context.fill(CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height)))
+            let entry = try store.add(image: XCTUnwrap(context.makeImage()), title: "Preview " + name)
+            targets.append((name, entry.id, color))
+        }
+        targets += [("sample", sampleID, nil), ("plain-text", textID, nil), ("imported-html", htmlID, nil)]
+        manager.reload()
+        let before = store.index, assets = try assetBytes(store.directory)
+        let manifest = try Data(contentsOf: store.directory.appendingPathComponent("index.json"))
+        // Traverse all source types, then repeat crossings between image and text
+        // to expose stale raster/selection or accumulated minimum-height state.
+        for (step, targetIndex) in [3, 0, 1, 2, 4, 5, 0, 4, 2, 1, 3, 5].enumerated() {
+            let target = targets[targetIndex]
+            let prefix = "previewTransition.\(appearance.rawValue).\(step).\(target.name)"
+            func capture(_ stage: String) { trace.capture(manager, store: store, phase: prefix + "." + stage) }
+            let sorted = store.entries.filter { $0.groupID == store.index.activeGroupID }.sorted {
+                $0.updatedAt == $1.updatedAt ? $0.id.uuidString < $1.id.uuidString : $0.updatedAt > $1.updatedAt
+            }
+            let row = try XCTUnwrap(sorted.firstIndex { $0.id == target.id })
+            capture("beforeRealRowSelection")
+            let receipt = try PortableSettingsUIPreviewFixture.clickRow(row, in: table)
+            capture("afterRealRowSelection")
+            XCTAssertEqual(manager.selectedPinIDs, [target.id]); XCTAssertEqual(table.selectedRow, row)
+            root.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            capture("afterLayout")
+            XCTAssertEqual(window.frame.size, NSSize(width: 680, height: 600))
+            let deadline = ProcessInfo.processInfo.systemUptime + 0.05
+            var slices = 0
+            while slices < 20 && ProcessInfo.processInfo.systemUptime < deadline {
+                _ = RunLoop.main.run(mode: .default, before: Date(timeIntervalSinceNow: 0.005))
+                slices += 1
+            }
+            capture("afterRunLoop")
+            XCTAssertEqual(window.frame.size, NSSize(width: 680, height: 600))
+            XCTAssertEqual(window.contentView?.bounds.size, NSSize(width: 680, height: 572))
+            XCTAssertEqual(manager.selectedPinIDs, [target.id]); XCTAssertEqual(table.selectedRow, row)
+            let entry = try XCTUnwrap(store.entry(id: target.id)), image = try XCTUnwrap(preview.image)
+            XCTAssertTrue(image === store.thumbnail(id: target.id), "Preview must use the selected pin's actual thumbnail")
+            XCTAssertEqual(preview.imageScaling, .scaleProportionallyUpOrDown)
+            XCTAssertEqual(preview.bounds.width, 270, accuracy: 0.01)
+            XCTAssertGreaterThanOrEqual(preview.bounds.height, 160)
+            XCTAssertFalse(preview.isHiddenOrHasHiddenAncestor); XCTAssertFalse(details.isHiddenOrHasHiddenAncestor)
+            let previewFrame = preview.convert(preview.bounds, to: root), detailFrame = details.convert(details.bounds, to: root)
+            XCTAssertTrue(root.bounds.contains(previewFrame)); XCTAssertTrue(root.bounds.contains(detailFrame))
+            XCTAssertFalse(previewFrame.intersects(detailFrame), "Preview artwork cannot obscure its detail label")
+            XCTAssertTrue(details.stringValue.contains(entry.title))
+            let detailNeed = try XCTUnwrap(details.cell).cellSize(forBounds: NSRect(x: 0, y: 0, width: details.bounds.width, height: 4_096))
+            XCTAssertGreaterThanOrEqual(details.bounds.height + 1, detailNeed.height, "Selected details remain fully visible")
+            let pixels = try previewPixelEvidence(preview, expectedColor: target.color, richText: targetIndex >= 4)
+            trace.emit("previewTransition", ["step": step, "kind": target.name, "selectedID": target.id.uuidString,
+                "requestedRow": row, "selectedRow": table.selectedRow,
+                "dispatchRoute": receipt["dispatchRoute"] as? String ?? "missing",
+                "sourceSize": [entry.current.width, entry.current.height], "thumbnailSize": [image.size.width, image.size.height],
+                "previewSize": [preview.bounds.width, preview.bounds.height],
+                "detailSize": [details.bounds.width, details.bounds.height], "requiredDetailHeight": detailNeed.height,
+                "runLoopSlices": slices, "pixels": pixels])
+            XCTAssertEqual(store.index, before, "Selection and layout must not mutate saved content or metadata")
+        }
+        XCTAssertEqual(try assetBytes(store.directory), assets)
+        XCTAssertEqual(try Data(contentsOf: store.directory.appendingPathComponent("index.json")), manifest)
+        try assertActionRowHitTargets(manager)
+    }
+
+    /// Measures pixels produced by the actual native preview view, not a separate
+    /// image.draw implementation. Saturated fixtures distinguish artwork from
+    /// both theme backgrounds and make stale-image transitions observable.
+    private func previewPixelEvidence(_ preview: NSImageView, expectedColor: [CGFloat]?, richText: Bool) throws -> [String: Any] {
+        let image = try XCTUnwrap(preview.image), bounds = preview.bounds
+        XCTAssertGreaterThan(image.size.width, 0); XCTAssertGreaterThan(image.size.height, 0)
+        let scale = min(bounds.width / image.size.width, bounds.height / image.size.height)
+        let expected = NSRect(x: bounds.midX - image.size.width * scale / 2, y: bounds.midY - image.size.height * scale / 2,
+            width: image.size.width * scale, height: image.size.height * scale)
+        let width = Int(ceil(bounds.width)), height = Int(ceil(bounds.height))
+        guard width > 0, height > 0, width <= 1_000_000 / height else {
+            XCTFail("Native preview raster exceeds its one-million-pixel bound")
+            return ["bounded": false]
+        }
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+            bytesPerRow: width * 4, bitsPerPixel: 32))
+        try XCTUnwrap(bitmap.bitmapData).initialize(repeating: 0, count: bitmap.bytesPerRow * height)
+        bitmap.size = bounds.size
+        preview.effectiveAppearance.performAsCurrentDrawingAppearance { preview.cacheDisplay(in: bounds, to: bitmap) }
+        var minX = width, minY = height, maxX = -1, maxY = -1, matches = 0, dark = 0, light = 0
+        for y in 0..<height {
+            for x in 0..<width {
+                guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB), color.alphaComponent > 0.9 else { continue }
+                if let expectedColor, abs(color.redComponent - expectedColor[0]) < 0.09,
+                   abs(color.greenComponent - expectedColor[1]) < 0.09, abs(color.blueComponent - expectedColor[2]) < 0.09 {
+                    matches += 1; minX = min(minX, x); minY = min(minY, y); maxX = max(maxX, x); maxY = max(maxY, y)
+                }
+                // The centered aspect-fit rectangle is symmetric under bitmap
+                // row orientation, so this interior excludes letterbox pixels.
+                if expected.insetBy(dx: 4, dy: 4).contains(NSPoint(x: CGFloat(x) + 0.5, y: CGFloat(y) + 0.5)) {
+                    if max(color.redComponent, color.greenComponent, color.blueComponent) < 0.4 { dark += 1 }
+                    if min(color.redComponent, color.greenComponent, color.blueComponent) > 0.8 { light += 1 }
+                }
+            }
+        }
+        var evidence: [String: Any] = ["bitmapSize": [width, height],
+            "expectedAspectFit": [expected.minX, expected.minY, expected.width, expected.height],
+            "sourceAspectRatio": image.size.width / image.size.height, "matchingPixels": matches,
+            "darkInteriorPixels": dark, "lightInteriorPixels": light]
+        if expectedColor != nil {
+            XCTAssertGreaterThan(matches, 100, "Actual native preview must draw the current fixture's pixels")
+            let actual = NSRect(x: CGFloat(minX), y: CGFloat(minY), width: CGFloat(max(0, maxX - minX + 1)), height: CGFloat(max(0, maxY - minY + 1)))
+            XCTAssertEqual(actual.width, expected.width, accuracy: 2, "Artwork must retain its native aspect-fit width")
+            XCTAssertEqual(actual.height, expected.height, accuracy: 2, "Artwork must retain its native aspect-fit height")
+            XCTAssertEqual(actual.midX, expected.midX, accuracy: 1)
+            XCTAssertEqual(actual.midY, expected.midY, accuracy: 1)
+            evidence["actualColoredPixelBounds"] = [actual.minX, actual.minY, actual.width, actual.height]
+            evidence["actualAspectRatio"] = actual.width / max(1, actual.height)
+        }
+        if richText {
+            XCTAssertGreaterThan(dark, 5, "Native rich preview must contain rendered text")
+            XCTAssertGreaterThan(light, 100, "Native rich preview must contain its saved poster background")
+        }
+        return evidence
     }
 
     private enum Failure: Error, Equatable { case write }
