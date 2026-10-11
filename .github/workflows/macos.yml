@@ -8,8 +8,8 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') && 'pin-ui-diagnostic' || contains(github.event.head_commit.message || '', '[shortcut-isolation]') && 'shortcut-isolation' || contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && 'intel154-fresh-diagnostic' || contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && 'native-timeout-diagnostic' || contains(github.event.head_commit.message || '', '[installed-diagnostic]') && 'installed-diagnostic' || contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-product-resource' || contains(github.event.head_commit.message || '', '[seed-render-crop]') && 'seed-render-crop' || contains(github.event.head_commit.message || '', '[effect-context]') && 'effect-context' || contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && 'renderer-scope-controls' || contains(github.event.head_commit.message || '', '[renderer-storage]') && 'renderer-storage' || contains(github.event.head_commit.message || '', '[drawing-pair]') && 'drawing-pair' || contains(github.event.head_commit.message || '', '[editable-observation]') && 'editable-observation' || contains(github.event.head_commit.message || '', '[callout-retirement]') && 'callout-retirement' || contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-documents' || contains(github.event.head_commit.message || '', '[multiwindow-memory]') && 'multiwindow-memory' || contains(github.event.head_commit.message || '', '[recording-wait]') && 'recording-wait' || contains(github.event.head_commit.message || '', '[manual-hash]') && 'manual-hash' || contains(github.event.head_commit.message || '', '[scroll-memory]') && 'scroll-memory' || contains(github.event.head_commit.message || '', '[decode-exit-latch]') && 'decode-exit-latch' || contains(github.event.head_commit.message || '', '[decode-timing-v3]') && 'decode-timing-v3' || contains(github.event.head_commit.message || '', '[decode-large]') && 'decode-large' || contains(github.event.head_commit.message || '', '[pin-workflows]') && 'pins-010' || contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
-  cancel-in-progress: ${{ !contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') && !contains(github.event.head_commit.message || '', '[shortcut-isolation]') && !contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && !(contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]')) && !contains(github.event.head_commit.message || '', '[seed-render-crop]') && !contains(github.event.head_commit.message || '', '[effect-context]') && !contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && !contains(github.event.head_commit.message || '', '[renderer-storage]') && !contains(github.event.head_commit.message || '', '[drawing-pair]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
+  group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[live-scroll-remainder]') && 'live-scroll-remainder' || contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') && 'pin-ui-diagnostic' || contains(github.event.head_commit.message || '', '[shortcut-isolation]') && 'shortcut-isolation' || contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && 'intel154-fresh-diagnostic' || contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && 'native-timeout-diagnostic' || contains(github.event.head_commit.message || '', '[installed-diagnostic]') && 'installed-diagnostic' || contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-product-resource' || contains(github.event.head_commit.message || '', '[seed-render-crop]') && 'seed-render-crop' || contains(github.event.head_commit.message || '', '[effect-context]') && 'effect-context' || contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && 'renderer-scope-controls' || contains(github.event.head_commit.message || '', '[renderer-storage]') && 'renderer-storage' || contains(github.event.head_commit.message || '', '[drawing-pair]') && 'drawing-pair' || contains(github.event.head_commit.message || '', '[editable-observation]') && 'editable-observation' || contains(github.event.head_commit.message || '', '[callout-retirement]') && 'callout-retirement' || contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-documents' || contains(github.event.head_commit.message || '', '[multiwindow-memory]') && 'multiwindow-memory' || contains(github.event.head_commit.message || '', '[recording-wait]') && 'recording-wait' || contains(github.event.head_commit.message || '', '[manual-hash]') && 'manual-hash' || contains(github.event.head_commit.message || '', '[scroll-memory]') && 'scroll-memory' || contains(github.event.head_commit.message || '', '[decode-exit-latch]') && 'decode-exit-latch' || contains(github.event.head_commit.message || '', '[decode-timing-v3]') && 'decode-timing-v3' || contains(github.event.head_commit.message || '', '[decode-large]') && 'decode-large' || contains(github.event.head_commit.message || '', '[pin-workflows]') && 'pins-010' || contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
+  cancel-in-progress: ${{ !contains(github.event.head_commit.message || '', '[live-scroll-remainder]') && !contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') && !contains(github.event.head_commit.message || '', '[shortcut-isolation]') && !contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && !(contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]')) && !contains(github.event.head_commit.message || '', '[seed-render-crop]') && !contains(github.event.head_commit.message || '', '[effect-context]') && !contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && !contains(github.event.head_commit.message || '', '[renderer-storage]') && !contains(github.event.head_commit.message || '', '[drawing-pair]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
 jobs:
   live-scroll-preview:
     if: ${{ contains(github.event.head_commit.message || '', '[live-scroll-preview]') }}
@@ -408,7 +408,7 @@ jobs:
           retention-days: 14
 
   build:
-    if: ${{ !contains(github.event.head_commit.message || '', '[live-scroll-preview]') && !contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') && !contains(github.event.head_commit.message || '', '[shortcut-isolation]') && !contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') && !contains(github.event.head_commit.message || '', '[codec-attribution]') && !contains(github.event.head_commit.message || '', '[codec-staging]') && !contains(github.event.head_commit.message || '', '[codec-avif-confirmation]') && !contains(github.event.head_commit.message || '', '[runner-only]') && !contains(github.event.head_commit.message || '', '[scroll-memory]') && !contains(github.event.head_commit.message || '', '[manual-hash]') && !contains(github.event.head_commit.message || '', '[recording-wait]') && !contains(github.event.head_commit.message || '', '[multiwindow-memory]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-documents]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
+    if: ${{ !contains(github.event.head_commit.message || '', '[live-scroll-remainder]') && !contains(github.event.head_commit.message || '', '[live-scroll-preview]') && !contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') && !contains(github.event.head_commit.message || '', '[shortcut-isolation]') && !contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') && !contains(github.event.head_commit.message || '', '[codec-attribution]') && !contains(github.event.head_commit.message || '', '[codec-staging]') && !contains(github.event.head_commit.message || '', '[codec-avif-confirmation]') && !contains(github.event.head_commit.message || '', '[runner-only]') && !contains(github.event.head_commit.message || '', '[scroll-memory]') && !contains(github.event.head_commit.message || '', '[manual-hash]') && !contains(github.event.head_commit.message || '', '[recording-wait]') && !contains(github.event.head_commit.message || '', '[multiwindow-memory]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-documents]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
     strategy:
       fail-fast: false
       matrix:
@@ -3992,3 +3992,775 @@ jobs:
             dist/avif-confirmation-phase-report.json
           if-no-files-found: warn
           retention-days: 14
+
+  # Diagnostic completion of retained227 checks only. Stable214 remains accepted;
+  # run38130153505's installed warmRSS/lateRSS failure is neither rerun nor waived.
+  live-scroll-remainder:
+    if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message || '', '[live-scroll-remainder]') }}
+    runs-on: macos-15
+    # Keep the original ARM whole-job cap and every copied stage/command cap.
+    # Independent stages can continue after a failure, but no failure is softened.
+    timeout-minutes: 318
+    env:
+      PICSHOT_REMAINDER_SOURCE: 'e5a859a82b2a7a697e51a0a4d42f34ae4f5602d0'
+      PICSHOT_REMAINDER_TREE: 'bee9ab45ee7770f2aab84565f392934f21903030'
+      PICSHOT_REMAINDER_WORKFLOW_SHA: ${{ github.workflow_sha }}
+      NATIVE_TEST_PROCESS_COUNT: '4'
+      FOCUSED_TEST_PROCESS_COUNT: '2'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        id: checkout_source227
+        with:
+          ref: e5a859a82b2a7a697e51a0a4d42f34ae4f5602d0
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bind exact retained227 source and separate diagnostic workflow
+        id: provenance
+        timeout-minutes: 2
+        run: |
+          python3 - <<'PYTHON'
+          import hashlib, json, os, platform, subprocess
+          from pathlib import Path
+          def git(*args):
+              return subprocess.check_output(['git', *args], timeout=10)
+          source, tree = os.environ['PICSHOT_REMAINDER_SOURCE'], os.environ['PICSHOT_REMAINDER_TREE']
+          root = Path('dist/live-scroll-remainder'); root.mkdir(parents=True, exist_ok=True)
+          if (git('rev-parse', 'HEAD', 'HEAD^{tree}').decode().splitlines() != [source, tree]
+                  or git('status', '--porcelain', '--untracked-files=no').strip()
+                  or platform.system() != 'Darwin' or platform.machine() != 'arm64'):
+              raise SystemExit('Expected the exact clean retained227 tree on native ARM macOS')
+          workflow_source = os.environ['PICSHOT_REMAINDER_WORKFLOW_SHA']
+          workflow = git('show', workflow_source + ':.github/workflows/macos.yml')
+          (root/'diagnostic-workflow.yml').write_bytes(workflow)
+          retained_workflow = Path('.github/workflows/macos.yml').read_bytes()
+          if hashlib.sha256(retained_workflow).hexdigest() != 'b09a4f78c221c77e5db83dc3cfedecc2abeb08162f41b00ee4397fff70a4b2c1':
+              raise SystemExit('Retained227 workflow bytes differ')
+          record = dict(status='source-verified', diagnosticOnly=True,
+              installerAcceptance=False, fullMemoryQualification=False, testingPackageEligible=False,
+              sourceCommit=source, sourceTree=tree, retainedBuild=227, latestAcceptedBuild=214,
+              triggerCommit=os.environ['GITHUB_SHA'], diagnosticWorkflowCommit=workflow_source,
+              diagnosticWorkflowTree=git('rev-parse', workflow_source+'^{tree}').decode().strip(),
+              diagnosticWorkflowBlob=git('rev-parse', workflow_source+':.github/workflows/macos.yml').decode().strip(),
+              diagnosticWorkflowSHA256=hashlib.sha256(workflow).hexdigest(),
+              retainedWorkflowSHA256=hashlib.sha256(retained_workflow).hexdigest(),
+              workflowRunID=os.environ['GITHUB_RUN_ID'], workflowRunAttempt=os.environ['GITHUB_RUN_ATTEMPT'],
+              diagnosticBuildVersion=os.environ['GITHUB_RUN_NUMBER'], architecture=platform.machine(),
+              productOverlayApplied=False, installerArtifactsPublished=False,
+              originalFailure=dict(runID='38130153505', build=227, sourceCommit=source,
+                  url=os.environ['GITHUB_SERVER_URL']+'/'+os.environ['GITHUB_REPOSITORY']+'/actions/runs/38130153505',
+                  warmRSS='failed', lateRSS='failed', pixelChecksPassed=10, ownerChecksPassed=10,
+                  preserved=True, rerun=False),
+              omittedCompletedStandaloneStages=dict(earlyNativeMethods=102, liveScrollNativeMethods=101,
+                  retainedInExhaustiveSuite=True),
+              diagnosticScope='Remaining checks only; original scrolling resource failure remains disqualifying')
+          (root/'source-identity.json').write_text(json.dumps(record, indent=2)+'\n')
+          PYTHON
+      - name: Test bounded CI command runner and annotation evidence checker
+        id: runner_contracts
+        if: ${{ !cancelled() && steps.provenance.outcome == 'success' }}
+        timeout-minutes: 2
+        run: |
+          python3 -m unittest discover -s scripts/tests -p test_run_bounded_command.py -v
+          python3 -m unittest discover -s scripts/tests -p test_recording_input_ui_contract.py -v
+          python3 -m unittest discover -s scripts/tests -p test_check_recording_transport_report.py -v
+          python3 -m unittest discover -s scripts/tests -p test_recording_input_export_contract.py -v
+          python3 -m unittest discover -s scripts/tests -p test_recording_input_export_early.py -v
+          python3 -O -m unittest discover -s scripts/tests -p test_recording_input_export_early.py -v
+          python3 -m unittest discover -s scripts/tests -p test_check_annotation_details_report.py -v
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_check_effect_output_failure_report.py -v
+          PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p test_check_effect_output_failure_report.py -v
+          python3 -m unittest discover -s scripts/tests -p test_check_scroll_manual_resource_report.py -v
+          python3 -m unittest discover -s scripts/tests -p test_check_manual_hash_comparison.py -v
+          python3 -m unittest discover -s scripts/tests -p test_check_multiwindow_memory_comparison.py -v
+          python3 -m unittest discover -s scripts/tests -p test_multiwindow_resource_smoke_selection.py -v
+          python3 -m unittest discover -s scripts/tests -p test_check_editable_annotation_report.py -v
+      - name: Check portable settings evidence contract
+        id: settings_contracts
+        if: ${{ !cancelled() && steps.provenance.outcome == 'success' }}
+        timeout-minutes: 2
+        run: |
+          python3 -m unittest discover -s scripts/tests -p test_check_portable_settings.py -v
+          python3 -O -m unittest discover -s scripts/tests -p test_check_portable_settings.py -v
+      - name: Check pin management evidence contract
+        id: pin_contracts
+        if: ${{ !cancelled() && steps.provenance.outcome == 'success' }}
+        timeout-minutes: 2
+        run: |
+          python3 -m unittest discover -s scripts/tests -p test_check_pin_management.py -v
+          python3 -O -m unittest discover -s scripts/tests -p test_check_pin_management.py -v
+      - name: Check explicit live scrolling testing classification
+        id: classification_contracts
+        if: ${{ !cancelled() && steps.provenance.outcome == 'success' }}
+        timeout-minutes: 2
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p 'test_live_scroll_testing_classification.py' -v
+          PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p 'test_live_scroll_testing_classification.py' -v
+      - name: Check installed drawing default product and source contracts
+        id: drawing_contracts
+        if: ${{ !cancelled() && steps.provenance.outcome == 'success' }}
+        timeout-minutes: 4
+        run: |
+          set -o pipefail
+          mkdir -p dist
+          for picshot_contract_pattern in '*drawing*.py' test_check_editable_product_resource.py test_editable_product_source_binding.py; do
+            PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p "$picshot_contract_pattern" -v 2>&1 | tee -a dist/installed-default-contracts.log
+          done
+      - name: Check installed default contracts with Python assertions disabled
+        id: drawing_contracts_optimized
+        if: ${{ !cancelled() && steps.provenance.outcome == 'success' }}
+        timeout-minutes: 4
+        run: |
+          set -o pipefail
+          for picshot_contract_pattern in '*drawing*.py' test_check_editable_product_resource.py test_editable_product_source_binding.py; do
+            PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p "$picshot_contract_pattern" -v 2>&1 | tee -a dist/installed-default-contracts-optimized.log
+          done
+      - name: Prepare verified codec dependencies before native tests
+        id: codec_dependencies
+        if: ${{ !cancelled() && steps.provenance.outcome == 'success' }}
+        timeout-minutes: 15
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 840
+          --log dist/native-dependencies-preflight.log --report dist/native-dependencies-preflight-report.json
+          -- python3 scripts/build-native-codecs.py --arch arm64
+      - name: Compile debug app
+        id: debug_build
+        if: ${{ !cancelled() && steps.provenance.outcome == 'success' && steps.codec_dependencies.outcome == 'success' }}
+        timeout-minutes: 8
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 420
+          --log dist/debug-build.log --report dist/debug-build-report.json
+          -- swift build --product PicShot
+      - name: Upload debug compilation evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-DIAGNOSTIC-Live-Scroll-Remainder-Debug-Compile-arm64-${{ env.PICSHOT_REMAINDER_SOURCE }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/live-scroll-remainder/source-identity.json
+            dist/debug-build.log
+            dist/debug-build-report.json
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Compile native tests
+        id: test_build
+        if: ${{ !cancelled() && steps.provenance.outcome == 'success' && steps.codec_dependencies.outcome == 'success' && steps.debug_build.outcome == 'success' }}
+        timeout-minutes: 10
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 540
+          --log dist/test-build.log --report dist/test-build-report.json
+          -- swift build --build-tests
+      - name: Upload test compilation evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-DIAGNOSTIC-Live-Scroll-Remainder-Test-Compile-arm64-${{ env.PICSHOT_REMAINDER_SOURCE }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/live-scroll-remainder/source-identity.json
+            dist/test-build.log
+            dist/test-build-report.json
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Build dedicated native codec helper for actual lifecycle tests
+        id: codec_helper
+        if: ${{ !cancelled() && steps.provenance.outcome == 'success' && steps.codec_dependencies.outcome == 'success' && steps.debug_build.outcome == 'success' && steps.test_build.outcome == 'success' }}
+        run: swift build --product PicShotCodecHelper
+      - name: Plan exhaustive and focused native test processes
+        id: discovery
+        if: ${{ !cancelled() && steps.provenance.outcome == 'success' && steps.test_build.outcome == 'success' && steps.codec_helper.outcome == 'success' }}
+        timeout-minutes: 2
+        run: |
+          python3 -m unittest discover -s scripts/tests -p test_native_test_shards.py -v
+          python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/native-test-discovery.log --report dist/native-test-discovery-report.json -- swift test list --skip-build
+          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$PICSHOT_REMAINDER_SOURCE" --process-count "$NATIVE_TEST_PROCESS_COUNT" --output dist/native-tests-plan.json
+          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$PICSHOT_REMAINDER_SOURCE" --process-count "$FOCUSED_TEST_PROCESS_COUNT" --selection-regex 'LiveScroll|AnnotationStyle|LocalAnnotationShortcut|PortableAnnotationPreferences|PortableSettings|AnnotationToolbarOrder|DrawingRaster|EditableProductResource|EditableProductRetirement|EditableComponent|PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|AnnotationEditing|CaptureAspectRatio|CaptureRatio|MultiWindow|ImageOutputDecoration|EditorOutput|PinOriginalCurrent|ManualScroll|ScrollPreview|ScrollSequencePreview|AnnotationFreehand|AnnotationTextLine|NumberedCallout|AutomaticMosaic|RepeatedRegion|AutomaticPinOCR|PinOCR|TextResultSourceSelection|PinManagement|PinWorkflow|LaTeXPin|PinLaTeX|PinGroup|PinDesktop|EditorToolbarHierarchy|SaveWorkflow|OwnedVideoExportStage|ImageBacking|Codec|NativeExport|AnimatedWebP|WebPContainer|RecordingWebP|CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingInput|RecordingHotKey|RecordingTransport|RecordingCommandCoordinator|SettingsAndMenuTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' --output dist/focused-tests-plan.json
+      - name: Require exact2148 discovery and preserve accepted214 method assignments
+        id: inventory
+        if: ${{ !cancelled() && steps.provenance.outcome == 'success' && steps.discovery.outcome == 'success' }}
+        timeout-minutes: 2
+        run: |
+          python3 - <<'PYTHON'
+          import hashlib, importlib.util, json, os
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('native', 'scripts/native-test-shards.py')
+          native = importlib.util.module_from_spec(spec); spec.loader.exec_module(native)
+          source = os.environ['PICSHOT_REMAINDER_SOURCE']
+          plan = native.checked_plan(Path('dist/native-tests-plan.json'), source)
+          focused = native.checked_plan(Path('dist/focused-tests-plan.json'), source)
+          inventory = plan['discoveredTests']
+          added = json.loads(native.bounded_text(Path('scripts/live-scroll-additive-tests.json'), 128*1024))
+          native.need(isinstance(added, list) and added == sorted(set(added)) and len(added) == 101
+              and all(native.SPECIFIER.fullmatch(case) and '.LiveScroll' in case for case in added),
+              'Retained227 additive101 inventory differs')
+          native.need(set(added).issubset(inventory), 'Missing required live-scroll method')
+          original = [case for case in inventory if case not in set(added)]
+          original_shards = [[case for case in shard['tests'] if case not in set(added)] for shard in plan['shards']]
+          native.need(len(inventory) == 2148 and len({case.split('/')[0] for case in inventory}) == 245
+              and len(original) == 2047 and len({case.split('/')[0] for case in original}) == 232
+              and hashlib.sha256(('\n'.join(original)+'\n').encode()).hexdigest() ==
+                  '926ac5674df90163b949fe461f0d4589ef72c8fc3215fa00b927564aae57cb44'
+              and plan['selectedTests'] == inventory and plan['selectionRegex'] == ''
+              and plan['processCount'] == 4 and plan['timeoutSecondsPerProcess'] == 420
+              and [len(cases) for cases in original_shards] == [579, 442, 522, 504]
+              and focused['discoveredTests'] == inventory and focused['processCount'] == 2
+              and focused['timeoutSecondsPerProcess'] == 420,
+              'Exact2148 discovery, accepted214 IDs, or original ARM process assignment differs')
+          Path('dist/live-scroll-remainder/inventory.json').write_text(json.dumps(dict(
+              status='passed', diagnosticOnly=True, sourceCommit=source,
+              workflowRunID=os.environ['GITHUB_RUN_ID'], workflowRunAttempt=os.environ['GITHUB_RUN_ATTEMPT'],
+              installerAcceptance=False, fullMemoryQualification=False, testingPackageEligible=False,
+              discoveredCount=len(inventory), discoveredClassCount=245, preserved214Methods=len(original),
+              additiveLiveScrollMethods=len(added), nativeProcessCount=4, focusedProcessCount=2,
+              timeoutSecondsPerProcess=420, nativePlanSHA256=hashlib.sha256(Path('dist/native-tests-plan.json').read_bytes()).hexdigest(),
+              focusedPlanSHA256=hashlib.sha256(Path('dist/focused-tests-plan.json').read_bytes()).hexdigest()), indent=2)+'\n')
+          PYTHON
+      - name: Package signed native app for early pixel review
+        id: package
+        if: ${{ !cancelled() && steps.provenance.outcome == 'success' && steps.codec_dependencies.outcome == 'success' }}
+        run: |
+          mkdir -p dist
+          set -o pipefail
+          bash scripts/package.sh 2>&1 | tee dist/package.log
+      - name: Bind signed diagnostic packages to source227 and this run
+        id: package_identity
+        if: ${{ !cancelled() && steps.provenance.outcome == 'success' && steps.package.outcome == 'success' }}
+        timeout-minutes: 2
+        run: |
+          python3 - <<'PYTHON'
+          import hashlib, json, os, plistlib, subprocess
+          from pathlib import Path
+          app = Path('dist/PicShot.app')
+          info = plistlib.loads((app/'Contents/Info.plist').read_bytes())
+          build = json.loads((app/'Contents/Resources/build-info.json').read_text())
+          source = os.environ['PICSHOT_REMAINDER_SOURCE']
+          if (subprocess.check_output(['git', 'rev-parse', 'HEAD', 'HEAD^{tree}'], text=True, timeout=10).splitlines()
+                  != [source, os.environ['PICSHOT_REMAINDER_TREE']]
+                  or subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=no'], timeout=10).strip()
+                  or info['PicShotSourceCommit'] != source or build['sourceCommit'] != source
+                  or info['CFBundleVersion'] != os.environ['GITHUB_RUN_NUMBER'] or build['architecture'] != 'arm64'):
+              raise SystemExit('Diagnostic package source, build, architecture, or tracked tree differs')
+          subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], check=True, timeout=30)
+          def digest(path):
+              sha = hashlib.sha256()
+              with path.open('rb') as stream:
+                  for chunk in iter(lambda: stream.read(1024*1024), b''): sha.update(chunk)
+              return sha.hexdigest()
+          files = [app/'Contents/MacOS/PicShot', app/'Contents/Info.plist', app/'Contents/Resources/build-info.json',
+              Path('dist/PicShot-0.22.0-macos-arm64.zip'), Path('dist/PicShot-0.22.0-macos-arm64.dmg')]
+          record = dict(status='passed', diagnosticOnly=True, sourceCommit=source,
+              buildVersion=info['CFBundleVersion'], workflowRunID=os.environ['GITHUB_RUN_ID'],
+              workflowRunAttempt=os.environ['GITHUB_RUN_ATTEMPT'], installerAcceptance=False,
+              fullMemoryQualification=False, testingPackageEligible=False,
+              packagesRemainOnRunner=True, files=[dict(path=str(path), bytes=path.stat().st_size,
+                  sha256=digest(path)) for path in files])
+          Path('dist/live-scroll-remainder/package-identity.json').write_text(json.dumps(record, indent=2)+'\n')
+          PYTHON
+      - name: Render native UI from installed ZIP before slow verification
+        id: native_ui
+        if: ${{ !cancelled() && steps.provenance.outcome == 'success' && steps.package_identity.outcome == 'success' }}
+        run: |
+          set -o pipefail
+          bash scripts/ui-preview.sh 2>&1 | tee dist/ui-preview.log
+      - name: Upload early native UI preview
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-DIAGNOSTIC-Live-Scroll-Remainder-UI-arm64-${{ env.PICSHOT_REMAINDER_SOURCE }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/live-scroll-remainder/source-identity.json
+            dist/evidence/ui/
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Check installed recording exports before slow native gates
+        id: recording_exports
+        if: ${{ !cancelled() && steps.provenance.outcome == 'success' && steps.package_identity.outcome == 'success' }}
+        # 660s launcher (unchanged 600s app + 6s owned cleanup), 330s reader,
+        # 140s bounded identity/extraction commands, 70s cleanup/report reserve
+        # (including existing-wrapper termination grace). Orchestration only.
+        # Total 1200s. Existing reader build/decode limits stay 60/120/90s.
+        timeout-minutes: 20
+        run: python3 scripts/recording-input-export-early.py "$PICSHOT_REMAINDER_SOURCE"
+      - name: Upload early installed recording export witness
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-DIAGNOSTIC-Live-Scroll-Remainder-Early-Recording-Exports-arm64-${{ env.PICSHOT_REMAINDER_SOURCE }}-${{ github.run_id }}-${{ github.run_attempt }}
+          # Five 4MiB media + eight 128KiB reports + two 2MiB logs = 25MiB
+          # maximum raw payload. Never include the installed app or extra PNG.
+          path: |
+            dist/live-scroll-remainder/source-identity.json
+            dist/evidence/recording-input-export-early/artifact/
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Measure codec and image backing in fresh installed processes
+        id: backing
+        if: ${{ !cancelled() && steps.provenance.outcome == 'success' && steps.package_identity.outcome == 'success' }}
+        timeout-minutes: 8
+        run: |
+          set -o pipefail
+          bash scripts/codec-attribution.sh 2>&1 | tee dist/codec-attribution.log
+          bash scripts/image-backing-attribution.sh 2>&1 | tee dist/image-backing-attribution.log
+      - name: Upload early backing observations before remaining installer gates
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-DIAGNOSTIC-Live-Scroll-Remainder-Backing-arm64-${{ env.PICSHOT_REMAINDER_SOURCE }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/live-scroll-remainder/source-identity.json
+            dist/codec-attribution.log
+            dist/image-backing-attribution.log
+            dist/evidence/codec-attribution/
+            dist/evidence/image-backing/
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Verify installed production staging routes and portable fidelity contract
+        id: default_routes
+        if: ${{ !cancelled() && steps.provenance.outcome == 'success' && steps.package_identity.outcome == 'success' && steps.backing.outcome == 'success' }}
+        timeout-minutes: 3
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_codec_fidelity_only.py -v
+          PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p test_codec_fidelity_only.py -v
+          python3 scripts/check-codec-staging-defaults.py dist/evidence/codec-attribution --source "$PICSHOT_REMAINDER_SOURCE" --webp verifiedBytesOnly --avif legacyPreview --report dist/codec-fidelity-metadata/default-routes.json
+      - name: Verify actual staged final and preview pixels from installed ZIP
+        id: fidelity
+        if: ${{ !cancelled() && steps.provenance.outcome == 'success' && steps.package_identity.outcome == 'success' && steps.default_routes.outcome == 'success' }}
+        timeout-minutes: 106
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 6240 --max-log-bytes 1048576
+          --log dist/codec-fidelity-metadata/outer.log --report dist/codec-fidelity-metadata/outer.json
+          -- bash scripts/codec-fidelity-installed.sh
+          "${{ github.workspace }}/dist/PicShot-0.22.0-macos-arm64.zip"
+          "${{ github.workspace }}/dist/codec-fidelity-standalone" "${{ env.PICSHOT_REMAINDER_SOURCE }}"
+      - name: Preserve standalone fidelity reports and actual default-route evidence
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-DIAGNOSTIC-Live-Scroll-Remainder-Fidelity-Only-Reports-arm64-${{ env.PICSHOT_REMAINDER_SOURCE }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/live-scroll-remainder/source-identity.json
+            dist/codec-fidelity-standalone/upload/fidelity-only-reports.zip
+          if-no-files-found: warn
+          compression-level: 0
+      - name: Preserve small fidelity specimens separately
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-DIAGNOSTIC-Live-Scroll-Remainder-Fidelity-Only-Small-arm64-${{ env.PICSHOT_REMAINDER_SOURCE }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/live-scroll-remainder/source-identity.json
+            dist/codec-fidelity-standalone/upload/small-specimens.zip
+          if-no-files-found: warn
+          compression-level: 0
+      - name: Preserve large control fidelity specimens separately
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-DIAGNOSTIC-Live-Scroll-Remainder-Fidelity-Only-Large-Control-arm64-${{ env.PICSHOT_REMAINDER_SOURCE }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/live-scroll-remainder/source-identity.json
+            dist/codec-fidelity-standalone/upload/large-control-specimens.zip
+          if-no-files-found: warn
+          compression-level: 0
+      - name: Preserve large candidate fidelity specimens separately
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-DIAGNOSTIC-Live-Scroll-Remainder-Fidelity-Only-Large-Candidate-arm64-${{ env.PICSHOT_REMAINDER_SOURCE }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/live-scroll-remainder/source-identity.json
+            dist/codec-fidelity-standalone/upload/large-candidate-specimens.zip
+          if-no-files-found: warn
+          compression-level: 0
+      - name: Preserve ordinary default-route and outer-command evidence separately
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-DIAGNOSTIC-Live-Scroll-Remainder-Fidelity-Only-Default-Routes-arm64-${{ env.PICSHOT_REMAINDER_SOURCE }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/live-scroll-remainder/source-identity.json
+            dist/codec-fidelity-metadata/default-routes.json
+            dist/codec-fidelity-metadata/outer.log
+            dist/codec-fidelity-metadata/outer.json
+          if-no-files-found: warn
+      - name: Reproduce the exact pin Apply regression before broader native gates
+        id: pin_apply
+        if: ${{ !cancelled() && steps.provenance.outcome == 'success' && steps.inventory.outcome == 'success' }}
+        # Method first, then its four-method class. Each keeps 420s native,
+        # 5s TERM grace and 8MiB log cap: 2 * (420s + 10s cleanup) + 60s = 920s.
+        timeout-minutes: 16
+        run: |
+          python3 - <<'PYTHON'
+          import hashlib, importlib.util, json, math, os, subprocess, sys, time
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('native', 'scripts/native-test-shards.py')
+          native = importlib.util.module_from_spec(spec); spec.loader.exec_module(native)
+          root = Path('dist/evidence/pin-apply-regression')
+          root.mkdir(parents=True, exist_ok=True)
+          source = os.environ['PICSHOT_REMAINDER_SOURCE']
+          overhead_start, native_wait_seconds = time.monotonic(), 0.0
+          method = 'PicShotTests.PinAnchoredEditingTests/testApplyCommitsOnlyOnceAndCancelLeavesPinPixelsUntouched'
+          class_ids = [
+              'PicShotTests.PinAnchoredEditingTests/testAnchoredEditorKeepsZoomPanAndImageAtExactScreenCoordinates',
+              method,
+              'PicShotTests.PinAnchoredEditingTests/testExplicitHideInvalidatesLateCloseAndNeverResurrectsPin',
+              'PicShotTests.PinAnchoredEditingTests/testGroupSwitchClosesAnchoredSurfacesWithoutReopeningHiddenSession']
+          record = dict(schemaVersion=1, status='running', sourceCommit=source, cells=[],
+              expectedOrder=['method', 'class'], sameProcessAsFullSuite=False,
+              scope='Exact corrected pin method, then its unchanged four-method class; overlapping coverage is not additive',
+              runnerCleanupScope='Original bounded runner owned process group; detached/global process absence is not proven')
+          def remaining_overhead():
+              remaining = 60 - (time.monotonic() - overhead_start - native_wait_seconds)
+              native.need(remaining > 0, 'Regression setup and replay exceeded their 60-second allowance')
+              return remaining
+          def digest(path):
+              remaining_overhead()
+              native.need(path.is_file() and not path.is_symlink(), 'Identity input is not a regular file')
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+          def source_identity():
+              native.need(subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True, timeout=min(10, remaining_overhead())).strip() == source,
+                  'Regression source differs from candidate commit')
+              native.need(not subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=no'], timeout=min(10, remaining_overhead())).strip(),
+                  'Regression tracked checkout changed')
+              native.need(digest(Path('Tests/PicShotTests/PinAnchoredEditingTests.swift')) ==
+                  'bd60e0bfe5f6231a87f8934de3841101d014d80cbd57c5e28613083696164c42', 'Pin regression fixture differs from reviewed bytes')
+              for name, expected in (
+                  ('scripts/native-test-shards.py', '797e5ddaf62b140dc60775fd5ddc267b2da1ffb0d21f6537fbf4fb9124387380'),
+                  ('scripts/run-bounded-command.py', 'ef85307a6227a0d99641b17c75e2aa625ae7344376fbcb3ec1af1c5be7e2d5d2')):
+                  native.need(digest(Path(name)) == expected, 'Original native planner/runner changed')
+          try:
+              source_identity()
+              plan_path = Path('dist/native-tests-plan.json')
+              plan = native.checked_plan(plan_path, source)
+              inventory = plan['discoveredTests']
+              added = json.loads(native.bounded_text(Path('scripts/live-scroll-additive-tests.json'), 128*1024))
+              native.need(isinstance(added, list) and added == sorted(set(added)) and len(added) >= 84
+                  and all(native.SPECIFIER.fullmatch(case) and '.LiveScroll' in case for case in added),
+                  'Explicit live-scroll inventory is invalid')
+              native.need(set(added).issubset(inventory), 'Complete native inventory is missing a required additive live-scroll method')
+              original = [case for case in inventory if case not in set(added)]
+              original_shards = [[case for case in shard['tests'] if case not in set(added)] for shard in plan['shards']]
+              native.need(len(original) == 2047 and len({case.split('/')[0] for case in original}) == 232
+                  and hashlib.sha256(('\n'.join(original)+'\n').encode()).hexdigest() ==
+                      '926ac5674df90163b949fe461f0d4589ef72c8fc3215fa00b927564aae57cb44'
+                  and plan['selectedTests'] == inventory and plan['selectionRegex'] == ''
+                  and plan['processCount'] == 4 and plan['timeoutSecondsPerProcess'] == 420
+                  and [len(cases) for cases in original_shards] == [579, 442, 522, 504],
+                  'Complete native inventory changed: accepted214 IDs or original process assignment differ')
+              native.need([case for case in inventory if case.startswith('PicShotTests.PinAnchoredEditingTests/')] == class_ids,
+                  'Pin class inventory differs from the four original methods')
+              record.update(planSHA256=digest(plan_path), discoveredCount=len(inventory), discoveredClassCount=len({case.split('/')[0] for case in inventory}),
+                  preserved214Methods=len(original), additiveLiveScrollMethods=len(added), additiveLiveScrollIDs=added,
+                  discoverySHA256=digest(Path('dist/native-test-discovery.log')),
+                  fixtureSHA256=digest(Path('Tests/PicShotTests/PinAnchoredEditingTests.swift')))
+              for label, expected in (('method', [method]), ('class', class_ids)):
+                  source_identity()
+                  pattern = native.command_pattern(expected)
+                  native.need([case for case in inventory if native.re.fullmatch(pattern, case)] == expected,
+                      'Regression filter differs from exact discovery selection')
+                  command = native.expected_command(dict(filter=pattern))
+                  log_path, runner_path = root/(label+'.log'), root/(label+'-runner.json')
+                  cell = dict(label=label, status='running', sourceCommit=source, expectedIDs=expected,
+                      command=command, timeoutSeconds=420, graceSeconds=5, maxLogBytes=8388608)
+                  record['cells'].append(cell)
+                  (root/(label+'-selection.json')).write_text(json.dumps(cell, indent=2)+'\n')
+                  waiting_from = time.monotonic()
+                  try:
+                      result = subprocess.run([sys.executable, 'scripts/run-bounded-command.py',
+                          '--timeout-seconds', '420', '--grace-seconds', '5', '--max-log-bytes', '8388608',
+                          '--log', str(log_path), '--report', str(runner_path), '--', *command], check=False)
+                  finally:
+                      native_wait_seconds += time.monotonic() - waiting_from
+                  cell['wrapperExitCode'] = result.returncode
+                  runner = json.loads(native.bounded_text(runner_path, 1024*1024))
+                  native.need(result.returncode == 0 and type(runner['schema_version']) is int and runner['schema_version'] == 1
+                      and runner['status'] == runner['termination_reason'] == 'exited'
+                      and type(runner['child_returncode']) is int and type(runner['exit_code']) is int
+                      and runner['child_returncode'] == runner['exit_code'] == 0, 'Native regression did not exit successfully')
+                  native.need(runner['command'] == command and runner['timeout_seconds'] == 420
+                      and runner['grace_seconds'] == 5 and runner['max_log_bytes'] == 8388608
+                      and runner['log_truncated'] is False and runner['descendant_cleanup'] is False
+                      and runner['sigterm_sent'] is False and runner['sigkill_sent'] is False
+                      and runner['cancel_signal'] is None and not runner.get('cleanup_errors') and not runner.get('error'),
+                      'Regression command, native cap, output or cleanup evidence differs')
+                  observation = runner['group_observation']
+                  native.need(observation['backend'] == 'darwin-ps-pgrp' and observation['timeout_seconds'] == 0.5
+                      and type(observation['count']) is int and observation['count'] > 0
+                      and type(observation['failures']) is int and observation['failures'] == 0
+                      and observation['atomic_snapshot'] is False, 'Original bounded group observation is uncertain')
+                  native.need(type(runner['pid']) is int and runner['pid'] > 0
+                      and type(runner['duration_seconds']) in (int, float) and math.isfinite(runner['duration_seconds'])
+                      and 0 <= runner['duration_seconds'] < 430, 'Invalid native identity or cleanup duration')
+                  log = native.bounded_text(log_path, native.MAX_LOG_BYTES)
+                  native.need(runner['log_bytes'] == runner['output_bytes'] == len(log.encode()), 'Raw native output length differs')
+                  passed, skipped = native.case_results(log, expected)
+                  native.need(passed == expected and skipped == [], 'Regression cases did not all pass without skips')
+                  source_identity()
+                  cell.update(status='passed', passedCount=len(passed), skippedCount=0, passedIDs=passed,
+                      logSHA256=digest(log_path), runnerSHA256=digest(runner_path), durationSeconds=runner['duration_seconds'])
+                  (root/(label+'-report.json')).write_text(json.dumps(cell, indent=2)+'\n')
+              record.update(status='passed', overheadSeconds=60-remaining_overhead())
+          except Exception as error:
+              record.update(status='failed', error=f'{type(error).__name__}: {error}')
+              if record['cells'] and record['cells'][-1]['status'] == 'running':
+                  record['cells'][-1].update(status='failed', error=record['error'])
+              raise
+          finally:
+              (root/'regression-report.json').write_text(json.dumps(record, indent=2)+'\n')
+          PYTHON
+      - name: Check annotation, GIF, recording durability and inference boundaries
+        id: focused_native
+        if: ${{ !cancelled() && steps.provenance.outcome == 'success' && steps.inventory.outcome == 'success' }}
+        # Intel: 4 * (420s command + 10s cleanup allowance) + 60s stage overhead
+        # = 1780s within 30 minutes. ARM keeps two processes within 16 minutes.
+        timeout-minutes: 16
+        run: |
+          set -o pipefail
+          execution_status=0
+          {
+            shard_failed=0
+            for ((shard = 0; shard < FOCUSED_TEST_PROCESS_COUNT; shard++)); do
+              python3 scripts/native-test-shards.py run --plan dist/focused-tests-plan.json --expected-source "$PICSHOT_REMAINDER_SOURCE" --index "$shard" --directory dist/focused-test-shards || shard_failed=1
+            done
+            test "$shard_failed" -eq 0
+          } 2>&1 | tee dist/critical-tests.log || execution_status=$?
+          python3 scripts/native-test-shards.py check --plan dist/focused-tests-plan.json --expected-source "$PICSHOT_REMAINDER_SOURCE" --directory dist/focused-test-shards --output dist/critical-tests-report.json
+          test "$execution_status" -eq 0
+      - name: Upload focused native test evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-DIAGNOSTIC-Live-Scroll-Remainder-Focused-Tests-arm64-${{ env.PICSHOT_REMAINDER_SOURCE }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/live-scroll-remainder/source-identity.json
+            dist/critical-tests.log
+            dist/critical-tests-report.json
+            dist/focused-tests-plan.json
+            dist/native-test-discovery.log
+            dist/native-test-discovery-report.json
+            dist/focused-test-shards/
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Recover actual abruptly terminated synthetic recording from installed app
+        id: recording_recovery
+        if: ${{ !cancelled() && steps.provenance.outcome == 'success' && steps.package_identity.outcome == 'success' }}
+        timeout-minutes: 4
+        run: |
+          set -o pipefail
+          bash scripts/recording-recovery-smoke.sh 2>&1 | tee dist/recording-recovery.log
+      - name: Test native modules
+        id: full_native
+        if: ${{ !cancelled() && steps.provenance.outcome == 'success' && steps.inventory.outcome == 'success' }}
+        # Both architectures have four 420s processes; 4 * 430s + 60s = 1780s.
+        # Discovery has its own unchanged 2-minute stage; aggregation is included here.
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          execution_status=0
+          {
+            shard_failed=0
+            for ((shard = 0; shard < NATIVE_TEST_PROCESS_COUNT; shard++)); do
+              python3 scripts/native-test-shards.py run --plan dist/native-tests-plan.json --expected-source "$PICSHOT_REMAINDER_SOURCE" --index "$shard" --directory dist/native-test-shards || shard_failed=1
+            done
+            test "$shard_failed" -eq 0
+          } 2>&1 | tee dist/test.log || execution_status=$?
+          python3 scripts/native-test-shards.py check --plan dist/native-tests-plan.json --expected-source "$PICSHOT_REMAINDER_SOURCE" --directory dist/native-test-shards --output dist/test-report.json
+          test "$execution_status" -eq 0
+      - name: Upload full native test evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-DIAGNOSTIC-Live-Scroll-Remainder-Native-Tests-arm64-${{ env.PICSHOT_REMAINDER_SOURCE }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/live-scroll-remainder/source-identity.json
+            dist/test.log
+            dist/test-report.json
+            dist/native-tests-plan.json
+            dist/native-test-discovery.log
+            dist/native-test-discovery-report.json
+            dist/native-test-shards/
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Validate native inference with approved pinned original model fixtures
+        id: model_inference
+        if: ${{ !cancelled() && steps.provenance.outcome == 'success' && steps.inventory.outcome == 'success' }}
+        run: |
+          set -o pipefail
+          python3 scripts/fetch-model-fixtures.py 2>&1 | tee dist/model-download.log
+          python3 scripts/SmartErase-fetch-fixture.py 2>&1 | tee dist/erase-model-download.log
+          export PICSHOT_ERASE_MODEL_DIR="$PWD/.build/model-fixtures/erase"
+          export PICSHOT_FORMULA_MODEL_DIR="$PWD/.build/model-fixtures/formula"
+          export PICSHOT_TEST_TABLE_MODEL_DIR="$PWD/.build/model-fixtures/table"
+          export PICSHOT_TEST_ML_HELPER="$(swift build --show-bin-path)/PicShotMLHelper"
+          swift build --product PicShotMLHelper
+          swift test --skip-build --filter 'FormulaEngineTests|RecordedModelOutputTests|SmartEraseEngineTests' 2>&1 | tee dist/model-inference.log
+      - name: Install and launch both formats, render native UI, measure repeated cycles
+        id: installed_smoke
+        if: ${{ !cancelled() && steps.provenance.outcome == 'success' && steps.package_identity.outcome == 'success' && steps.model_inference.outcome == 'success' }}
+        run: |
+          set -o pipefail
+          bash scripts/smoke.sh 2>&1 | tee dist/smoke.log
+      - name: Verify retained source and archived workflow after diagnostic checks
+        id: final_source_identity
+        if: ${{ !cancelled() && steps.provenance.outcome == 'success' }}
+        timeout-minutes: 2
+        run: |
+          python3 - <<'PYTHON'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+          root = Path('dist/live-scroll-remainder')
+          record = json.loads((root/'source-identity.json').read_text())
+          identity = subprocess.check_output(['git','rev-parse','HEAD','HEAD^{tree}'], text=True, timeout=10).splitlines()
+          if (identity != [os.environ['PICSHOT_REMAINDER_SOURCE'], os.environ['PICSHOT_REMAINDER_TREE']]
+                  or subprocess.check_output(['git','status','--porcelain','--untracked-files=no'], timeout=10).strip()
+                  or hashlib.sha256((root/'diagnostic-workflow.yml').read_bytes()).hexdigest() != record['diagnosticWorkflowSHA256']
+                  or hashlib.sha256(Path('.github/workflows/macos.yml').read_bytes()).hexdigest() != record['retainedWorkflowSHA256']):
+              raise SystemExit('Exact retained source or diagnostic workflow archive changed')
+          (root/'final-source-identity.json').write_text(json.dumps(dict(status='passed',
+              diagnosticOnly=True, sourceCommit=identity[0], sourceTree=identity[1],
+              workflowRunID=os.environ['GITHUB_RUN_ID'], workflowRunAttempt=os.environ['GITHUB_RUN_ATTEMPT'],
+              installerAcceptance=False, fullMemoryQualification=False, testingPackageEligible=False), indent=2)+'\n')
+          PYTHON
+      # Bound evidence publication only; product/test limits and raw reports are unchanged.
+      # Each compressed archive stays below31MiB, leaving transfer/header margin.
+      - name: Prepare bounded diagnostic records and separate format evidence
+        id: evidence_archives
+        if: always()
+        timeout-minutes: 3
+        run: |
+          python3 - <<'PYTHON'
+          import hashlib, json, os, zipfile
+          from pathlib import Path
+          root = Path('dist/live-scroll-remainder')
+          root.mkdir(parents=True, exist_ok=True)
+          target = Path('dist/live-scroll-remainder-artifacts'); target.mkdir(parents=True, exist_ok=True)
+          groups = {'records': ['dist/live-scroll-remainder/', 'dist/native-dependencies-preflight.log', 'dist/native-dependencies-preflight-report.json', 'dist/installed-default-contracts.log', 'dist/installed-default-contracts-optimized.log', 'dist/package.log', 'dist/ui-preview.log', 'dist/recording-recovery.log', 'dist/model-download.log', 'dist/erase-model-download.log', 'dist/model-inference.log', 'dist/smoke.log', 'dist/editable-product-installed-default.log', 'dist/editable-product-installed-default-report.json', 'dist/evidence/pin-apply-regression/', 'dist/evidence/recording-recovery/', 'dist/evidence/installed-format-identity.json'], 'zip': ['dist/live-scroll-remainder/source-identity.json', 'dist/evidence/zip/'], 'dmg': ['dist/live-scroll-remainder/source-identity.json', 'dist/evidence/dmg/']}
+          budget = 31 * 1024 * 1024
+          records = {}
+          for name, inputs in groups.items():
+              archive = target/(name+'.zip')
+              record = dict(status='not-uploadable', inputs=inputs, archiveBudgetBytes=budget,
+                  maxInputBytes=256*1024*1024, maxFileCount=4096, rawReportsModified=False)
+              records[name] = record
+              try:
+                  candidates = []
+                  for entry in inputs:
+                      path = Path(entry)
+                      if path.is_symlink(): raise ValueError('Refuse symlink evidence root: '+str(path))
+                      candidates.extend([path] if path.is_file() else path.rglob('*'))
+                  if any(file.is_symlink() or any(part.lower().endswith(('.app', '.mlmodelc', '.mlpackage'))
+                          for part in file.parts) for file in candidates):
+                      raise ValueError('Refuse symlink, application, or compiled model evidence entry')
+                  files = sorted({file for file in candidates if not file.is_dir()})
+                  if not files or (name in ('zip', 'dmg') and not any(str(file).startswith('dist/evidence/'+name+'/') for file in files)):
+                      raise ValueError('No stage evidence files were produced')
+                  if len(files) > record['maxFileCount']: raise ValueError('Evidence file-count bound exceeded')
+                  total = 0
+                  for file in files:
+                      if (file.is_symlink() or not file.is_file()
+                              or not file.resolve().is_relative_to(Path('dist').resolve())
+                              or any(part.lower().endswith(('.app', '.mlmodelc', '.mlpackage')) for part in file.parts)
+                              or file.suffix.lower() in {'.dmg', '.zip', '.onnx', '.mlmodel', '.bin', '.weights', '.safetensors', '.pt', '.pth', '.ckpt', '.tflite', '.pb'}
+                              or file.name.startswith('PicShot-')):
+                          raise ValueError('Refuse nonregular, escaped, or installer evidence input: '+str(file))
+                      total += file.stat().st_size
+                  record.update(fileCount=len(files), inputBytes=total)
+                  if total > record['maxInputBytes']: raise ValueError('Evidence input-byte bound exceeded')
+                  with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as output:
+                      for file in files:
+                          output.write(file, file.as_posix())
+                          if output.fp.tell() >= budget: raise ValueError('Compressed evidence exceeds31MiB')
+                  record['archiveBytes'] = archive.stat().st_size
+                  if record['archiveBytes'] >= budget: raise ValueError('Final evidence archive exceeds31MiB')
+                  record.update(status='ready', archive=str(archive), archiveSHA256=hashlib.sha256(archive.read_bytes()).hexdigest())
+              except Exception as error:
+                  record['error'] = str(error)
+                  archive.unlink(missing_ok=True)
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+                  output.write(name+'='+str(record['status'] == 'ready').lower()+'\n')
+          report = dict(diagnosticOnly=True, installerAcceptance=False, fullMemoryQualification=False,
+              testingPackageEligible=False, sourceCommit=os.environ['PICSHOT_REMAINDER_SOURCE'],
+              workflowRunID=os.environ['GITHUB_RUN_ID'], workflowRunAttempt=os.environ['GITHUB_RUN_ATTEMPT'],
+              archiveBudgetBytes=budget, rawEvidencePreservedOnRunner=True, archives=records)
+          (root/'evidence-archives.json').write_text(json.dumps(report, indent=2)+'\n')
+          if any(record['status'] != 'ready' for record in records.values()):
+              raise SystemExit('Some diagnostic evidence is absent or oversized; see evidence-archives.json')
+          PYTHON
+      - name: Record diagnostic outcomes including failures and unrun stages
+        id: diagnostic_outcomes
+        if: always()
+        timeout-minutes: 2
+        env:
+          PICSHOT_REMAINDER_STEP_RESULTS: ${{ toJSON(steps) }}
+          PICSHOT_REMAINDER_REQUIRED_STEPS: '["checkout_source227","provenance","runner_contracts","settings_contracts","pin_contracts","classification_contracts","drawing_contracts","drawing_contracts_optimized","codec_dependencies","debug_build","test_build","codec_helper","discovery","inventory","package","package_identity","native_ui","recording_exports","backing","default_routes","fidelity","pin_apply","focused_native","recording_recovery","full_native","model_inference","installed_smoke","final_source_identity","evidence_archives"]'
+        run: |
+          python3 - <<'PYTHON'
+          import json, os
+          from pathlib import Path
+          root = Path('dist/live-scroll-remainder'); root.mkdir(parents=True, exist_ok=True)
+          observed = json.loads(os.environ['PICSHOT_REMAINDER_STEP_RESULTS'])
+          required = json.loads(os.environ['PICSHOT_REMAINDER_REQUIRED_STEPS'])
+          outcomes = {name:dict(outcome=observed.get(name, {}).get('outcome', 'not-run'),
+              conclusion=observed.get(name, {}).get('conclusion', 'not-run')) for name in required}
+          completed = all(value['outcome'] == 'success' for value in outcomes.values())
+          record = dict(status='diagnostic-checks-completed' if completed else 'diagnostic-checks-incomplete-or-failed',
+              diagnosticOnly=True, installerAcceptance=False, fullMemoryQualification=False,
+              testingPackageEligible=False, latestAcceptedBuild=214, originalFailureRunID='38130153505',
+              originalResourceFailurePreserved=True, liveScrollResourceRerun=False,
+              sourceCommit=os.environ['PICSHOT_REMAINDER_SOURCE'], sourceTree=os.environ['PICSHOT_REMAINDER_TREE'],
+              triggerCommit=os.environ['GITHUB_SHA'], diagnosticWorkflowCommit=os.environ['PICSHOT_REMAINDER_WORKFLOW_SHA'],
+              workflowRunID=os.environ['GITHUB_RUN_ID'], workflowRunAttempt=os.environ['GITHUB_RUN_ATTEMPT'],
+              buildVersion=os.environ['GITHUB_RUN_NUMBER'], stageOutcomes=outcomes,
+              unrunStages=[name for name,value in outcomes.items() if value['outcome'] in ('skipped','not-run')],
+              failedStages=[name for name,value in outcomes.items() if value['outcome'] in ('failure','cancelled')])
+          (root/'outcomes.json').write_text(json.dumps(record, indent=2)+'\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as output:
+              output.write('Diagnostic-only retained227 remainder; stable214 remains the latest accepted build.\n\n')
+              output.write('installerAcceptance=false; fullMemoryQualification=false; testingPackageEligible=false.\n\n')
+              output.write('Original warmRSS and lateRSS failures remain recorded in run38130153505; the cell was not rerun.\n\n')
+              for name,value in outcomes.items(): output.write(name+': '+value['outcome']+'\n\n')
+          if not completed: raise SystemExit('Diagnostic remainder has failed, cancelled, or unrun stages; see outcomes.json')
+          PYTHON
+      - name: Preserve diagnostic provenance outcomes and remaining bounded reports
+        if: ${{ always() && steps.evidence_archives.outputs.records == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-DIAGNOSTIC-Live-Scroll-Remainder-Records-${{ env.PICSHOT_REMAINDER_SOURCE }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/live-scroll-remainder-artifacts/records.zip
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+      - name: Upload final ZIP installed evidence separately
+        if: ${{ always() && steps.evidence_archives.outputs.zip == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-DIAGNOSTIC-Live-Scroll-Remainder-Final-ZIP-Evidence-arm64-${{ env.PICSHOT_REMAINDER_SOURCE }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/live-scroll-remainder-artifacts/zip.zip
+          if-no-files-found: ignore
+          retention-days: 14
+          compression-level: 0
+      - name: Upload final DMG installed evidence separately
+        if: ${{ always() && steps.evidence_archives.outputs.dmg == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-DIAGNOSTIC-Live-Scroll-Remainder-Final-DMG-Evidence-arm64-${{ env.PICSHOT_REMAINDER_SOURCE }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/live-scroll-remainder-artifacts/dmg.zip
+          if-no-files-found: ignore
+          retention-days: 14
+          compression-level: 0
+      - name: Preserve small diagnostic outcomes and evidence budget receipts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-DIAGNOSTIC-Live-Scroll-Remainder-Outcomes-${{ env.PICSHOT_REMAINDER_SOURCE }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/live-scroll-remainder/source-identity.json
+            dist/live-scroll-remainder/outcomes.json
+            dist/live-scroll-remainder/evidence-archives.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
