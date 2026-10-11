@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import ImageIO
 import UniformTypeIdentifiers
 import PicShotCore
@@ -24,16 +25,30 @@ enum ScrollSequenceImageError: Error, LocalizedError {
     }
 }
 
+/// Foundation remains the production default until paired native resource evidence
+/// supports changing only the PNG consumer's byte-write path.
+enum ScrollPNGWriteBackend: String, Sendable {
+    case foundation, posix
+}
+
 private final class BoundedScrollPNGWriter {
     let handle: FileHandle
     let limit: Int64
+    let backend: ScrollPNGWriteBackend
+    // Synchronous syscall seam for short-write and errno tests; never retains bytes.
+    let writeForTesting: ((Int32, UnsafeRawPointer, Int) -> Int)?
     var written: Int64 = 0
     var failure: Error?
-    init(url: URL, limit: Int64) throws { handle = try FileHandle(forWritingTo: url); self.limit = limit }
+    init(url: URL, limit: Int64, backend: ScrollPNGWriteBackend,
+         writeForTesting: ((Int32, UnsafeRawPointer, Int) -> Int)?) throws {
+        handle = try FileHandle(forWritingTo: url); self.limit = limit
+        self.backend = backend; self.writeForTesting = writeForTesting
+    }
     func put(_ buffer: UnsafeRawPointer, count: Int) -> Int {
         guard failure == nil else { return 0 }
         if Task.isCancelled { failure = CancellationError(); return 0 }
         guard count >= 0, Int64(count) <= limit - written else { failure = ScrollSequenceImageError.storageLimit; return 0 }
+        if backend == .posix { return putPOSIX(buffer, count: count) }
         do {
             // The encoder owns this buffer for this synchronous callback. Do not copy a
             // potentially large compressed chunk merely to send it to the file descriptor.
@@ -43,12 +58,41 @@ private final class BoundedScrollPNGWriter {
             return count
         } catch { failure = error; return 0 }
     }
+
+    private func putPOSIX(_ buffer: UnsafeRawPointer, count: Int) -> Int {
+        var offset = 0
+        while offset < count {
+            if Task.isCancelled { failure = CancellationError(); return offset }
+            let remaining = count - offset
+            let amount: Int
+            if let writeForTesting {
+                amount = writeForTesting(handle.fileDescriptor, buffer.advanced(by: offset), remaining)
+            } else {
+                amount = Darwin.write(handle.fileDescriptor, buffer.advanced(by: offset), remaining)
+            }
+            if amount < 0 {
+                let code = errno
+                if code == EINTR { continue }
+                failure = POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+                return offset
+            }
+            guard amount > 0, amount <= remaining else {
+                failure = ScrollSequenceImageError.writeFailed
+                return offset
+            }
+            offset += amount
+            written += Int64(amount)
+        }
+        return offset
+    }
 }
 
 extension ScrollImageIO {
     /// The encoder cannot write even one byte beyond remaining session storage. Failed or
     /// canceled encodes remove their partial file; source PNGs are never overwritten.
-    static func writeBoundedPNG(_ image: CGImage, to url: URL, maximumBytes: Int64) throws {
+    static func writeBoundedPNG(_ image: CGImage, to url: URL, maximumBytes: Int64,
+                                backend: ScrollPNGWriteBackend = .foundation,
+                                writeForTesting: ((Int32, UnsafeRawPointer, Int) -> Int)? = nil) throws {
         guard maximumBytes > 0 else { throw ScrollSequenceImageError.storageLimit }
         guard !FileManager.default.fileExists(atPath: url.path),
               FileManager.default.createFile(atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
@@ -56,7 +100,8 @@ extension ScrollImageIO {
         }
         var completed = false
         defer { if !completed { try? FileManager.default.removeItem(at: url) } }
-        let writer = try BoundedScrollPNGWriter(url: url, limit: maximumBytes)
+        let writer = try BoundedScrollPNGWriter(url: url, limit: maximumBytes, backend: backend,
+                                              writeForTesting: writeForTesting)
         defer { try? writer.handle.close() }
         var callbacks = CGDataConsumerCallbacks(putBytes: { info, bytes, count in
             guard let info else { return 0 }

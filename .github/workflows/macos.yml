@@ -17,6 +17,12 @@ jobs:
     timeout-minutes: 40
     steps:
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+    - name: Check bounded PNG pair report contracts
+      if: ${{ contains(github.event.head_commit.message || '', '[png-boundary-pair]') }}
+      timeout-minutes: 2
+      run: |
+        python3 -m unittest discover -s scripts/tests -p 'test_live_scroll_png_pair.py'
+        python3 -O -m unittest discover -s scripts/tests -p 'test_live_scroll_png_pair.py'
     - name: Build native dependencies
       timeout-minutes: 15
       run: python3 scripts/run-bounded-command.py --timeout-seconds 840 --log dist/live-scroll-dependencies.log --report dist/live-scroll-dependencies.json -- python3 scripts/build-native-codecs.py --arch arm64
@@ -57,10 +63,81 @@ jobs:
       run: |
         python3 scripts/run-bounded-command.py --timeout-seconds 540 --log dist/live-scroll-build.log --report dist/live-scroll-build.json -- swift build --build-tests
     - name: Test live scrolling matcher storage stream and geometry
+      id: test_live_scroll
       if: ${{ always() && steps.compile_live_scroll_tests.outcome == 'success' }}
       timeout-minutes: 8
       run: |
         python3 scripts/run-bounded-command.py --timeout-seconds 420 --log dist/live-scroll-tests.log --report dist/live-scroll-tests.json -- swift test --skip-build --filter LiveScroll
+        python3 - <<'PY'
+        import importlib.util,json
+        from pathlib import Path
+        spec=importlib.util.spec_from_file_location('native','scripts/native-test-shards.py')
+        native=importlib.util.module_from_spec(spec);spec.loader.exec_module(native)
+        expected=json.loads(Path('scripts/live-scroll-additive-tests.json').read_text())
+        passed,skipped=native.case_results(Path('dist/live-scroll-tests.log').read_text(),expected)
+        native.need(not skipped,'Live scrolling cases cannot be skipped')
+        Path('dist/live-scroll-test-inventory.json').write_text(json.dumps({'passed':passed,'skipped':skipped,'count':len(expected)},indent=2)+'\n')
+        PY
+    # One diagnostic pair only; ordinary product defaults remain unchanged.
+    # Existing40min job cap is independent of individual worst-case stage bounds.
+    - name: Compare exact final PNG write bridge in two fresh resource cells
+      if: ${{ contains(github.event.head_commit.message || '', '[png-boundary-pair]') && steps.test_live_scroll.outcome == 'success' }}
+      timeout-minutes: 26
+      run: >-
+        python3 scripts/run-bounded-command.py --timeout-seconds 1500 --grace-seconds 10
+        --log dist/live-scroll-png-pair.log --report dist/live-scroll-png-pair-command.json
+        -- bash scripts/live-scroll-png-pair.sh "$PWD/dist/PicShot.app"
+        "$PWD/dist/live-scroll-png-pair" "${{ github.sha }}"
+    - name: Preserve paired PNG boundary reports
+      if: ${{ always() && contains(github.event.head_commit.message || '', '[png-boundary-pair]') }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Live-Scroll-PNG-Pair-Reports-${{ github.sha }}
+        path: |
+          dist/live-scroll-png-pair.log
+          dist/live-scroll-png-pair-command.json
+          dist/live-scroll-png-pair/comparison.json
+          dist/live-scroll-png-pair/foundation/upload/
+          dist/live-scroll-png-pair/posix/upload/
+        if-no-files-found: ignore
+        retention-days: 14
+        compression-level: 6
+    - name: Preserve foundation PNG output bytes
+      if: ${{ always() && contains(github.event.head_commit.message || '', '[png-boundary-pair]') }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Live-Scroll-PNG-foundation-output-${{ github.sha }}
+        path: dist/live-scroll-png-pair/foundation/review-output/
+        if-no-files-found: ignore
+        retention-days: 14
+        compression-level: 0
+    - name: Preserve foundation PNG reference bytes
+      if: ${{ always() && contains(github.event.head_commit.message || '', '[png-boundary-pair]') }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Live-Scroll-PNG-foundation-reference-${{ github.sha }}
+        path: dist/live-scroll-png-pair/foundation/review-reference/
+        if-no-files-found: ignore
+        retention-days: 14
+        compression-level: 0
+    - name: Preserve posix PNG output bytes
+      if: ${{ always() && contains(github.event.head_commit.message || '', '[png-boundary-pair]') }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Live-Scroll-PNG-posix-output-${{ github.sha }}
+        path: dist/live-scroll-png-pair/posix/review-output/
+        if-no-files-found: ignore
+        retention-days: 14
+        compression-level: 0
+    - name: Preserve posix PNG reference bytes
+      if: ${{ always() && contains(github.event.head_commit.message || '', '[png-boundary-pair]') }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Live-Scroll-PNG-posix-reference-${{ github.sha }}
+        path: dist/live-scroll-png-pair/posix/review-reference/
+        if-no-files-found: ignore
+        retention-days: 14
+        compression-level: 0
     - name: Preserve focused usability evidence
       if: always()
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

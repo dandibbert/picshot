@@ -47,12 +47,15 @@ enum LiveScrollResourceFixture {
     static func runIfRequested(evidenceDirectory: URL) async throws -> [String: Any]? {
         let env = ProcessInfo.processInfo.environment
         guard let mode = env["PICSHOT_LIVE_SCROLL_RESOURCE_MODE"] else { return nil }
-        let allowed: Set<String> = ["PICSHOT_SMOKE_TEST", "PICSHOT_SMOKE_REPORT", "PICSHOT_LIVE_SCROLL_RESOURCE_MODE", "PICSHOT_LIVE_SCROLL_RESOURCE_INPUT"]
+        let allowed: Set<String> = ["PICSHOT_SMOKE_TEST", "PICSHOT_SMOKE_REPORT", "PICSHOT_LIVE_SCROLL_RESOURCE_MODE", "PICSHOT_LIVE_SCROLL_RESOURCE_INPUT", "PICSHOT_LIVE_SCROLL_PNG_WRITER"]
         guard Set(env.keys.filter { $0.hasPrefix("PICSHOT_") }).isSubset(of: allowed),
               ["certify", "measure", "validate"].contains(mode),
               let path = env["PICSHOT_LIVE_SCROLL_RESOURCE_INPUT"], path.hasPrefix("/"),
               env["PICSHOT_SMOKE_TEST"] == "1", env["PICSHOT_LIVE_SCROLL_DEMO_ONLY"] == nil else {
             throw failure("Invalid/extraneous live-scroll resource request")
+        }
+        guard let pngWriter = ScrollPNGWriteBackend(rawValue: env["PICSHOT_LIVE_SCROLL_PNG_WRITER"] ?? "foundation") else {
+            throw failure("Unknown live-scroll PNG writer; expected foundation or posix")
         }
         let prepared = URL(fileURLWithPath: path, isDirectory: true).resolvingSymlinksInPath()
         let input = prepared.appendingPathComponent("fixture.bgra")
@@ -63,7 +66,9 @@ enum LiveScrollResourceFixture {
         try require(commit.count == 40 && commit.allSatisfy { $0.isHexDigit }, "Missing exact production source stamp")
         guard let executable = Bundle.main.executableURL else { throw failure("Missing executable identity") }
         let executableSHA = try digest(executable)
-        var report: [String: Any] = ["schemaVersion": 1, "status": "running", "mode": mode,
+        var report: [String: Any] = ["schemaVersion": 2, "status": "running", "mode": mode,
+            "pngWriterBackend": pngWriter.rawValue, "pngWriterSelectionScope": "Final PNG recipient only; independent reference uses the unchanged default writer",
+            "measurementComplete": false, "pixelValidationStatus": "not-run",
             "workload": workload, "sourceCommit": commit, "executableSHA256": executableSHA,
             "architecture": architecture, "os": ProcessInfo.processInfo.operatingSystemVersionString,
             "bundlePath": Bundle.main.bundlePath, "processIdentifier": ProcessInfo.processInfo.processIdentifier,
@@ -99,7 +104,8 @@ enum LiveScrollResourceFixture {
                 let certificate = try readObject(certificateURL)
                 try require(certificate["status"] as? String == "passed" && certificate["workload"] as? String == workload
                     && certificate["sourceCommit"] as? String == commit
-                    && certificate["executableSHA256"] as? String == executableSHA,
+                    && certificate["executableSHA256"] as? String == executableSHA
+                    && certificate["pngWriterBackend"] as? String == pngWriter.rawValue,
                     "Native pixel certificate does not match this exact app/workload")
                 let inputSHA = try digest(input)
                 try require(certificate["inputSHA256"] as? String == inputSHA, "Prepared input identity changed")
@@ -108,17 +114,72 @@ enum LiveScrollResourceFixture {
             report["inputSHA256"] = try digest(input)
             report["afterInputValidation"] = try memory("after-input-validation")
             if mode == "validate" {
+                let measurement = try readObject(reportURL)
+                guard let cycles = measurement["cycles"] as? [[String: Any]],
+                      let assessment = measurement["budgetAssessment"] as? [String: Any],
+                      let memoryPassed = assessment["warmAndLateGatesPassed"] as? Bool else {
+                    throw failure("Complete measurement cycles/assessment unavailable")
+                }
+                try require(measurement["measurementComplete"] as? Bool == true
+                    && measurement["measurementStatus"] as? String == "complete"
+                    && measurement["workload"] as? String == workload
+                    && measurement["warmupCycles"] as? Int == warmups
+                    && measurement["measuredCycles"] as? Int == measured
+                    && measurement["sourceFramesPerCycle"] as? Int == offsets.count
+                    && measurement["sourceCommit"] as? String == commit
+                    && measurement["executableSHA256"] as? String == executableSHA
+                    && measurement["pngWriterBackend"] as? String == pngWriter.rawValue
+                    && (measurement["inputSHA256"] as? String) == (report["inputSHA256"] as? String)
+                    && (measurement["certificateSHA256"] as? String) == (report["certificateSHA256"] as? String)
+                    && measurement["completedWarmupCycles"] as? Int == warmups
+                    && measurement["completedMeasuredCycles"] as? Int == measured
+                    && cycles.count == warmups + measured,
+                    "Matching complete measurement identity/counts unavailable")
+                let expectedMeasurementStatus = memoryPassed ? "measured-awaiting-pixel-validation" : "failed"
+                try require(measurement["status"] as? String == expectedMeasurementStatus
+                    && measurement["memoryGateStatus"] as? String == (memoryPassed ? "passed" : "failed"),
+                    "Measurement status disagrees with unchanged memory gates")
                 var proofs: [[String: Any]] = []
                 for ordinal in 1...(warmups + measured) {
-                    let url = evidenceDirectory.appendingPathComponent(String(format: "cycle-%02d.png", ordinal))
-                    proofs.append(try verifyPNG(url, input: input))
+                    let cycle = cycles[ordinal - 1]
+                    let name = String(format: "cycle-%02d.png", ordinal)
+                    guard let output = cycle["output"] as? [String: Any],
+                          let expectedBytes = output["encodedBytes"] as? Int,
+                          let state = cycle["lastProductState"] as? [String: Any],
+                          let source = cycle["sourceAfterStop"] as? [String: Any] else {
+                        throw failure("Completed cycle output/work metadata missing")
+                    }
+                    try require(cycle["ordinal"] as? Int == ordinal && cycle["status"] as? String == "passed"
+                        && cycle["warmup"] as? Bool == (ordinal <= warmups)
+                        && cycle["pngWriterBackend"] as? String == pngWriter.rawValue
+                        && cycle["finishCallbacks"] as? Int == 1
+                        && state["acceptedObservations"] as? Int == offsets.count
+                        && source["successfulFrames"] as? Int == offsets.count
+                        && output["file"] as? String == name && expectedBytes > 0
+                        && output["width"] as? Int == width && output["height"] as? Int == finalHeight,
+                        "Incomplete or reordered cycle cannot receive a complete pixel certificate")
+                    var proof: [String: Any]
+                    do { proof = try verifyPNG(evidenceDirectory.appendingPathComponent(name), input: input) }
+                    catch {
+                        proof = ["passed": false, "file": name, "error": error.localizedDescription,
+                            "hashAvailable": false, "pixelEquality": false]
+                    }
+                    proof["ordinal"] = ordinal; proof["expectedEncodedBytes"] = expectedBytes
+                    if proof["encodedBytes"] as? Int != expectedBytes {
+                        proof["passed"] = false; proof["error"] = "Encoded file byte count differs from completed recipient output"
+                    }
+                    proofs.append(proof)
+                    report["outputCertificates"] = proofs
+                    try write(report, evidenceDirectory.appendingPathComponent("live-scroll-resource-validation.json"))
                 }
-                let measurement = try readObject(reportURL)
-                try require(measurement["status"] as? String == "measured-awaiting-pixel-validation"
-                    && measurement["sourceCommit"] as? String == commit
-                    && measurement["executableSHA256"] as? String == executableSHA,
-                    "Matching complete measurement report unavailable")
-                report["outputCertificates"] = proofs; report["status"] = "passed"
+                let pixelsPassed = proofs.allSatisfy { $0["passed"] as? Bool == true }
+                report["measurementComplete"] = true; report["measurementStatus"] = "complete"
+                report["completedWarmupCycles"] = warmups; report["completedMeasuredCycles"] = measured
+                report["memoryGateStatus"] = memoryPassed ? "passed" : "failed"
+                report["measurementReportStatus"] = measurement["status"]
+                report["pixelValidationStatus"] = pixelsPassed ? "passed" : "failed"
+                report["validationCompleted"] = true
+                report["status"] = memoryPassed && pixelsPassed ? "passed" : "failed"
                 report["measurementReportSHA256"] = try digest(reportURL)
                 try write(report, evidenceDirectory.appendingPathComponent("live-scroll-resource-validation.json"))
                 return report
@@ -126,7 +187,7 @@ enum LiveScrollResourceFixture {
             var cycles: [[String: Any]] = []
             let count = mode == "certify" ? 1 : warmups + measured
             for ordinal in 1...count {
-                let cycle = await runCycle(input: input, directory: evidenceDirectory, ordinal: ordinal, deadline: deadline)
+                let cycle = await runCycle(input: input, directory: evidenceDirectory, ordinal: ordinal, deadline: deadline, pngWriter: pngWriter)
                 cycles.append(cycle); report["cycles"] = cycles
                 try write(report, reportURL)
                 try require(cycle["status"] as? String == "passed", "Live-scroll resource cycle failed; inspect preserved scalar evidence")
@@ -150,15 +211,26 @@ enum LiveScrollResourceFixture {
             report["final"] = final
             report["finalTimingScope"] = "Fresh reading after the last cycle's explicit 150ms and1000ms release observations; exact per-cycle timestamps retained"
             if mode == "certify" {
-                report["outputCertificate"] = try verifyPNG(evidenceDirectory.appendingPathComponent("cycle-01.png"), input: input)
+                let proof = try verifyPNG(evidenceDirectory.appendingPathComponent("cycle-01.png"), input: input)
+                report["outputCertificate"] = proof
+                try require(proof["passed"] as? Bool == true, "Native prequalification PNG pixels failed")
+                report["pixelValidationStatus"] = "passed"
                 report["status"] = "passed"
                 try write(report, certificateURL)
             } else {
                 let assessment = try assess(entry: entry, cycles: cycles, final: final)
                 report["budgetAssessment"] = assessment
-                try require(assessment["warmAndLateGatesPassed"] as? Bool == true,
-                    "Predeclared measured/late growth gate exceeded; inspect all preserved raw boundaries")
-                report["status"] = "measured-awaiting-pixel-validation"
+                let memoryPassed = assessment["warmAndLateGatesPassed"] as? Bool == true
+                report["measurementComplete"] = true; report["measurementStatus"] = "complete"
+                report["completedWarmupCycles"] = warmups; report["completedMeasuredCycles"] = measured
+                report["memoryGateStatus"] = memoryPassed ? "passed" : "failed"
+                report["pixelValidationStatus"] = "pending-independent-validation"
+                report["independentValidationRequired"] = true
+                report["status"] = memoryPassed ? "measured-awaiting-pixel-validation" : "failed"
+                if !memoryPassed {
+                    report["failureKind"] = "memory-gates"
+                    report["error"] = "Predeclared measured/late growth gate exceeded; all complete outputs still require independent pixel validation"
+                }
             }
             report["elapsedSeconds"] = ProcessInfo.processInfo.systemUptime - started
             try write(report, reportURL)
@@ -171,18 +243,18 @@ enum LiveScrollResourceFixture {
         }
     }
 
-    private static func runCycle(input: URL, directory: URL, ordinal: Int, deadline: Double) async -> [String: Any] {
+    private static func runCycle(input: URL, directory: URL, ordinal: Int, deadline: Double, pngWriter: ScrollPNGWriteBackend) async -> [String: Any] {
         let context = Cycle(), sampler = GIFResourceMemorySampler(includeBacking: true)
         defer { sampler.stop() }
         let began = ProcessInfo.processInfo.systemUptime
         let spool = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("PicShot-LiveResource-" + UUID().uuidString)
-        context.report = ["ordinal": ordinal, "warmup": ordinal <= warmups, "cold": ordinal == 1]
+        context.report = ["ordinal": ordinal, "warmup": ordinal <= warmups, "cold": ordinal == 1, "pngWriterBackend": pngWriter.rawValue]
         var cycleError: Error?
         do {
             try context.boundary("before-session")
             try FileManager.default.createDirectory(at: spool, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
             try await runSession(context, input: input, spool: spool,
-                output: directory.appendingPathComponent(String(format: "cycle-%02d.png", ordinal)), sampler: sampler, deadline: deadline)
+                output: directory.appendingPathComponent(String(format: "cycle-%02d.png", ordinal)), sampler: sampler, deadline: deadline, pngWriter: pngWriter)
             try context.boundary("session-closed-output-recipient-alive")
         } catch { cycleError = error }
         let releasedAt = ProcessInfo.processInfo.systemUptime
@@ -240,7 +312,7 @@ enum LiveScrollResourceFixture {
     }
 
     private static func runSession(_ context: Cycle, input: URL, spool: URL, output: URL,
-                                   sampler: GIFResourceMemorySampler, deadline: Double) async throws {
+                                   sampler: GIFResourceMemorySampler, deadline: Double, pngWriter: ScrollPNGWriteBackend) async throws {
         guard let screen = NSScreen.main else { throw CaptureError.noDisplay }
         let sessionDeadline = min(deadline, ProcessInfo.processInfo.systemUptime + 180)
         let source = try LiveScrollResourceFrameSource(input: input, screen: screen, ledger: context.ledger)
@@ -251,7 +323,7 @@ enum LiveScrollResourceFixture {
             context.image = image
             try context.boundary("finish-image-alive-before-png")
             try require(image.width == width && image.height == finalHeight, "Finish output dimensions changed")
-            try ScrollImageIO.writeBoundedPNG(image, to: output, maximumBytes: 512 * 1_024 * 1_024)
+            try ScrollImageIO.writeBoundedPNG(image, to: output, maximumBytes: 512 * 1_024 * 1_024, backend: pngWriter)
             context.report["output"] = ["file": output.lastPathComponent, "width": image.width, "height": image.height,
                 "layoutBytes": image.bytesPerRow * image.height,
                 "encodedBytes": try output.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? -1]
@@ -482,19 +554,27 @@ enum LiveScrollResourceFixture {
         try ScrollImageIO.writeBoundedPNG(image, to: output, maximumBytes: 512 * 1_024 * 1_024)
     }
     private static func verifyPNG(_ url: URL, input: URL) throws -> [String: Any] {
-        guard let reader = CGImageSourceCreateWithURL(url as CFURL, nil),
-              let image = CGImageSourceCreateImageAtIndex(reader, 0, nil),
-              image.width == width, image.height == finalHeight else { throw failure("Output PNG is missing or has wrong dimensions") }
-        let raw = try Data(contentsOf: input)
-        try require(raw.count == outputBytes, "Oracle length changed")
-        try ManualScrollVImageObservation().withNormalizedPixels(image) { bytes in
-            try require(bytes.count == outputBytes, "Decoded output byte count changed")
-            for i in stride(from: 0, to: bytes.count, by: 4) {
-                try require(bytes[i] == raw[i + 2] && bytes[i + 1] == raw[i + 1]
-                    && bytes[i + 2] == raw[i] && bytes[i + 3] == raw[i + 3], "Final PNG pixel differs from independent coordinate oracle")
+        let encodedBytes = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? -1
+        let identity = try digest(url)
+        var proof: [String: Any] = ["passed": false, "pixelEquality": false, "file": url.lastPathComponent,
+            "sha256": identity, "encodedBytes": encodedBytes, "hashAvailable": true,
+            "expectedWidth": width, "expectedHeight": finalHeight]
+        do {
+            guard let reader = CGImageSourceCreateWithURL(url as CFURL, nil),
+                  let image = CGImageSourceCreateImageAtIndex(reader, 0, nil),
+                  image.width == width, image.height == finalHeight else { throw failure("Output PNG is missing or has wrong dimensions") }
+            let raw = try Data(contentsOf: input)
+            try require(raw.count == outputBytes, "Oracle length changed")
+            try ManualScrollVImageObservation().withNormalizedPixels(image) { bytes in
+                try require(bytes.count == outputBytes, "Decoded output byte count changed")
+                for i in stride(from: 0, to: bytes.count, by: 4) {
+                    try require(bytes[i] == raw[i + 2] && bytes[i + 1] == raw[i + 1]
+                        && bytes[i + 2] == raw[i] && bytes[i + 3] == raw[i + 3], "Final PNG pixel differs from independent coordinate oracle")
+                }
             }
-        }
-        return ["passed": true, "file": url.lastPathComponent, "sha256": try digest(url), "comparedBytes": outputBytes]
+            proof["passed"] = true; proof["pixelEquality"] = true; proof["comparedBytes"] = outputBytes
+        } catch { proof["error"] = error.localizedDescription }
+        return proof
     }
     private static func digest(_ url: URL) throws -> String {
         let handle = try FileHandle(forReadingFrom: url); defer { try? handle.close() }

@@ -7,7 +7,7 @@ LIVE_SCROLL_LAUNCHER_HOOKS = (('let liveScrollDiagnostic = '
   '    || ProcessInfo.processInfo.environment["PICSHOT_LIVE_SCROLL_DEMO_ONLY"] == "1"\n',
   ''),
  ('"PICSHOT_LIVE_SCROLL_RESOURCE_MODE", "PICSHOT_LIVE_SCROLL_RESOURCE_INPUT", '
-  '"PICSHOT_LIVE_SCROLL_DEMO_ONLY", "PICSHOT_LIVE_SCROLL_TARGET", ',
+  '"PICSHOT_LIVE_SCROLL_PNG_WRITER", "PICSHOT_LIVE_SCROLL_DEMO_ONLY", "PICSHOT_LIVE_SCROLL_TARGET", ',
   ''),
  ('if liveScrollDiagnostic || recordingInputExportOnly || pinUIDiagnostic != nil {\n',
   'if recordingInputExportOnly || pinUIDiagnostic != nil {\n'),
