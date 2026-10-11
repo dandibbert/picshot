@@ -26,7 +26,7 @@ enum LiveScrollUsabilityDemoFixture {
         let screen = try unwrap(NSScreen.main, "Native demo requires an available display")
         let visible = screen.visibleFrame
         let window = NSWindow(contentRect: CGRect(x: visible.midX - 390, y: visible.midY - 200,
-            width: width, height: height), styleMask: .borderless, backing: .buffered, defer: false)
+            width: CGFloat(width), height: CGFloat(height)), styleMask: .borderless, backing: .buffered, defer: false)
         window.title = "PicShot · Native continuous-scroll document"
         window.isReleasedWhenClosed = false; window.hasShadow = false
         window.backgroundColor = .white; window.appearance = NSAppearance(named: .aqua)
@@ -350,7 +350,7 @@ enum LiveScrollUsabilityDemoFixture {
             "sessionBoundary": "Real compact HUD and LiveScrollAssembler, with fixture-owned acquisition/input tasks; this pass does not validate LiveScrollSessionController acquisition, pause, auto-scroll or finish routing"
         ]
         let visible = NSScreen.main?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1280, height: 800)
-        let frame = CGRect(x: visible.midX - 390, y: visible.midY - 200, width: width, height: height)
+        let frame = CGRect(x: visible.midX - 390, y: visible.midY - 200, width: CGFloat(width), height: CGFloat(height))
         let window = NSWindow(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
         window.title = "PicShot · Continuous scroll demo"
         window.isReleasedWhenClosed = false; window.hasShadow = false
