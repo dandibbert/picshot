@@ -1,0 +1,93 @@
+{
+  "width": 640,
+  "height": 1200,
+  "header": 36,
+  "nativeViewportOrigins": [
+    0,
+    0,
+    60,
+    116,
+    176,
+    236,
+    296,
+    356,
+    416,
+    472,
+    532,
+    592,
+    652,
+    708,
+    720
+  ],
+  "decodedSha256": "955c261f86a8c885bbba459e2abb8954b9fdfd434fa802c65f1aa6dd309caf5c",
+  "fixtureSha256": "a48200ef81f59d39bbfbfd745a979821479d8791a9f39724e9e372c510653495",
+  "pngs": [
+    {
+      "file": "live-scroll-plain-text-native-first-window.png",
+      "sha256": "bdd9466f4c48f89f15a0d6bc3d59e9a899958d30e89b8d29edd32fd154a8ed39"
+    },
+    {
+      "file": "live-scroll-plain-text-frame-01.png",
+      "sha256": "9636c1523067152324e8ebb4381e15be5ad302a78f7929a16585c110c05c3c86"
+    },
+    {
+      "file": "live-scroll-plain-text-frame-02.png",
+      "sha256": "798a89cc49fd9702768923226f615e752634ee18ac218dad453ae517b006b4ca"
+    },
+    {
+      "file": "live-scroll-plain-text-frame-03.png",
+      "sha256": "d8aed749610ec7caf4dc8c8be8e926cf22fb315a8c011be40e8bb437135f875f"
+    },
+    {
+      "file": "live-scroll-plain-text-frame-04.png",
+      "sha256": "12ccb884d870f8a4aedf04dd705955dddd9d904e2f3c0a915f7e6bfe7f4560f5"
+    },
+    {
+      "file": "live-scroll-plain-text-frame-05.png",
+      "sha256": "153f3caff2e6d29421ee438381c39c43579e853442103a99ed7adb828f481a22"
+    },
+    {
+      "file": "live-scroll-plain-text-frame-06.png",
+      "sha256": "b7571b343d1c9b5fd7a2e086f6f6cc43b9d1e641c245f1399fb120b3546bec39"
+    },
+    {
+      "file": "live-scroll-plain-text-frame-07.png",
+      "sha256": "4123319889bb1089b1f1bb14262050833b2b8b83253c37270ad9fcf1d8d56603"
+    },
+    {
+      "file": "live-scroll-plain-text-frame-08.png",
+      "sha256": "cc09c2c1a0279020e759d19dbd27c74bccc49400014f510b576825f597e20f7e"
+    },
+    {
+      "file": "live-scroll-plain-text-frame-09.png",
+      "sha256": "ce69e50078a235650b0b8310183a17d8b56c51a1d23895dd79355bca92c978cf"
+    },
+    {
+      "file": "live-scroll-plain-text-frame-10.png",
+      "sha256": "22198ce58eac6e206befe7731fbaea28f60a014c9ef4e522a3da7d60339ce8b1"
+    },
+    {
+      "file": "live-scroll-plain-text-frame-11.png",
+      "sha256": "270d5f6b881daf9fa3507750ccf69b6c740d5a8941de5da4808f3d070cc039d5"
+    },
+    {
+      "file": "live-scroll-plain-text-frame-12.png",
+      "sha256": "65ef5996b291e8c463308c6dd0a8d1d9ae94f3f14a6309c288b22fa06e8c7800"
+    },
+    {
+      "file": "live-scroll-plain-text-frame-13.png",
+      "sha256": "d4fff9140d1ea804aef88c8651fb597e0ab7ac4cf877d1f2d82421857c81e0a7"
+    },
+    {
+      "file": "live-scroll-plain-text-failure.png",
+      "sha256": "3ebfc35e8a6a5241b9f2997975fac983a2182473fd55f754fceb327f2ecc9d92"
+    }
+  ],
+  "fixtureEncoding": "ASCII Base64, line wrapped",
+  "encodedFixture": "Tests/PicShotCoreTests/Fixtures/LiveScrollPlainTextLuminance.rle.b64",
+  "encodedFixtureSha256": "7bb53ff44c40463088fc6866c50dab5d69092df05abd2fd263c6656d4beb96fd",
+  "fixtureSha256Description": "SHA256 of Base64-decoded PSG1 RLE payload",
+  "baselineSource": "18fc18f77955ae1a4ba7488ceac08703a6b85961",
+  "content": "Original PicShot-owned native numbered article; no user screenshot or private content",
+  "scope": "Lossless luminance test input, not production resource"
+}

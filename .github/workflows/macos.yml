@@ -38,6 +38,18 @@ jobs:
         mkdir -p dist/live-scroll-demo
         swift scripts/launch-smoke-app.swift "$PWD/dist/PicShot.app" "$PWD/dist/live-scroll-demo/demo.json"
         python3 -c 'import json; r=json.load(open("dist/live-scroll-demo/demo.json")); assert r["status"] == "passed", r'
+    - name: Preserve early native scrolling demonstration
+      if: ${{ always() && steps.package_live_scroll.outcome == 'success' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Live-Scroll-Demo-${{ github.sha }}
+        path: |
+          dist/live-scroll-package.log
+          dist/live-scroll-package.json
+          dist/live-scroll-demo/
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 6
     - name: Compile live scrolling app and focused tests
       id: compile_live_scroll_tests
       if: ${{ always() && steps.package_live_scroll.outcome == 'success' }}

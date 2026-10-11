@@ -42,7 +42,7 @@ public struct LiveScrollQuality: Sendable, Equatable {
     public let supportingTiles: Int
     public let supportingAlongBands: Int
     public let supportingAcrossBands: Int
-    /// Gap between sampled, clipped-error scores for all viable signed integer offsets.
+    /// Gap between contrast-bearing sampled, clipped-error scores for viable signed offsets.
     public let uniquenessMargin: Double
     /// Every overlap pixel is inspected during verification, including outlier pixels.
     public let verifiedPixels: Int
@@ -245,55 +245,76 @@ public enum LiveScrollMatcher {
 
     /// Forty-eight spatial tiles, each sampled on a phase-varying 5x5 grid. Both images
     /// must carry texture; a matching blank background is never positive motion evidence.
+    /// Uniqueness uses contrast-bearing samples, so empty margins cannot dilute the
+    /// disagreement between similar text rows. Support and full-pixel checks stay separate.
     private static func screen(_ a: ScrollFrame, _ b: ScrollFrame, axis: ScrollAxis, start: Int,
                                length: Int, cross: Int, displacement: Int,
                                configuration: Configuration) -> Screening {
         let overlap = length - abs(displacement)
         let oldStart = start + max(0, displacement), newStart = start + max(0, -displacement)
-        var totalError = 0.0, total = 0, totalBad = 0, textured = 0, supported = 0
-        var alongMask = 0, acrossMask = 0, textureAlongMask = 0, textureAcrossMask = 0, quadrantMask = 0
-        for alongTile in 0..<8 {
-            let low = alongTile * overlap / 8, high = (alongTile + 1) * overlap / 8
-            for acrossTile in 0..<6 {
-                let left = acrossTile * cross / 6, right = (acrossTile + 1) * cross / 6
-                var sumA = 0.0, squareA = 0.0, sumB = 0.0, squareB = 0.0, error = 0.0
-                var bad = 0, count = 0
-                let rows = min(5, high - low), columns = min(5, right - left)
-                for row in 0..<rows {
-                    let y0 = low + row * (high - low) / rows
-                    let y1 = low + (row + 1) * (high - low) / rows
-                    for column in 0..<columns {
-                        let x0 = left + column * (right - left) / columns
-                        let x1 = left + (column + 1) * (right - left) / columns
-                        let along = y0 + (acrossTile * 3 + column * 5 + row) % max(1, y1 - y0)
-                        let across = x0 + (alongTile * 7 + row * 3 + column) % max(1, x1 - x0)
-                        let av = value(a, axis: axis, along: oldStart + along, across: across)
-                        let bv = value(b, axis: axis, along: newStart + along, across: across)
-                        let delta = abs(av - bv)
-                        sumA += Double(av); squareA += Double(av * av)
-                        sumB += Double(bv); squareB += Double(bv * bv)
-                        error += Double(min(delta, configuration.pixelDifferenceTolerance))
-                        if delta > configuration.pixelDifferenceTolerance { bad += 1 }
-                        count += 1
+        return withUnsafeTemporaryAllocation(of: UInt16.self, capacity: 25) { samples in
+            var informativeError = 0.0, informativeCount = 0
+            var total = 0, totalBad = 0, textured = 0, supported = 0
+            var alongMask = 0, acrossMask = 0, textureAlongMask = 0, textureAcrossMask = 0, quadrantMask = 0
+            for alongTile in 0..<8 {
+                let low = alongTile * overlap / 8, high = (alongTile + 1) * overlap / 8
+                for acrossTile in 0..<6 {
+                    let left = acrossTile * cross / 6, right = (acrossTile + 1) * cross / 6
+                    var sumA = 0.0, squareA = 0.0, sumB = 0.0, squareB = 0.0, error = 0.0
+                    var bad = 0, count = 0
+                    let rows = min(5, high - low), columns = min(5, right - left)
+                    for row in 0..<rows {
+                        let y0 = low + row * (high - low) / rows
+                        let y1 = low + (row + 1) * (high - low) / rows
+                        for column in 0..<columns {
+                            let x0 = left + column * (right - left) / columns
+                            let x1 = left + (column + 1) * (right - left) / columns
+                            let along = y0 + (acrossTile * 3 + column * 5 + row) % max(1, y1 - y0)
+                            let across = x0 + (alongTile * 7 + row * 3 + column) % max(1, x1 - x0)
+                            let av = value(a, axis: axis, along: oldStart + along, across: across)
+                            let bv = value(b, axis: axis, along: newStart + along, across: across)
+                            let delta = abs(av - bv)
+                            sumA += Double(av); squareA += Double(av * av)
+                            sumB += Double(bv); squareB += Double(bv * bv)
+                            error += Double(min(delta, configuration.pixelDifferenceTolerance))
+                            if delta > configuration.pixelDifferenceTolerance { bad += 1 }
+                            samples[count] = UInt16(av << 8 | bv)
+                            count += 1
+                        }
                     }
-                }
-                let n = Double(max(1, count))
-                let deviation = min(sqrt(max(0, squareA / n - pow(sumA / n, 2))),
-                                    sqrt(max(0, squareB / n - pow(sumB / n, 2))))
-                if deviation >= configuration.minimumTextureDeviation {
-                    textured += 1; textureAlongMask |= 1 << alongTile; textureAcrossMask |= 1 << acrossTile
-                    if error / n <= configuration.maximumInlierMeanError + 1 && Double(bad) / n <= 0.20 {
-                        supported += 1; alongMask |= 1 << alongTile; acrossMask |= 1 << acrossTile
-                        quadrantMask |= 1 << ((alongTile / 4) * 2 + acrossTile / 3)
+                    let n = Double(max(1, count))
+                    let meanA = sumA / n, meanB = sumB / n
+                    let deviationA = sqrt(max(0, squareA / n - meanA * meanA))
+                    let deviationB = sqrt(max(0, squareB / n - meanB * meanB))
+                    let deviation = min(deviationA, deviationB)
+                    if max(deviationA, deviationB) >= configuration.minimumTextureDeviation {
+                        let contrastA = max(configuration.minimumTextureDeviation, deviationA)
+                        let contrastB = max(configuration.minimumTextureDeviation, deviationB)
+                        for index in 0..<count {
+                            let av = Int(samples[index] >> 8), bv = Int(samples[index] & 255)
+                            // The union matters: disappearing/replaced text must contribute
+                            // disagreement even when the other image is a flat background.
+                            if abs(Double(av) - meanA) >= contrastA || abs(Double(bv) - meanB) >= contrastB {
+                                informativeError += Double(min(abs(av - bv), configuration.pixelDifferenceTolerance))
+                                informativeCount += 1
+                            }
+                        }
                     }
+                    if deviation >= configuration.minimumTextureDeviation {
+                        textured += 1; textureAlongMask |= 1 << alongTile; textureAcrossMask |= 1 << acrossTile
+                        if error / n <= configuration.maximumInlierMeanError + 1 && Double(bad) / n <= 0.20 {
+                            supported += 1; alongMask |= 1 << alongTile; acrossMask |= 1 << acrossTile
+                            quadrantMask |= 1 << ((alongTile / 4) * 2 + acrossTile / 3)
+                        }
+                    }
+                    total += count; totalBad += bad
                 }
-                totalError += error; total += count; totalBad += bad
             }
+            return Screening(error: informativeError / Double(max(1, informativeCount)), badFraction: Double(totalBad) / Double(max(1, total)), texturedTiles: textured,
+                supportingTiles: supported, alongBands: alongMask.nonzeroBitCount,
+                acrossBands: acrossMask.nonzeroBitCount, textureAlongBands: textureAlongMask.nonzeroBitCount,
+                textureAcrossBands: textureAcrossMask.nonzeroBitCount, quadrants: quadrantMask.nonzeroBitCount)
         }
-        return Screening(error: totalError / Double(max(1, total)), badFraction: Double(totalBad) / Double(max(1, total)), texturedTiles: textured,
-            supportingTiles: supported, alongBands: alongMask.nonzeroBitCount,
-            acrossBands: acrossMask.nonzeroBitCount, textureAlongBands: textureAlongMask.nonzeroBitCount,
-            textureAcrossBands: textureAcrossMask.nonzeroBitCount, quadrants: quadrantMask.nonzeroBitCount)
     }
 
     private static func inferEdges(_ a: ScrollFrame, _ b: ScrollFrame, axis: ScrollAxis,
@@ -322,6 +343,43 @@ public enum LiveScrollMatcher {
         // A single accidental unchanged scanline is not enough evidence for a fixed bar.
         if leading < 2 { leading = 0 }
         if trailing < 2 { trailing = 0 }
+        // A stationary run can cross the real bar boundary into coincident paragraph
+        // whitespace. Do not lock that blank extension into the fixed band: its pixels
+        // cannot distinguish fixed padding from scrolling content yet. Wait for another
+        // changing frame to expose the boundary instead of guessing or dropping rows.
+        func hasAmbiguousFlatExtension(_ band: Range<Int>, leadingEdge: Bool) throws -> Bool {
+            guard !band.isEmpty else { return false }
+            let end = leadingEdge ? band.upperBound - 1 : band.lowerBound
+            let inward = leadingEdge ? -1 : 1
+            let reference = value(a, axis: axis, along: end, across: 0)
+            var line = end
+            while band.contains(line) {
+                if line % 32 == 0 { try Task.checkCancellation() }
+                var flatA = true, flatB = true
+                for column in 0..<samples {
+                    let across = column * cross / samples
+                    if abs(value(a, axis: axis, along: line, across: across) - reference) > 4 { flatA = false }
+                    if abs(value(b, axis: axis, along: line, across: across) - reference) > 4 { flatB = false }
+                    if !flatA && !flatB { break }
+                }
+                if !flatA && !flatB { break }
+                line += inward
+            }
+            guard line != end, band.contains(line) else { return false }
+            var broad = 0
+            for column in 0..<samples {
+                let across = column * cross / samples
+                if abs(value(a, axis: axis, along: line, across: across) - reference)
+                    > configuration.pixelDifferenceTolerance
+                    && abs(value(b, axis: axis, along: line, across: across) - reference)
+                    > configuration.pixelDifferenceTolerance { broad += 1 }
+            }
+            return Double(broad) / Double(samples) >= 0.50
+        }
+        if try hasAmbiguousFlatExtension(0..<leading, leadingEdge: true)
+            || hasAmbiguousFlatExtension((length - trailing)..<length, leadingEdge: false) {
+            throw LiveScrollMatchError.uncertainContentBounds
+        }
         // Ordinary paragraph/row whitespace can coincide at a viewport edge. Such a
         // flat run alone is not a fixed bar. Require texture OR a broad visible boundary;
         // an uninformative run remains in the full-pixel verified scrolling rectangle.

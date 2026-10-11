@@ -86,6 +86,9 @@ final class LiveScrollCaptureController: NSObject, NSWindowDelegate {
                                   (view.cancelButton, #selector(cancelPressed))] {
             button.target = self; button.action = selector
         }
+        // NSPopUpButton already has an empty native menu. Install our owned
+        // menu once, then keep that identity during live capture updates.
+        view.moreButton.menu = makeMoreMenu()
         update(snapshot: snapshot)
     }
 

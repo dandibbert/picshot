@@ -281,8 +281,8 @@ final class LiveScrollScreenSource {
 
     private func checkActiveRead(_ token: UInt64) throws {
         try Task.checkCancellation()
-        guard generation == token, state == .running, !terminalRequested,
-              mailbox.isAccepting(generation: token) else { throw CancellationError() }
+        guard generation == token, state == .running, !terminalRequested else { throw CancellationError() }
+        try mailbox.checkAccepting(generation: token)
     }
 
     private func validateDisplay() throws {

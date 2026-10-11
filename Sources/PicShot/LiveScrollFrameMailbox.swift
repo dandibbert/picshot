@@ -50,6 +50,15 @@ final class LiveScrollFrameMailbox<Element>: @unchecked Sendable {
         locked { accepting && self.generation == generation }
     }
 
+    /// Recheck after consuming a value without turning a stream failure into cancellation.
+    /// An invalidated reader must never inherit another generation's failure.
+    func checkAccepting(generation: UInt64) throws {
+        try locked {
+            guard self.generation == generation else { throw CancellationError() }
+            guard accepting else { throw failure }
+        }
+    }
+
     func offer(_ value: Element, generation: UInt64) {
         let ready = locked { () -> CheckedContinuation<Bool, Error>? in
             guard accepting, self.generation == generation else {

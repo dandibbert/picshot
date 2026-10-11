@@ -73,6 +73,8 @@ final class ManualScrollRegionMover: NSObject, NSWindowDelegate {
     private var token: UUID?
     private var observer: NSObjectProtocol?
 
+    var viewForVerification: ManualScrollRegionMoveView? { panel?.contentView as? ManualScrollRegionMoveView }
+
     func choose(screen: NSScreen, region: CGRect, movementAxis: ScrollAxis? = nil) async throws -> CGRect {
         guard token == nil else { throw CaptureError.busy }
         try Task.checkCancellation()

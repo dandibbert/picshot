@@ -85,6 +85,8 @@ final class LiveScrollCaptureControlsTests: XCTestCase {
         }
         XCTAssertFalse(controller.snapshot.reverseCrop)
         let originalMenu = try XCTUnwrap(view.moreButton.menu)
+        XCTAssertNotNil(originalMenu.items.first?.image, "The actual More control must have its ellipsis image")
+        XCTAssertTrue(originalMenu.items.contains { $0.identifier?.rawValue == "scroll.live.moveRegion" })
         XCTAssertFalse(originalMenu.items.contains { $0.identifier?.rawValue == "scroll.live.reverseCrop" })
         var state = active; state.showsReverseCrop = true
         controller.update(snapshot: state)

@@ -8,7 +8,8 @@ final class LiveScrollDocumentTests: XCTestCase {
     private typealias Document = LiveScrollDocument
 
     private func root() throws -> URL {
-        let result = FileManager.default.temporaryDirectory.appendingPathComponent("PicShot-LiveDocument-Test-" + UUID().uuidString)
+        let result = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("PicShot-LiveDocument-Test-" + UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: result, withIntermediateDirectories: false)
         return result
     }
@@ -349,13 +350,17 @@ final class LiveScrollDocumentTests: XCTestCase {
         try Data("keep parent neighbor".utf8).write(to: unrelated)
         let source = try image(axis: .vertical, lower: 0, upper: 8)
         let document = try await Document.create(firstImage: source, scrollingContentRect: content(axis: .vertical), storageParent: parent)
+        // Capture the actual owned inventory before adding the unrelated child.
+        // Comparing an enumerated URL with a constructed URL can differ in its
+        // base/normalization despite identifying the same filesystem entry.
+        let own = Array(try files(document).keys)
+        XCTAssertFalse(own.isEmpty)
         let unexpected = document.storageDirectory.appendingPathComponent("not-owned.txt")
         try Data("keep unowned child".utf8).write(to: unexpected)
-        let own = Set(try files(document).keys).subtracting([unexpected])
         await document.close(); await document.close()
         XCTAssertEqual(try String(contentsOf: unrelated), "keep parent neighbor")
         XCTAssertEqual(try String(contentsOf: unexpected), "keep unowned child")
-        for url in own { XCTAssertFalse(FileManager.default.fileExists(atPath: url.path)) }
+        for url in own { XCTAssertFalse(FileManager.default.fileExists(atPath: url.path), "Owned strip remains: \(url.path)") }
         await expect(.closed) { _ = try await document.append(image: source, viewportOffset: 1) }
         await expect(.closed) { _ = try await document.render() }
     }

@@ -2,6 +2,7 @@ import XCTest
 import AppKit
 import CoreVideo
 import ScreenCaptureKit
+import PicShotCore
 @testable import PicShot
 
 /// Synthetic ownership/concurrency tests only. These never create an SCStream,
@@ -49,6 +50,69 @@ final class LiveScrollScreenSourceTests: XCTestCase {
         XCTAssertEqual(mailbox.counters.rejectedFrames, 1)
         do { _ = try await mailbox.next(generation: 10, timeout: 0.1); XCTFail("Closed read succeeded") }
         catch is CancellationError { }
+    }
+
+    func testPostConsumeStreamFailureKeepsItsOriginalError() async throws {
+        let mailbox = LiveScrollFrameMailbox<Marker>()
+        mailbox.activate(generation: 11, width: 80, height: 60)
+        mailbox.offer(Marker(1), generation: 11)
+        let consumed = try await mailbox.next(generation: 11, timeout: 0.1)
+        XCTAssertEqual(consumed?.value, 1)
+        XCTAssertEqual(mailbox.counters.consumedFrames, 1)
+        XCTAssertEqual(mailbox.counters.pendingFrames, 0)
+        let failure = NSError(domain: "LiveScrollScreenSourceTests.Stream", code: 42)
+        // Deterministically place the callback after consumption and before the
+        // same mailbox check called by LiveScrollScreenSource.checkActiveRead.
+        mailbox.close(generation: 11, error: failure)
+        XCTAssertThrowsError(try mailbox.checkAccepting(generation: 11)) { error in
+            XCTAssertFalse(error is CancellationError)
+            XCTAssertTrue((error as NSError) === failure)
+        }
+    }
+
+    func testPostConsumeInvalidBufferFailureIsNotCancellation() async throws {
+        let mailbox = LiveScrollFrameMailbox<Marker>()
+        mailbox.activate(generation: 12, width: 80, height: 60)
+        mailbox.offer(Marker(1), generation: 12)
+        let consumed = try await mailbox.next(generation: 12, timeout: 0.1)
+        XCTAssertNotNil(consumed)
+        mailbox.close(generation: 12, error: ScrollStitchError.differentDimensions)
+        XCTAssertThrowsError(try mailbox.checkAccepting(generation: 12)) { error in
+            XCTAssertEqual(error as? ScrollStitchError, .differentDimensions)
+        }
+    }
+
+    func testPostConsumeIntentionalClosureRemainsCancellation() async throws {
+        let mailbox = LiveScrollFrameMailbox<Marker>()
+        mailbox.activate(generation: 13, width: 80, height: 60)
+        mailbox.offer(Marker(1), generation: 13)
+        let consumed = try await mailbox.next(generation: 13, timeout: 0.1)
+        XCTAssertNotNil(consumed)
+        mailbox.close(generation: 13)
+        XCTAssertThrowsError(try mailbox.checkAccepting(generation: 13)) { error in
+            XCTAssertTrue(error is CancellationError)
+        }
+    }
+
+    func testPostConsumeFailureCannotCrossGenerationBoundary() async throws {
+        let mailbox = LiveScrollFrameMailbox<Marker>()
+        mailbox.activate(generation: 14, width: 80, height: 60)
+        mailbox.offer(Marker(1), generation: 14)
+        _ = try await mailbox.next(generation: 14, timeout: 0.1)
+        mailbox.close(generation: 14, error: ScrollStitchError.differentDimensions)
+        mailbox.activate(generation: 15, width: 80, height: 60)
+        mailbox.close(generation: 14, error: ScrollStitchError.invalidPixels)
+        XCTAssertNoThrow(try mailbox.checkAccepting(generation: 15))
+        mailbox.offer(Marker(2), generation: 15)
+        let current = try await mailbox.next(generation: 15, timeout: 0.1)
+        XCTAssertEqual(current?.value, 2)
+        XCTAssertThrowsError(try mailbox.checkAccepting(generation: 14)) { error in
+            XCTAssertTrue(error is CancellationError)
+        }
+        mailbox.close(generation: 15, error: ScrollStitchError.invalidPixels)
+        XCTAssertThrowsError(try mailbox.checkAccepting(generation: 14)) { error in
+            XCTAssertTrue(error is CancellationError, "A stale reader must not inherit the new generation's error")
+        }
     }
 
     func testPausedReadAndOldGenerationCannotAffectMovedRegionGeneration() async throws {

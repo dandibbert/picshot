@@ -563,12 +563,33 @@ import PicShotCore
             "fullVisibleFramesChecked": true, "controlsDoNotOverlap": true, "opaqueWindowBackgroundComposited": true, "text": textEvidence]
     }
 
-    private static func popup(_ button: NSPopUpButton, id: String, boundary: Bool) async throws -> [String: Any] {
+    // Reuse the accepted native menu tracking route with an explicit window expectation.
+    static func activateMenuItemForVerification(_ button: NSPopUpButton, id: String) async throws -> [String: Any] {
+        try await popup(button, id: id, boundary: false, windowMode: .nonactivatingPanel)
+    }
+
+    private enum MenuWindowMode: String {
+        case keyWindow = "key-window"
+        case nonactivatingPanel = "visible-nonactivating-panel"
+
+        @MainActor func matches(_ window: NSWindow) -> Bool {
+            switch self {
+            case .keyWindow: return window.isKeyWindow
+            case .nonactivatingPanel:
+                return window is NSPanel && window.isVisible && window.styleMask.contains(.nonactivatingPanel)
+                    && !window.canBecomeKey && !window.isKeyWindow
+            }
+        }
+    }
+
+    private static func popup(_ button: NSPopUpButton, id: String, boundary: Bool,
+                              windowMode: MenuWindowMode = .keyWindow) async throws -> [String: Any] {
         let menu = try required(button.menu, "Order menu absent"), window = try required(button.window, "Order window absent")
+        try require(windowMode.matches(window), "Owned menu window does not match expected mode: " + windowMode.rawValue)
         menu.delegate?.menuNeedsUpdate?(menu)
         let item = try required(menu.items.first { $0.identifier?.rawValue == id }, "Order item absent")
         try require(item.isEnabled != boundary, "Order boundary enabled state incorrect")
-        let probe = MenuProbe(menu: menu, window: window, button: button, item: item, boundary: boundary), previous = menu.delegate
+        let probe = MenuProbe(menu: menu, window: window, button: button, item: item, boundary: boundary, windowMode: windowMode), previous = menu.delegate
         probe.previous = previous; menu.delegate = probe
         probe.startTrackingObservations()
         let timer = Timer(timeInterval: 0.03, repeats: true) { [weak probe] _ in MainActor.assumeIsolated { probe?.tick() } }
@@ -594,6 +615,7 @@ import PicShotCore
         try require(probe.trackingComplete && (boundary || probe.closed) && !probe.timedOut && probe.activated == !boundary,
                     "Native order tracking failed | probe=" + String(decoding: receipt, as: UTF8.self))
         return ["itemID": id, "boundary": boundary, "enabled": !boundary,
+            "expectedWindowMode": windowMode.rawValue,
             "activated": probe.activated, "postedKeyCount": probe.posted, "timeoutSeconds": 2, "windowNumber": window.windowNumber,
             "dispatchRoute": "owned-nextEvent-sendEvent/native-menu-tracking",
             "mouseDispatch": try required(probe.mouseDispatch, "Owned menu mouse dispatch receipt absent"), "disabledDismissedWithEscape": boundary && probe.lastPostedKeyCode == 53 && probe.posted == 1,
@@ -795,6 +817,7 @@ import PicShotCore
         weak var button: NSPopUpButton?
         weak var previous: NSMenuDelegate?
         let boundary: Bool; private let started: TimeInterval, deadline: TimeInterval
+        private let windowMode: MenuWindowMode
         var opened = false, closed = false, activated = false, timedOut = false, posted = 0
         private(set) var openMenuIdentityVerified = false
         private(set) var openedElapsed: TimeInterval?
@@ -822,6 +845,7 @@ import PicShotCore
         private var events: [[String: Any]] = [], omittedEvents = 0
         var evidence: [String: Any] {
             ["requestedItem": target?.identifier?.rawValue ?? "none", "boundary": boundary,
+             "expectedWindowMode": windowMode.rawValue,
              "opened": opened, "closed": closed, "activated": activated, "timedOut": timedOut,
              "posted": posted, "entered": entered, "highlightedItem": highlighted?.identifier?.rawValue ?? "none",
              "highlightIsTarget": highlighted === target, "targetEnabled": target?.isEnabled ?? false,
@@ -867,7 +891,9 @@ import PicShotCore
             let expectedLocation = try PinManagementSmokeFixture.required(expected["location"] as? [CGFloat], "Expected mouse location absent")
             let currentLocation = current.locationInWindow
             let hitVerified = hit === button || hit?.isDescendant(of: button) == true
-            let valid = now <= deadline && mouseDispatch == nil && window.isKeyWindow && hitVerified &&
+            let windowModeVerified = windowMode.matches(window)
+            let valid = now <= deadline && mouseDispatch == nil && windowModeVerified && hitVerified &&
+                button.window === window &&
                 expectedClock > 0 && expectedClock == dequeuedClock && dequeuedClock == currentClock &&
                 event.type == .leftMouseDown && current.type == .leftMouseDown &&
                 event.windowNumber == window.windowNumber && current.windowNumber == window.windowNumber &&
@@ -883,7 +909,12 @@ import PicShotCore
                 "currentLocation": [currentLocation.x, currentLocation.y], "currentEventType": Int(current.type.rawValue),
                 "currentWindowNumber": current.windowNumber, "currentEventNumber": current.eventNumber,
                 "currentClickCount": current.clickCount, "currentModifierFlags": current.modifierFlags.rawValue,
-                "ownedWindowIsKey": window.isKeyWindow, "hitTestVerified": hitVerified]
+                "ownedWindowIsKey": window.isKeyWindow, "hitTestVerified": hitVerified,
+                "expectedWindowMode": windowMode.rawValue, "windowModeVerifiedAtDispatch": windowModeVerified,
+                "ownedWindowIsPanel": window is NSPanel, "ownedWindowIsVisible": window.isVisible,
+                "ownedWindowCanBecomeKey": window.canBecomeKey,
+                "ownedWindowHasNonactivatingStyle": window.styleMask.contains(.nonactivatingPanel),
+                "buttonWindowIdentityVerified": button.window === window]
             PinManagementSmokeFixture.trace("popupApplicationMouseDispatch", ["requestedItem": target?.identifier?.rawValue ?? "none",
                 "valid": valid, "mouseDispatch": receipt])
             guard valid else {
@@ -983,8 +1014,10 @@ import PicShotCore
                 "highlightedItem": highlighted?.identifier?.rawValue ?? "none", "highlightIsTarget": highlighted === target,
                 "entered": entered, "posted": posted, "syntheticKeyCode": code.map(Int.init) ?? -1])
         }
-        init(menu: NSMenu, window: NSWindow, button: NSPopUpButton, item: NSMenuItem, boundary: Bool) {
+        init(menu: NSMenu, window: NSWindow, button: NSPopUpButton, item: NSMenuItem, boundary: Bool,
+             windowMode: MenuWindowMode) {
             self.menu = menu; self.window = window; self.button = button; target = item; self.boundary = boundary
+            self.windowMode = windowMode
             let now = ProcessInfo.processInfo.systemUptime; started = now; deadline = now + 2
             super.init(); record("created")
         }

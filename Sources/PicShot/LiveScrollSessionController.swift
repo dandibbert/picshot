@@ -9,6 +9,7 @@ final class LiveScrollSessionController {
     var onClose: (() -> Void)?
     private let onComplete: (CGImage) throws -> Void
     private let onImport: () -> Void
+    private let onCopy: (CGImage) -> Void
     private let capture = CaptureService()
     private var source: (any LiveScrollFrameSource)?
     private var assembler: LiveScrollAssembler?
@@ -24,6 +25,8 @@ final class LiveScrollSessionController {
     private var lastState = LiveScrollAssembler.State()
     private var paused = false
     private var finishing = false
+    private var deliveryCompleted = false
+    private var deliveryWarning: String?
     private var retired = false
     private var automatic = false
     private var startedAt: TimeInterval?
@@ -34,8 +37,10 @@ final class LiveScrollSessionController {
     private let maximumDuration: TimeInterval = 180
     private let maximumSamples = 2400
 
-    init(onComplete: @escaping (CGImage) throws -> Void, onImport: @escaping () -> Void) {
+    init(onComplete: @escaping (CGImage) throws -> Void, onImport: @escaping () -> Void,
+         onCopy: ((CGImage) -> Void)? = nil) {
         self.onComplete = onComplete; self.onImport = onImport
+        self.onCopy = onCopy ?? { copyImage($0) }
     }
 
     func start(presentation: FrozenCapturePresentation? = nil) {
@@ -117,6 +122,7 @@ final class LiveScrollSessionController {
     var snapshotForVerification: LiveScrollCaptureSnapshot { snapshot }
     var stateForVerification: LiveScrollAssembler.State { lastState }
     var controlsForVerification: LiveScrollCaptureController? { controls }
+    var activeMoveViewForVerification: ManualScrollRegionMoveView? { mover?.viewForVerification }
     var sampledFramesForVerification: Int { samples }
     var isClosedForVerification: Bool { retired && source == nil && assembler == nil && controls == nil && sampling == nil }
 
@@ -208,18 +214,19 @@ final class LiveScrollSessionController {
     }
 
     private func setStatus(_ text: String, kind: LiveScrollCaptureSnapshot.StatusKind) {
-        snapshot.status = text; snapshot.statusKind = kind
+        snapshot.status = deliveryWarning ?? text; snapshot.statusKind = deliveryWarning == nil ? kind : .warning
         snapshot.paused = paused; snapshot.busy = finishing || transition != nil
-        snapshot.canPause = !finishing && transition == nil && source != nil
-        snapshot.canMoveRegion = !finishing && transition == nil && source != nil
-        snapshot.canImport = lastState.width == 0 && !finishing
+        snapshot.canPause = !deliveryCompleted && !finishing && transition == nil && source != nil
+        snapshot.canMoveRegion = !deliveryCompleted && !finishing && transition == nil && source != nil
+        snapshot.canImport = !deliveryCompleted && lastState.width == 0 && !finishing
         snapshot.autoScrolling = automatic; snapshot.axis = axis
-        snapshot.canAutoScroll = !finishing && !paused && transition == nil && source != nil && AXIsProcessTrusted()
+        snapshot.canAutoScroll = !deliveryCompleted && !finishing && !paused && transition == nil && source != nil && AXIsProcessTrusted()
+        if deliveryCompleted { snapshot.canFinish = false; snapshot.canCopy = false; snapshot.canChangeAxis = false }
         controls?.update(snapshot: snapshot)
     }
 
     private func togglePause() {
-        guard transition == nil, !finishing, !retired, let source else { return }
+        guard transition == nil, !finishing, !retired, !deliveryCompleted, let source else { return }
         automatic = false
         snapshot.busy = true; snapshot.canPause = false; snapshot.canMoveRegion = false
         snapshot.status = paused ? "正在继续…" : "正在暂停…"; controls?.update(snapshot: snapshot)
@@ -248,7 +255,7 @@ final class LiveScrollSessionController {
     }
 
     private func finish(copyOnly: Bool) {
-        guard !finishing, !retired, transition == nil, lastState.width > 0, let source, let assembler else { return }
+        guard !finishing, !retired, !deliveryCompleted, transition == nil, lastState.width > 0, let source, let assembler else { return }
         finishing = true; paused = true; automatic = false
         setStatus("正在完成长截图…", kind: .finishing)
         transition = Task { [weak self] in
@@ -261,11 +268,17 @@ final class LiveScrollSessionController {
                 let image = try await assembler.finish()
                 try Task.checkCancellation()
                 guard !self.retired else { return }
-                if copyOnly { copyImage(image) }
+                if copyOnly { self.onCopy(image) }
                 else { try self.onComplete(image) }
+                // Delivery is terminal even if stopping the source was not confirmed.
+                // Set this only after the recipient returns successfully, so a
+                // throwing editor/history callback retains the draft and retry.
+                self.deliveryCompleted = true
                 if let teardownWarning {
                     self.finishing = false
-                    self.setStatus("长图已完成，但采集停止未确认：\(teardownWarning.localizedDescription)。请关闭本次捕获。", kind: .warning)
+                    let warning = "\(copyOnly ? "长图已复制" : "长图已完成")，但采集停止未确认：\(teardownWarning.localizedDescription)。请关闭本次捕获。"
+                    self.deliveryWarning = warning
+                    self.setStatus(warning, kind: .warning)
                 } else { await self.retire() }
             } catch {
                 self.finishing = false
@@ -275,7 +288,7 @@ final class LiveScrollSessionController {
     }
 
     private func toggleAutomatic() {
-        guard !finishing, !paused, source != nil else { return }
+        guard !deliveryCompleted, !finishing, !paused, source != nil else { return }
         guard AXIsProcessTrusted() else { setStatus("自动滚动需要辅助功能权限；仍可直接手动滚动", kind: .warning); return }
         automatic.toggle(); sameViewportCount = 0
         if automatic, let source { do { try performAutomaticStep(source: source) } catch { automatic = false; setStatus(error.localizedDescription, kind: .warning); return } }
@@ -295,7 +308,7 @@ final class LiveScrollSessionController {
     }
 
     private func moveRegion() {
-        guard transition == nil, !finishing, !retired, let source, let screen else { return }
+        guard transition == nil, !finishing, !retired, !deliveryCompleted, let source, let screen else { return }
         let wasPaused = paused
         paused = true; automatic = false
         snapshot.busy = true; snapshot.status = "正在准备移动选区…"; controls?.update(snapshot: snapshot)
@@ -325,7 +338,7 @@ final class LiveScrollSessionController {
     }
 
     private func changeAxis(_ next: ScrollAxis) {
-        guard next != axis, lastState.acceptedObservations <= 1, transition == nil, !finishing,
+        guard !deliveryCompleted, next != axis, lastState.acceptedObservations <= 1, transition == nil, !finishing,
               let source, let original = assembler else { return }
         paused = true; automatic = false
         snapshot.busy = true; snapshot.status = "正在切换方向…"; controls?.update(snapshot: snapshot)
@@ -352,7 +365,7 @@ final class LiveScrollSessionController {
         }
     }
     private func openImporter() {
-        guard lastState.width == 0 else { return }
+        guard !deliveryCompleted, lastState.width == 0 else { return }
         Task { [weak self] in guard let self else { return }; await self.retire(); self.onImport() }
     }
     func cancel() {

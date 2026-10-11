@@ -61,8 +61,18 @@ enum LiveScrollUsabilityDemoFixture {
         let plain = await productCycle(viewport: viewport, window: window, screen: screen,
             capture: capture, directory: directory, plain: true)
         report["ordinaryTextCase"] = plain
-        let realStream: [String: Any]
+        try writeReport(report, directory)
+        let movement: [String: Any]
         if plain["productSessionClosed"] as? Bool == true {
+            movement = await verifyMovement(evidenceDirectory: directory.appendingPathComponent("movement"))
+        } else {
+            movement = ["status": "blocked", "productSessionClosed": false,
+                        "reason": "Previous owned product session cleanup was not confirmed"]
+        }
+        report["movementCase"] = movement
+        try writeReport(report, directory)
+        let realStream: [String: Any]
+        if movement["productSessionClosed"] as? Bool == true {
             realStream = await LiveScrollRealStreamFixture.run(outputDirectory: directory.appendingPathComponent("real-stream"))
         } else {
             realStream = ["status": "blocked", "permissionAlreadyGranted": permitted,
@@ -79,7 +89,7 @@ enum LiveScrollUsabilityDemoFixture {
         let realOutcomeAcceptable = realStream["status"] as? String == "passed"
             || (realStream["status"] as? String == "blocked" && !realPermission)
         let passed = illustrated["status"] as? String == "passed" && plain["status"] as? String == "passed"
-            && realOutcomeAcceptable
+            && movement["status"] as? String == "passed" && realOutcomeAcceptable
         report["status"] = passed ? "passed" : "failed"
         report["elapsedSeconds"] = ProcessInfo.processInfo.systemUptime - start
         try writeReport(report, directory)
@@ -264,16 +274,21 @@ enum LiveScrollUsabilityDemoFixture {
             report["finishButtonCompletionCallbacks"] = completedCount
             report["outputWidth"] = output.width; report["outputHeight"] = output.height
             report["frameProviderCalls"] = frameRequests
-            if plain {
-                let reference = try plainTextReference(initial: initial, totalHeight: height + Int(maxOffset.rounded()))
-                try writePNG(reference, directory.appendingPathComponent(prefix + "-reference.png"))
-                let comparison = try nativeRasterComparison(output, reference)
-                report["nativeReferenceComparison"] = comparison
-                try require(comparison["passed"] as? Bool == true, "Ordinary text output differs from independent native document reference")
-            } else {
-                let coverage = try numberedCoverage(output: output, expectedOffset: Int(maxOffset.rounded()))
-                report["numberedCoverage"] = coverage
-                try require(coverage["passed"] as? Bool == true, "Product Finish has missing or duplicated numbered coverage")
+            let reference = try numberedReference(initial: initial,
+                totalHeight: height + Int(maxOffset.rounded()), illustrated: !plain)
+            try writePNG(reference, directory.appendingPathComponent(prefix + "-reference.png"))
+            let referenceStart = try unwrap(reference.cropping(to: CGRect(x: 0, y: 0, width: width, height: height)),
+                                             "Independent reference has no initial viewport")
+            let calibration = try nativeRasterComparison(referenceStart, initial)
+            let comparison = try nativeRasterComparison(output, reference)
+            report["referenceInitialViewportCalibration"] = calibration
+            report["nativeReferenceComparison"] = comparison
+            report["referenceMethod"] = "Fresh native numbered document from origin; only original 36px header reused; every RGBA pixel normalized identically and compared"
+            try require(calibration["passed"] as? Bool == true,
+                        "Independent document reference does not reproduce the initial native viewport")
+            try require(comparison["passed"] as? Bool == true,
+                        "Product Finish differs from the independent full native document reference")
+            if !plain {
                 try require(reverseUpdates >= 2 && extendedAfterReverse, "Product session failed reversal then extension")
             }
             try require(events == totalEvents && continuousSeconds >= (plain ? 6 : 15), "Continuous native input was incomplete")
@@ -671,8 +686,12 @@ enum LiveScrollUsabilityDemoFixture {
     }
 
     private static func plainTextReference(initial: CGImage, totalHeight: Int) throws -> CGImage {
+        try numberedReference(initial: initial, totalHeight: totalHeight, illustrated: false)
+    }
+
+    private static func numberedReference(initial: CGImage, totalHeight: Int, illustrated: Bool) throws -> CGImage {
         let page = NumberedDocument(frame: CGRect(x: 0, y: 0, width: width, height: totalHeight - headerHeight))
-        page.illustrated = false; page.appearance = NSAppearance(named: .aqua)
+        page.illustrated = illustrated; page.appearance = NSAppearance(named: .aqua)
         let body = try nativeImage(page)
         let heading = try unwrap(initial.cropping(to: CGRect(x: 0, y: 0, width: width, height: headerHeight)),
                                  "Cannot retain the original native heading")
@@ -879,8 +898,11 @@ enum LiveScrollUsabilityDemoFixture {
         var bytes = Data(count: image.width * image.height * 4)
         try bytes.withUnsafeMutableBytes { buffer in
             let context = try unwrap(CGContext(data: buffer.baseAddress, width: image.width, height: image.height,
-                bitsPerComponent: 8, bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(),
-                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue), "Pixel comparison allocation failed")
+                bitsPerComponent: 8, bytesPerRow: image.width * 4,
+                space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.premultipliedLast.rawValue),
+                "Pixel comparison allocation failed")
+            context.setBlendMode(.copy); context.interpolationQuality = .none
             context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
         }
         return bytes
@@ -937,4 +959,249 @@ enum LiveScrollUsabilityDemoFixture {
     private static func unwrap<T>(_ value: T?, _ message: String) throws -> T {
         guard let value else { throw DemoFailure(errorDescription: message) }; return value
     }
+}
+
+// A separate owned-source case exercises the actual movement action and source crop.
+extension LiveScrollUsabilityDemoFixture {
+    static func verifyMovement(evidenceDirectory directory: URL) async -> [String: Any] {
+        var report: [String: Any] = ["status": "running", "productSessionControllerExercised": true,
+            "captureMode": "injected-rendered-owned-window-current-region",
+            "realScreenCaptureClaimed": false, "permissionRequested": false,
+            "globalInputPosted": false, "privateUserContent": false,
+            "headerExcluded": true, "newMenuHarness": false,
+            "scope": "Actual Move menu, axis-constrained native drag and Return; provider crops the actual changed source region; continued capture and product Finish"]
+        let started = ProcessInfo.processInfo.systemUptime
+        var session: LiveScrollSessionController?
+        var ownedWindow: NSWindow?
+        var providerCalls = 0, providerRegions: [[CGFloat]] = []
+        var trace: [[String: Any]] = []
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let screen = try unwrap(NSScreen.main, "Movement demo requires a native display")
+            let displayID = try unwrap(screen.displayID, "Movement display has no identity")
+            let displayBounds = CGDisplayBounds(displayID), visible = screen.visibleFrame
+            try require(visible.height >= 680, "Movement demo needs a 680-point usable native display")
+            let nativeHeight = min(CGFloat(700), visible.height - 40)
+            // The injected raster is 1 px per point; align its display-relative origin
+            // before converting from top-left display coordinates to AppKit coordinates.
+            let windowLeft = (visible.midX - screen.frame.minX - CGFloat(width) / 2).rounded()
+            let windowTop = (screen.frame.maxY - visible.maxY + 18).rounded()
+            let window = NSWindow(contentRect: CGRect(x: screen.frame.minX + windowLeft,
+                y: screen.frame.maxY - windowTop - nativeHeight, width: CGFloat(width), height: nativeHeight),
+                styleMask: .borderless, backing: .buffered, defer: false)
+            ownedWindow = window
+            window.title = "PicShot · Move capture region"
+            window.isReleasedWhenClosed = false; window.hasShadow = false
+            window.backgroundColor = .white; window.appearance = NSAppearance(named: .aqua)
+            let scrollView = NSScrollView(frame: CGRect(x: 0, y: 0, width: CGFloat(width), height: nativeHeight))
+            let document = NumberedDocument(frame: CGRect(x: 0, y: 0, width: width, height: 8000))
+            document.illustrated = false
+            scrollView.documentView = document; scrollView.borderType = .noBorder
+            scrollView.hasVerticalScroller = false; scrollView.hasHorizontalScroller = false
+            scrollView.verticalScrollElasticity = .none; scrollView.horizontalScrollElasticity = .none
+            scrollView.backgroundColor = .white; scrollView.drawsBackground = true
+            scrollView.automaticallyAdjustsContentInsets = false
+            window.contentView = scrollView; window.orderFrontRegardless(); window.displayIfNeeded()
+            let windowOnDisplay = CGRect(x: window.frame.minX - screen.frame.minX,
+                y: screen.frame.maxY - window.frame.maxY, width: window.frame.width, height: window.frame.height)
+            let originalRegion = CGRect(x: windowOnDisplay.minX, y: windowOnDisplay.minY + 80,
+                                        width: CGFloat(width), height: CGFloat(height))
+            let target = LiveScrollScreenSource.Target(pid: ProcessInfo.processInfo.processIdentifier,
+                windowID: CGWindowID(window.windowNumber),
+                bounds: windowOnDisplay.offsetBy(dx: displayBounds.minX, dy: displayBounds.minY))
+            let reference = MovementSourceReference()
+            let source = try LiveScrollVerificationFrameSource(region: originalRegion, displayBounds: displayBounds,
+                target: target, image: { [reference, weak scrollView, weak window] in
+                    try await Task.sleep(nanoseconds: 66_666_667)
+                    guard let source = reference.source, let scrollView, let window,
+                          window.windowNumber == Int(target.windowID) else {
+                        throw DemoFailure(errorDescription: "Owned movement source identity disappeared")
+                    }
+                    let region = source.region
+                    let crop = region.offsetBy(dx: -windowOnDisplay.minX, dy: -windowOnDisplay.minY)
+                    try require(CGRect(origin: .zero, size: scrollView.bounds.size).contains(crop),
+                                "Moved capture escaped its original owned document window")
+                    providerCalls += 1
+                    if providerRegions.count < 120 { providerRegions.append([region.minX, region.minY, region.width, region.height]) }
+                    let full = try nativeImage(scrollView)
+                    return try unwrap(full.cropping(to: crop), "Cannot crop actual moved source region")
+                })
+            reference.source = source
+            var output: CGImage?, completions = 0
+            let controller = LiveScrollSessionController(onComplete: { image in output = image; completions += 1 }, onImport: {})
+            session = controller
+            try await controller.startForVerification(source: source, screen: screen)
+            try await waitFor("Movement source produced no preview", timeout: 5) {
+                controller.stateForVerification.acceptedObservations > 0
+            }
+            let controls = try unwrap(controller.controlsForVerification, "Movement controls absent")
+            var story = [try scene(window: window, controls: controls, caption: "Capture an inner band of the actual native document")]
+            try writePNG(story[0], directory.appendingPathComponent("live-scroll-movement-native-first.png"))
+            try await movementWheelRun(scrollView, session: controller, count: 90, phase: "before move", trace: &trace)
+            try await waitFor("Initial movement capture did not join", timeout: 5) {
+                controller.stateForVerification.viewportOffset == Int(scrollView.contentView.bounds.minY.rounded())
+            }
+            let before = controller.stateForVerification
+            let cropBefore = source.region.offsetBy(dx: -windowOnDisplay.minX, dy: -windowOnDisplay.minY)
+            let beforePixels = try normalizedPixels(try unwrap(nativeImage(scrollView).cropping(to: cropBefore), "Initial crop absent"))
+            story.append(try scene(window: window, controls: controls, caption: "Before Move · live capture remains active"))
+            let more = try unwrap(findButton("scroll.live.more", in: controls.toolbarWindow?.contentView) as? NSPopUpButton,
+                                  "Actual More menu button absent")
+            report["menu"] = try await PinManagementSmokeFixture.activateMenuItemForVerification(more, id: "scroll.live.moveRegion")
+            try await waitFor("Actual Move action did not open the native region view", timeout: 5) {
+                controller.activeMoveViewForVerification != nil
+            }
+            let moveView = try unwrap(controller.activeMoveViewForVerification, "Native Move view disappeared")
+            let moveWindow = try unwrap(moveView.window, "Native Move window disappeared")
+            try require(moveWindow.isKeyWindow && moveWindow.firstResponder === moveView,
+                        "Native Move view is not the active keyboard destination")
+            let original = moveView.region
+            try require(original == source.region, "Native Move view started with a different source region")
+            let downPoint = CGPoint(x: original.midX, y: original.midY)
+            let draggedPoint = CGPoint(x: downPoint.x + 24, y: downPoint.y + 48)
+            let hitPoint = moveView.convert(downPoint, to: moveView.superview)
+            try require(moveView.hitTest(hitPoint) === moveView, "Native move target was not hit-testable")
+            try movementMouse(.leftMouseDown, point: downPoint, view: moveView)
+            try movementMouse(.leftMouseDragged, point: draggedPoint, view: moveView)
+            try movementMouse(.leftMouseUp, point: draggedPoint, view: moveView)
+            let dragged = moveView.region
+            report["drag"] = ["requestedDelta": [24, 48], "original": movementRect(original),
+                "afterDrag": movementRect(dragged), "crossAxisUnchanged": dragged.minX == original.minX,
+                "sizeUnchanged": dragged.size == original.size, "alongAxisDelta": dragged.minY - original.minY,
+                "route": "owned native window mouseDown/mouseDragged/mouseUp dispatch with hit-test"]
+            try require(dragged.minX == original.minX && dragged.minY == original.minY + 48 && dragged.size == original.size,
+                        "Active capture Move was not constrained to its scroll axis")
+            let overlay = try movementOverlay(window: window, moveView: moveView, screen: screen)
+            story.append(overlay)
+            try writePNG(overlay, directory.appendingPathComponent("live-scroll-movement-native-drag.png"))
+            let enter = try unwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: moveWindow.windowNumber, context: nil,
+                characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36), "Return event unavailable")
+            moveWindow.sendEvent(enter)
+            try await waitFor("Return did not apply and resume the actual region", timeout: 5) {
+                controller.activeMoveViewForVerification == nil && source.region == dragged
+                    && !controller.snapshotForVerification.busy && !controller.snapshotForVerification.paused
+            }
+            try await waitFor("Changed source crop did not match its real document displacement", timeout: 5) {
+                controller.stateForVerification.viewportOffset == before.viewportOffset + 48
+            }
+            let cropAfter = source.region.offsetBy(dx: -windowOnDisplay.minX, dy: -windowOnDisplay.minY)
+            let afterPixels = try normalizedPixels(try unwrap(nativeImage(scrollView).cropping(to: cropAfter), "Moved crop absent"))
+            report["moveAppliedThroughReturn"] = true
+            report["actualSourcePixelsChanged"] = beforePixels != afterPixels
+            report["matchedMoveDisplacement"] = controller.stateForVerification.viewportOffset - before.viewportOffset
+            report["ownedTargetIdentityUnchanged"] = source.target == target
+            try require(beforePixels != afterPixels, "Moved-region provider returned unchanged pixels")
+            story.append(try scene(window: window, controls: controls, caption: "After Return · the actual cropped region moved 48 px"))
+            try await movementWheelRun(scrollView, session: controller, count: 60, phase: "after move", trace: &trace)
+            let expectedOffset = Int(scrollView.contentView.bounds.minY.rounded()) + 48
+            try await waitFor("Capture did not continue after moving its region", timeout: 5) {
+                controller.stateForVerification.viewportOffset == expectedOffset
+            }
+            story.append(try scene(window: window, controls: controls, caption: "Continued scrolling after Move · ready to Finish"))
+            let finish = try unwrap(findButton("scroll.live.finish", in: controls.toolbarWindow?.contentView), "Actual Finish absent")
+            try PortableSettingsUIPreviewFixture.click(finish)
+            try await waitFor("Actual Finish did not deliver moved-region output", timeout: 8) { output != nil }
+            let image = try unwrap(output, "Moved-region Finish returned no output")
+            let expectedHeight = height + expectedOffset
+            let referencePage = NumberedDocument(frame: CGRect(x: 0, y: 0, width: width, height: 80 + expectedHeight))
+            referencePage.illustrated = false; referencePage.appearance = NSAppearance(named: .aqua)
+            let expectedImage = try unwrap(nativeImage(referencePage).cropping(to: CGRect(x: 0, y: 80, width: width, height: expectedHeight)),
+                                           "Independent moved-range document reference absent")
+            let comparison = try nativeRasterComparison(image, expectedImage)
+            report["referenceComparison"] = comparison
+            report["referenceDocumentRange"] = [80, 80 + expectedHeight]
+            report["finishCallbacks"] = completions; report["providerCalls"] = providerCalls
+            report["providerRegions"] = providerRegions; report["trace"] = trace
+            report["nativeWheelEvents"] = 150
+            report["returnKeyRoute"] = "owned key window sendEvent to actual first responder"
+            try writePNG(image, directory.appendingPathComponent("live-scroll-movement-finished.png"))
+            try writePNG(expectedImage, directory.appendingPathComponent("live-scroll-movement-reference.png"))
+            try writeGIF(try uniformMovementFrames(story), directory.appendingPathComponent("live-scroll-movement-interaction.gif"))
+            try writePNG(try contactSheet(story), directory.appendingPathComponent("live-scroll-movement-contact-sheet.png"))
+            try require(completions == 1 && comparison["passed"] as? Bool == true,
+                        "Moved capture lost or duplicated independent document pixels")
+            report["status"] = "passed"
+        } catch {
+            report["status"] = "failed"; report["error"] = error.localizedDescription
+            if let session { report["productStatus"] = session.snapshotForVerification.status }
+            if let window = ownedWindow, let controls = session?.controlsForVerification,
+               let image = try? scene(window: window, controls: controls, caption: "Actual movement session failure") {
+                try? writePNG(image, directory.appendingPathComponent("live-scroll-movement-failure.png"))
+            }
+        }
+        report["providerCalls"] = providerCalls; report["providerRegions"] = providerRegions
+        report["trace"] = trace
+        await session?.closeForVerification()
+        report["productSessionClosed"] = session?.isClosedForVerification ?? true
+        if session?.isClosedForVerification == false { report["status"] = "failed"; report["cleanupError"] = "Session retirement unconfirmed" }
+        ownedWindow?.close()
+        report["elapsedSeconds"] = ProcessInfo.processInfo.systemUptime - started
+        if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: directory.appendingPathComponent("live-scroll-movement.json"), options: .atomic)
+        }
+        return report
+    }
+
+    @MainActor private final class MovementSourceReference { weak var source: LiveScrollVerificationFrameSource? }
+
+    private static func movementWheelRun(_ view: NSScrollView, session: LiveScrollSessionController,
+                                        count: Int, phase: String, trace: inout [[String: Any]]) async throws {
+        for index in 0..<count {
+            try Task.checkCancellation()
+            try scroll(view, pixels: 4)
+            if index % 10 == 0 {
+                trace.append(["phase": phase, "event": index + 1, "nativeScrollOffset": view.contentView.bounds.minY,
+                    "acceptedOffset": session.stateForVerification.viewportOffset,
+                    "outputHeight": session.stateForVerification.height,
+                    "status": session.snapshotForVerification.status])
+            }
+            try await Task.sleep(nanoseconds: 33_333_333)
+        }
+    }
+
+    private static func movementMouse(_ type: NSEvent.EventType, point: CGPoint, view: NSView) throws {
+        let window = try unwrap(view.window, "Move event window absent")
+        let event = try unwrap(NSEvent.mouseEvent(with: type, location: view.convert(point, to: nil),
+            modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+            context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1), "Move mouse event unavailable")
+        window.sendEvent(event)
+    }
+
+    private static func movementOverlay(window: NSWindow, moveView: NSView, screen: NSScreen) throws -> CGImage {
+        let ownedFrame = CGRect(x: window.frame.minX - screen.frame.minX,
+            y: screen.frame.maxY - window.frame.maxY, width: window.frame.width, height: window.frame.height)
+        let crop = ownedFrame.insetBy(dx: -20, dy: -20).intersection(moveView.bounds).integral
+        let w = Int(crop.width), h = Int(crop.height)
+        let bitmap = try unwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+            bytesPerRow: w * 4, bitsPerPixel: 32), "Move overlay allocation failed")
+        bitmap.size = crop.size; moveView.cacheDisplay(in: crop, to: bitmap)
+        let overlay = try unwrap(bitmap.cgImage, "Move overlay pixels absent")
+        let context = try unwrap(CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue), "Move scene allocation failed")
+        context.setFillColor(NSColor(calibratedWhite: 0.9, alpha: 1).cgColor)
+        context.fill(CGRect(x: 0, y: 0, width: w, height: h))
+        let content = try nativeImage(try unwrap(window.contentView, "Owned movement document absent"))
+        context.draw(content, in: CGRect(x: ownedFrame.minX - crop.minX, y: crop.maxY - ownedFrame.maxY,
+                                        width: ownedFrame.width, height: ownedFrame.height))
+        context.draw(overlay, in: CGRect(x: 0, y: 0, width: w, height: h))
+        return try unwrap(context.makeImage(), "Move scene pixels absent")
+    }
+
+    private static func uniformMovementFrames(_ images: [CGImage]) throws -> [CGImage] {
+        let width = images.map(\.width).max() ?? 1, height = images.map(\.height).max() ?? 1
+        return try images.map { image in
+            let context = try unwrap(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+                "Movement frame canvas allocation failed")
+            context.setFillColor(NSColor(calibratedWhite: 0.91, alpha: 1).cgColor)
+            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+            context.draw(image, in: CGRect(x: (width - image.width) / 2, y: (height - image.height) / 2,
+                                          width: image.width, height: image.height))
+            return try unwrap(context.makeImage(), "Movement frame canvas absent")
+        }
+    }
+
+    private static func movementRect(_ rect: CGRect) -> [CGFloat] { [rect.minX, rect.minY, rect.width, rect.height] }
 }
