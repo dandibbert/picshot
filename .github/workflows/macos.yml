@@ -20,15 +20,11 @@ jobs:
     - name: Build native dependencies
       timeout-minutes: 15
       run: python3 scripts/run-bounded-command.py --timeout-seconds 840 --log dist/live-scroll-dependencies.log --report dist/live-scroll-dependencies.json -- python3 scripts/build-native-codecs.py --arch arm64
-    - name: Compile live scrolling app and focused tests
-      timeout-minutes: 10
-      run: |
-        python3 scripts/run-bounded-command.py --timeout-seconds 540 --log dist/live-scroll-build.log --report dist/live-scroll-build.json -- swift build --build-tests
-    - name: Test live scrolling matcher storage stream and geometry
-      timeout-minutes: 8
-      run: |
-        python3 scripts/run-bounded-command.py --timeout-seconds 420 --log dist/live-scroll-tests.log --report dist/live-scroll-tests.json -- swift test --skip-build --filter LiveScroll
+    - name: Build separate owned native scrolling target
+      timeout-minutes: 3
+      run: python3 scripts/run-bounded-command.py --timeout-seconds 150 --log dist/live-scroll-target-build.log --report dist/live-scroll-target-build.json -- bash scripts/build-live-scroll-target.sh "$PWD/.build/LiveScrollTarget.app"
     - name: Package exact signed preview application
+      id: package_live_scroll
       timeout-minutes: 15
       env:
         PICSHOT_PACKAGE_APP_ONLY: '1'
@@ -37,10 +33,22 @@ jobs:
       timeout-minutes: 5
       env:
         PICSHOT_LIVE_SCROLL_DEMO_ONLY: '1'
+        PICSHOT_LIVE_SCROLL_TARGET: '${{ github.workspace }}/.build/LiveScrollTarget.app/Contents/MacOS/LiveScrollTarget'
       run: |
         mkdir -p dist/live-scroll-demo
         swift scripts/launch-smoke-app.swift "$PWD/dist/PicShot.app" "$PWD/dist/live-scroll-demo/demo.json"
         python3 -c 'import json; r=json.load(open("dist/live-scroll-demo/demo.json")); assert r["status"] == "passed", r'
+    - name: Compile live scrolling app and focused tests
+      id: compile_live_scroll_tests
+      if: ${{ always() && steps.package_live_scroll.outcome == 'success' }}
+      timeout-minutes: 10
+      run: |
+        python3 scripts/run-bounded-command.py --timeout-seconds 540 --log dist/live-scroll-build.log --report dist/live-scroll-build.json -- swift build --build-tests
+    - name: Test live scrolling matcher storage stream and geometry
+      if: ${{ always() && steps.compile_live_scroll_tests.outcome == 'success' }}
+      timeout-minutes: 8
+      run: |
+        python3 scripts/run-bounded-command.py --timeout-seconds 420 --log dist/live-scroll-tests.log --report dist/live-scroll-tests.json -- swift test --skip-build --filter LiveScroll
     - name: Preserve focused usability evidence
       if: always()
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

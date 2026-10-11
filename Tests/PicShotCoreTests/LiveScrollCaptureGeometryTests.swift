@@ -62,7 +62,7 @@ final class LiveScrollCaptureGeometryTests: XCTestCase {
         let clipped = try XCTUnwrap(LiveScrollCaptureGeometry.normalizedViewport(CGRect(x: -0.1, y: 0.9, width: 1.2, height: 0.5)))
         XCTAssertEqual(clipped.minX, 0); XCTAssertEqual(clipped.width, 1)
         XCTAssertEqual(clipped.minY, 0.9); XCTAssertEqual(clipped.height, 0.1, accuracy: 0.000_001)
-        for invalid in [CGRect.null, .zero, CGRect(x: .nan, y: 0, width: 1, height: 1),
+        for invalid in [CGRect.null, .zero, CGRect(x: CGFloat.nan, y: 0, width: 1, height: 1),
                         CGRect(x: 2, y: 0, width: 1, height: 1)] {
             XCTAssertNil(LiveScrollCaptureGeometry.normalizedViewport(invalid))
         }

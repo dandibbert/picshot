@@ -27,3 +27,7 @@ The real-app demonstration records continuous wheel movement, first-preview and 
 Full prior regression/model/installed/default-resource gates are still required before a replacement installer is accepted. No current native pass, general memory stability, full PixPin parity or physical-device validation is claimed by this source checkpoint.
 
 The current requested order is live scrolling usability, action chains/scripts, video recording region movement, and evidenced memory reductions alongside those paths. Cloud configuration synchronization is no longer requested.
+
+## Native verification boundary
+
+The first focused build 217 stopped on an explicitly typed numeric-literal correction in a new test; it produced no runtime evidence. The next native demonstration uses the same production session callbacks for both controlled injected input and, separately, actual ScreenCaptureKit input from an owned helper application. The real-stream result must state permission preflight, received/consumed buffers, output comparison and cleanup. Missing permission is reported as blocked and never treated as a passed screen-capture test. No OS permission is requested by these verification phases.

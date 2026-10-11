@@ -10,7 +10,7 @@ final class LiveScrollSessionController {
     private let onComplete: (CGImage) throws -> Void
     private let onImport: () -> Void
     private let capture = CaptureService()
-    private var source: LiveScrollScreenSource?
+    private var source: (any LiveScrollFrameSource)?
     private var assembler: LiveScrollAssembler?
     private var controls: LiveScrollCaptureController?
     private var sampling: Task<Void, Never>?
@@ -64,28 +64,70 @@ final class LiveScrollSessionController {
                 }
                 try Task.checkCancellation()
                 guard self.generation == token, let displayID = chosenScreen.displayID else { throw CancellationError() }
-                self.screen = chosenScreen; self.region = selected
-                self.installControls()
                 let source = try LiveScrollScreenSource(displayID: displayID, region: selected, screenSize: chosenScreen.frame.size)
-                self.source = source
-                self.assembler = LiveScrollAssembler(axis: self.axis, generation: token)
-                self.setStatus("正在读取选区…", kind: .capturing)
-                try await source.start()
-                try Task.checkCancellation()
-                guard self.generation == token else { throw CancellationError() }
-                self.region = source.region
-                self.placeControls()
-                self.startedAt = ProcessInfo.processInfo.systemUptime
-                if let target = source.target {
-                    NSRunningApplication(processIdentifier: target.pid)?.activate(options: [])
-                } else { self.previousApplication?.activate(options: []) }
-                self.startSampling()
+                try await self.beginSource(source, on: chosenScreen, token: token)
             } catch CaptureError.cancelled { await self.retire() }
             catch is CancellationError { }
             catch {
                 if self.controls != nil { self.paused = true; self.setStatus(error.localizedDescription, kind: .error) }
                 else { showError(error); await self.retire() }
             }
+        }
+    }
+
+    /// Both real ScreenCaptureKit and the native owned-window demonstration use
+    /// this exact lifecycle, sampling loop, assembler and completion callbacks.
+    private func beginSource(_ source: any LiveScrollFrameSource, on screen: NSScreen, token: UInt64) async throws {
+        self.screen = screen; self.region = source.region
+        self.source = source
+        self.assembler = LiveScrollAssembler(axis: axis, generation: token)
+        installControls()
+        setStatus("正在读取选区…", kind: .capturing)
+        try await source.start()
+        try Task.checkCancellation()
+        guard generation == token, !retired else { throw CancellationError() }
+        region = source.region
+        placeControls()
+        startedAt = ProcessInfo.processInfo.systemUptime
+        if let target = source.target {
+            NSRunningApplication(processIdentifier: target.pid)?.activate(options: [])
+        } else { previousApplication?.activate(options: []) }
+        startSampling()
+    }
+
+    // Verification substitutes acquisition only. It does not bypass production
+    // sampling, pause/drain, incremental assembly, UI actions or Finish output.
+    func startForVerification(targetFrame: CGRect, screen: NSScreen,
+                              nextImage: @escaping @MainActor () async throws -> CGImage?) async throws {
+        guard source == nil, transition == nil, !retired else { throw CaptureError.busy }
+        let selected = CGRect(x: targetFrame.minX - screen.frame.minX,
+            y: screen.frame.maxY - targetFrame.maxY, width: targetFrame.width, height: targetFrame.height)
+        let input = try LiveScrollVerificationFrameSource(region: selected,
+            displayBounds: CGDisplayBounds(screen.displayID ?? 0), image: nextImage)
+        try await beginSource(input, on: screen, token: generation)
+    }
+
+    /// A permitted native stream run may inject an actual screen source after
+    /// preparing a separately owned target window; no permission is requested.
+    func startForVerification(source: any LiveScrollFrameSource, screen: NSScreen) async throws {
+        guard self.source == nil, transition == nil, !retired else { throw CaptureError.busy }
+        try await beginSource(source, on: screen, token: generation)
+    }
+
+    var snapshotForVerification: LiveScrollCaptureSnapshot { snapshot }
+    var stateForVerification: LiveScrollAssembler.State { lastState }
+    var controlsForVerification: LiveScrollCaptureController? { controls }
+    var sampledFramesForVerification: Int { samples }
+    var isClosedForVerification: Bool { retired && source == nil && assembler == nil && controls == nil && sampling == nil }
+
+    func closeForVerification() async {
+        transition?.cancel(); sampling?.cancel(); mover?.cancel()
+        await retire()
+        // A Finish callback may already have started retirement. Keep the
+        // observation owned and bounded without changing product deadlines.
+        let deadline = ProcessInfo.processInfo.systemUptime + 4
+        while !isClosedForVerification, ProcessInfo.processInfo.systemUptime < deadline {
+            try? await Task.sleep(nanoseconds: 10_000_000)
         }
     }
 
@@ -132,7 +174,7 @@ final class LiveScrollSessionController {
                     break
                 }
                 do {
-                    guard let frame = try await source.nextFrame() else {
+                    guard let frame = try await source.nextFrame(timeout: 0.75) else {
                         if self.automatic { self.sameViewportCount += 1; try self.performAutomaticStep(source: source) }
                         continue
                     }
@@ -148,7 +190,7 @@ final class LiveScrollSessionController {
                     self.snapshot.canCopy = self.snapshot.canFinish
                     self.snapshot.canChangeAxis = update.state.acceptedObservations <= 1
                     if let image = update.preview { self.controls?.updatePreview(image: image, viewportFraction: update.viewport) }
-                    self.setStatus(update.state.message, kind: update.state.matched ? .capturing : .warning)
+                    self.setStatus(update.state.message, kind: update.state.matched && !update.state.previewUnavailable ? .capturing : .warning)
                     if self.automatic {
                         if update.state.matched { try self.performAutomaticStep(source: source) }
                         else { self.automatic = false; self.setStatus("自动滚动已停，稍往回滚接回长图", kind: .warning) }
@@ -239,7 +281,7 @@ final class LiveScrollSessionController {
         if automatic, let source { do { try performAutomaticStep(source: source) } catch { automatic = false; setStatus(error.localizedDescription, kind: .warning); return } }
         setStatus(automatic ? "自动滚动中 · 可随时暂停或完成" : "已停止自动滚动，可继续手动滚动", kind: .capturing)
     }
-    private func performAutomaticStep(source: LiveScrollScreenSource) throws {
+    private func performAutomaticStep(source: any LiveScrollFrameSource) throws {
         guard !paused, automatic, AXIsProcessTrusted(), let region else { automatic = false; return }
         try source.validateTarget()
         let now = ProcessInfo.processInfo.systemUptime

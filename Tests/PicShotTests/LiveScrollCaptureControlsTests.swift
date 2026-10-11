@@ -61,7 +61,10 @@ final class LiveScrollCaptureControlsTests: XCTestCase {
         XCTAssertEqual(controller.toolbarWindow?.frame, initialFrame)
         state.busy = true; controller.update(snapshot: state)
         XCTAssertFalse(view.pauseButton.isEnabled)
-        XCTAssertTrue(view.copyButton.isEnabled); XCTAssertTrue(view.finishButton.isEnabled); XCTAssertTrue(view.cancelButton.isEnabled)
+        XCTAssertFalse(view.copyButton.isEnabled); XCTAssertFalse(view.finishButton.isEnabled)
+        XCTAssertTrue(view.cancelButton.isEnabled)
+        view.copyButton.performClick(nil); view.finishButton.performClick(nil)
+        XCTAssertEqual(copy, 2); XCTAssertEqual(finish, 2)
         view.cancelButton.performClick(nil); view.cancelButton.performClick(nil); controller.close()
         XCTAssertEqual(cancel, 1); XCTAssertEqual(close, 0)
     }

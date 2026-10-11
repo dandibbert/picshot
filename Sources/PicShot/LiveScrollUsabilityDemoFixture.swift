@@ -16,7 +16,326 @@ enum LiveScrollUsabilityDemoFixture {
     private static let headerHeight = 36
     private static let duration = 15.0
 
+    /// Main route: the actual product session owns frame acquisition, matching,
+    /// presentation state, pause/resume, and Finish. The fixture supplies only an
+    /// owned source window/frame provider, native wheel input and observations.
     static func verify(evidenceDirectory directory: URL) async throws -> [String: Any] {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let start = ProcessInfo.processInfo.systemUptime
+        let permitted = CGPreflightScreenCaptureAccess()
+        let screen = try unwrap(NSScreen.main, "Native demo requires an available display")
+        let visible = screen.visibleFrame
+        let window = NSWindow(contentRect: CGRect(x: visible.midX - 390, y: visible.midY - 200,
+            width: width, height: height), styleMask: .borderless, backing: .buffered, defer: false)
+        window.title = "PicShot · Native continuous-scroll document"
+        window.isReleasedWhenClosed = false; window.hasShadow = false
+        window.backgroundColor = .white; window.appearance = NSAppearance(named: .aqua)
+        let viewport = DemoViewport(frame: CGRect(x: 0, y: 0, width: width, height: height))
+        window.contentView = viewport; window.orderFrontRegardless(); window.displayIfNeeded()
+        defer { window.close() }
+        try writePNG(try nativeImage(viewport), directory.appendingPathComponent("live-scroll-native-first-viewport.png"))
+        let firstPixelsMS = milliseconds(since: start)
+        let capture = try await CaptureSource.make(window: window, viewport: viewport, permitted: permitted)
+        var report: [String: Any] = ["schemaVersion": 2, "status": "running",
+            "productSessionControllerExercised": true, "permissionAlreadyGranted": permitted,
+            "permissionRequested": false, "globalInputPosted": false, "privateUserContent": false,
+            "networkUsed": false, "captureMode": "production-session-with-owned-frame-provider",
+            "ownedFrameAcquisitionMode": capture.mode,
+            "ownedWindowScreenshotAcquisitionStarted": capture.screenCaptureStarted,
+            "realScreenCaptureClaimed": false, "realScreenCaptureValidated": false,
+            "sourceBoundary": "Owned-window cases inject a frame provider into the production session; only the separately reported realStream phase can validate production SCStream delivery. No phase requests TCC permission.",
+            "firstNativeWindowPixelsMilliseconds": firstPixelsMS,
+            "sourceCommit": Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String ?? "unknown"]
+        if !capture.screenCaptureStarted { report["limitation"] = capture.reason }
+        try writeReport(report, directory)
+        let illustrated = await productCycle(viewport: viewport, window: window, screen: screen,
+            capture: capture, directory: directory, plain: false)
+        report["illustratedCase"] = illustrated
+        try writeReport(report, directory)
+        guard illustrated["productSessionClosed"] as? Bool == true else {
+            report["status"] = "failed"
+            report["ordinaryTextCase"] = ["status": "blocked", "reason": "Prior owned product session did not close"]
+            try writeReport(report, directory)
+            throw DemoFailure(errorDescription: "Previous native demo session cleanup was not confirmed")
+        }
+        let plain = await productCycle(viewport: viewport, window: window, screen: screen,
+            capture: capture, directory: directory, plain: true)
+        report["ordinaryTextCase"] = plain
+        let realStream: [String: Any]
+        if plain["productSessionClosed"] as? Bool == true {
+            realStream = await LiveScrollRealStreamFixture.run(outputDirectory: directory.appendingPathComponent("real-stream"))
+        } else {
+            realStream = ["status": "blocked", "permissionAlreadyGranted": permitted,
+                          "blocker": "Previous owned product session cleanup was not confirmed",
+                          "realScreenCaptureClaimed": false]
+        }
+        report["realStream"] = realStream
+        report["realScreenCaptureClaimed"] = realStream["realScreenCaptureClaimed"] as? Bool ?? false
+        report["realScreenCaptureValidated"] = realStream["status"] as? String == "passed"
+        if realStream["status"] as? String == "blocked" {
+            report["realScreenCaptureBlocker"] = realStream["blocker"] as? String ?? "Real stream phase blocked"
+        }
+        let realPermission = realStream["permissionAlreadyGranted"] as? Bool ?? permitted
+        let realOutcomeAcceptable = realStream["status"] as? String == "passed"
+            || (realStream["status"] as? String == "blocked" && !realPermission)
+        let passed = illustrated["status"] as? String == "passed" && plain["status"] as? String == "passed"
+            && realOutcomeAcceptable
+        report["status"] = passed ? "passed" : "failed"
+        report["elapsedSeconds"] = ProcessInfo.processInfo.systemUptime - start
+        try writeReport(report, directory)
+        try require(passed, "Product-session demo failed; preserved per-case reports and native pixels identify the failure")
+        return report
+    }
+
+    private static func productCycle(viewport: DemoViewport, window: NSWindow, screen: NSScreen,
+                                     capture: CaptureSource, directory: URL, plain: Bool) async -> [String: Any] {
+        let prefix = plain ? "live-scroll-plain-text" : "live-scroll"
+        let start = ProcessInfo.processInfo.systemUptime
+        var completedImage: CGImage?, completedCount = 0, frameRequests = 0
+        let session = LiveScrollSessionController(onComplete: { image in
+            completedImage = image; completedCount += 1
+        }, onImport: {})
+        var wheel: Task<Void, Error>?
+        var report: [String: Any] = ["status": "running", "productSessionControllerExercised": true,
+            "addedAlignmentMarkers": !plain, "captureMode": capture.mode,
+            "scope": plain ? "ordinary numbered native text on white" : "numbered native rich document",
+            "sessionSamplingLoopReimplementedByFixture": false,
+            "buttonInputRoute": "accepted native hit-test/mouse helper PortableSettingsUIPreviewFixture.click"]
+        do {
+            try scroll(viewport.scrollView, pixels: -Int(viewport.offset.rounded()))
+            viewport.document.illustrated = !plain
+            let initial = try await capture.image()
+            try await session.startForVerification(targetFrame: window.frame, screen: screen, nextImage: {
+                try await Task.sleep(nanoseconds: 66_666_667)
+                frameRequests += 1
+                return try await capture.image()
+            })
+            try await waitFor("Product session did not produce its first preview", timeout: 6) {
+                session.stateForVerification.acceptedObservations > 0
+            }
+            let controls = try unwrap(session.controlsForVerification, "Product session did not install capture controls")
+            for panel in [controls.toolbarWindow, controls.previewWindow, controls.outlineWindow] {
+                panel?.appearance = NSAppearance(named: .aqua)
+            }
+            let thumbnail = try unwrap(controls.previewWindow?.contentView as? LiveScrollThumbnailView,
+                                       "Product session thumbnail is missing")
+            let firstMarker = thumbnail.viewportMarker
+            report["firstPreviewMilliseconds"] = milliseconds(since: start)
+            try writePNG(try scene(window: window, controls: controls,
+                caption: plain ? "Ordinary text · actual PicShot session" : "PicShot · actual live-scroll session"),
+                directory.appendingPathComponent(prefix + "-native-first-window.png"))
+            var done = false, events = 0, direction = 1
+            var maxOffset = 0.0, lastArtifact = -1.0
+            var firstGrowth: Double?
+            var growths = 0, reverseUpdates = 0, observedUpdates = 0
+            var extendedAfterReverse = false
+            var lastAccepted = session.stateForVerification.acceptedObservations
+            var lastHeight = session.stateForVerification.height
+            var story: [CGImage] = [], trace: [[String: Any]] = []
+            let totalEvents = plain ? 180 : 450
+            let inputStart = ProcessInfo.processInfo.systemUptime
+            wheel = Task { @MainActor in
+                for index in 0..<totalEvents {
+                    try Task.checkCancellation()
+                    direction = !plain && (180..<240).contains(index) ? -1 : 1
+                    try scroll(viewport.scrollView, pixels: direction * 4)
+                    events += 1; maxOffset = max(maxOffset, Double(viewport.offset))
+                    try await Task.sleep(nanoseconds: 33_333_333)
+                }
+                done = true
+            }
+            while !done {
+                let state = session.stateForVerification
+                if state.acceptedObservations > lastAccepted {
+                    observedUpdates += 1
+                    if direction < 0 { reverseUpdates += 1 }
+                    lastAccepted = state.acceptedObservations
+                }
+                if state.height > lastHeight {
+                    growths += 1; lastHeight = state.height
+                    if firstGrowth == nil { firstGrowth = milliseconds(since: inputStart) }
+                    if !plain && events > 240 { extendedAfterReverse = true }
+                }
+                let elapsed = ProcessInfo.processInfo.systemUptime - inputStart
+                trace.append(["seconds": elapsed, "nativeOffset": viewport.offset,
+                    "acceptedOffset": state.viewportOffset, "outputHeight": state.height,
+                    "acceptedObservations": state.acceptedObservations, "matched": state.matched,
+                    "nativeWheelEvents": events, "direction": direction,
+                    "productStatus": session.snapshotForVerification.status])
+                if elapsed - lastArtifact >= 0.5, story.count < 36 {
+                    let image = try scene(window: window, controls: controls,
+                        caption: String(format: "%.1f s · %@ · %d px · actual PicShot session", elapsed,
+                                        direction < 0 ? "scrolling back" : "scrolling", state.height))
+                    story.append(image); lastArtifact = elapsed
+                    try writePNG(image, directory.appendingPathComponent(String(format: prefix + "-frame-%02d.png", story.count)))
+                }
+                try await Task.sleep(nanoseconds: 100_000_000)
+                try require(elapsed < (plain ? 18 : 32), "Native product demo exceeded its input deadline")
+            }
+            try await wheel?.value; wheel = nil
+            let continuousSeconds = ProcessInfo.processInfo.systemUptime - inputStart
+            report["continuousSeconds"] = continuousSeconds
+            report["nativeWheelEvents"] = events
+            report["inputRoute"] = "Owned NSScrollView.scrollWheel(with:) with native pixel NSEvents; no global posting"
+            report["settleDetectorUsed"] = false
+            report["firstGrowthMilliseconds"] = firstGrowth ?? -1
+            report["observedGrowingPreviewUpdates"] = growths
+            report["observedPreviewUpdates"] = observedUpdates
+            report["acceptedReverseObservations"] = reverseUpdates
+            report["extendedAfterReversal"] = extendedAfterReverse
+            report["trace"] = trace
+            // Synchronize only the terminal assertions. Acquisition updated throughout
+            // the continuous input above; no stop/settle gate feeds the product loop.
+            try await waitFor("Final native viewport was not joined", timeout: 5) {
+                session.stateForVerification.viewportOffset == Int(viewport.offset.rounded())
+            }
+            if !plain {
+                let pause = try unwrap(findButton("scroll.live.pauseResume", in: controls.toolbarWindow?.contentView),
+                                       "Actual Pause button missing")
+                try require(pause.isEnabled, "Actual Pause button disabled during capture")
+                try PortableSettingsUIPreviewFixture.click(pause)
+                try await waitFor("Actual Pause did not drain", timeout: 5) {
+                    session.snapshotForVerification.paused && !session.snapshotForVerification.busy
+                }
+                let pausedRequests = frameRequests
+                let pausedState = session.stateForVerification
+                try scroll(viewport.scrollView, pixels: 48)
+                try await Task.sleep(nanoseconds: 220_000_000)
+                let pausePreserved = frameRequests == pausedRequests
+                    && session.stateForVerification.viewportOffset == pausedState.viewportOffset
+                try PortableSettingsUIPreviewFixture.click(pause)
+                try await waitFor("Actual Resume did not rejoin", timeout: 5) {
+                    !session.snapshotForVerification.paused
+                        && session.stateForVerification.viewportOffset == Int(viewport.offset.rounded())
+                }
+                report["pauseStoppedFrameRequestsAndPreservedOutput"] = pausePreserved
+                report["resumeRejoinedNativeViewport"] = true
+                let retainedState = session.stateForVerification
+                let retainedImage = try unwrap(thumbnail.image, "No retained thumbnail before gap")
+                let retainedPixels = try normalizedPixels(retainedImage)
+                let retainedOffset = viewport.offset
+                try scroll(viewport.scrollView, pixels: height * 2)
+                try await waitFor("Product session did not warn about the non-overlapping gap", timeout: 5) {
+                    !session.stateForVerification.matched
+                }
+                let afterGap = session.stateForVerification
+                let afterGapPixels = try normalizedPixels(try unwrap(thumbnail.image, "Gap removed the retained thumbnail"))
+                let preserved = afterGap.height == retainedState.height && afterGap.viewportOffset == retainedState.viewportOffset
+                    && afterGapPixels == retainedPixels
+                try writePNG(try scene(window: window, controls: controls,
+                    caption: "Gap warning · actual session retains the last valid long image"),
+                    directory.appendingPathComponent("live-scroll-gap-recovery.png"))
+                try scroll(viewport.scrollView, pixels: Int((retainedOffset - viewport.offset).rounded()))
+                try await waitFor("Product session did not recover retained overlap", timeout: 5) {
+                    session.stateForVerification.matched
+                }
+                try scroll(viewport.scrollView, pixels: 48)
+                try await waitFor("Product session did not extend after recovery", timeout: 5) {
+                    session.stateForVerification.viewportOffset == Int(viewport.offset.rounded())
+                }
+                report["gapRejected"] = true; report["gapPreservedLastValidPreviewAndState"] = preserved
+                report["gapRecoveryMatched"] = true
+                try require(pausePreserved && preserved, "Pause or gap changed the retained output")
+            }
+            maxOffset = max(maxOffset, Double(viewport.offset))
+            let finalState = session.stateForVerification
+            let finalMarker = thumbnail.viewportMarker
+            report["fixedHeaderDetectedPixels"] = finalState.fixedLeading
+            report["actualPreviewUpdates"] = finalState.acceptedObservations
+            report["viewportMarkerPresentAtStartAndEnd"] = firstMarker != nil && finalMarker != nil
+            report["viewportMarkerShrankAsDocumentGrew"] = (finalMarker?.height ?? .infinity) < (firstMarker?.height ?? 0)
+            let finalScene = try scene(window: window, controls: controls, caption: "Ready to finish · actual PicShot session")
+            story.append(finalScene)
+            try writePNG(finalScene, directory.appendingPathComponent(prefix + "-native-finished-window.png"))
+            for panel in [controls.toolbarWindow, controls.previewWindow, controls.outlineWindow] {
+                panel?.appearance = NSAppearance(named: .darkAqua)
+            }
+            try writePNG(try scene(window: window, controls: controls, caption: "Dark appearance · actual PicShot session"),
+                         directory.appendingPathComponent(prefix + "-native-dark-controls.png"))
+            try writeGIF(story, directory.appendingPathComponent(prefix + "-interaction.gif"))
+            try writePNG(try contactSheet(story), directory.appendingPathComponent(prefix + "-contact-sheet.png"))
+            let finish = try unwrap(findButton("scroll.live.finish", in: controls.toolbarWindow?.contentView),
+                                    "Actual Finish button missing")
+            try require(finish.isEnabled, "Actual Finish button disabled with retained output")
+            try PortableSettingsUIPreviewFixture.click(finish)
+            try await waitFor("Actual Finish did not deliver its completion image", timeout: 8) { completedImage != nil }
+            let output = try unwrap(completedImage, "Actual Finish returned no image")
+            try writePNG(output, directory.appendingPathComponent(prefix + "-finished.png"))
+            report["finishButtonCompletionCallbacks"] = completedCount
+            report["outputWidth"] = output.width; report["outputHeight"] = output.height
+            report["frameProviderCalls"] = frameRequests
+            if plain {
+                let reference = try plainTextReference(initial: initial, totalHeight: height + Int(maxOffset.rounded()))
+                try writePNG(reference, directory.appendingPathComponent(prefix + "-reference.png"))
+                let comparison = try nativeRasterComparison(output, reference)
+                report["nativeReferenceComparison"] = comparison
+                try require(comparison["passed"] as? Bool == true, "Ordinary text output differs from independent native document reference")
+            } else {
+                let coverage = try numberedCoverage(output: output, expectedOffset: Int(maxOffset.rounded()))
+                report["numberedCoverage"] = coverage
+                try require(coverage["passed"] as? Bool == true, "Product Finish has missing or duplicated numbered coverage")
+                try require(reverseUpdates >= 2 && extendedAfterReverse, "Product session failed reversal then extension")
+            }
+            try require(events == totalEvents && continuousSeconds >= (plain ? 6 : 15), "Continuous native input was incomplete")
+            try require(growths >= (plain ? 3 : 8) && (firstGrowth ?? .infinity) < 2000, "Actual growing preview was too slow or absent")
+            try require(finalState.fixedLeading == headerHeight, "Actual session did not preserve the sticky header exactly once")
+            try require(completedCount == 1 && firstMarker != nil && finalMarker != nil, "Actual Finish or viewport marker failed")
+            report["status"] = "passed"
+        } catch {
+            wheel?.cancel(); try? await wheel?.value
+            report["status"] = "failed"; report["error"] = error.localizedDescription
+            report["productStatus"] = session.snapshotForVerification.status
+            report["retainedOutputHeight"] = session.stateForVerification.height
+            if let controls = session.controlsForVerification,
+               let image = try? scene(window: window, controls: controls, caption: "Actual product-session failure; retained native UI") {
+                try? writePNG(image, directory.appendingPathComponent(prefix + "-failure.png"))
+            }
+        }
+        report["productSampledFrames"] = session.sampledFramesForVerification
+        await session.closeForVerification()
+        report["productSessionClosed"] = session.isClosedForVerification
+        if !session.isClosedForVerification {
+            report["status"] = "failed"
+            report["cleanupError"] = "Product session did not report closed after bounded closeForVerification"
+        }
+        report["elapsedSeconds"] = ProcessInfo.processInfo.systemUptime - start
+        if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: directory.appendingPathComponent(prefix + "-product-session.json"), options: .atomic)
+        }
+        return report
+    }
+
+    private static func nativeRasterComparison(_ output: CGImage, _ reference: CGImage) throws -> [String: Any] {
+        let actual = try normalizedPixels(output), expected = try normalizedPixels(reference)
+        let dimensions = output.width == reference.width && output.height == reference.height
+        var total: UInt64 = 0, bad = 0
+        if dimensions {
+            actual.withUnsafeBytes { aa in expected.withUnsafeBytes { bb in
+                let a = aa.bindMemory(to: UInt8.self), b = bb.bindMemory(to: UInt8.self)
+                for index in 0..<a.count {
+                    let delta = abs(Int(a[index]) - Int(b[index])); total += UInt64(delta)
+                    if delta > 8 { bad += 1 }
+                }
+            } }
+        }
+        let mean = dimensions ? Double(total) / Double(max(1, actual.count)) : -1
+        let fraction = dimensions ? Double(bad) / Double(max(1, actual.count)) : 1
+        return ["passed": dimensions && mean <= 0.5 && fraction <= 0.001,
+            "exactEquality": actual == expected, "dimensionsMatch": dimensions,
+            "expectedHeight": reference.height, "actualHeight": output.height,
+            "meanAbsoluteRGBAError": mean, "fractionOfChannelsDifferingByMoreThan8": fraction]
+    }
+
+    private static func waitFor(_ message: String, timeout: Double,
+                                condition: @MainActor () -> Bool) async throws {
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        while !condition() {
+            try require(ProcessInfo.processInfo.systemUptime < deadline, message)
+            try await Task.sleep(nanoseconds: 25_000_000)
+        }
+    }
+
+    static func verifyAssemblerDemo(evidenceDirectory directory: URL) async throws -> [String: Any] {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let started = ProcessInfo.processInfo.systemUptime
         let permitted = CGPreflightScreenCaptureAccess()

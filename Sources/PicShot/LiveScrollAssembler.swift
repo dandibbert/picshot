@@ -2,9 +2,9 @@ import AppKit
 import CoreGraphics
 import PicShotCore
 
-/// One serial matching owner. A failed candidate never replaces the last verified
-/// viewport, the document position, or the committed strips. Screen acquisition
-/// runs independently with one replaceable pending buffer.
+/// One serial matching owner. A rejected match/write never replaces the last
+/// verified viewport. Once document work succeeds, matching state is accepted
+/// before fallible preview work. Screen acquisition has one replaceable buffer.
 actor LiveScrollAssembler {
     struct State: Sendable {
         var width = 0
@@ -17,7 +17,9 @@ actor LiveScrollAssembler {
         var message = "滚动页面，图片会自动接长"
         var fixedLeading = 0
         var fixedTrailing = 0
+        /// Verified body coverage extends beyond the durable document union.
         var previewIsTransient = false
+        var previewUnavailable = false
     }
     struct Update: @unchecked Sendable {
         let state: State
@@ -27,6 +29,7 @@ actor LiveScrollAssembler {
 
     private let axis: ScrollAxis
     private let generation: UInt64
+    private let storageParent: URL
     private var firstImage: CGImage?
     private var anchorImage: CGImage?
     private var anchorGray: ScrollFrame?
@@ -38,9 +41,11 @@ actor LiveScrollAssembler {
     private let commitDistance = 96
     private var committedLower = 0
     private var committedUpper = 0
+    enum PreviewFailureForTesting { case unavailable, cancelled }
+    private var nextPreviewFailureForTesting: PreviewFailureForTesting?
 
-    init(axis: ScrollAxis, generation: UInt64) {
-        self.axis = axis; self.generation = generation
+    init(axis: ScrollAxis, generation: UInt64, storageParent: URL = FileManager.default.temporaryDirectory) {
+        self.axis = axis; self.generation = generation; self.storageParent = storageParent
     }
 
     func observe(_ image: CGImage) async throws -> Update {
@@ -51,7 +56,11 @@ actor LiveScrollAssembler {
             firstImage = image; anchorImage = image; anchorGray = gray
             state.width = image.width; state.height = image.height
             state.acceptedObservations = 1; state.matched = true
-            return Update(state: state, preview: try Self.thumbnail(image), viewport: CGRect(x: 0, y: 0, width: 1, height: 1))
+            do {
+                try injectPreviewFailureForTesting()
+                return Update(state: state, preview: try Self.thumbnail(image), viewport: CGRect(x: 0, y: 0, width: 1, height: 1))
+            } catch is CancellationError { throw CancellationError() }
+            catch { return previewUnavailableUpdate() }
         }
         let match: LiveScrollMatch
         do {
@@ -62,7 +71,8 @@ actor LiveScrollAssembler {
             }
             match = try LiveScrollMatcher.match(previous: previous, next: gray, axis: axis, configuration: configuration)
         } catch ScrollStitchError.duplicate {
-            state.matched = true; state.message = "已接上 · 继续滚动，或完成截图"
+            state.matched = true
+            if !state.previewUnavailable { state.message = "已接上 · 继续滚动，或完成截图" }
             return Update(state: state, preview: nil, viewport: .zero)
         } catch is CancellationError { throw CancellationError() }
         catch {
@@ -72,7 +82,8 @@ actor LiveScrollAssembler {
         }
         try check()
         guard match.displacement != 0 else {
-            state.matched = true; state.message = "已接上 · 继续滚动，或完成截图"
+            state.matched = true
+            if !state.previewUnavailable { state.message = "已接上 · 继续滚动，或完成截图" }
             return Update(state: state, preview: nil, viewport: .zero)
         }
         let bounds = match.contentBounds.rect
@@ -85,40 +96,78 @@ actor LiveScrollAssembler {
         guard !sum.overflow else { throw ScrollStitchError.pixelLimit }
         let nextOffset = sum.partialValue
         let bodyLength = axis == .vertical ? Int(detected.height) : Int(detected.width)
-        if document == nil {
+        let acceptedSnapshot: LiveScrollDocument.Snapshot
+        let acceptedDocument: LiveScrollDocument
+        if let document {
+            acceptedDocument = document
+            // A pending frontier may disappear from the next viewport on reversal.
+            // Persist it before replacing the one owned full-image anchor. A large
+            // verified step can also outrun the durable union on a short viewport.
+            let pendingLeading = offset < committedLower
+            let pendingTrailing = offset + bodyLength > committedUpper
+            let retreats = (pendingLeading && nextOffset > offset) || (pendingTrailing && nextOffset < offset)
+            let disconnects = nextOffset > committedUpper || nextOffset + bodyLength < committedLower
+            if (pendingLeading || pendingTrailing) && (retreats || disconnects) {
+                let flushed = try await document.append(image: previousImage, viewportOffset: offset, generation: generation)
+                guard !cancelled else { throw CancellationError() }
+                install(flushed.snapshot)
+                // Even if this task was cancelled after the disk commit, metadata
+                // is now reconciled with that existing, still-valid old anchor.
+                try check()
+            }
+            let newExtent = max(committedLower - nextOffset, nextOffset + bodyLength - committedUpper)
+            // Never accept an unflushable new pending frontier after the source cap.
+            let atSourceLimit = state.committedSources >= LiveScrollDocument.Limits.default.maximumSources
+            if newExtent >= commitDistance || (newExtent > 0 && atSourceLimit) {
+                acceptedSnapshot = try await document.append(image: image, viewportOffset: nextOffset,
+                                                               generation: generation).snapshot
+            } else {
+                acceptedSnapshot = try await document.updateViewport(offset: nextOffset, generation: generation)
+            }
+        } else {
             let created = try await LiveScrollDocument.create(firstImage: previousImage,
-                scrollingContentRect: detected, axis: axis, generation: generation)
+                scrollingContentRect: detected, axis: axis, generation: generation, storageParent: storageParent)
             do {
-                _ = try await created.append(image: image, viewportOffset: nextOffset, generation: generation)
+                acceptedSnapshot = try await created.append(image: image, viewportOffset: nextOffset,
+                                                              generation: generation).snapshot
                 try check()
             } catch {
                 created.cancel(); await created.close(); throw error
             }
-            document = created; scrollingRect = detected
-            committedLower = min(0, nextOffset); committedUpper = max(bodyLength, nextOffset + bodyLength)
+            document = created; acceptedDocument = created; scrollingRect = detected
             state.fixedLeading = axis == .vertical ? Int(detected.minY) : Int(detected.minX)
             state.fixedTrailing = axis == .vertical ? image.height - Int(detected.maxY) : image.width - Int(detected.maxX)
             firstImage = nil
         }
-        guard let document else { throw ScrollSequenceError.invalidGeometry }
-        let newExtent = max(committedLower - nextOffset, nextOffset + bodyLength - committedUpper)
-        if newExtent >= commitDistance {
-            _ = try await document.append(image: image, viewportOffset: nextOffset, generation: generation)
-        } else {
-            _ = try await document.updateViewport(offset: nextOffset, generation: generation)
-        }
-        try check()
-        let preview = try await document.preview(image: image, viewportOffset: nextOffset, generation: generation)
-        try check()
+        // No suspension or fallible display work between successful document work
+        // and the matching-state commit. Explicit close must not resurrect an anchor.
+        guard !cancelled else { throw CancellationError() }
         anchorGray = gray; anchorImage = image; offset = nextOffset
         state.acceptedObservations += 1; state.viewportOffset = offset
-        install(preview.snapshot)
-        state.width = preview.outputWidth; state.height = preview.outputHeight
-        state.previewIsTransient = preview.isTransient
+        install(acceptedSnapshot)
+        // Logical dimensions include the verified pending viewport even if its
+        // display cannot be regenerated. The old visible thumbnail stays intact.
+        let verifiedLower = min(acceptedSnapshot.lowerBound, nextOffset)
+        let verifiedUpper = max(acceptedSnapshot.upperBound, nextOffset + bodyLength)
+        let verifiedLength = state.fixedLeading + verifiedUpper - verifiedLower + state.fixedTrailing
+        if axis == .vertical { state.height = verifiedLength } else { state.width = verifiedLength }
+        state.previewIsTransient = verifiedLower != acceptedSnapshot.lowerBound || verifiedUpper != acceptedSnapshot.upperBound
         state.matched = true
-        state.message = (state.fixedLeading + state.fixedTrailing) > 0
-            ? "正在接长 · 固定页眉/页脚保留一次" : "正在接长 · 可向回滚动"
-        return Update(state: state, preview: preview.image, viewport: preview.viewportFraction)
+        try check()
+        do {
+            try injectPreviewFailureForTesting()
+            let preview = try await acceptedDocument.preview(image: image, viewportOffset: nextOffset, generation: generation)
+            try check()
+            state.width = preview.outputWidth; state.height = preview.outputHeight
+            state.previewUnavailable = false
+            state.message = (state.fixedLeading + state.fixedTrailing) > 0
+                ? "正在接长 · 固定页眉/页脚保留一次" : "正在接长 · 可向回滚动"
+            return Update(state: state, preview: preview.image, viewport: preview.viewportFraction)
+        } catch is CancellationError { throw CancellationError() }
+        catch {
+            try check()
+            return previewUnavailableUpdate()
+        }
     }
 
     func finish() async throws -> CGImage {
@@ -128,23 +177,45 @@ actor LiveScrollAssembler {
             return firstImage
         }
         guard let anchorImage else { throw CaptureError.invalidRegion }
-        _ = try await document.append(image: anchorImage, viewportOffset: offset, generation: generation)
+        let flushed = try await document.append(image: anchorImage, viewportOffset: offset, generation: generation)
+        guard !cancelled else { throw CancellationError() }
+        install(flushed.snapshot); state.previewIsTransient = false
         try check()
-        return try await document.render()
+        let image = try await document.render()
+        try check()
+        return image
     }
 
     func currentState() -> State { state }
     func initialImageForAxisChange() -> CGImage? { document == nil ? anchorImage : nil }
     func close() async {
-        cancelled = true
+        cancelled = true; nextPreviewFailureForTesting = nil
         document?.cancel()
         if let document { await document.close() }
         document = nil; anchorImage = nil; firstImage = nil; anchorGray = nil
     }
 
+    func failNextPreviewForTesting(_ failure: PreviewFailureForTesting = .unavailable) {
+        nextPreviewFailureForTesting = failure
+    }
+    private func injectPreviewFailureForTesting() throws {
+        guard let failure = nextPreviewFailureForTesting else { return }
+        nextPreviewFailureForTesting = nil
+        switch failure {
+        case .unavailable: throw LiveScrollDocument.Failure.previewLimit
+        case .cancelled: throw CancellationError()
+        }
+    }
+    private func previewUnavailableUpdate() -> Update {
+        state.previewUnavailable = true
+        state.message = "预览暂时无法更新，已验证内容保留，可继续或完成"
+        return Update(state: state, preview: nil, viewport: .zero)
+    }
+
     private func install(_ snapshot: LiveScrollDocument.Snapshot) {
         state.width = snapshot.width; state.height = snapshot.height
         state.committedSources = snapshot.sourceCount; state.diskBytes = snapshot.diskBytes
+        state.previewIsTransient = false
         committedLower = snapshot.lowerBound; committedUpper = snapshot.upperBound
     }
     private func check() throws {
@@ -154,17 +225,14 @@ actor LiveScrollAssembler {
     private static func thumbnail(_ image: CGImage) throws -> CGImage {
         let scale = min(1, 800 / CGFloat(max(image.width, image.height)))
         let width = max(1, Int(CGFloat(image.width) * scale)), height = max(1, Int(CGFloat(image.height) * scale))
-        var bytes = [UInt8](repeating: 0, count: width * height * 4)
-        return try bytes.withUnsafeMutableBytes { storage in
-            guard let context = CGContext(data: storage.baseAddress, width: width, height: height,
-                bitsPerComponent: 8, bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
-                bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.premultipliedLast.rawValue) else {
-                throw ScrollSequenceError.invalidGeometry
-            }
-            context.interpolationQuality = .high
-            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-            guard let result = context.makeImage() else { throw ScrollSequenceError.invalidGeometry }
-            return result
+        guard let context = CGContext(data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.premultipliedLast.rawValue) else {
+            throw ScrollSequenceError.invalidGeometry
         }
+        context.interpolationQuality = .high
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let result = context.makeImage() else { throw ScrollSequenceError.invalidGeometry }
+        return result
     }
 }

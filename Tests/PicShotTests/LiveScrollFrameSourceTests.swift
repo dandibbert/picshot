@@ -1,0 +1,133 @@
+import XCTest
+import AppKit
+@testable import PicShot
+
+/// Exercises the production session's source interface with owned synthetic frames.
+/// These tests provide no evidence about real display capture or screen permission.
+@MainActor
+final class LiveScrollFrameSourceTests: XCTestCase {
+    private let region = CGRect(x: 20, y: 30, width: 16, height: 32)
+    private let display = CGRect(x: -800, y: -100, width: 800, height: 600)
+
+    func testProtocolSourceProducesOwnedFrameAndSupportsPauseMoveResume() async throws {
+        let fixture = try Self.image(width: 16, height: 32)
+        let source: any LiveScrollFrameSource = try LiveScrollVerificationFrameSource(region: region, displayBounds: display) { fixture }
+        try await source.start()
+        let firstResult = try await source.nextFrame(timeout: 0.1)
+        let first = try XCTUnwrap(firstResult)
+        XCTAssertEqual(first.image.width, 16); XCTAssertEqual(first.image.height, 32)
+        XCTAssertEqual(first.region, region)
+        XCTAssertFalse(first.image === fixture)
+        try await source.pauseAndDrain()
+        let moved = region.offsetBy(dx: 40, dy: 60)
+        try source.moveRegion(to: moved)
+        try await source.resume()
+        let secondResult = try await source.nextFrame(timeout: 0.1)
+        let second = try XCTUnwrap(secondResult)
+        XCTAssertEqual(second.region, moved)
+        XCTAssertGreaterThan(second.generation, first.generation)
+        XCTAssertGreaterThan(second.sequence, first.sequence)
+        try await source.stop()
+        do { try await source.resume(); XCTFail("Stopped source resumed") }
+        catch LiveScrollSourceError.stopped { }
+    }
+
+    func testNilProviderReturnsIdleAndNextCallCanProduceFrame() async throws {
+        let fixture = try Self.image(width: 16, height: 32)
+        var produce = false
+        let source = try LiveScrollVerificationFrameSource(region: region, displayBounds: display) { produce ? fixture : nil }
+        try await source.start()
+        let idle = try await source.nextFrame(timeout: 0.01)
+        XCTAssertNil(idle)
+        produce = true
+        let frame = try await source.nextFrame(timeout: 0.1)
+        XCTAssertNotNil(frame)
+        try await source.stop()
+    }
+
+    func testRepeatedIdleDeadlinesDoNotDuplicateAnOutstandingProvider() async throws {
+        let gate = ImageGate(image: try Self.image(width: 16, height: 32))
+        let source = try LiveScrollVerificationFrameSource(region: region, displayBounds: display) { await gate.next() }
+        try await source.start()
+        let firstIdle = try await source.nextFrame(timeout: 0.01)
+        let secondIdle = try await source.nextFrame(timeout: 0.01)
+        XCTAssertNil(firstIdle); XCTAssertNil(secondIdle)
+        XCTAssertEqual(gate.calls, 1)
+        gate.release()
+        let frame = try await source.nextFrame(timeout: 0.1)
+        XCTAssertNotNil(frame)
+        XCTAssertEqual(gate.calls, 1)
+        try await source.stop()
+    }
+
+    func testPauseDrainsLateProviderAndRejectsItsGenerationBeforeMove() async throws {
+        let gate = ImageGate(image: try Self.image(width: 16, height: 32))
+        let source = try LiveScrollVerificationFrameSource(region: region, displayBounds: display) { await gate.next() }
+        try await source.start()
+        let read = Task { try await source.nextFrame(timeout: 1) }
+        for _ in 0..<1_000 where gate.calls == 0 { await Task.yield() }
+        XCTAssertEqual(gate.calls, 1)
+        let pause = Task { try await source.pauseAndDrain() }
+        for _ in 0..<1_000 where !gate.cancelled { await Task.yield() }
+        XCTAssertTrue(gate.cancelled)
+        gate.release()
+        try await pause.value
+        do { _ = try await read.value; XCTFail("Paused generation returned its late frame") }
+        catch is CancellationError { }
+        try source.moveRegion(to: region.offsetBy(dx: 2, dy: 4))
+        try await source.resume()
+        let resumed = try await source.nextFrame(timeout: 0.1)
+        XCTAssertEqual(resumed?.region, region.offsetBy(dx: 2, dy: 4))
+        XCTAssertEqual(gate.calls, 2)
+        try await source.stop()
+    }
+
+    func testCancellingReadDrainsProviderAndMakesSourceTerminal() async throws {
+        var entered = false
+        let source = try LiveScrollVerificationFrameSource(region: region, displayBounds: display) {
+            entered = true
+            try await Task.sleep(nanoseconds: 30_000_000_000)
+            return nil
+        }
+        try await source.start()
+        let read = Task { try await source.nextFrame(timeout: 1) }
+        for _ in 0..<1_000 where !entered { await Task.yield() }
+        XCTAssertTrue(entered)
+        read.cancel()
+        do { _ = try await read.value; XCTFail("Cancelled read succeeded") }
+        catch is CancellationError { }
+        do { try await source.resume(); XCTFail("Cancelled source resumed") }
+        catch LiveScrollSourceError.stopped { }
+        try await source.stop()
+    }
+
+    private static func image(width: Int, height: Int) throws -> CGImage {
+        let context = try XCTUnwrap(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(CGColor(red: 0.8, green: 0.2, blue: 0.4, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        return try XCTUnwrap(context.makeImage())
+    }
+
+    @MainActor
+    private final class ImageGate {
+        let image: CGImage
+        var calls = 0
+        var cancelled = false
+        var continuation: CheckedContinuation<Void, Never>?
+        init(image: CGImage) { self.image = image }
+        func next() async -> CGImage? {
+            calls += 1
+            if calls == 1 {
+                await withTaskCancellationHandler {
+                    await withCheckedContinuation { continuation = $0 }
+                } onCancel: {
+                    Task { @MainActor in self.cancelled = true }
+                }
+            }
+            return image
+        }
+        func release() { let held = continuation; continuation = nil; held?.resume() }
+    }
+}

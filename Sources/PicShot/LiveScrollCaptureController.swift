@@ -241,8 +241,8 @@ final class LiveScrollCaptureController: NSObject, NSWindowDelegate {
         }
     }
 
-    @objc private func finishPressed() { if !isRetired && snapshot.canFinish { actions?.finishEdit() } }
-    @objc private func copyPressed() { if !isRetired && snapshot.canCopy { actions?.copy() } }
+    @objc private func finishPressed() { if !isRetired && snapshot.canFinish && !snapshot.busy { actions?.finishEdit() } }
+    @objc private func copyPressed() { if !isRetired && snapshot.canCopy && !snapshot.busy { actions?.copy() } }
     @objc private func pausePressed() { if !isRetired && snapshot.canPause && !snapshot.busy { actions?.pauseResume() } }
     @objc private func autoPressed() { if !isRetired && snapshot.canAutoScroll && !snapshot.busy { actions?.autoScroll() } }
     @objc private func cancelPressed() { cancel() }
@@ -331,7 +331,8 @@ final class LiveScrollToolbarView: NSView {
         pauseButton.image = liveScrollSymbol(error ? "arrow.clockwise" : (snapshot.paused ? "play.fill" : "pause.fill"), title: title)
         pauseButton.setAccessibilityLabel(title); pauseButton.toolTip = title
         pauseButton.isEnabled = snapshot.canPause && !snapshot.busy
-        finishButton.isEnabled = snapshot.canFinish; copyButton.isEnabled = snapshot.canCopy
+        finishButton.isEnabled = snapshot.canFinish && !snapshot.busy
+        copyButton.isEnabled = snapshot.canCopy && !snapshot.busy
         showsAutoScroll = snapshot.showsAutoScroll
         autoButton.isHidden = !showsAutoScroll; autoButton.isEnabled = snapshot.canAutoScroll && !snapshot.busy
         autoButton.contentTintColor = snapshot.autoScrolling ? .systemGreen : .labelColor
