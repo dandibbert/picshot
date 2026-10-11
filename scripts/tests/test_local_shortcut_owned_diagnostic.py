@@ -31,8 +31,8 @@ class ShortcutOwnedDiagnosticTests(unittest.TestCase):
         self.binary.parent.mkdir(parents=True)
         self.binary.write_bytes(b'compiled fixture, never executed')
         self.commit, self.tree = 'a' * 40, 'b' * 40
-        inventory = [M.METHOD]
-        classes = [f'Fixture.Class{i}' for i in range(231)]
+        inventory = [M.METHOD, M.PIN_LAYOUT_METHOD]
+        classes = [f'Fixture.Class{i}' for i in range(230)]
         for method in range(9):
             for cls in classes:
                 if len(inventory) < 2047:
@@ -40,8 +40,12 @@ class ShortcutOwnedDiagnosticTests(unittest.TestCase):
         inventory.sort()
         bucket = lambda name: M.O.hashlib.sha256(name.split('/')[0].encode()).digest()[0] % 2
         self.assertEqual(bucket(M.METHOD), 0)
-        group0 = sorted([M.METHOD] + [n for n in inventory if n != M.METHOD and bucket(n) == 0][:74])
-        selected = sorted(group0 + [n for n in inventory if bucket(n) == 1][:27])
+        mandatory = [M.METHOD, M.PIN_LAYOUT_METHOD]
+        group0 = [n for n in mandatory if bucket(n) == 0]
+        group0 = sorted(group0 + [n for n in inventory if n not in mandatory and bucket(n) == 0][:75-len(group0)])
+        group1 = [n for n in mandatory if bucket(n) == 1]
+        group1 += [n for n in inventory if n not in mandatory and bucket(n) == 1][:27-len(group1)]
+        selected = sorted(group0 + group1)
         raw = ('\n'.join(inventory) + '\n').encode()
         self.plan = M.N.make_plan(inventory, M.N.command_pattern(selected), self.commit, M.O.sha(raw))
         self.plan_path = self.path / 'plan.json'
@@ -151,6 +155,24 @@ class ShortcutOwnedDiagnosticTests(unittest.TestCase):
         self.assertEqual(historical, (M.O.SOURCE, M.O.TREE, M.O.INVENTORY_SHA, M.O.IDS_SHA, M.O.FILTER_SHA))
         self.assertFalse(args.directory.exists())
         self.assertEqual(M.validate_process(args.directory, self.report(args, identity), identity)['status'], 'passed')
+
+    def test_pin_layout_selects_only_literal_method_with_owned_identity_and_same_cap(self):
+        args = self.args('pin-layout')
+        identity, _ = self.launch(args)
+        self.assertEqual(identity['planEvidence']['selectedIDs'], [M.PIN_LAYOUT_METHOD])
+        self.assertEqual(identity['planEvidence']['selectionMode'], 'pin-layout')
+        self.assertEqual(identity['limits']['nativeSeconds'], 420)
+        report = self.report(args, identity)
+        self.assertEqual(M.validate_process(args.directory, report, identity)['status'], 'passed')
+        for mode in ('pin-layout.*', 'PinGroupOrderNativeTests', 'all'):
+            with self.assertRaisesRegex(ValueError, 'Unknown diagnostic cell'):
+                M.selection_ids(self.plan, mode)
+        absent = copy.deepcopy(self.plan)
+        absent['selectedTests'].remove(M.PIN_LAYOUT_METHOD)
+        with self.assertRaisesRegex(ValueError, 'Required pin-layout method'):
+            M.selection_ids(absent, 'pin-layout')
+        with self.assertRaisesRegex(ValueError, 'cannot reuse a receipt'):
+            M.run(self.args('pin-layout', single_pass=args.directory))
 
     def test_explicit_identity_mismatches_reject_before_workload(self):
         for key, value in (('expected_source', 'c' * 40), ('expected_tree', 'c' * 40),

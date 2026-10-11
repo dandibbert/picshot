@@ -218,29 +218,148 @@ import PicShotCore
 
     func testMinimumWindowGeometryAndNativeHitTargetsInBothThemesAfterReorder() throws {
         try withApplicationLoop { [self] in
+            let trace = GroupOrderLayoutTrace()
             let f = try fixture(includeTransforms: true); defer { f.close() }
+            trace.capture(f.controller, store: f.store, phase: "original.constructed")
             // Maximum permitted names must not expand or obscure the compact header.
             for id in f.groupIDs { try f.store.renameGroup(id: id, name: String(repeating: "长", count: 48), color: nil) }
             f.controller.reload(); f.controller.showWindow(nil)
             let window = try XCTUnwrap(f.controller.window)
+            trace.capture(f.controller, store: f.store, phase: "original.shown")
             window.animationBehavior = .none
             for appearance in [NSAppearance.Name.aqua, .darkAqua] {
                 window.appearance = try XCTUnwrap(NSAppearance(named: appearance))
                 for size in [NSSize(width: 680, height: 600), NSSize(width: 780, height: 640), NSSize(width: 680, height: 600)] {
+                    let prefix = "original.\(appearance.rawValue).\(Int(size.width))x\(Int(size.height))"
+                    trace.capture(f.controller, store: f.store, phase: prefix + ".beforeResize")
                     var frame = window.frame; frame.size = size; window.setFrame(frame, display: true)
+                    trace.capture(f.controller, store: f.store, phase: prefix + ".afterResize")
                     window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+                    trace.capture(f.controller, store: f.store, phase: prefix + ".afterLayout")
                     XCTAssertEqual(window.frame.size, size)
                     try assertHeaderHitTargets(f.controller)
                     try assertActionRowHitTargets(f.controller)
                     try invoke(try orderItem("earlier", in: f.controller))
+                    trace.capture(f.controller, store: f.store, phase: prefix + ".afterEarlier")
                     window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded()
                     try assertHeaderHitTargets(f.controller)
                     try assertActionRowHitTargets(f.controller)
                     try invoke(try orderItem("later", in: f.controller))
+                    trace.capture(f.controller, store: f.store, phase: prefix + ".afterLater")
                     assertPickerIDs(f)
                 }
             }
+            f.controller.close()
+            let previousAppearance = NSApp.appearance
+            defer { NSApp.appearance = previousAppearance }
+            for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+                NSApp.appearance = try XCTUnwrap(NSAppearance(named: appearance))
+                try traceInstalledLayout(appearance, trace: trace)
+            }
+            trace.emit("complete", ["diagnosticOnly": true, "installerAcceptance": false])
         }
+    }
+
+    /// Isolates installed manager data/selection/layout using the existing owned
+    /// host. Menu mutations retain this test's native target/action route; this
+    /// is not evidence for installed menu tracking or four-second release gates.
+    private func traceInstalledLayout(_ appearance: NSAppearance.Name, trace: GroupOrderLayoutTrace) throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PicShot-GroupLayout-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try PinSessionStore(directory: directory)
+        let active = try store.createGroup(name: "文字与参考", color: .purple)
+        _ = try store.createGroup(name: "稍后查看", color: .green)
+        try store.setActiveGroup(id: active.id)
+        let initial = PinTextContent(text: PinManagementSmokeFixture.initialText)
+        let text = try store.add(rich: PreparedRichPin(document: PinRichDocument(text: initial), title: "文字便笺"))
+        let html = PinTextContent(runs: [PinTextRun(text: "Keep bold", bold: true), PinTextRun(text: " 与 HTML", italic: true)], importedHTML: true)
+        _ = try store.add(rich: PreparedRichPin(document: PinRichDocument(text: html), title: "HTML 参考"))
+        let image = try store.add(image: ImageEditorRenderer.makeSampleImage(), title: "图片参考")
+        // Same model-visible order as the installed draft-save/rename sequence.
+        try store.updateText(id: text.id, content: PinTextContent(text: PinManagementSmokeFixture.savedText), expectedContent: initial)
+        try store.renamePin(id: text.id, title: "文字已命名 🧪")
+        try store.renamePin(id: image.id, title: "图片已命名 🖼️")
+        XCTAssertEqual(image.current.width, 960); XCTAssertEqual(image.current.height, 600)
+        let manager = PinGroupsController(store: store)
+        defer { manager.close() }
+        let window = try XCTUnwrap(manager.window)
+        let prefix = "installedShape.\(appearance.rawValue)"
+        let resizeObserver = NotificationCenter.default.addObserver(forName: NSWindow.didResizeNotification, object: window, queue: nil) { [weak window, weak trace] _ in
+            MainActor.assumeIsolated {
+                if let window, let trace { trace.window(window, event: "didResize") }
+            }
+        }
+        defer { NotificationCenter.default.removeObserver(resizeObserver) }
+        func capture(_ stage: String) { trace.capture(manager, store: store, phase: prefix + "." + stage, details: true) }
+        func layout(_ stage: String) {
+            capture(stage + ".beforeLayout")
+            window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            capture(stage + ".afterLayout")
+        }
+        func drain(_ stage: String) {
+            capture(stage + ".beforeRunLoop")
+            // Finite observation only: at most 20 default-mode slices / 50 ms.
+            // No menu tracking, waiting for a desired size, or forced resize.
+            let deadline = ProcessInfo.processInfo.systemUptime + 0.05
+            var slices = 0
+            while slices < 20 && ProcessInfo.processInfo.systemUptime < deadline {
+                _ = RunLoop.main.run(mode: .default, before: Date(timeIntervalSinceNow: 0.005))
+                slices += 1
+            }
+            capture(stage + ".afterRunLoop")
+            trace.emit("runLoopSlices", ["count": slices, "maximum": 20, "budgetSeconds": 0.05])
+        }
+        trace.emit("fixture", ["appearance": appearance.rawValue, "transformsSupplied": false,
+            "inputWidth": 960, "inputHeight": 600, "expectedSelectedID": image.id.uuidString,
+            "menuRoute": "existing-test-native-target-action", "rowRoute": "owned-nextEvent-sendEvent",
+            "maximumRunLoopSlicesPerBoundary": 20, "originalMenuDeadlineSecondsUnchanged": 2,
+            "originalReleaseDeadlineSecondsUnchanged": 4, "outerTestDeadlineSecondsUnchanged": 420])
+        capture("constructed")
+        capture("beforeShow")
+        manager.showWindow(nil)
+        capture("afterShow")
+        capture("beforeResize")
+        window.setFrame(NSRect(origin: window.frame.origin, size: NSSize(width: 680, height: 600)), display: true)
+        capture("afterResize")
+        layout("initial")
+        window.center()
+        capture("afterCenter")
+        XCTAssertEqual(window.frame.size, NSSize(width: 680, height: 600))
+        let table = try XCTUnwrap(descendants(window.contentView).first { $0.identifier?.rawValue == "pin-group-entries" } as? NSTableView)
+        capture("beforeRealRowSelection")
+        let selection = try PortableSettingsUIPreviewFixture.clickRow(1, in: table)
+        capture("afterRealRowSelection")
+        trace.emit("rowSelection", ["requestedRow": 1, "selectedRow": table.selectedRow,
+            "dispatchRoute": selection["dispatchRoute"] as? String ?? "missing",
+            "targetPointVisible": selection["targetPointVisible"] as? Bool ?? false])
+        XCTAssertEqual(manager.selectedPinIDs, [image.id])
+        layout("selected"); drain("selected")
+        let beforeEntries = store.entries
+        var callbacks = 0
+        manager.onSessionChange = { callbacks += 1 }
+        for (index, step) in [("earlier", false), ("earlier", true), ("later", false), ("later", false), ("later", true)].enumerated() {
+            let stage = "order\(index).\(step.0)"
+            let item = try orderItem(step.0, in: manager)
+            XCTAssertEqual(item.isEnabled, !step.1)
+            capture(stage + ".beforeAction")
+            if !step.1 { try invoke(item) }
+            else { trace.emit("disabledBoundary", ["item": step.0, "actionSent": false]) }
+            capture(stage + ".afterAction")
+            layout(stage); drain(stage)
+            XCTAssertEqual(manager.selectedPinIDs, [image.id])
+            XCTAssertEqual(table.selectedRow, 1)
+            XCTAssertEqual(store.index.activeGroupID, active.id)
+            XCTAssertEqual(store.entries, beforeEntries)
+        }
+        XCTAssertEqual(callbacks, 3)
+        capture("beforeExplicitReload")
+        manager.reload()
+        capture("afterExplicitReload")
+        layout("reload"); drain("reload")
+        capture("final")
+        // Diagnostic failure is preserved. Never resize again to make this pass.
+        XCTAssertEqual(window.frame.size, NSSize(width: 680, height: 600))
+        try assertActionRowHitTargets(manager)
     }
 
     private enum Failure: Error, Equatable { case write }
@@ -463,4 +582,144 @@ import PicShotCore
     var timer: Timer?
     var acceptsCallbacks = true
     var activationRequested = false
+}
+
+/// Descriptor writes are unbuffered. The observer retains only scalar snapshots,
+/// never an AppKit object or constraint. Fitting queries are explicitly bracketed
+/// because observation can itself cause AppKit to consult its layout engine.
+@MainActor private final class GroupOrderLayoutTrace {
+    private var rows = 0, bytes = 0, exceeded = false
+    private var lastConstraints: [String: String] = [:]
+    private let started = ProcessInfo.processInfo.systemUptime
+    private var phase = "starting"
+
+    func emit(_ event: String, _ fields: [String: Any] = [:]) {
+        guard !exceeded else { return }
+        var record = fields
+        record["diagnostic"] = "pin-group-layout"
+        record["event"] = event; record["phase"] = phase; record["sequence"] = rows
+        record["elapsedSeconds"] = ProcessInfo.processInfo.systemUptime - started
+        guard var data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]),
+              data.count <= 8_192, rows < 16_384, bytes + data.count + 1 <= 8_388_608 else {
+            exceeded = true
+            FileHandle.standardError.write(Data("PIN_LAYOUT_TRACE_BOUND_EXCEEDED\n".utf8))
+            XCTFail("Layout diagnostic exceeded its finite scalar evidence budget")
+            return
+        }
+        data.append(10); FileHandle.standardError.write(data)
+        rows += 1; bytes += data.count
+    }
+
+    func window(_ window: NSWindow, event: String) {
+        emit(event, ["frame": rect(window.frame), "contentBounds": rect(window.contentView?.bounds ?? .zero),
+            "contentLayoutRect": rect(window.contentLayoutRect),
+            "minimumSize": size(window.minSize), "contentMinimumSize": size(window.contentMinSize),
+            "visible": window.isVisible, "key": window.isKeyWindow,
+            "windowNumber": window.windowNumber, "applicationRunning": NSApp.isRunning,
+            "applicationActive": NSApp.isActive])
+    }
+
+    func capture(_ controller: PinGroupsController, store: PinSessionStore, phase: String, details: Bool = false) {
+        self.phase = phase
+        guard let window = controller.window, let root = window.contentView else {
+            emit("missingWindow"); return
+        }
+        self.window(window, event: "beforeObservation")
+        var nodes: [(path: String, view: NSView)] = []
+        func walk(_ view: NSView, _ path: String) {
+            guard nodes.count < 256 else { return }
+            nodes.append((path, view))
+            for (index, child) in view.subviews.enumerated() { walk(child, path + ".\(index)") }
+        }
+        walk(root, "root")
+        let byIdentity = Dictionary(uniqueKeysWithValues: nodes.map { (ObjectIdentifier($0.view), $0.path) })
+        XCTAssertLessThan(nodes.count, 256, "Layout view census reached its evidence bound")
+        func itemName(_ item: Any?) -> String {
+            guard let item else { return "none" }
+            if let view = item as? NSView, let path = byIdentity[ObjectIdentifier(view)] { return path }
+            return String(describing: type(of: item))
+        }
+        let table = nodes.compactMap { $0.view as? NSTableView }.first
+        let visibleRows = table.map { $0.rows(in: $0.visibleRect) } ?? NSRange(location: 0, length: 0)
+        let selected = controller.selectedPinIDs.map(\.uuidString).sorted()
+        emit("selection", ["selectedPinIDs": selected,
+            "activeGroupID": store.index.activeGroupID.uuidString,
+            "groupOrder": store.groups.map { $0.id.uuidString },
+            "selectedRow": table?.selectedRow ?? -1, "rowCount": table?.numberOfRows ?? 0,
+            "visibleRowLocation": visibleRows.location, "visibleRowCount": visibleRows.length,
+            "tableVisibleRect": rect(table?.visibleRect ?? .zero), "viewCount": nodes.count,
+            "rootFittingSize": size(root.fittingSize)])
+        guard details else { self.window(window, event: "afterObservation"); return }
+        var constraintCount = 0, requiredCount = 0
+        for node in nodes {
+            let view = node.view
+            let isTableChild = table.map { view !== $0 && view.isDescendant(of: $0) } ?? false
+            // Visible table cells are covered by the row-range observation. Keep
+            // detail focused on the container, stack rows and preview controls.
+            guard !isTableChild else { continue }
+            var fields: [String: Any] = ["path": node.path, "class": String(describing: type(of: view)),
+                "identifier": view.identifier?.rawValue ?? "none", "frame": rect(view.frame),
+                "bounds": rect(view.bounds), "hidden": view.isHidden, "hiddenAncestor": view.isHiddenOrHasHiddenAncestor,
+                "fittingSize": size(view.fittingSize), "intrinsicSize": size(view.intrinsicContentSize),
+                "needsLayout": view.needsLayout, "needsUpdateConstraints": view.needsUpdateConstraints,
+                "ambiguousLayout": view.hasAmbiguousLayout,
+                "verticalHugging": view.contentHuggingPriority(for: .vertical).rawValue,
+                "verticalCompressionResistance": view.contentCompressionResistancePriority(for: .vertical).rawValue,
+                "horizontalHugging": view.contentHuggingPriority(for: .horizontal).rawValue,
+                "horizontalCompressionResistance": view.contentCompressionResistancePriority(for: .horizontal).rawValue]
+            if let stack = view as? NSStackView {
+                fields["stackOrientation"] = stack.orientation.rawValue
+                fields["stackSpacing"] = stack.spacing
+                fields["stackViewCount"] = stack.views.count
+                fields["stackVisibleViewCount"] = stack.views.filter { !$0.isHiddenOrHasHiddenAncestor }.count
+                fields["stackDetachedCount"] = stack.detachedViews.count
+            }
+            if let preview = view as? NSImageView {
+                fields["imageSize"] = size(preview.image?.size ?? .zero)
+                fields["imageScaling"] = preview.imageScaling.rawValue
+            }
+            if let label = view as? NSTextField {
+                fields["textUTF8Count"] = label.stringValue.utf8.count
+                fields["explicitLineCount"] = label.stringValue.split(separator: "\n", omittingEmptySubsequences: false).count
+                fields["maximumLines"] = label.maximumNumberOfLines
+                fields["cellSize"] = size(label.cell?.cellSize ?? .zero)
+                fields["cellSizeForCurrentBounds"] = size(label.cell?.cellSize(forBounds: label.bounds) ?? .zero)
+            }
+            emit("view", fields)
+            // Emit each constraint when first observed or changed. Scalar counts
+            // on every snapshot make missing/truncated coverage explicit.
+            let constraints = view.constraints.filter(\.isActive)
+            XCTAssertLessThanOrEqual(constraints.count, 256, "Per-view constraint evidence bound")
+            for (index, constraint) in constraints.prefix(256).enumerated() {
+                constraintCount += 1
+                if constraint.priority == .required { requiredCount += 1 }
+                let record: [String: Any] = ["owner": node.path, "index": index,
+                    "firstItem": itemName(constraint.firstItem), "firstAttribute": constraint.firstAttribute.rawValue,
+                    "relation": constraint.relation.rawValue, "secondItem": itemName(constraint.secondItem),
+                    "secondAttribute": constraint.secondAttribute.rawValue, "multiplier": constraint.multiplier,
+                    "constant": constraint.constant, "priority": constraint.priority.rawValue,
+                    "identifier": constraint.identifier ?? "none"]
+                let key = phase.components(separatedBy: ".").prefix(2).joined(separator: ".") + ":" + node.path + ":\(index)"
+                let encoded = (try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])).map { String(decoding: $0, as: UTF8.self) } ?? "invalid"
+                if lastConstraints[key] != encoded {
+                    lastConstraints[key] = encoded; emit("constraint", record)
+                }
+            }
+            if view === root || view is NSStackView || view is NSImageView {
+                let vertical = view.constraintsAffectingLayout(for: .vertical)
+                XCTAssertLessThanOrEqual(vertical.count, 128, "Vertical constraint evidence bound")
+                emit("verticalConstraints", ["path": node.path, "count": vertical.count,
+                    "requiredCount": vertical.filter { $0.priority == .required }.count,
+                    "constantSum": vertical.reduce(CGFloat(0)) { $0 + $1.constant },
+                    "positiveConstants": vertical.prefix(128).filter { $0.constant > 0 }.map(\.constant),
+                    "priorities": vertical.prefix(128).map { $0.priority.rawValue }])
+            }
+        }
+        emit("constraintCounts", ["active": constraintCount, "required": requiredCount,
+            "scalarConstraintCacheCount": lastConstraints.count])
+        self.window(window, event: "afterObservation")
+    }
+
+    private func rect(_ value: NSRect) -> [CGFloat] { [value.minX, value.minY, value.width, value.height] }
+    private func size(_ value: NSSize) -> [CGFloat] { [value.width, value.height] }
 }

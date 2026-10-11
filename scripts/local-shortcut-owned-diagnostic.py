@@ -5,6 +5,7 @@ Supply verified current checkout/plan/inventory and freshly compiled executable
 identities explicitly. This never builds, installs, discovers processes, changes
 tests, or substitutes for native-suite or installer acceptance. Run the single
 method first; group0 requires its verified pass and the same compiled bundle.
+The separate pin-layout mode runs one literal existing method only.
 The historical
 owned runner, its 420-second cap and 180/360-second sample slots are unchanged.
 """
@@ -28,6 +29,9 @@ SPEC.loader.exec_module(O)
 D, N, need, save = O.D, O.N, O.need, O.save
 METHOD = ('PicShotTests.LocalAnnotationShortcutNativeTests/'
           'testNativeSheetMenuAndOtherWindowBlockCanvasShortcutRouting')
+PIN_LAYOUT_METHOD = ('PicShotTests.PinGroupOrderNativeTests/'
+                     'testMinimumWindowGeometryAndNativeHitTargetsInBothThemesAfterReorder')
+PIN_LAYOUT_SCOPE = 'Owned pin-layout diagnosis; not native-suite or installer acceptance'
 SLOTS = (180, 360)
 GROUP0_SHA256 = 'c979913e1543ab86c0483d8320a9ad6a598cdf2685957d61d1f02344cc855448'
 INVENTORY_SHA256 = '926ac5674df90163b949fe461f0d4589ef72c8fc3215fa00b927564aae57cb44'
@@ -45,7 +49,10 @@ def expectations(args):
 
 
 def selection_ids(plan, mode):
-    need(mode in ('single', 'group0'), 'Unknown diagnostic cell')
+    need(mode in ('single', 'group0', 'pin-layout'), 'Unknown diagnostic cell')
+    if mode == 'pin-layout':
+        need(PIN_LAYOUT_METHOD in plan['selectedTests'], 'Required pin-layout method is absent from verified plan selection')
+        return [PIN_LAYOUT_METHOD]
     need(METHOD in plan['selectedTests'], 'Required method is absent from verified plan selection')
     if mode == 'single':
         return [METHOD]
@@ -63,7 +70,7 @@ def plan_inputs(args, evidence):
          and len(plan['discoveredTests']) == 2047
          and len({name.split('/')[0] for name in plan['discoveredTests']}) == 232,
          'Complete discovered inventory SHA-256 differs')
-    need(plan['timeoutSecondsPerProcess'] == 420 and METHOD in plan['selectedTests'],
+    need(plan['timeoutSecondsPerProcess'] == 420,
          'Required method is absent from the verified plan selection or cap differs')
     # checked_plan proves canonical, unique IDs and exact agreement with the raw
     # discovery. Selection is one literal member, never a regex/class shortcut.
@@ -271,7 +278,8 @@ def run(args):
     report = O.run_owned(O.command(identity['xctestPath'], identity['bundlePath'],
         identity['planEvidence']['selectedIDs']),
         env, identity['sourceRoot'], args.directory, D.ProcessIdentity(), timeout=420, slots=SLOTS)
-    result = dict(schemaVersion=1, scope=SCOPE, diagnosticOnly=True, installerAcceptance=False,
+    result = dict(schemaVersion=1, scope=PIN_LAYOUT_SCOPE if args.selection == 'pin-layout' else SCOPE,
+        diagnosticOnly=True, installerAcceptance=False,
         inputs=identity, singlePassReceipt=prior, process=report, evidenceStatus='rejected', cases=None)
     try:
         result['cases'] = validate_process(args.directory, report, identity)
@@ -289,7 +297,7 @@ def run(args):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--selection', choices=('single', 'group0'), required=True)
+    parser.add_argument('--selection', choices=('single', 'group0', 'pin-layout'), required=True)
     parser.add_argument('--single-pass', type=Path)
     parser.add_argument('--source-root', type=Path, required=True)
     parser.add_argument('--bundle', type=Path, required=True)

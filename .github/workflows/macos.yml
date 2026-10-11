@@ -100,8 +100,10 @@ jobs:
         python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count 4 --output dist/native-tests-plan.json
         python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count 2 --selection-regex '^PicShotTests\.(RecordingInputExportTests/testAuthoredInputTrimPreservesAllSelectedPixelsAndPacketBoundaries|RecordingInputExportTests/testInteriorSelectionAndSamplingIncludeExpiryResumeAndFrozenStop|RecordingInputExportTests/testPixelOracleUsesTopDownRGBAAndDetectsEffectRelocationAndExpiry|RecordingInputExportTests/testFixtureRequiresAcceptedOriginalReportBeforeLaunchingHelpers|RecordingCommandCoordinatorTests/testExpandCollapseAndDisplayChangesRetainOneOwnerWithoutClosingSession|AnnotationToolbarOrderUITests/[^/]+|PortableSettingsUITests/[^/]+|AnnotationStylePresetTests/[^/]+|LocalAnnotationShortcutTests/[^/]+|LocalAnnotationShortcutNativeTests/[^/]+|PortableAnnotationPreferencesTests/[^/]+|PinManagementCoordinatorTests/[^/]+|PinTextEditNativeTests/[^/]+|PinTextDraftHistoryTests/[^/]+|PinTextUpdateStoreTests/[^/]+|PinGroupOrderStoreTests/[^/]+|PinGroupOrderNativeTests/[^/]+)$|^PicShotCoreTests\.PinGroupOrderTests/[^/]+$' --output dist/recording-regression-plan.json
 
-    - name: Isolate one shortcut method and conditionally the exact early group
+    - name: Isolate one exact native method and conditionally the shortcut group
       timeout-minutes: 18
+      env:
+        PIN_LAYOUT_DIAGNOSTIC: ${{ contains(github.event.head_commit.message || '', '[pin-layout]') }}
       run: |
         python3 - <<'PYDIAGNOSTIC'
         import hashlib, json, os, subprocess, sys
@@ -127,8 +129,11 @@ jobs:
             common += ['--expected-' + key, value]
         (source / 'dist/shortcut-diagnostic-identities.json').write_text(json.dumps(bound, indent=2) + '\n')
         single = source / 'dist/shortcut-single'
-        print('Starting exact single-method owned XCTest diagnostic', flush=True)
-        first = subprocess.run(common + ['--selection', 'single', '--directory', str(single)], check=False)
+        mode = 'pin-layout' if os.environ['PIN_LAYOUT_DIAGNOSTIC'] == 'true' else 'single'
+        print('Starting exact single-method owned XCTest diagnostic: ' + mode, flush=True)
+        first = subprocess.run(common + ['--selection', mode, '--directory', str(single)], check=False)
+        if mode == 'pin-layout':
+            raise SystemExit(first.returncode)
         if first.returncode != 0:
             print('Single-method diagnostic did not pass; group0 remains unrun', flush=True)
             raise SystemExit(first.returncode)
