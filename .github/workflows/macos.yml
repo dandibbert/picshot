@@ -460,6 +460,11 @@ jobs:
         run: |
           python3 -m unittest discover -s scripts/tests -p test_check_pin_management.py -v
           python3 -O -m unittest discover -s scripts/tests -p test_check_pin_management.py -v
+      - name: Check explicit live scrolling testing classification
+        timeout-minutes: 2
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p 'test_live_scroll_testing_classification.py' -v
+          PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p 'test_live_scroll_testing_classification.py' -v
       - name: Check installed drawing default product and source contracts
         timeout-minutes: 4
         run: |
@@ -566,6 +571,10 @@ jobs:
       # The pre-existing318/346min whole-job cap remains an independent outer cap;
       # it does not promise every nested stage can simultaneously use its maximum.
       - name: Verify continuous scrolling and bounded resources from the actual ZIP
+        id: live_scroll_resource
+        # Preserve this step's original failure. Only the separately audited
+        # testing classifier below may permit the remaining independent gates.
+        continue-on-error: true
         timeout-minutes: 46
         run: >-
           python3 scripts/run-bounded-command.py --timeout-seconds 2640 --grace-seconds 10
@@ -573,6 +582,20 @@ jobs:
           -- bash scripts/live-scroll-installed.sh
           "${{ github.workspace }}/dist/PicShot-0.22.0-macos-${{ matrix.arch }}.zip"
           "${{ github.workspace }}/dist/live-scroll-installed" "${{ github.sha }}"
+      - name: Classify explicit scrolling testing eligibility without changing resource results
+        if: ${{ !cancelled() && (steps.live_scroll_resource.outcome == 'success' || steps.live_scroll_resource.outcome == 'failure') }}
+        timeout-minutes: 2
+        run: |
+          picshot_scroll_executable_sha=$(shasum -a 256 dist/PicShot.app/Contents/MacOS/PicShot | cut -d ' ' -f 1)
+          picshot_scroll_archive_sha=$(shasum -a 256 "dist/PicShot-0.22.0-macos-${{ matrix.arch }}.zip" | cut -d ' ' -f 1)
+          python3 scripts/classify-live-scroll-testing.py \
+            "$PWD/dist/live-scroll-installed" "${{ github.sha }}" \
+            "$PWD/dist/live-scroll-testing-qualification.json" \
+            --executable-sha256 "$picshot_scroll_executable_sha" \
+            --archive-sha256 "$picshot_scroll_archive_sha" \
+            --build "${{ github.run_number }}" \
+            --runner-report "$PWD/dist/live-scroll-installed-report.json" \
+            --step-outcome "${{ steps.live_scroll_resource.outcome }}"
       - name: Preserve installed live-scrolling visuals and resource evidence
         if: always()
         timeout-minutes: 3
@@ -582,6 +605,7 @@ jobs:
           path: |
             dist/live-scroll-installed.log
             dist/live-scroll-installed-report.json
+            dist/live-scroll-testing-qualification.json
             dist/live-scroll-installed/package-identity.json
             dist/live-scroll-installed/demo-launch.*
             dist/live-scroll-installed/demo/
@@ -919,6 +943,29 @@ jobs:
         run: |
           set -o pipefail
           bash scripts/smoke.sh 2>&1 | tee dist/smoke.log
+      - name: Record testing-only distribution after all remaining qualification steps
+        run: |
+          python3 - <<'PYTHON'
+          import hashlib, json, os
+          from pathlib import Path
+          path = Path('dist/live-scroll-testing-qualification.json')
+          raw = path.read_bytes()
+          classification = json.loads(raw)
+          if (classification.get('testingPackageEligible') is not True
+                  or classification.get('sourceCommit') != os.environ['GITHUB_SHA']
+                  or classification.get('installerAcceptance') is not False
+                  or classification.get('fullMemoryQualification') is not False):
+              raise SystemExit('No verified scrolling testing eligibility')
+          report = dict(
+              sourceCommit=os.environ['GITHUB_SHA'], build=os.environ['GITHUB_RUN_NUMBER'],
+              distribution='testing-only', stableInstallerReplacement=False,
+              installerAcceptance=False, fullMemoryQualification=False,
+              remainingWorkflowChecksCompleted=True,
+              physicalScreenCaptureValidated=False, requiresUserRealCaptureValidation=True,
+              classificationSHA256=hashlib.sha256(raw).hexdigest(),
+              classification=classification)
+          Path('dist/testing-package-distribution.json').write_text(json.dumps(report, indent=2)+'\n')
+          PYTHON
       - name: Upload verification evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -968,7 +1015,7 @@ jobs:
         run: |
           python3 - <<'PYTHON'
           from pathlib import Path
-          # Four files per uncompressed artifact ZIP; reserve 64 KiB for its
+          # Six files per uncompressed artifact ZIP; reserve 64 KiB for its
           # archive headers so each upload remains below the 32 MiB transfer cap.
           budget = 32 * 1024 * 1024 - 64 * 1024
           for extension in ("zip", "dmg"):
@@ -978,7 +1025,9 @@ jobs:
               installer = installers[0]
               metadata = installer.with_suffix(".build-info.json")
               files = (installer, Path(str(installer) + ".sha256"),
-                       metadata, Path(str(metadata) + ".sha256"))
+                       metadata, Path(str(metadata) + ".sha256"),
+                       Path('dist/live-scroll-testing-qualification.json'),
+                       Path('dist/testing-package-distribution.json'))
               total = sum(path.stat().st_size for path in files)
               print(f"{extension.upper()} artifact input: {total} bytes; budget: {budget}")
               if total >= budget:
@@ -987,24 +1036,28 @@ jobs:
       - name: Upload ZIP installer and provenance
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: PicShot-macos-${{ matrix.arch }}-ZIP-${{ github.sha }}
+          name: PicShot-TESTING-macos-${{ matrix.arch }}-ZIP-${{ github.sha }}
           path: |
             dist/PicShot-*.zip
             dist/PicShot-*.zip.sha256
             dist/PicShot-*.build-info.json
             dist/PicShot-*.build-info.json.sha256
+            dist/live-scroll-testing-qualification.json
+            dist/testing-package-distribution.json
           compression-level: 0
           if-no-files-found: error
           retention-days: 14
       - name: Upload DMG installer and provenance
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: PicShot-macos-${{ matrix.arch }}-DMG-${{ github.sha }}
+          name: PicShot-TESTING-macos-${{ matrix.arch }}-DMG-${{ github.sha }}
           path: |
             dist/PicShot-*.dmg
             dist/PicShot-*.dmg.sha256
             dist/PicShot-*.build-info.json
             dist/PicShot-*.build-info.json.sha256
+            dist/live-scroll-testing-qualification.json
+            dist/testing-package-distribution.json
           compression-level: 0
           if-no-files-found: error
           retention-days: 14
