@@ -19,6 +19,14 @@ enum RecordingInputExportSmokeSelection {
         let url=URL(fileURLWithPath:report);let directory=url.deletingLastPathComponent()
         do{
             try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
+            if ProcessInfo.processInfo.environment["PICSHOT_LIVE_SCROLL_RESOURCE_MODE"] != nil {
+                defer { try? FileManager.default.removeItem(at: history.directory) }
+                guard let payload = try await LiveScrollResourceFixture.runIfRequested(evidenceDirectory: directory) else {
+                    throw PicShotError.message("Live-scroll resource request disappeared")
+                }
+                try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]).write(to: url, options: .atomic)
+                NSApp.terminate(nil); return
+            }
             if ProcessInfo.processInfo.environment["PICSHOT_LIVE_SCROLL_DEMO_ONLY"] == "1" {
                 var payload = try await LiveScrollUsabilityDemoFixture.verify(evidenceDirectory: directory)
                 payload["sourceCommit"] = Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String ?? "unknown"

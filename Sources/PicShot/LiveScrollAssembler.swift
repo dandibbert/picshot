@@ -186,6 +186,9 @@ actor LiveScrollAssembler {
         return image
     }
 
+    func documentSnapshotForResourceVerification() async -> LiveScrollDocument.Snapshot? {
+        await document?.snapshot()
+    }
     func currentState() -> State { state }
     func initialImageForAxisChange() -> CGImage? { document == nil ? anchorImage : nil }
     func close() async {

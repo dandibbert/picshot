@@ -248,6 +248,8 @@ guard CommandLine.arguments.count == 3 else {
 }
 let appURL = URL(fileURLWithPath: CommandLine.arguments[1])
 let recordingInputExportOnly = ProcessInfo.processInfo.environment["PICSHOT_RECORDING_INPUT_EXPORT_ONLY"] != nil
+let liveScrollDiagnostic = ProcessInfo.processInfo.environment["PICSHOT_LIVE_SCROLL_RESOURCE_MODE"] != nil
+    || ProcessInfo.processInfo.environment["PICSHOT_LIVE_SCROLL_DEMO_ONLY"] == "1"
 let expectedExecutablePath = appURL.appendingPathComponent("Contents/MacOS/PicShot").resolvingSymlinksInPath().path
 let pinUIDiagnosticDirectory = ProcessInfo.processInfo.environment["PICSHOT_PIN_UI_DIAGNOSTIC_DIRECTORY"]
 var pinUIDiagnostic: PinUIOwnedDiagnostic?
@@ -270,7 +272,7 @@ if let directory = pinUIDiagnosticDirectory, pinUIDiagnostic != nil {
 if let selector = ProcessInfo.processInfo.environment["PICSHOT_RECORDING_INPUT_EXPORT_ONLY"] {
     configuration.environment["PICSHOT_RECORDING_INPUT_EXPORT_ONLY"] = selector
 }
-for key in ["PICSHOT_LIVE_SCROLL_DEMO_ONLY", "PICSHOT_LIVE_SCROLL_TARGET", "PICSHOT_CODEC_STAGING_MODE", "PICSHOT_CODEC_STAGING_ARM", "PICSHOT_CODEC_STAGING_PROFILE", "PICSHOT_CODEC_STAGING_FORMAT", "PICSHOT_CODEC_STAGING_INPUT_DIRECTORY", "PICSHOT_EDITABLE_PRODUCT_MODE", "PICSHOT_EDITABLE_PRODUCT_INPUT", "PICSHOT_EDITABLE_PRODUCT_CERTIFICATE", "PICSHOT_RENDERER_STORAGE_STRATEGY", "PICSHOT_DRAWING_RASTER_STRATEGY", "PICSHOT_EFFECT_OUTPUT_FAILURE_ONLY", "PICSHOT_EDITABLE_HASH_DIAGNOSTIC", "PICSHOT_EDITABLE_ANNOTATIONS_ONLY", "PICSHOT_EDITABLE_ANNOTATION_RESOURCES", "PICSHOT_MULTIWINDOW_COMPOSITION", "PICSHOT_MULTIWINDOW_RESOURCES_ONLY", "PICSHOT_MULTIWINDOW_DIAGNOSTIC_TAIL_FIRST", "PICSHOT_MULTIWINDOW_DIAGNOSTIC_BOUNDARIES", "PICSHOT_RECORDING_COMPOSITION_ONLY", "PICSHOT_RECORDING_COMPOSITION_TRACE", "PICSHOT_MANUAL_HASH_STRATEGY", "PICSHOT_SCROLL_ATTRIBUTION_MODE", "PICSHOT_SCROLL_ATTRIBUTION_INPUT_DIRECTORY", "PICSHOT_SCROLL_ATTRIBUTION_PRODUCTION_COMMIT", "PICSHOT_SCROLL_ATTRIBUTION_OVERLAY_COMMIT", "PICSHOT_MANUAL_SCROLL_ONLY", "PICSHOT_MANUAL_SCROLL_RESOURCES", "PICSHOT_ANNOTATION_DETAILS_ONLY", "PICSHOT_AUTOMATIC_MOSAIC_ONLY", "PICSHOT_PIN_GROUP_TRANSFORMS_ONLY", "PICSHOT_LATEX_PIN_VERIFY", "PICSHOT_PIN_DESKTOP_VISIBILITY_ONLY", "PICSHOT_SMOKE_FORMULA_MODEL_DIR", "PICSHOT_SMOKE_FORMULA_INPUT", "PICSHOT_SMOKE_TABLE_MODEL_DIR", "PICSHOT_SMOKE_TABLE_INPUT", "PICSHOT_SMOKE_ERASE_MODEL_DIR", "PICSHOT_UI_PREVIEW_ONLY", "PICSHOT_SMOKE_GIF_RESOURCES", "PICSHOT_GIF_DIAGNOSTIC_MODE", "PICSHOT_GIF_EXTRACTION", "PICSHOT_GIF_EXECUTION", "PICSHOT_CODEC_ATTRIBUTION_MODE", "PICSHOT_CODEC_ATTRIBUTION_FORMAT", "PICSHOT_CODEC_ATTRIBUTION_PROFILE", "PICSHOT_CODEC_ATTRIBUTION_INPUT_DIRECTORY", "PICSHOT_IMAGE_BACKING_MODE", "PICSHOT_IMAGE_BACKING_FORMAT", "PICSHOT_IMAGE_BACKING_PROFILE", "PICSHOT_IMAGE_BACKING_INPUT_DIRECTORY"] {
+for key in ["PICSHOT_LIVE_SCROLL_RESOURCE_MODE", "PICSHOT_LIVE_SCROLL_RESOURCE_INPUT", "PICSHOT_LIVE_SCROLL_DEMO_ONLY", "PICSHOT_LIVE_SCROLL_TARGET", "PICSHOT_CODEC_STAGING_MODE", "PICSHOT_CODEC_STAGING_ARM", "PICSHOT_CODEC_STAGING_PROFILE", "PICSHOT_CODEC_STAGING_FORMAT", "PICSHOT_CODEC_STAGING_INPUT_DIRECTORY", "PICSHOT_EDITABLE_PRODUCT_MODE", "PICSHOT_EDITABLE_PRODUCT_INPUT", "PICSHOT_EDITABLE_PRODUCT_CERTIFICATE", "PICSHOT_RENDERER_STORAGE_STRATEGY", "PICSHOT_DRAWING_RASTER_STRATEGY", "PICSHOT_EFFECT_OUTPUT_FAILURE_ONLY", "PICSHOT_EDITABLE_HASH_DIAGNOSTIC", "PICSHOT_EDITABLE_ANNOTATIONS_ONLY", "PICSHOT_EDITABLE_ANNOTATION_RESOURCES", "PICSHOT_MULTIWINDOW_COMPOSITION", "PICSHOT_MULTIWINDOW_RESOURCES_ONLY", "PICSHOT_MULTIWINDOW_DIAGNOSTIC_TAIL_FIRST", "PICSHOT_MULTIWINDOW_DIAGNOSTIC_BOUNDARIES", "PICSHOT_RECORDING_COMPOSITION_ONLY", "PICSHOT_RECORDING_COMPOSITION_TRACE", "PICSHOT_MANUAL_HASH_STRATEGY", "PICSHOT_SCROLL_ATTRIBUTION_MODE", "PICSHOT_SCROLL_ATTRIBUTION_INPUT_DIRECTORY", "PICSHOT_SCROLL_ATTRIBUTION_PRODUCTION_COMMIT", "PICSHOT_SCROLL_ATTRIBUTION_OVERLAY_COMMIT", "PICSHOT_MANUAL_SCROLL_ONLY", "PICSHOT_MANUAL_SCROLL_RESOURCES", "PICSHOT_ANNOTATION_DETAILS_ONLY", "PICSHOT_AUTOMATIC_MOSAIC_ONLY", "PICSHOT_PIN_GROUP_TRANSFORMS_ONLY", "PICSHOT_LATEX_PIN_VERIFY", "PICSHOT_PIN_DESKTOP_VISIBILITY_ONLY", "PICSHOT_SMOKE_FORMULA_MODEL_DIR", "PICSHOT_SMOKE_FORMULA_INPUT", "PICSHOT_SMOKE_TABLE_MODEL_DIR", "PICSHOT_SMOKE_TABLE_INPUT", "PICSHOT_SMOKE_ERASE_MODEL_DIR", "PICSHOT_UI_PREVIEW_ONLY", "PICSHOT_SMOKE_GIF_RESOURCES", "PICSHOT_GIF_DIAGNOSTIC_MODE", "PICSHOT_GIF_EXTRACTION", "PICSHOT_GIF_EXECUTION", "PICSHOT_CODEC_ATTRIBUTION_MODE", "PICSHOT_CODEC_ATTRIBUTION_FORMAT", "PICSHOT_CODEC_ATTRIBUTION_PROFILE", "PICSHOT_CODEC_ATTRIBUTION_INPUT_DIRECTORY", "PICSHOT_IMAGE_BACKING_MODE", "PICSHOT_IMAGE_BACKING_FORMAT", "PICSHOT_IMAGE_BACKING_PROFILE", "PICSHOT_IMAGE_BACKING_INPUT_DIRECTORY"] {
     if let value = ProcessInfo.processInfo.environment[key] { configuration.environment[key] = value }
 }
 #if PICSHOT_CALLOUT_RETIREMENT_DIAGNOSTICS
@@ -323,7 +325,7 @@ func pinUIOwnedIdentity() -> [String: Any] {
 // owns a separate app process, so let this existing owner close its exact app.
 var interruptedSignal: Int32?
 var interruptionSources: [DispatchSourceSignal] = []
-if recordingInputExportOnly || pinUIDiagnostic != nil {
+if liveScrollDiagnostic || recordingInputExportOnly || pinUIDiagnostic != nil {
     for number in [SIGTERM, SIGINT] {
         signal(number, SIG_IGN)
         let source = DispatchSource.makeSignalSource(signal: number, queue: .main)
@@ -361,7 +363,7 @@ let deadline = Date().addingTimeInterval(timeout)
 func finish(_ requestedCode: Int32, _ status: String) -> Never {
     pinUIDiagnostic?.finish(status: status, code: requestedCode, identity: pinUIOwnedIdentity)
     let code: Int32 = requestedCode == 0 && pinUIDiagnostic?.failed == true ? 1 : requestedCode
-    if recordingInputExportOnly || ProcessInfo.processInfo.environment["PICSHOT_CODEC_STAGING_MODE"] != nil || ProcessInfo.processInfo.environment["PICSHOT_EDITABLE_PRODUCT_MODE"] != nil ||
+    if liveScrollDiagnostic || recordingInputExportOnly || ProcessInfo.processInfo.environment["PICSHOT_CODEC_STAGING_MODE"] != nil || ProcessInfo.processInfo.environment["PICSHOT_EDITABLE_PRODUCT_MODE"] != nil ||
        ProcessInfo.processInfo.environment["PICSHOT_EFFECT_OUTPUT_FAILURE_ONLY"] == "1" ||
        ProcessInfo.processInfo.environment["PICSHOT_UI_PREVIEW_ONLY"] == "1" ||
        ProcessInfo.processInfo.environment["PICSHOT_EDITABLE_ANNOTATIONS_ONLY"] == "1" ||
@@ -385,8 +387,9 @@ func finish(_ requestedCode: Int32, _ status: String) -> Never {
             report["launchedIdentityMatches"] = launchedIdentityMatches()
             report["expectedExecutablePath"] = expectedExecutablePath
         }
-        if recordingInputExportOnly {
-            report["earlyWitnessOnly"] = true
+        if recordingInputExportOnly || liveScrollDiagnostic {
+            report["earlyWitnessOnly"] = recordingInputExportOnly
+            report["liveScrollDiagnosticOnly"] = liveScrollDiagnostic
             report["expectedExecutablePath"] = expectedExecutablePath
             report["launchedIdentityMatches"] = launchedIdentityMatches()
             if let interruptedSignal { report["interruptedSignal"] = Int(interruptedSignal) }
@@ -422,7 +425,7 @@ while Date() < deadline && interruptedSignal == nil {
             fputs("LaunchServices returned no application\n", stderr)
             finish(1, "application-missing")
         }
-        if (recordingInputExportOnly || ProcessInfo.processInfo.environment["PICSHOT_CODEC_STAGING_MODE"] != nil) && !launchedIdentityMatches() {
+        if (liveScrollDiagnostic || recordingInputExportOnly || ProcessInfo.processInfo.environment["PICSHOT_CODEC_STAGING_MODE"] != nil) && !launchedIdentityMatches() {
             fputs("LaunchServices returned a different installed bundle or executable\n", stderr)
             finish(1, "identity-mismatch")
         }
@@ -439,8 +442,8 @@ while Date() < deadline && interruptedSignal == nil {
 }
 pinUIDiagnostic?.stopSample("launcher-timeout-or-interruption", identity: pinUIOwnedIdentity)
 pinUIDiagnostic?.record("app-cleanup-started", ["identityBefore": pinUIOwnedIdentity(), "interruptedSignal": interruptedSignal.map(Int.init) ?? 0])
-fputs(interruptedSignal == nil ? "LaunchServices smoke app did not terminate within \(Int(timeout)) seconds\n" : "Early recording witness launch interrupted\n", stderr)
-if let launched, !launched.isTerminated, !recordingInputExportOnly || launchedIdentityMatches(),
+fputs(interruptedSignal == nil ? "LaunchServices smoke app did not terminate within \(Int(timeout)) seconds\n" : "Owned smoke launch interrupted\n", stderr)
+if let launched, !launched.isTerminated, !(recordingInputExportOnly || liveScrollDiagnostic) || launchedIdentityMatches(),
    pinUIDiagnostic == nil || pinUIOwnedIdentity()["ownedLiveIdentityMatches"] as? Bool == true {
     _ = launched.terminate()
     let grace = Date().addingTimeInterval(3)

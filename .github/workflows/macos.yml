@@ -439,7 +439,7 @@ jobs:
           python3 -m unittest discover -s scripts/tests -p test_native_test_shards.py -v
           python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/native-test-discovery.log --report dist/native-test-discovery-report.json -- swift test list --skip-build
           python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$NATIVE_TEST_PROCESS_COUNT" --output dist/native-tests-plan.json
-          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$FOCUSED_TEST_PROCESS_COUNT" --selection-regex 'AnnotationStyle|LocalAnnotationShortcut|PortableAnnotationPreferences|PortableSettings|AnnotationToolbarOrder|DrawingRaster|EditableProductResource|EditableProductRetirement|EditableComponent|PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|AnnotationEditing|CaptureAspectRatio|CaptureRatio|MultiWindow|ImageOutputDecoration|EditorOutput|PinOriginalCurrent|ManualScroll|ScrollPreview|ScrollSequencePreview|AnnotationFreehand|AnnotationTextLine|NumberedCallout|AutomaticMosaic|RepeatedRegion|AutomaticPinOCR|PinOCR|TextResultSourceSelection|PinManagement|PinWorkflow|LaTeXPin|PinLaTeX|PinGroup|PinDesktop|EditorToolbarHierarchy|SaveWorkflow|OwnedVideoExportStage|ImageBacking|Codec|NativeExport|AnimatedWebP|WebPContainer|RecordingWebP|CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingInput|RecordingHotKey|RecordingTransport|RecordingCommandCoordinator|SettingsAndMenuTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' --output dist/focused-tests-plan.json
+          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$FOCUSED_TEST_PROCESS_COUNT" --selection-regex 'LiveScroll|AnnotationStyle|LocalAnnotationShortcut|PortableAnnotationPreferences|PortableSettings|AnnotationToolbarOrder|DrawingRaster|EditableProductResource|EditableProductRetirement|EditableComponent|PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|AnnotationEditing|CaptureAspectRatio|CaptureRatio|MultiWindow|ImageOutputDecoration|EditorOutput|PinOriginalCurrent|ManualScroll|ScrollPreview|ScrollSequencePreview|AnnotationFreehand|AnnotationTextLine|NumberedCallout|AutomaticMosaic|RepeatedRegion|AutomaticPinOCR|PinOCR|TextResultSourceSelection|PinManagement|PinWorkflow|LaTeXPin|PinLaTeX|PinGroup|PinDesktop|EditorToolbarHierarchy|SaveWorkflow|OwnedVideoExportStage|ImageBacking|Codec|NativeExport|AnimatedWebP|WebPContainer|RecordingWebP|CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingInput|RecordingHotKey|RecordingTransport|RecordingCommandCoordinator|SettingsAndMenuTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' --output dist/focused-tests-plan.json
       - name: Reproduce settings interaction and recording regressions
         # Additive early reproduction preserves the five recording and twelve settings UI IDs,
         # adding current style/local-key/import regressions. Keep each 420s process cap.
@@ -482,6 +482,54 @@ jobs:
           mkdir -p dist
           set -o pipefail
           bash scripts/package.sh 2>&1 | tee dist/package.log
+      - name: Build owned scrolling target for installed live-session verification
+        timeout-minutes: 3
+        run: python3 scripts/run-bounded-command.py --timeout-seconds 150 --log dist/live-scroll-target-build.log --report dist/live-scroll-target-build.json -- bash scripts/build-live-scroll-target.sh "$PWD/.build/LiveScrollTarget.app"
+      # Four fresh launches retain600s each plus compilation and owned cleanup.
+      # The pre-existing318/346min whole-job cap remains an independent outer cap;
+      # it does not promise every nested stage can simultaneously use its maximum.
+      - name: Verify continuous scrolling and bounded resources from the actual ZIP
+        timeout-minutes: 46
+        run: >-
+          python3 scripts/run-bounded-command.py --timeout-seconds 2640 --grace-seconds 10
+          --log dist/live-scroll-installed.log --report dist/live-scroll-installed-report.json
+          -- bash scripts/live-scroll-installed.sh
+          "${{ github.workspace }}/dist/PicShot-0.22.0-macos-${{ matrix.arch }}.zip"
+          "${{ github.workspace }}/dist/live-scroll-installed" "${{ github.sha }}"
+      - name: Preserve installed live-scrolling visuals and resource evidence
+        if: always()
+        timeout-minutes: 3
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Live-Scroll-Installed-${{ matrix.arch }}-${{ github.sha }}
+          path: |
+            dist/live-scroll-installed.log
+            dist/live-scroll-installed-report.json
+            dist/live-scroll-installed/package-identity.json
+            dist/live-scroll-installed/demo-launch.*
+            dist/live-scroll-installed/demo/
+            dist/live-scroll-installed/resource/upload/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
+      - name: Preserve one independently checked live-scroll output
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Live-Scroll-Output-${{ matrix.arch }}-${{ github.sha }}
+          path: dist/live-scroll-installed/resource/review-output/
+          if-no-files-found: ignore
+          retention-days: 14
+          compression-level: 6
+      - name: Preserve independent live-scroll reference pixels
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Live-Scroll-Reference-${{ matrix.arch }}-${{ github.sha }}
+          path: dist/live-scroll-installed/resource/review-reference/
+          if-no-files-found: ignore
+          retention-days: 14
+          compression-level: 6
       - name: Render native UI from installed ZIP before slow verification
         run: |
           set -o pipefail
@@ -639,16 +687,24 @@ jobs:
               plan_path = Path('dist/native-tests-plan.json')
               plan = native.checked_plan(plan_path, source)
               inventory = plan['discoveredTests']
-              native.need(len(inventory) == 2047 and len({case.split('/')[0] for case in inventory}) == 232
-                  and hashlib.sha256(('\n'.join(inventory)+'\n').encode()).hexdigest() ==
+              added = json.loads(native.bounded_text(Path('scripts/live-scroll-additive-tests.json'), 128*1024))
+              native.need(isinstance(added, list) and added == sorted(set(added)) and len(added) >= 84
+                  and all(native.SPECIFIER.fullmatch(case) and '.LiveScroll' in case for case in added),
+                  'Explicit live-scroll inventory is invalid')
+              native.need(set(added).issubset(inventory), 'Complete native inventory is missing a required additive live-scroll method')
+              original = [case for case in inventory if case not in set(added)]
+              original_shards = [[case for case in shard['tests'] if case not in set(added)] for shard in plan['shards']]
+              native.need(len(original) == 2047 and len({case.split('/')[0] for case in original}) == 232
+                  and hashlib.sha256(('\n'.join(original)+'\n').encode()).hexdigest() ==
                       '926ac5674df90163b949fe461f0d4589ef72c8fc3215fa00b927564aae57cb44'
                   and plan['selectedTests'] == inventory and plan['selectionRegex'] == ''
                   and plan['processCount'] == 4 and plan['timeoutSecondsPerProcess'] == 420
-                  and [len(shard['tests']) for shard in plan['shards']] == [579, 442, 522, 504],
-                  'Complete native inventory or original process grouping changed')
+                  and [len(cases) for cases in original_shards] == [579, 442, 522, 504],
+                  'Complete native inventory changed: accepted214 IDs or original process assignment differ')
               native.need([case for case in inventory if case.startswith('PicShotTests.PinAnchoredEditingTests/')] == class_ids,
                   'Pin class inventory differs from the four original methods')
-              record.update(planSHA256=digest(plan_path), discoveredCount=2047, discoveredClassCount=232,
+              record.update(planSHA256=digest(plan_path), discoveredCount=len(inventory), discoveredClassCount=len({case.split('/')[0] for case in inventory}),
+                  preserved214Methods=len(original), additiveLiveScrollMethods=len(added), additiveLiveScrollIDs=added,
                   discoverySHA256=digest(Path('dist/native-test-discovery.log')),
                   fixtureSHA256=digest(Path('Tests/PicShotTests/PinAnchoredEditingTests.swift')))
               for label, expected in (('method', [method]), ('class', class_ids)):
@@ -799,6 +855,38 @@ jobs:
             dist/focused-test-shards/
             dist/evidence/
           retention-days: 14
+      # Preserve the same final records as bounded per-format archives as well.
+      # The comprehensive QA archive remains above; no evidence or gate is omitted.
+      - name: Upload final ZIP installed evidence separately
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Final-ZIP-Evidence-${{ matrix.arch }}-${{ github.sha }}
+          path: dist/evidence/zip/
+          if-no-files-found: ignore
+          retention-days: 14
+          compression-level: 6
+      - name: Upload final DMG installed evidence separately
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Final-DMG-Evidence-${{ matrix.arch }}-${{ github.sha }}
+          path: dist/evidence/dmg/
+          if-no-files-found: ignore
+          retention-days: 14
+          compression-level: 6
+      - name: Upload final model and installed identity records
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Final-Records-${{ matrix.arch }}-${{ github.sha }}
+          path: |
+            dist/*.log
+            dist/*.json
+            dist/evidence/installed-format-identity.json
+          if-no-files-found: ignore
+          retention-days: 14
+          compression-level: 6
       - name: Check split installer transfer budgets
         run: |
           python3 - <<'PYTHON'

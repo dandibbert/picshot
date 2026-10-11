@@ -11,6 +11,7 @@ final class LiveScrollSessionController {
     private let onImport: () -> Void
     private let onCopy: (CGImage) -> Void
     private let capture = CaptureService()
+    private let resourceStorageParent: URL
     private var source: (any LiveScrollFrameSource)?
     private var assembler: LiveScrollAssembler?
     private var controls: LiveScrollCaptureController?
@@ -38,7 +39,9 @@ final class LiveScrollSessionController {
     private let maximumSamples = 2400
 
     init(onComplete: @escaping (CGImage) throws -> Void, onImport: @escaping () -> Void,
-         onCopy: ((CGImage) -> Void)? = nil) {
+         onCopy: ((CGImage) -> Void)? = nil,
+         resourceStorageParent: URL = FileManager.default.temporaryDirectory) {
+        self.resourceStorageParent = resourceStorageParent
         self.onComplete = onComplete; self.onImport = onImport
         self.onCopy = onCopy ?? { copyImage($0) }
     }
@@ -85,7 +88,7 @@ final class LiveScrollSessionController {
     private func beginSource(_ source: any LiveScrollFrameSource, on screen: NSScreen, token: UInt64) async throws {
         self.screen = screen; self.region = source.region
         self.source = source
-        self.assembler = LiveScrollAssembler(axis: axis, generation: token)
+        self.assembler = LiveScrollAssembler(axis: axis, generation: token, storageParent: resourceStorageParent)
         installControls()
         setStatus("正在读取选区…", kind: .capturing)
         try await source.start()
@@ -119,6 +122,9 @@ final class LiveScrollSessionController {
         try await beginSource(source, on: screen, token: generation)
     }
 
+    func documentSnapshotForResourceVerification() async -> LiveScrollDocument.Snapshot? {
+        await assembler?.documentSnapshotForResourceVerification()
+    }
     var snapshotForVerification: LiveScrollCaptureSnapshot { snapshot }
     var stateForVerification: LiveScrollAssembler.State { lastState }
     var controlsForVerification: LiveScrollCaptureController? { controls }
@@ -349,7 +355,7 @@ final class LiveScrollSessionController {
             do {
                 try await source.pauseAndDrain(); await self.sampling?.value; self.sampling = nil
                 guard let first = await original.initialImageForAxisChange() else { throw CaptureError.busy }
-                let fresh = LiveScrollAssembler(axis: next, generation: self.generation); replacement = fresh
+                let fresh = LiveScrollAssembler(axis: next, generation: self.generation, storageParent: self.resourceStorageParent); replacement = fresh
                 let seed = try await fresh.observe(first)
                 try await source.resume()
                 self.axis = next; self.assembler = fresh; replacement = nil
