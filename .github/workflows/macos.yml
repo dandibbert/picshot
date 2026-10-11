@@ -8,8 +8,8 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[blocked-installers227]') && 'blocked-installers227' || contains(github.event.head_commit.message || '', '[live-scroll-remainder]') && 'live-scroll-remainder' || contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') && 'pin-ui-diagnostic' || contains(github.event.head_commit.message || '', '[shortcut-isolation]') && 'shortcut-isolation' || contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && 'intel154-fresh-diagnostic' || contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && 'native-timeout-diagnostic' || contains(github.event.head_commit.message || '', '[installed-diagnostic]') && 'installed-diagnostic' || contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-product-resource' || contains(github.event.head_commit.message || '', '[seed-render-crop]') && 'seed-render-crop' || contains(github.event.head_commit.message || '', '[effect-context]') && 'effect-context' || contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && 'renderer-scope-controls' || contains(github.event.head_commit.message || '', '[renderer-storage]') && 'renderer-storage' || contains(github.event.head_commit.message || '', '[drawing-pair]') && 'drawing-pair' || contains(github.event.head_commit.message || '', '[editable-observation]') && 'editable-observation' || contains(github.event.head_commit.message || '', '[callout-retirement]') && 'callout-retirement' || contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-documents' || contains(github.event.head_commit.message || '', '[multiwindow-memory]') && 'multiwindow-memory' || contains(github.event.head_commit.message || '', '[recording-wait]') && 'recording-wait' || contains(github.event.head_commit.message || '', '[manual-hash]') && 'manual-hash' || contains(github.event.head_commit.message || '', '[scroll-memory]') && 'scroll-memory' || contains(github.event.head_commit.message || '', '[decode-exit-latch]') && 'decode-exit-latch' || contains(github.event.head_commit.message || '', '[decode-timing-v3]') && 'decode-timing-v3' || contains(github.event.head_commit.message || '', '[decode-large]') && 'decode-large' || contains(github.event.head_commit.message || '', '[pin-workflows]') && 'pins-010' || contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
-  cancel-in-progress: ${{ !contains(github.event.head_commit.message || '', '[blocked-installers227]') && !contains(github.event.head_commit.message || '', '[live-scroll-remainder]') && !contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') && !contains(github.event.head_commit.message || '', '[shortcut-isolation]') && !contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && !(contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]')) && !contains(github.event.head_commit.message || '', '[seed-render-crop]') && !contains(github.event.head_commit.message || '', '[effect-context]') && !contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && !contains(github.event.head_commit.message || '', '[renderer-storage]') && !contains(github.event.head_commit.message || '', '[drawing-pair]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
+  group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[experimental-installer227]') && 'experimental-installer227' || contains(github.event.head_commit.message || '', '[blocked-installers227]') && 'blocked-installers227' || contains(github.event.head_commit.message || '', '[live-scroll-remainder]') && 'live-scroll-remainder' || contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') && 'pin-ui-diagnostic' || contains(github.event.head_commit.message || '', '[shortcut-isolation]') && 'shortcut-isolation' || contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && 'intel154-fresh-diagnostic' || contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && 'native-timeout-diagnostic' || contains(github.event.head_commit.message || '', '[installed-diagnostic]') && 'installed-diagnostic' || contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-product-resource' || contains(github.event.head_commit.message || '', '[seed-render-crop]') && 'seed-render-crop' || contains(github.event.head_commit.message || '', '[effect-context]') && 'effect-context' || contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && 'renderer-scope-controls' || contains(github.event.head_commit.message || '', '[renderer-storage]') && 'renderer-storage' || contains(github.event.head_commit.message || '', '[drawing-pair]') && 'drawing-pair' || contains(github.event.head_commit.message || '', '[editable-observation]') && 'editable-observation' || contains(github.event.head_commit.message || '', '[callout-retirement]') && 'callout-retirement' || contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-documents' || contains(github.event.head_commit.message || '', '[multiwindow-memory]') && 'multiwindow-memory' || contains(github.event.head_commit.message || '', '[recording-wait]') && 'recording-wait' || contains(github.event.head_commit.message || '', '[manual-hash]') && 'manual-hash' || contains(github.event.head_commit.message || '', '[scroll-memory]') && 'scroll-memory' || contains(github.event.head_commit.message || '', '[decode-exit-latch]') && 'decode-exit-latch' || contains(github.event.head_commit.message || '', '[decode-timing-v3]') && 'decode-timing-v3' || contains(github.event.head_commit.message || '', '[decode-large]') && 'decode-large' || contains(github.event.head_commit.message || '', '[pin-workflows]') && 'pins-010' || contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
+  cancel-in-progress: ${{ !contains(github.event.head_commit.message || '', '[experimental-installer227]') && !contains(github.event.head_commit.message || '', '[blocked-installers227]') && !contains(github.event.head_commit.message || '', '[live-scroll-remainder]') && !contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') && !contains(github.event.head_commit.message || '', '[shortcut-isolation]') && !contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && !(contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]')) && !contains(github.event.head_commit.message || '', '[seed-render-crop]') && !contains(github.event.head_commit.message || '', '[effect-context]') && !contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && !contains(github.event.head_commit.message || '', '[renderer-storage]') && !contains(github.event.head_commit.message || '', '[drawing-pair]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
 jobs:
   live-scroll-preview:
     if: ${{ contains(github.event.head_commit.message || '', '[live-scroll-preview]') }}
@@ -408,7 +408,7 @@ jobs:
           retention-days: 14
 
   build:
-    if: ${{ !contains(github.event.head_commit.message || '', '[blocked-installers227]') && !contains(github.event.head_commit.message || '', '[live-scroll-remainder]') && !contains(github.event.head_commit.message || '', '[live-scroll-preview]') && !contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') && !contains(github.event.head_commit.message || '', '[shortcut-isolation]') && !contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') && !contains(github.event.head_commit.message || '', '[codec-attribution]') && !contains(github.event.head_commit.message || '', '[codec-staging]') && !contains(github.event.head_commit.message || '', '[codec-avif-confirmation]') && !contains(github.event.head_commit.message || '', '[runner-only]') && !contains(github.event.head_commit.message || '', '[scroll-memory]') && !contains(github.event.head_commit.message || '', '[manual-hash]') && !contains(github.event.head_commit.message || '', '[recording-wait]') && !contains(github.event.head_commit.message || '', '[multiwindow-memory]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-documents]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
+    if: ${{ !contains(github.event.head_commit.message || '', '[experimental-installer227]') && !contains(github.event.head_commit.message || '', '[blocked-installers227]') && !contains(github.event.head_commit.message || '', '[live-scroll-remainder]') && !contains(github.event.head_commit.message || '', '[live-scroll-preview]') && !contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') && !contains(github.event.head_commit.message || '', '[shortcut-isolation]') && !contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') && !contains(github.event.head_commit.message || '', '[codec-attribution]') && !contains(github.event.head_commit.message || '', '[codec-staging]') && !contains(github.event.head_commit.message || '', '[codec-avif-confirmation]') && !contains(github.event.head_commit.message || '', '[runner-only]') && !contains(github.event.head_commit.message || '', '[scroll-memory]') && !contains(github.event.head_commit.message || '', '[manual-hash]') && !contains(github.event.head_commit.message || '', '[recording-wait]') && !contains(github.event.head_commit.message || '', '[multiwindow-memory]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-documents]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
     strategy:
       fail-fast: false
       matrix:
@@ -3996,7 +3996,7 @@ jobs:
   # Diagnostic completion of retained227 checks only. Stable214 remains accepted;
   # run38130153505's installed warmRSS/lateRSS failure is neither rerun nor waived.
   live-scroll-remainder:
-    if: ${{ !contains(github.event.head_commit.message || '', '[blocked-installers227]') && github.event_name == 'push' && contains(github.event.head_commit.message || '', '[live-scroll-remainder]') }}
+    if: ${{ !contains(github.event.head_commit.message || '', '[experimental-installer227]') && !contains(github.event.head_commit.message || '', '[blocked-installers227]') && github.event_name == 'push' && contains(github.event.head_commit.message || '', '[live-scroll-remainder]') }}
     runs-on: macos-15
     # Keep the original ARM whole-job cap and every copied stage/command cap.
     # Independent stages can continue after a failure, but no failure is softened.
@@ -4767,7 +4767,7 @@ jobs:
 
   # No installer acceptance: only the previously blocked gates run against clean-built227.
   blocked-installers227:
-    if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message || '', '[blocked-installers227]')
+    if: ${{ !contains(github.event.head_commit.message || '', '[experimental-installer227]') && github.event_name == 'push' && contains(github.event.head_commit.message || '', '[blocked-installers227]')
       }}
     runs-on: macos-15
     timeout-minutes: 318
@@ -5227,3 +5227,399 @@ jobs:
         retention-days: 14
         compression-level: 6
       timeout-minutes: 2
+
+  # Explicit user-opted experimental ZIP rebuild; no qualification or stable replacement.
+  experimental-installer227:
+    if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message || '', '[experimental-installer227]')
+      }}
+    runs-on: macos-15
+    timeout-minutes: 85
+    env:
+      PICSHOT_EXPERIMENT_SOURCE: e5a859a82b2a7a697e51a0a4d42f34ae4f5602d0
+      PICSHOT_EXPERIMENT_TREE: bee9ab45ee7770f2aab84565f392934f21903030
+      PICSHOT_EXPERIMENT_WORKFLOW_SHA: ${{ github.workflow_sha }}
+    steps:
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      id: checkout_source227
+      with:
+        ref: e5a859a82b2a7a697e51a0a4d42f34ae4f5602d0
+        fetch-depth: 0
+        persist-credentials: false
+    - name: Bind exact clean227 product and separate experimental workflow
+      id: provenance
+      timeout-minutes: 2
+      run: |
+        python3 - <<'PYTHON'
+        import hashlib, json, os, platform, subprocess
+        from pathlib import Path
+
+        def git(*args): return subprocess.check_output(['git', *args], timeout=10)
+        def need(value, message):
+            if not value: raise ValueError(message)
+        root=Path('dist/experimental-installer227');root.mkdir(parents=True,exist_ok=True)
+        source,tree,workflow=(os.environ[key] for key in ('PICSHOT_EXPERIMENT_SOURCE','PICSHOT_EXPERIMENT_TREE','PICSHOT_EXPERIMENT_WORKFLOW_SHA'))
+        need(git('rev-parse','HEAD','HEAD^{tree}').decode().splitlines()==[source,tree], 'Exact original227 source/tree required')
+        need(not git('status','--porcelain','--untracked-files=no').strip(), 'Original227 tracked tree must be clean')
+        need(platform.system()=='Darwin' and platform.machine()=='arm64', 'Native ARM macOS required')
+        need(int(os.environ['GITHUB_RUN_NUMBER'])>229, 'Use a new build number, never relabel build229')
+        need(workflow==os.environ['GITHUB_SHA'], 'Workflow and triggering commit differ')
+        prior='19fc13cad94f954b076b90b7658d5c82b5c63f9b'
+        subprocess.run(['git','merge-base','--is-ancestor',prior,workflow],check=True,timeout=10)
+        changed=git('diff','--name-only',prior,workflow).decode().splitlines()
+        need(set(changed)<={'.github/workflows/macos.yml','docs/VERIFICATION.md'}, 'Only experimental workflow/evidence documentation may differ from229')
+        workflow_bytes=git('show',workflow+':.github/workflows/macos.yml')
+        (root/'experimental-workflow.yml').write_bytes(workflow_bytes)
+        script_hashes={'scripts/package.sh': '83a967b25c2ba21dd80fcc3d0cbab2c44d3f6e29bcc80df7cb7f0cd5339f3b14', 'scripts/build-native-codecs.py': 'bb39595aa6de09fc7e8a19d65bb87c18e6df85f75ef25736f522be5ed3915e8f', 'scripts/build-live-scroll-target.sh': '28ee2e22c8799e79c031eb241d579e74d170c3ab00378ab645d4a0bf32c82fd1', 'scripts/live-scroll-installed.sh': '7099c8c469de1f03cdc82f6589c04da69d07627276ae17a8bfe48b36922bdec8', 'scripts/launch-smoke-app.swift': '589eab4377c411f1146dd2c3144320b212358bf52ff81543a70d6c9da295149f', 'scripts/run-bounded-command.py': 'ef85307a6227a0d99641b17c75e2aa625ae7344376fbcb3ec1af1c5be7e2d5d2', 'scripts/bundle-runtime.py': '2c2368eee65972ce24856b96cf36fb8088ddf13622c3c8cf9d50d8b1aeaf2ea7', 'scripts/FormulaRender-verify-packaged-runtime.py': '131caad33dc6204b5ac4bf05c9dcc9cf845847a0339ea3dc30744cb27f0073fe'}
+        for path,expected in script_hashes.items():
+            need(hashlib.sha256(Path(path).read_bytes()).hexdigest()==expected, 'Original script bytes differ: '+path)
+        original=Path('scripts/live-scroll-installed.sh').read_bytes()
+        omitted=b'bash scripts/run-live-scroll-resource.sh "$app" "$evidence/resource" "$source_sha"\n'
+        need(original.endswith(omitted) and original.count(omitted)==1, 'Expected one final resource command')
+        prefix=original[:-len(omitted)]
+        need(hashlib.sha256(prefix).hexdigest()=='44ee48f13fdfe6ec558a8d6adb63de52494f0650ca13dddf3fc4329ae7f63c1c', 'Selected original installed-demo prefix differs')
+        (root/'installed-demo-prefix.sh').write_bytes(prefix)
+        record=dict(status='passed',distribution='user-opted-experimental',userOptedExperimentalDistribution=True,
+            installerAcceptance=False,fullMemoryQualification=False,testingPackageEligible=False,
+            sourceCommit=source,sourceTree=tree,originalProductBuild=227,newBuildVersion=os.environ['GITHUB_RUN_NUMBER'],
+            workflowCommit=workflow,workflowTree=git('rev-parse',workflow+'^{tree}').decode().strip(),
+            workflowBlob=git('rev-parse',workflow+':.github/workflows/macos.yml').decode().strip(),
+            workflowSHA256=hashlib.sha256(workflow_bytes).hexdigest(),triggerChangedPaths=changed,
+            trackedSourceClean=True,runtimeOverlayApplied=False,originalScriptSHA256=script_hashes,
+            selectedInstalledScript='scripts/live-scroll-installed.sh',selectedPrefixSHA256=hashlib.sha256(prefix).hexdigest(),
+            selectedAssertions='All original installed ZIP identity, owned launch, three demo cases and output comparisons before final resource command',
+            omittedCommand=omitted.decode().strip(),disputedResourceCellRerun=False,
+            fullNativeSuiteRepeated=False,separateModelSuiteRepeated=False,modelFixturesDownloaded=False,
+            priorNativeEvidence=dict(runID='38133056370',build=228,sourceCommit=source,focusedPassed=1616,fullIDs=2148,fullClasses=245,fullPassed=2145,approvedModelSkips=3,separatePinnedModelPassed=12),
+            priorInstalledEvidence=dict(runID='38137698587',build=229,workflowCommit=prior,originalUIAndZIPAndDMG='passed; prior build bytes only'),
+            originalMemoryFailure=dict(runID='38130153505',warmRSSBytes=10780672,warmLimitBytes=9830400,lateThreeRSSBytes=5177344,lateLimitBytes=4915200,preserved=True),
+            stable214Unchanged=True,realScreenCaptureAcceptance=False,
+            workflowRunID=os.environ['GITHUB_RUN_ID'],workflowRunAttempt=os.environ['GITHUB_RUN_ATTEMPT'])
+        (root/'source-identity.json').write_text(json.dumps(record,indent=2)+'\n')
+        PYTHON
+    - name: Prepare original verified codec dependencies for release packaging
+      id: codec_dependencies
+      if: ${{ !cancelled() && steps.provenance.outcome == 'success' }}
+      timeout-minutes: 15
+      run: python3 scripts/run-bounded-command.py --timeout-seconds 840 --log dist/native-dependencies-preflight.log
+        --report dist/native-dependencies-preflight-report.json -- python3 scripts/build-native-codecs.py --arch arm64
+    - name: Package exact clean227 release app and both installer formats
+      id: package
+      if: ${{ !cancelled() && steps.provenance.outcome == 'success' && steps.codec_dependencies.outcome == 'success'
+        }}
+      timeout-minutes: 30
+      run: |
+        python3 scripts/run-bounded-command.py --timeout-seconds 1740 --log dist/package.log --report dist/package-report.json -- bash scripts/package.sh
+    - name: Build original owned native target for optional real-stream demo phase
+      id: owned_target
+      timeout-minutes: 3
+      run: |
+        python3 scripts/run-bounded-command.py --timeout-seconds 150 --log dist/experimental-owned-target.log --report dist/experimental-owned-target.json -- bash scripts/build-live-scroll-target.sh "$PWD/.build/LiveScrollTarget.app"
+      if: ${{ !cancelled() && steps.provenance.outcome == 'success' && steps.package.outcome == 'success' }}
+    - name: Verify actual ZIP extraction signatures all helpers and new package identity
+      id: zip_identity
+      timeout-minutes: 5
+      run: |
+        python3 - <<'PYTHON'
+        import hashlib, json, os, plistlib, subprocess, tempfile
+        from pathlib import Path
+
+        def need(value,message):
+            if not value: raise ValueError(message)
+        def sha(path):
+            result=hashlib.sha256()
+            with path.open('rb') as stream:
+                for chunk in iter(lambda:stream.read(1024*1024),b''):result.update(chunk)
+            return result.hexdigest()
+        def run(*args):return subprocess.check_output(args,text=True,timeout=30).strip()
+        def manifest(app):
+            rows=[]
+            for path in sorted(app.rglob('*')):
+                relative=path.relative_to(app).as_posix()
+                if path.is_symlink():
+                    need(path.resolve().is_relative_to(app.resolve()),'Bundle symlink escapes application')
+                    rows.append(dict(path=relative,link=os.readlink(path)))
+                elif path.is_file():rows.append(dict(path=relative,bytes=path.stat().st_size,sha256=sha(path)))
+            return rows
+        root=Path('dist/experimental-installer227')
+        identity=json.loads((root/'source-identity.json').read_text())
+        need(run('git','rev-parse','HEAD','HEAD^{tree}').splitlines()==[identity['sourceCommit'],identity['sourceTree']], 'Product source identity changed')
+        need(not run('git','status','--porcelain','--untracked-files=no'), 'Product source must remain clean')
+        archive=Path('dist/PicShot-0.22.0-macos-arm64.zip')
+        need(0<archive.stat().st_size<30*1024*1024,'Experimental ZIP must fit below30MiB, leaving transfer margin')
+        with tempfile.TemporaryDirectory(prefix='experimental-zip-',dir=Path('dist').resolve()) as work:
+            subprocess.run(['ditto','-x','-k',str(archive),work],check=True,timeout=60)
+            app=Path(work)/'PicShot.app';need(app.resolve()==app,'Installed bundle path must be canonical')
+            subprocess.run(['codesign','--verify','--deep','--strict',str(app)],check=True,timeout=30)
+            info=plistlib.loads((app/'Contents/Info.plist').read_bytes())
+            build=json.loads((app/'Contents/Resources/build-info.json').read_text())
+            need(info['PicShotSourceCommit']==build['sourceCommit']==identity['sourceCommit'],'Installed source mismatch')
+            need(info['CFBundleVersion']==os.environ['GITHUB_RUN_NUMBER'],'New build number mismatch')
+            need(info['CFBundleShortVersionString']==build['version']=='0.22.0' and build['architecture']=='arm64','Version/architecture mismatch')
+            need(info['CFBundleExecutable']=='PicShot' and info['LSMinimumSystemVersion']=='14.0','Executable/minimum macOS mismatch')
+            staged=Path('dist/PicShot.app');actual_manifest=manifest(app)
+            need(actual_manifest==manifest(staged),'Extracted ZIP bundle differs from signed packaged bundle')
+            binaries=['Contents/MacOS/PicShot']+['Contents/Helpers/'+name for name in ('PicShotMLHelper','PicShotCodecHelper','PicShotEraseHelper','PicShotFormulaRenderHelper')]
+            executables=[]
+            for relative in binaries:
+                path=app/relative
+                need(path.is_file() and run('lipo','-archs',str(path))=='arm64','Native executable missing or wrong architecture: '+relative)
+                subprocess.run(['codesign','--verify','--strict',str(path)],check=True,timeout=30)
+                dependencies=[]
+                for line in run('otool','-L',str(path)).splitlines()[1:]:
+                    linked=line.strip().split(' (',1)[0]
+                    if linked.startswith(('/usr/lib/','/System/Library/')):resolved='system'
+                    else:
+                        if linked.startswith('@rpath/'):target=app/'Contents/Frameworks'/linked[len('@rpath/'):]
+                        elif linked.startswith('@executable_path/'):target=path.parent/linked[len('@executable_path/'):]
+                        elif linked.startswith('@loader_path/'):target=path.parent/linked[len('@loader_path/'):]
+                        else:raise ValueError('Unapproved external runtime dependency: '+linked)
+                        need(target.is_file() and target.resolve().is_relative_to(app),'Dependency missing or escaped bundle: '+linked)
+                        resolved=str(target.relative_to(app))
+                    dependencies.append(dict(linked=linked,resolved=resolved))
+                executables.append(dict(path=relative,sha256=sha(path),architecture='arm64',signatureVerified=True,dependencies=dependencies))
+            record=dict(status='passed',distribution='user-opted-experimental',userOptedExperimentalDistribution=True,
+                sourceCommit=identity['sourceCommit'],sourceTree=identity['sourceTree'],version='0.22.0',buildVersion=info['CFBundleVersion'],architecture='arm64',
+                installerAcceptance=False,fullMemoryQualification=False,testingPackageEligible=False,
+                archivePath=str(archive),archiveBytes=archive.stat().st_size,archiveSHA256=sha(archive),
+                exactExtractedBundleMatchesPackaged=True,bundleManifestSHA256=hashlib.sha256(json.dumps(actual_manifest,sort_keys=True).encode()).hexdigest(),
+                executables=executables,bundleManifest=actual_manifest,signing='ad-hoc',notarized=False,
+                unusedDMGGeneratedByOriginalPackageScript=True,dmgInstalledRouteExercised=False,dmgPublished=False)
+            (root/'zip-package-identity.json').write_text(json.dumps(record,indent=2)+'\n')
+        PYTHON
+      if: ${{ !cancelled() && steps.provenance.outcome == 'success' && steps.package.outcome == 'success' }}
+    - name: Run every original installed-demo assertion while omitting only disputed resource cell
+      id: installed_demo
+      timeout-minutes: 14
+      run: |
+        set -euo pipefail
+        picshot_demo_prefix=$(cat dist/experimental-installer227/installed-demo-prefix.sh)
+        python3 scripts/run-bounded-command.py --timeout-seconds 780 --log dist/experimental-installed-demo.log --report dist/experimental-installed-demo.json -- bash -c "$picshot_demo_prefix" scripts/live-scroll-installed.sh "$PWD/dist/PicShot-0.22.0-macos-arm64.zip" "$PWD/dist/evidence/experimental-installed" "$PICSHOT_EXPERIMENT_SOURCE"
+      if: ${{ !cancelled() && steps.provenance.outcome == 'success' && steps.owned_target.outcome == 'success' &&
+        steps.zip_identity.outcome == 'success' }}
+    - name: Require exact reference output ordinary text reversal and axis movement on new ZIP
+      id: demo_receipt
+      timeout-minutes: 2
+      run: |
+        python3 - <<'PYTHON'
+        import hashlib,json,os
+        from pathlib import Path
+
+        def need(value,message):
+            if not value:raise ValueError(message)
+        root=Path('dist/experimental-installer227');evidence=Path('dist/evidence/experimental-installed')
+        source=json.loads((root/'source-identity.json').read_text());package=json.loads((root/'zip-package-identity.json').read_text())
+        installed=json.loads((evidence/'package-identity.json').read_text());demo=json.loads((evidence/'demo/demo.json').read_text())
+        need(installed['archiveSHA256']==package['archiveSHA256'],'Demo did not use this experimental ZIP')
+        need(installed['sourceCommit']==source['sourceCommit'] and str(installed['build'])==os.environ['GITHUB_RUN_NUMBER'],'Demo identity differs')
+        need(demo['status']=='passed' and demo['installerAcceptance'] is False,'Original native demo failed or promoted acceptance')
+        need(demo['privateUserContent'] is False and demo['permissionRequested'] is False and demo['globalInputPosted'] is False,'Demo side effect boundary changed')
+        comparisons={}
+        for name in ('illustratedCase','ordinaryTextCase','movementCase'):
+            case=demo[name];comparison=case['referenceComparison' if name=='movementCase' else 'nativeReferenceComparison']
+            need(comparison['exactEquality'] is True and comparison['meanAbsoluteRGBAError']==0 and comparison['fractionOfChannelsDifferingByMoreThan8']==0,'Output is not exactly equal to independent reference: '+name)
+            comparisons[name]=comparison
+        need(demo['ordinaryTextCase']['addedAlignmentMarkers'] is False,'Ordinary-text case acquired artificial markers')
+        need(demo['illustratedCase']['acceptedReverseObservations']>=2 and demo['illustratedCase']['extendedAfterReversal'] is True,'Reversal and extension incomplete')
+        move=demo['movementCase']
+        need(move['drag']['crossAxisUnchanged'] is True and move['drag']['sizeUnchanged'] is True and move['drag']['alongAxisDelta']==48,'Axis movement failed')
+        need(move['moveAppliedThroughReturn'] is True and move['actualSourcePixelsChanged'] is True and move['matchedMoveDisplacement']==48,'Movement did not update source and resume')
+        need(not (evidence/'resource').exists(),'Disputed resource cell must not run')
+        record=dict(status='passed',distribution='user-opted-experimental',userOptedExperimentalDistribution=True,
+            sourceCommit=source['sourceCommit'],sourceTree=source['sourceTree'],buildVersion=os.environ['GITHUB_RUN_NUMBER'],
+            archiveSHA256=package['archiveSHA256'],installerAcceptance=False,fullMemoryQualification=False,testingPackageEligible=False,
+            originalSelectedAssertionsPreserved=True,exactReferenceOutputs=comparisons,
+            ordinaryText=True,reversalThenExtension=True,axisMovementAndResume=True,
+            actualOwnedInstalledLaunch=True,realScreenCaptureAcceptance=False,
+            observedRealStreamStatus=demo['realStream']['status'],observedRealScreenCaptureValidated=demo['realScreenCaptureValidated'],
+            newBuildScope='Targeted rebuilt ZIP only; broad native/model/installed evidence is from original228/229 runs',
+            stable214Unchanged=True,disputedResourceCellRerun=False)
+        (root/'targeted-demo-receipt.json').write_text(json.dumps(record,indent=2)+'\n')
+        PYTHON
+      if: ${{ !cancelled() && steps.installed_demo.outcome == 'success' && steps.zip_identity.outcome == 'success'
+        }}
+    - name: Verify immutable product and prepare distinctly named experimental ZIP
+      id: delivery_gate
+      timeout-minutes: 2
+      run: |
+        python3 - <<'PYTHON'
+        import hashlib,json,os,shutil,subprocess
+        from pathlib import Path
+
+        def need(value,message):
+            if not value:raise ValueError(message)
+        def sha(path):return hashlib.sha256(path.read_bytes()).hexdigest()
+        root=Path('dist/experimental-installer227')
+        source=json.loads((root/'source-identity.json').read_text());package=json.loads((root/'zip-package-identity.json').read_text())
+        demo=json.loads((root/'targeted-demo-receipt.json').read_text())
+        need(subprocess.check_output(['git','rev-parse','HEAD','HEAD^{tree}'],text=True,timeout=10).splitlines()==[source['sourceCommit'],source['sourceTree']],'Product identity changed')
+        need(not subprocess.check_output(['git','status','--porcelain','--untracked-files=no'],timeout=10).strip(),'Product source no longer clean')
+        need(sha(root/'experimental-workflow.yml')==source['workflowSHA256'],'Archived workflow changed')
+        need(sha(root/'installed-demo-prefix.sh')==source['selectedPrefixSHA256'],'Selected original script prefix changed')
+        for path,expected in source['originalScriptSHA256'].items():need(sha(Path(path))==expected,'Original script changed')
+        archive=Path(package['archivePath']);need(sha(archive)==package['archiveSHA256'],'ZIP changed after actual installed verification')
+        need(demo['status']=='passed' and demo['archiveSHA256']==package['archiveSHA256'],'Targeted gate incomplete')
+        output=Path('dist/experimental-delivery');output.mkdir(parents=True,exist_ok=True)
+        filename='PicShot-EXPERIMENTAL-0.22.0-build'+os.environ['GITHUB_RUN_NUMBER']+'-macos-arm64.zip'
+        destination=output/filename
+        shutil.copyfile(archive,destination)
+        need(sha(destination)==package['archiveSHA256'] and destination.stat().st_size<30*1024*1024,'Delivery ZIP copy differs or exceeds bound')
+        receipt=dict(status='ready-for-user-opted-experimental-distribution',distribution='user-opted-experimental',
+            userOptedExperimentalDistribution=True,sourceCommit=source['sourceCommit'],sourceTree=source['sourceTree'],
+            workflowCommit=source['workflowCommit'],workflowRunID=source['workflowRunID'],workflowRunAttempt=source['workflowRunAttempt'],
+            version='0.22.0',buildVersion=os.environ['GITHUB_RUN_NUMBER'],architecture='arm64',file=filename,
+            bytes=destination.stat().st_size,sha256=package['archiveSHA256'],installerAcceptance=False,
+            fullMemoryQualification=False,testingPackageEligible=False,stable214Unchanged=True,
+            resourceFailurePreserved=source['originalMemoryFailure'],realScreenCaptureAcceptance=False,
+            adHocSigned=True,notarized=False,minimumMacOS='14.0',sharedPreferencesAndHistoryWithStable=True,
+            dmgPublished=False,trackedSourceClean=True,runtimeOverlayApplied=False)
+        (root/'experimental-delivery.json').write_text(json.dumps(receipt,indent=2)+'\n')
+        (output/'experimental-delivery.json').write_text(json.dumps(receipt,indent=2)+'\n')
+        with open(os.environ['GITHUB_OUTPUT'],'a') as target:target.write('zip='+str(destination)+'\n')
+        PYTHON
+      if: ${{ !cancelled() && steps.provenance.outcome == 'success' && steps.zip_identity.outcome == 'success' &&
+        steps.demo_receipt.outcome == 'success' }}
+    - name: Preserve separate bounded source and targeted demo evidence
+      id: evidence_archives
+      if: always()
+      timeout-minutes: 3
+      run: |
+        python3 - <<'PYTHON'
+        import hashlib, json, os, zipfile
+        from pathlib import Path
+        root = Path('dist/experimental-installer227')
+        root.mkdir(parents=True, exist_ok=True)
+        target = Path('dist/experimental-installer227-artifacts'); target.mkdir(parents=True, exist_ok=True)
+        groups = {'records': ['dist/experimental-installer227/', 'dist/native-dependencies-preflight.log', 'dist/native-dependencies-preflight-report.json', 'dist/package.log', 'dist/package-report.json', 'dist/experimental-owned-target.log', 'dist/experimental-owned-target.json', 'dist/experimental-installed-demo.log', 'dist/experimental-installed-demo.json'], 'demo': ['dist/experimental-installer227/source-identity.json', 'dist/experimental-installer227/zip-package-identity.json', 'dist/experimental-installer227/targeted-demo-receipt.json', 'dist/evidence/experimental-installed/']}
+        budget = 31 * 1024 * 1024
+        records = {}
+        for name, inputs in groups.items():
+            archive = target/(name+'.zip')
+            record = dict(status='not-uploadable', inputs=inputs, archiveBudgetBytes=budget,
+                maxInputBytes=256*1024*1024, maxFileCount=4096, rawReportsModified=False)
+            records[name] = record
+            try:
+                candidates = []
+                for entry in inputs:
+                    path = Path(entry)
+                    if path.is_symlink(): raise ValueError('Refuse symlink evidence root: '+str(path))
+                    candidates.extend([path] if path.is_file() else path.rglob('*'))
+                if any(file.is_symlink() or any(part.lower().endswith(('.app', '.mlmodelc', '.mlpackage'))
+                        for part in file.parts) for file in candidates):
+                    raise ValueError('Refuse symlink, application, or compiled model evidence entry')
+                files = sorted({file for file in candidates if not file.is_dir()})
+                if not files or (name == 'demo' and not any(str(file).startswith('dist/evidence/experimental-installed/') for file in files)):
+                    raise ValueError('No stage evidence files were produced')
+                if len(files) > record['maxFileCount']: raise ValueError('Evidence file-count bound exceeded')
+                total = 0
+                for file in files:
+                    if (file.is_symlink() or not file.is_file()
+                            or not file.resolve().is_relative_to(Path('dist').resolve())
+                            or any(part.lower().endswith(('.app', '.mlmodelc', '.mlpackage')) for part in file.parts)
+                            or file.suffix.lower() in {'.dmg', '.zip', '.onnx', '.mlmodel', '.bin', '.weights', '.safetensors', '.pt', '.pth', '.ckpt', '.tflite', '.pb'}
+                            or file.name.startswith('PicShot-')):
+                        raise ValueError('Refuse nonregular, escaped, or installer evidence input: '+str(file))
+                    total += file.stat().st_size
+                record.update(fileCount=len(files), inputBytes=total)
+                if total > record['maxInputBytes']: raise ValueError('Evidence input-byte bound exceeded')
+                with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as output:
+                    for file in files:
+                        output.write(file, file.as_posix())
+                        if output.fp.tell() >= budget: raise ValueError('Compressed evidence exceeds31MiB')
+                record['archiveBytes'] = archive.stat().st_size
+                if record['archiveBytes'] >= budget: raise ValueError('Final evidence archive exceeds31MiB')
+                record.update(status='ready', archive=str(archive), archiveSHA256=hashlib.sha256(archive.read_bytes()).hexdigest())
+            except Exception as error:
+                record['error'] = str(error)
+                archive.unlink(missing_ok=True)
+            with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+                output.write(name+'='+str(record['status'] == 'ready').lower()+'\n')
+        report = dict(distribution='user-opted-experimental', evidenceOnly=True, installerAcceptance=False, fullMemoryQualification=False,
+            testingPackageEligible=False, sourceCommit=os.environ['PICSHOT_EXPERIMENT_SOURCE'],
+            workflowRunID=os.environ['GITHUB_RUN_ID'], workflowRunAttempt=os.environ['GITHUB_RUN_ATTEMPT'],
+            archiveBudgetBytes=budget, rawEvidencePreservedOnRunner=True, archives=records)
+        (root/'evidence-archives.json').write_text(json.dumps(report, indent=2)+'\n')
+        if any(record['status'] != 'ready' for record in records.values()):
+            raise SystemExit('Some diagnostic evidence is absent or oversized; see evidence-archives.json')
+        PYTHON
+    - name: Require all targeted rebuilt ZIP gates while preserving failed qualification
+      id: outcomes
+      timeout-minutes: 2
+      run: |
+        python3 - <<'PYTHON'
+        import json,os
+        from pathlib import Path
+        root=Path('dist/experimental-installer227');root.mkdir(parents=True,exist_ok=True)
+        observed=json.loads(os.environ['PICSHOT_EXPERIMENT_STEPS']);required=json.loads(os.environ['PICSHOT_EXPERIMENT_REQUIRED'])
+        outcomes={name:observed.get(name,{}).get('outcome','not-run') for name in required}
+        ready=all(value=='success' for value in outcomes.values())
+        record=dict(status='ready-for-user-opted-experimental-distribution' if ready else 'experimental-checks-incomplete-or-failed',
+            distribution='user-opted-experimental',userOptedExperimentalDistribution=True,
+            installerAcceptance=False,fullMemoryQualification=False,testingPackageEligible=False,
+            stable214Unchanged=True,disputedResourceCellRerun=False,sourceCommit=os.environ['PICSHOT_EXPERIMENT_SOURCE'],
+            sourceTree=os.environ['PICSHOT_EXPERIMENT_TREE'],workflowCommit=os.environ['PICSHOT_EXPERIMENT_WORKFLOW_SHA'],
+            buildVersion=os.environ['GITHUB_RUN_NUMBER'],workflowRunID=os.environ['GITHUB_RUN_ID'],stageOutcomes=outcomes,
+            unrunStages=[name for name,value in outcomes.items() if value in ('skipped','not-run')],
+            failedStages=[name for name,value in outcomes.items() if value in ('failure','cancelled')],
+            actualInstallerUploadPermitted=ready,actualInstallerUploadConfirmed=False)
+        (root/'outcomes.json').write_text(json.dumps(record,indent=2)+'\n')
+        with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as output:
+            output.write('User-opted experimental rebuild of exact227; stable214 unchanged.\n\n')
+            output.write('Original227 memory failure remains: installerAcceptance=false; fullMemoryQualification=false; testingPackageEligible=false.\n\n')
+            output.write('New build identity and targeted installed ZIP demo only. Earlier broad evidence remains scoped to228/229.\n\n')
+            for name,value in outcomes.items():output.write(name+': '+value+'\n\n')
+        if not ready:raise SystemExit('One or more required experimental ZIP checks failed or did not run')
+        PYTHON
+      if: always()
+      env:
+        PICSHOT_EXPERIMENT_STEPS: ${{ toJSON(steps) }}
+        PICSHOT_EXPERIMENT_REQUIRED: '["checkout_source227","provenance","codec_dependencies","package","owned_target","zip_identity","installed_demo","demo_receipt","delivery_gate","evidence_archives"]'
+    - name: Upload bounded experimental records evidence
+      if: ${{ always() && steps.evidence_archives.outputs.records == 'true' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      timeout-minutes: 2
+      with:
+        name: PicShot-EXPERIMENTAL-Evidence-records-build${{ github.run_number }}-${{ github.run_id }}-${{ github.run_attempt
+          }}
+        path: dist/experimental-installer227-artifacts/records.zip
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 0
+    - name: Upload bounded experimental demo evidence
+      if: ${{ always() && steps.evidence_archives.outputs.demo == 'true' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      timeout-minutes: 2
+      with:
+        name: PicShot-EXPERIMENTAL-Evidence-demo-build${{ github.run_number }}-${{ github.run_id }}-${{ github.run_attempt
+          }}
+        path: dist/experimental-installer227-artifacts/demo.zip
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 0
+    - name: Upload actual opted-in experimental ZIP after all targeted gates
+      if: ${{ !cancelled() && steps.outcomes.outcome == 'success' && steps.delivery_gate.outcome == 'success' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      timeout-minutes: 3
+      with:
+        name: PicShot-EXPERIMENTAL-0.22.0-build${{ github.run_number }}-macos-arm64-${{ github.run_id }}-${{ github.run_attempt
+          }}
+        path: |
+          ${{ steps.delivery_gate.outputs.zip }}
+          dist/experimental-delivery/experimental-delivery.json
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 0
+    - name: Preserve small experimental outcome receipts even on failure
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      timeout-minutes: 2
+      with:
+        name: PicShot-EXPERIMENTAL-Outcomes-build${{ github.run_number }}-${{ github.run_id }}-${{ github.run_attempt
+          }}
+        path: |
+          dist/experimental-installer227/source-identity.json
+          dist/experimental-installer227/experimental-delivery.json
+          dist/experimental-installer227/outcomes.json
+          dist/experimental-installer227/evidence-archives.json
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 6
