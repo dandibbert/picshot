@@ -206,7 +206,11 @@ enum LiveScrollResourceFixture {
             context.report["remainingSpoolEntries"] = remaining
             try require(remaining.isEmpty, "Owned live-scroll spool did not clean up")
             // rmdir only: never recursively hide a leaked session directory.
-            let removed = spool.withUnsafeFileSystemRepresentation { $0.map { rmdir($0) == 0 } ?? false }
+            var removed = false
+            spool.withUnsafeFileSystemRepresentation { path -> Void in
+                guard let path else { return }
+                removed = Darwin.rmdir(path) == 0
+            }
             context.report["ownedSpoolParentRemoved"] = removed
             try require(removed && context.owners.released && allocations.liveImages == 0 && allocations.liveBytes == 0
                 && allocations.allocatedImages == allocations.releasedImages,
