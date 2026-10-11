@@ -11,6 +11,116 @@ concurrency:
   group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') && 'pin-ui-diagnostic' || contains(github.event.head_commit.message || '', '[shortcut-isolation]') && 'shortcut-isolation' || contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && 'intel154-fresh-diagnostic' || contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && 'native-timeout-diagnostic' || contains(github.event.head_commit.message || '', '[installed-diagnostic]') && 'installed-diagnostic' || contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-product-resource' || contains(github.event.head_commit.message || '', '[seed-render-crop]') && 'seed-render-crop' || contains(github.event.head_commit.message || '', '[effect-context]') && 'effect-context' || contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && 'renderer-scope-controls' || contains(github.event.head_commit.message || '', '[renderer-storage]') && 'renderer-storage' || contains(github.event.head_commit.message || '', '[drawing-pair]') && 'drawing-pair' || contains(github.event.head_commit.message || '', '[editable-observation]') && 'editable-observation' || contains(github.event.head_commit.message || '', '[callout-retirement]') && 'callout-retirement' || contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-documents' || contains(github.event.head_commit.message || '', '[multiwindow-memory]') && 'multiwindow-memory' || contains(github.event.head_commit.message || '', '[recording-wait]') && 'recording-wait' || contains(github.event.head_commit.message || '', '[manual-hash]') && 'manual-hash' || contains(github.event.head_commit.message || '', '[scroll-memory]') && 'scroll-memory' || contains(github.event.head_commit.message || '', '[decode-exit-latch]') && 'decode-exit-latch' || contains(github.event.head_commit.message || '', '[decode-timing-v3]') && 'decode-timing-v3' || contains(github.event.head_commit.message || '', '[decode-large]') && 'decode-large' || contains(github.event.head_commit.message || '', '[pin-workflows]') && 'pins-010' || contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
   cancel-in-progress: ${{ !contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') && !contains(github.event.head_commit.message || '', '[shortcut-isolation]') && !contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && !(contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]')) && !contains(github.event.head_commit.message || '', '[seed-render-crop]') && !contains(github.event.head_commit.message || '', '[effect-context]') && !contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && !contains(github.event.head_commit.message || '', '[renderer-storage]') && !contains(github.event.head_commit.message || '', '[drawing-pair]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
 jobs:
+  recover-214-qa:
+    if: ${{ contains(github.event.head_commit.message || '', '[recover-214-qa]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    steps:
+      - name: Verify immutable build 214 evidence and preserve its exact archive bytes
+        timeout-minutes: 3
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PYRECOVERY'
+          import hashlib, json, os, resource, subprocess
+          from pathlib import Path
+          repository = 'dandibbert/picshot'
+          artifact_id, run_id = 11687739525, 38098751899
+          source = 'f215a8203b71b0ab8ffee02128003450efc7ce01'
+          size = 34847369
+          digest = '3eea451d587d5b644991d84940d1f94651b4cc4528a83e1802b8205fb5cc7af8'
+          api = f'repos/{repository}/actions/artifacts/{artifact_id}'
+          metadata = json.loads(subprocess.check_output(['gh', 'api', api], timeout=30))
+          origin = metadata.get('workflow_run', {})
+          if not (metadata.get('id') == artifact_id and metadata.get('size_in_bytes') == size
+                  and metadata.get('expired') is False and origin.get('id') == run_id
+                  and origin.get('head_sha') == source and metadata.get('digest') == 'sha256:' + digest):
+              raise SystemExit('Original artifact identity mismatch')
+          root = Path('recovered214'); root.mkdir()
+          archive = root/'original-QA.zip'
+          def cap_download():
+              resource.setrlimit(resource.RLIMIT_FSIZE, (size + 4096, size + 4096))
+          with archive.open('xb') as output:
+              subprocess.run(['gh', 'api', api + '/zip'], stdout=output, check=True,
+                             timeout=120, preexec_fn=cap_download)
+          if archive.stat().st_size != size or hashlib.file_digest(archive.open('rb'), 'sha256').hexdigest() != digest:
+              raise SystemExit('Original archive bytes mismatch')
+          part_size = 8 * 1024 * 1024
+          parts = []
+          with archive.open('rb') as original:
+              for index in range(5):
+                  data = original.read(part_size)
+                  if not data:
+                      break
+                  part = root/f'part-{index:02d}.bin'; part.write_bytes(data)
+                  parts.append({'name': part.name, 'index': index, 'offset': index * part_size,
+                                'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()})
+              if original.read(1):
+                  raise SystemExit('Unexpected trailing original bytes')
+          if len(parts) != 5 or sum(p['bytes'] for p in parts) != size:
+              raise SystemExit('Incomplete split')
+          record = {'schemaVersion': 1, 'operation': 'byte-preserving-artifact-transport-only',
+                    'repository': repository, 'sourceCommit': source, 'sourceRun': run_id,
+                    'sourceArtifact': artifact_id, 'originalArchiveBytes': size,
+                    'originalArchiveSHA256': digest, 'parts': parts,
+                    'recoveryCommit': os.environ['GITHUB_SHA'], 'recoveryRun': os.environ['GITHUB_RUN_ID'],
+                    'productOrTestsExecuted': False, 'acceptanceClaim': False}
+          (root/'manifest.json').write_text(json.dumps(record, indent=2) + '\n')
+          print(json.dumps(record, sort_keys=True))
+          PYRECOVERY
+      - name: Preserve original QA part 00
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-QA214-Original-Part-00
+          path: |
+            recovered214/part-00.bin
+            recovered214/manifest.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+      - name: Preserve original QA part 01
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-QA214-Original-Part-01
+          path: |
+            recovered214/part-01.bin
+            recovered214/manifest.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+      - name: Preserve original QA part 02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-QA214-Original-Part-02
+          path: |
+            recovered214/part-02.bin
+            recovered214/manifest.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+      - name: Preserve original QA part 03
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-QA214-Original-Part-03
+          path: |
+            recovered214/part-03.bin
+            recovered214/manifest.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+      - name: Preserve original QA part 04
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-QA214-Original-Part-04
+          path: |
+            recovered214/part-04.bin
+            recovered214/manifest.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
   runner-check:
     if: ${{ contains(github.event.head_commit.message || '', '[runner-only]') }}
     strategy:
@@ -268,7 +378,7 @@ jobs:
           retention-days: 14
 
   build:
-    if: ${{ !contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') && !contains(github.event.head_commit.message || '', '[shortcut-isolation]') && !contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') && !contains(github.event.head_commit.message || '', '[codec-attribution]') && !contains(github.event.head_commit.message || '', '[codec-staging]') && !contains(github.event.head_commit.message || '', '[codec-avif-confirmation]') && !contains(github.event.head_commit.message || '', '[runner-only]') && !contains(github.event.head_commit.message || '', '[scroll-memory]') && !contains(github.event.head_commit.message || '', '[manual-hash]') && !contains(github.event.head_commit.message || '', '[recording-wait]') && !contains(github.event.head_commit.message || '', '[multiwindow-memory]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-documents]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
+    if: ${{ !contains(github.event.head_commit.message || '', '[recover-214-qa]') && !contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') && !contains(github.event.head_commit.message || '', '[shortcut-isolation]') && !contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') && !contains(github.event.head_commit.message || '', '[codec-attribution]') && !contains(github.event.head_commit.message || '', '[codec-staging]') && !contains(github.event.head_commit.message || '', '[codec-avif-confirmation]') && !contains(github.event.head_commit.message || '', '[runner-only]') && !contains(github.event.head_commit.message || '', '[scroll-memory]') && !contains(github.event.head_commit.message || '', '[manual-hash]') && !contains(github.event.head_commit.message || '', '[recording-wait]') && !contains(github.event.head_commit.message || '', '[multiwindow-memory]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-documents]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
     strategy:
       fail-fast: false
       matrix:
