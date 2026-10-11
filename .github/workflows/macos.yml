@@ -1,3 +1,4 @@
+# Full pin-management qualification resumes after the bounded preview-layout check.
 name: Native macOS build and verification
 on:
   push:
