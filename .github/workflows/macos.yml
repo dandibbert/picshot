@@ -1,4 +1,4 @@
-# Full pin-management qualification resumes after the bounded preview-layout check.
+# Full continuous-scrolling qualification retains the accepted feature and resource gates.
 name: Native macOS build and verification
 on:
   push:
