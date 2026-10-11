@@ -559,6 +559,31 @@ jobs:
             dist/test-build-report.json
           if-no-files-found: ignore
           retention-days: 14
+      - name: Verify existing live scrolling pixels ownership cancellation and storage before resource qualification
+        timeout-minutes: 8
+        run: |
+          python3 scripts/run-bounded-command.py --timeout-seconds 420 --log dist/live-scroll-tests.log --report dist/live-scroll-tests.json -- swift test --skip-build --filter LiveScroll
+          python3 - <<'PY'
+          import importlib.util,json
+          from pathlib import Path
+          spec=importlib.util.spec_from_file_location('native','scripts/native-test-shards.py')
+          native=importlib.util.module_from_spec(spec);spec.loader.exec_module(native)
+          expected=json.loads(Path('scripts/live-scroll-additive-tests.json').read_text())
+          passed,skipped=native.case_results(Path('dist/live-scroll-tests.log').read_text(),expected)
+          native.need(not skipped,'Live scrolling cases cannot be skipped')
+          Path('dist/live-scroll-test-inventory.json').write_text(json.dumps({'passed':passed,'skipped':skipped,'count':len(expected)},indent=2)+'\n')
+          PY
+      - name: Preserve existing live scrolling native results before installed work
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Early-Live-Scroll-Tests-${{ matrix.arch }}-${{ github.sha }}
+          path: |
+            dist/live-scroll-tests.log
+            dist/live-scroll-tests.json
+            dist/live-scroll-test-inventory.json
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Package signed native app for early pixel review
         run: |
           mkdir -p dist

@@ -303,15 +303,19 @@ actor LiveScrollDocument {
             while firstRow < strip.height {
                 try check(generation)
                 let rows = min(rowsPerChunk, strip.height - firstRow), count = rows * rowBytes
-                guard let data = try handle.read(upToCount: count), data.count == count else { throw Failure.missingStrip }
-                data.withUnsafeBytes { source in
-                    guard let base = source.baseAddress else { return }
-                    if axis == .vertical {
-                        destination.advanced(by: (outputStart + firstRow) * current.width * 4).copyMemory(from: base, byteCount: count)
-                    } else {
-                        for row in 0..<rows {
-                            destination.advanced(by: ((firstRow + row) * current.width + outputStart) * 4)
-                                .copyMemory(from: base.advanced(by: row * rowBytes), byteCount: rowBytes)
+                // Copy every byte before draining temporary Foundation read objects.
+                // Neither Data nor its borrowed pointer escapes this bounded chunk.
+                try autoreleasepool {
+                    guard let data = try handle.read(upToCount: count), data.count == count else { throw Failure.missingStrip }
+                    data.withUnsafeBytes { source in
+                        guard let base = source.baseAddress else { return }
+                        if axis == .vertical {
+                            destination.advanced(by: (outputStart + firstRow) * current.width * 4).copyMemory(from: base, byteCount: count)
+                        } else {
+                            for row in 0..<rows {
+                                destination.advanced(by: ((firstRow + row) * current.width + outputStart) * 4)
+                                    .copyMemory(from: base.advanced(by: row * rowBytes), byteCount: rowBytes)
+                            }
                         }
                     }
                 }
