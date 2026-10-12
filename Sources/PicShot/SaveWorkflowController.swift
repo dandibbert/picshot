@@ -207,7 +207,16 @@ final class SaveWorkflowController: NSWindowController, NSWindowDelegate {
                         let outcome = self.copyAfterSaving ? SaveWorkflowService.copySaved(saved, cancellation: self.token, copier: self.copier) : saved
                         self.result = SaveWorkflowSummary(outcome); self.savedForCopy = outcome.clipboardOutcome == .failed ? outcome : nil
                         self.deadline?.cancel(); self.deadline = nil
-                        if self.state != .closed { self.showResult() }
+                        if self.state != .closed {
+                            self.showResult()
+                            // Successful recipient callbacks may order out their
+                            // capture parent immediately. Keep final feedback
+                            // independent before dispatch, without showing quiet
+                            // jobs or moving retryable Copy feedback behind its parent.
+                            if outcome.clipboardOutcome != .failed && outcome.clipboardOutcome != .cancelledAfterSave {
+                                self.detachFromParent()
+                            }
+                        }
                         self.callback?(outcome); self.callback = nil
                         if self.quietAutomatic && outcome.clipboardOutcome != .failed { self.cancel() }
                         return

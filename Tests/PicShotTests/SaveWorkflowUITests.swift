@@ -188,8 +188,23 @@ final class SaveWorkflowUITests: XCTestCase {
         for component in [String(repeating: "long-output-", count: 8), String(repeating: "截图资料-é-", count: 6)] {
             try SaveWorkflowSettings(baseURL: root, relativeFolderTemplate: component + "/" + component,
                 filenameTemplate: component + "-{counter}").save(to: defaults)
-            let job = try XCTUnwrap(presenter.save(image: image))
+            let parent = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 240, height: 100),
+                styleMask: [.titled], backing: .buffered, defer: false)
+            parent.isReleasedWhenClosed = false; parent.orderFront(nil)
+            defer { parent.close() }
+            weak var observedJob: SaveWorkflowController?
+            var callbacks = 0
+            let job = try XCTUnwrap(presenter.save(image: image, from: parent, onSaved: { _ in
+                callbacks += 1
+                XCTAssertNil(observedJob?.window?.parent, "Successful feedback must detach before recipient retirement")
+                // Match the real capture HUD: orderOut precedes willClose.
+                parent.orderOut(nil); parent.close()
+                XCTAssertTrue(observedJob?.window?.isVisible == true, "Parent retirement must not hide the saved outcome")
+            }))
+            observedJob = job
             try await SaveWorkflowUIPreviewFixture.until({ job.state == .completed || job.state == .failed }, "Long-path save did not finish")
+            XCTAssertEqual(callbacks, 1); XCTAssertNil(job.window?.parent)
+            XCTAssertTrue(job.window?.isVisible == true)
             let saved = try XCTUnwrap(job.result)
             XCTAssertEqual(saved.clipboardOutcome, .notRequested)
             XCTAssertEqual(job.statusLabel.stringValue, "文件已安全保存")
@@ -218,8 +233,14 @@ final class SaveWorkflowUITests: XCTestCase {
             guard copyCalls > 1 else { return false }
             board.clearContents(); return board.setData(bytes, forType: .init(type))
         }
-        let job = try XCTUnwrap(presenter.save(image: SaveWorkflowUIPreviewFixture.sourceImage(width: 48, height: 32), copy: true))
+        let parent = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 240, height: 100),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        parent.isReleasedWhenClosed = false; parent.level = .floating; parent.orderFront(nil)
+        defer { parent.close() }
+        let job = try XCTUnwrap(presenter.save(image: SaveWorkflowUIPreviewFixture.sourceImage(width: 48, height: 32), copy: true, from: parent))
         try await SaveWorkflowUIPreviewFixture.until({ job.state == .completed || job.state == .failed }, "Copy-failure save did not finish")
+        XCTAssertTrue(job.window?.parent === parent)
+        XCTAssertGreaterThan(try XCTUnwrap(job.window).level.rawValue, parent.level.rawValue)
         let saved = try XCTUnwrap(job.result), bytes = try Data(contentsOf: saved.savedURL)
         XCTAssertEqual(saved.clipboardOutcome, .failed); XCTAssertEqual(copyCalls, 1)
         XCTAssertEqual(job.statusLabel.stringValue, "复制失败，已保存的文件仍然保留，可重试复制")
@@ -229,6 +250,8 @@ final class SaveWorkflowUITests: XCTestCase {
         try assertFeedbackAtBothWidths(job, detailIsLong: true)
         job.retryCopyButton.performClick(nil)
         XCTAssertEqual(copyCalls, 2); XCTAssertEqual(job.result?.clipboardOutcome, .copied)
+        XCTAssertTrue(job.window?.parent === parent, "Retry must preserve its existing presentation lifecycle")
+        XCTAssertGreaterThan(try XCTUnwrap(job.window).level.rawValue, parent.level.rawValue)
         XCTAssertEqual(job.statusLabel.stringValue, "已保存并复制同一份编码文件内容")
         XCTAssertEqual(job.detailLabel.stringValue, saved.savedURL.path)
         XCTAssertTrue(job.retryCopyButton.isHidden); XCTAssertEqual(job.retainedClipboardBytes, 0)
@@ -248,8 +271,13 @@ final class SaveWorkflowUITests: XCTestCase {
         defer { presenter.cancelAll() }
         var copyCalls = 0
         presenter.clipboardCopier = { _, _ in copyCalls += 1; return true }
-        let job = try XCTUnwrap(presenter.save(image: SaveWorkflowUIPreviewFixture.sourceImage(width: 48, height: 32), copy: true))
+        let parent = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 240, height: 100),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        parent.isReleasedWhenClosed = false; parent.orderFront(nil)
+        defer { parent.close() }
+        let job = try XCTUnwrap(presenter.save(image: SaveWorkflowUIPreviewFixture.sourceImage(width: 48, height: 32), copy: true, from: parent))
         try await SaveWorkflowUIPreviewFixture.until({ job.state == .failed }, "Missing save directory did not fail")
+        XCTAssertTrue(job.window?.parent === parent, "Failure remains attached to the active capture")
         XCTAssertNil(job.result); XCTAssertEqual(copyCalls, 0)
         XCTAssertEqual(job.statusLabel.stringValue, "保存失败；原图仍然保留，可关闭后重试。")
         XCTAssertEqual(job.statusLabel.textColor, .systemRed)
@@ -323,6 +351,9 @@ final class SaveWorkflowUITests: XCTestCase {
                     NSRect(x: 0, y: 0, width: job.statusLabel.bounds.width, height: 1_000))
                 XCTAssertGreaterThanOrEqual(job.statusLabel.bounds.height + 0.5, needed.height, "Complete outcome must fit", file: file, line: line)
                 XCTAssertEqual(job.noteLabel.identifier?.rawValue, "saveWorkflow.note", file: file, line: line)
+                XCTAssertTrue(window.isVisible, "Outcome/progress must remain visible", file: file, line: line)
+                XCTAssertTrue(job.noteLabel.isDescendant(of: content), file: file, line: line)
+                XCTAssertFalse(job.noteLabel.isHiddenOrHasHiddenAncestor, file: file, line: line)
                 let controls: [NSControl] = [job.statusLabel, job.detailLabel, job.noteLabel, job.retryCopyButton, job.closeButton]
                     .filter { !$0.isHiddenOrHasHiddenAncestor }
                 let frames = controls.map { $0.convert($0.bounds, to: content) }
