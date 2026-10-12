@@ -146,6 +146,7 @@ import PicShotCore
 
         nameField.identifier = NSUserInterfaceItemIdentifier("capture-chain-name")
         nameField.placeholderString = "截图链名称，最多 64 个字符"; nameField.delegate = self
+        nameField.cell?.isScrollable = true
         nameField.setAccessibilityLabel("截图链名称")
         nameField.setContentHuggingPriority(.defaultLow, for: .horizontal)
         nameField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -153,10 +154,11 @@ import PicShotCore
         sourcePicker.setAccessibilityLabel("截图来源")
         sourcePicker.setContentHuggingPriority(.defaultLow, for: .horizontal)
         sourcePicker.target = self; sourcePicker.action = #selector(sourceChanged)
+        sourcePicker.cell?.lineBreakMode = .byTruncatingTail
         sourcePicker.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let nameRow = row([NSTextField(labelWithString: "名称"), nameField])
         let sourceRow = row([NSTextField(labelWithString: "来源"), sourcePicker])
-        outputs.orientation = .vertical; outputs.alignment = .leading; outputs.spacing = 4
+        outputs.orientation = .vertical; outputs.alignment = .leading; outputs.spacing = 16
         outputs.identifier = NSUserInterfaceItemIdentifier("capture-chain-outputs")
 
         configure(createButton, "create", #selector(createDraft))
@@ -188,11 +190,16 @@ import PicShotCore
         // ancestor. The same width relationship is valid once both rows belong
         // to managerContent; activating it earlier raises NSGenericException.
         nameField.widthAnchor.constraint(equalTo: sourcePicker.widthAnchor).isActive = true
+        nameField.widthAnchor.constraint(greaterThanOrEqualToConstant: 320).isActive = true
+        // Reserve the label, gap and native alignment padding even when a long
+        // definition or preset would otherwise raise the row's intrinsic width.
+        nameField.widthAnchor.constraint(lessThanOrEqualTo: managerContent.widthAnchor, constant: -64).isActive = true
         for view in [runStatus, receipts] { progressContent.addArrangedSubview(view) }
         for stack in [managerContent, progressContent] {
             stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 8
             for view in stack.arrangedSubviews { view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
         }
+        managerContent.spacing = 16
         progressContent.isHidden = true
         let actions = row([closeButton, manageButton, resultButton, NSView(), retryButton, cancelButton, runButton])
         let root = NSStackView(views: [managerContent, progressContent, NSView(), actions])
@@ -211,7 +218,7 @@ import PicShotCore
         rebuildSources(); rebuildOutputs(); renderProgress()
     }
     private func row(_ views: [NSView]) -> NSStackView {
-        let row = NSStackView(views: views); row.orientation = .horizontal; row.spacing = 12; return row
+        let row = NSStackView(views: views); row.orientation = .horizontal; row.spacing = 20; return row
     }
     private func configure(_ button: NSButton, _ id: String, _ action: Selector) {
         button.target = self; button.action = action; button.bezelStyle = .rounded
@@ -241,6 +248,7 @@ import PicShotCore
         draftID = definition?.id; nameField.stringValue = definition?.name ?? ""
         draftSource = definition?.source ?? .region; draftOutputs = definition?.outputs ?? [.quickSavePNG]
         nameField.toolTip = definition?.name
+        nameField.setAccessibilityValue(nameField.stringValue)
         rebuildSources(); rebuildOutputs(); refreshControls()
     }
     private func rebuildSources() {
@@ -259,6 +267,7 @@ import PicShotCore
             }
         } else { sourcePicker.selectItem(at: 0) }
         sourcePicker.toolTip = sourcePicker.titleOfSelectedItem
+        sourcePicker.setAccessibilityValue(sourcePicker.titleOfSelectedItem ?? "")
     }
     private func rebuildOutputs() {
         for view in outputs.arrangedSubviews { outputs.removeArrangedSubview(view); view.removeFromSuperview() }
@@ -348,12 +357,14 @@ import PicShotCore
     }
     func controlTextDidChange(_ obj: Notification) {
         guard canEdit else { return }
-        invalidateCommands(); nameField.toolTip = nameField.stringValue; refreshControls()
+        invalidateCommands(); nameField.toolTip = nameField.stringValue
+        nameField.setAccessibilityValue(nameField.stringValue); refreshControls()
     }
     @objc private func sourceChanged() {
         guard canEdit && hasDraft else { return }
         draftSource = (sourcePicker.selectedItem?.representedObject as? UUID).map(CaptureChainSource.preset) ?? .region
         invalidateCommands(); sourcePicker.toolTip = sourcePicker.titleOfSelectedItem
+        sourcePicker.setAccessibilityValue(sourcePicker.titleOfSelectedItem ?? "")
     }
     @objc private func outputChanged(_ sender: NSButton) {
         guard canEdit && hasDraft, CaptureChainOutput.allCases.indices.contains(sender.tag) else { return }

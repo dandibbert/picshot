@@ -104,8 +104,11 @@ import PicShotCore
               directory.standardizedFileURL.resolvingSymlinksInPath().path == directory.path else {
             throw CaptureChainError.unsafePath
         }
-        let values = try directory.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
-        guard values.isDirectory == true, values.isSymbolicLink != true else { throw CaptureChainError.unsafePath }
+        // A retained URL may cache resource values after the directory moves.
+        // Query the current filesystem before treating a missing manifest as an
+        // intentionally empty catalog; a missing directory must preserve index.
+        let attributes = try fileManager.attributesOfItem(atPath: directory.path)
+        guard attributes[.type] as? FileAttributeType == .typeDirectory else { throw CaptureChainError.unsafePath }
     }
 
     private func checkedManifestExists() throws -> Bool {

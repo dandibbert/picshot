@@ -135,6 +135,77 @@ def row_selection(row):
         need(identity['expected'][key] == identity['dequeued'][key], 'owned event changed: ' + key)
 
 
+def control_ancestry(controls, window_number):
+    """Recompute nearest control ancestors from independently recorded view paths.
+
+    A product control is always an independent control in this fixture. Only
+    unnamed native text descendants may nest under a button or table; class
+    names alone never exempt a row from geometry, text or overlap validation.
+    """
+    by_id, paths = {}, {}
+    public_kinds = {'NSButton': 'button', 'NSPopUpButton': 'button', 'CaptureChainRunButton': 'button',
+                    'NSTextField': 'textField', 'NSTableView': 'tableView', 'NSScroller': 'scroller'}
+    for row in controls:
+        need(type(row) is dict, 'invalid native control')
+        identifier = text(row.get('id'), 'control ID', 128)
+        need(identifier not in by_id, 'duplicate control: '+identifier)
+        by_id[identifier] = row
+        boolean(row, 'hidden', identifier)
+        kind = text(row.get('controlKind'), identifier+'.controlKind', 32)
+        need(kind in ('button', 'textField', 'tableView', 'scroller'), 'unsupported native control kind')
+        native_class = text(row.get('class'), identifier+'.class', 128)
+        if native_class in public_kinds:
+            need(kind == public_kinds[native_class], identifier+': class/kind mismatch')
+        explicit = boolean(row, 'identifierIsExplicit', identifier)
+        need(explicit == identifier.startswith('capture-chain-') and
+             (explicit or re.fullmatch(r'native-control-[0-9]+', identifier)), identifier+': forged identifier origin')
+        fields(row, dict(ownerWindowNumber=window_number, descendantOfOwnedContent=True), identifier+'.ownership')
+        path = row.get('viewPath')
+        need(type(path) is list and 1 <= len(path) <= 32, identifier+': missing/bounded view path')
+        for component in path: integer(component, identifier+'.viewPath', 0, 4095)
+        path = tuple(path)
+        need(path not in paths.values(), identifier+': duplicate native view path')
+        paths[identifier] = path
+        need('parentControlID' in row, identifier+': missing parent control identity')
+        parent = row['parentControlID']
+        need(parent is None or type(parent) is str, identifier+': invalid parent control identity')
+        ancestors = row.get('controlAncestorIDs')
+        need(type(ancestors) is list and len(ancestors) <= 32 and
+             all(type(value) is str for value in ancestors) and len(set(ancestors)) == len(ancestors),
+             identifier+': missing/duplicate/cyclic control ancestry')
+    ancestry = {}
+    for identifier, row in by_id.items():
+        path = paths[identifier]
+        ancestors = sorted((other for other in by_id if len(paths[other]) < len(path)
+                            and path[:len(paths[other])] == paths[other]),
+                           key=lambda other: len(paths[other]), reverse=True)
+        parent = ancestors[0] if ancestors else None
+        need(row['parentControlID'] == parent and row['controlAncestorIDs'] == ancestors,
+             identifier+': missing/foreign/forged control ancestry')
+        if row['identifierIsExplicit']:
+            need(parent is None, identifier+': independent product control forged as descendant')
+        if parent is not None:
+            owner = by_id[parent]
+            need(not row['identifierIsExplicit'] and row['controlKind'] == 'textField'
+                 and owner['controlKind'] in ('button', 'tableView'), identifier+': invalid native descendant role')
+            need(not owner['hidden'] or row['hidden'], identifier+': visible descendant of hidden control')
+            if owner['controlKind'] == 'button':
+                need(row.get('text') == owner.get('text'), identifier+': button title descendant content differs')
+        if row['class'] not in public_kinds:
+            need(parent is not None and row['controlKind'] == 'textField'
+                 and by_id[parent]['controlKind'] == 'button', identifier+': unowned private native control')
+        ancestry[identifier] = set(ancestors)
+    return ancestry
+
+
+def check_control_overlap(leaves, ancestry):
+    for index, (identifier, frame) in enumerate(leaves):
+        for other, previous in leaves[:index]:
+            if other in ancestry[identifier] or identifier in ancestry[other]:
+                continue
+            need(not overlap(frame, previous), identifier+'/'+other+': independent full controls overlap')
+
+
 def layout(artifact, phase):
     row = artifact.get('layout')
     fields(row, dict(passed=True, phase=phase, windowTitle='截图链', windowVisible=True, violations=[],
@@ -147,6 +218,10 @@ def layout(artifact, phase):
     need(bounds == (0, 0, artifact['width'], artifact['height']), 'PNG omits native content extent')
     controls = row.get('controls')
     need(type(controls) is list and 3 <= len(controls) <= 128, 'bounded native controls missing')
+    window_number = integer(row.get('windowNumber'), 'owned layout window', 1)
+    fields(row, dict(nativeControlCount=len(controls)), 'native control census')
+    ancestry = control_ancestry(controls, window_number)
+    all_controls = {control["id"]: control for control in controls}
     by_id, leaves = {}, []
     for control in controls:
         need(type(control) is dict, 'invalid native control')
@@ -154,8 +229,7 @@ def layout(artifact, phase):
         need(identifier not in by_id, 'duplicate control: ' + identifier)
         by_id[identifier] = control
         kind = text(control.get('class'), 'control class', 128)
-        need(kind in ('NSButton', 'NSPopUpButton', 'CaptureChainRunButton', 'NSTextField',
-                      'NSTableView', 'NSScroller'), 'unrecognized native control class: '+kind)
+        role = control['controlKind']
         hidden = boolean(control, 'hidden', identifier)
         boolean(control, 'enabled', identifier)
         in_viewport = boolean(control, 'insideScrollableViewport', identifier)
@@ -167,16 +241,27 @@ def layout(artifact, phase):
         for key in ('text', 'toolTip', 'accessibilityLabel', 'accessibilityValue'):
             text(control.get(key), identifier + '.' + key, nonempty=False)
         if hidden or not in_viewport: continue
-        if kind not in ('NSButton', 'NSPopUpButton', 'CaptureChainRunButton', 'NSTextField'): continue
+        if role not in ('button', 'textField'): continue
         fields(control, dict(fullFrameContained=True), identifier)
         need(contains(bounds, frame) and contains(screen, on_screen) and contains(window, on_screen),
              identifier + ': full frame clipped')
         need(frame[2:] == on_screen[2:], identifier + ': full native screen frame differs')
-        need(not any(overlap(frame, prior) for prior in leaves), identifier + ': full controls overlap')
-        leaves.append(frame)
-        if kind != 'NSTextField':
-            fields(control, dict(hitTest=True, titleFits=True), identifier)
-            need(frame[2]+.5 >= size[0] and frame[3]+.5 >= size[1], identifier + ': button title clipped')
+        leaves.append((identifier, frame))
+        if role == 'button':
+            fields(control, dict(hitTest=True), identifier)
+            fits = boolean(control, 'titleFits', identifier)
+            actual_fit = frame[2]+.5 >= size[0] and frame[3]+.5 >= size[1]
+            need(fits == actual_fit, identifier+': button metrics contradict title fit')
+            alternative = False
+            if identifier == 'capture-chain-source':
+                alignment = rectangle(control.get('alignmentFrame'), identifier+'.alignment')
+                need(alignment[2] >= 320 and contains(frame, alignment), identifier+': source alignment width is unusable')
+                fields(control, {'class': 'NSPopUpButton', 'selectedItemTitle': control['text']}, identifier)
+                mode = integer(control.get('titleLineBreakMode'), identifier+'.titleLineBreakMode', 0, 5)
+                alternative = (mode in (3, 4, 5) and frame[3]+.5 >= size[1]
+                    and control['toolTip'] == control['text'] == control['accessibilityValue'])
+                fields(control, dict(sourcePopupLongTitleAlternative=alternative), identifier)
+            need(fits or alternative, identifier+': button title clipped')
         elif control['text']:
             fits = boolean(control, 'textFits', identifier)
             wraps = boolean(control, 'textWraps', identifier)
@@ -187,10 +272,27 @@ def layout(artifact, phase):
             actual_fit = wrapped[1] <= frame[3]+.5 and (wraps or size[0] <= frame[2]+.5)
             need(fits == actual_fit, identifier + ': text metrics contradict fit')
             need(truncation == (line_break in (3, 4, 5) and not fits), identifier + ': truncation metrics contradict mode')
-            need(fits or (truncation and alternative and control['toolTip'] == control['text']
+            name_alternative = False
+            if identifier == 'capture-chain-name':
+                alignment = rectangle(control.get('alignmentFrame'), identifier+'.alignment')
+                need(alignment[2] >= 320 and contains(frame, alignment), identifier+': name alignment width is unusable')
+                fields(control, {'class': 'NSTextField', 'textEditable': True, 'textSelectable': True,
+                    'textScrollable': True}, identifier)
+                name_alternative = (wrapped[1] <= frame[3]+.5
+                    and control['toolTip'] == control['text'] == control['accessibilityValue'])
+                fields(control, dict(editableNameLongTextAlternative=name_alternative), identifier)
+            parent = all_controls.get(control['parentControlID'])
+            inherited_source = (parent is not None and parent['id'] == 'capture-chain-source'
+                and parent['class'] == 'NSPopUpButton' and parent.get('sourcePopupLongTitleAlternative') is True
+                and control['text'] == parent['text'] and wrapped[1] <= frame[3]+.5)
+            fields(control, dict(inheritedSourceTitleAlternative=inherited_source), identifier)
+            if parent is not None and parent['controlKind'] == 'button':
+                need(fits or inherited_source, identifier+': native button title descendant is clipped')
+            need(fits or name_alternative or inherited_source or (identifier != 'capture-chain-name' and truncation and alternative and control['toolTip'] == control['text']
                  and control['text'] in (control['accessibilityLabel'], control['accessibilityValue'])),
                  identifier + ': unreadable text has no complete accessible alternative')
             number(control.get('fontPointSize'), identifier + '.font', 11, 128)
+    check_control_overlap(leaves, ancestry)
     required = {'capture-chain-close'}
     if phase == 'chain-manager':
         required |= {'capture-chain-run', 'capture-chain-list', 'capture-chain-name', 'capture-chain-source'}

@@ -52,19 +52,29 @@ def rect(x, y, w, h):
 
 def control(identifier, index, kind='NSButton'):
     x, y = 12, 10+index*35
-    value = dict(id=identifier, **{'class': kind}, fullFrame=rect(x, y, 300, 30),
-        fullScreenFrame=rect(x+20, y+20, 300, 30), visibleRect=rect(0, 0, 300, 30),
+    value = dict(id=identifier, **{'class': kind}, fullFrame=rect(x, y, 320, 30),
+        fullScreenFrame=rect(x+20, y+20, 320, 30), visibleRect=rect(0, 0, 320, 30),
         hidden=False, enabled=True, insideScrollableViewport=True,
         text='完整文本', toolTip='完整文本', accessibilityLabel='完整文本', accessibilityValue='',
         untruncatedCellSize=[100, 20], requiredTextSizeAtActualWidth=[100, 20])
+    value.update(controlKind='tableView' if kind == 'NSTableView' else 'textField' if kind == 'NSTextField' else 'button',
+        identifierIsExplicit=identifier.startswith('capture-chain-'), viewPath=[index+1],
+        ownerWindowNumber=12, descendantOfOwnedContent=True, parentControlID=None, controlAncestorIDs=[])
     if kind != 'NSTableView':
         value['fullFrameContained'] = True
         if kind == 'NSTextField':
             value.update(textFits=True, textWraps=False, intentionalTruncation=False,
                          fullTextTooltipAndAccessibility=True, fontPointSize=12,
-                         lineBreakMode=4, maximumNumberOfLines=2)
+                         lineBreakMode=4, maximumNumberOfLines=2,
+                         textEditable=False, textSelectable=False, textScrollable=False, inheritedSourceTitleAlternative=False)
         else:
             value.update(hitTest=True, titleFits=True)
+    if identifier in ('capture-chain-name', 'capture-chain-source'):
+        value.update(alignmentFrame=rect(x, y, 320, 30), accessibilityValue=value['text'])
+        if identifier == 'capture-chain-name':
+            value.update(textEditable=True, textSelectable=True, textScrollable=True, editableNameLongTextAlternative=True)
+        else:
+            value.update(selectedItemTitle=value['text'], titleLineBreakMode=4, sourcePopupLongTitleAlternative=True)
     return value
 
 
@@ -81,7 +91,7 @@ def artifacts(phase):
     for mode, pixel_hash in [('light', LIGHT_PIXELS), ('dark', DARK_PIXELS)]:
         result.append(dict(filename=phase+'-'+mode+'.png', appearance=mode, rendering=C.RENDERING,
             width=600, height=300, canonicalRGBAPixelSHA256=pixel_hash,
-            layout=dict(passed=True, phase=phase, windowTitle='截图链', windowVisible=True,
+            layout=dict(passed=True, phase=phase, windowTitle='截图链', windowVisible=True, windowNumber=12, nativeControlCount=len(ids),
                 windowFrame=rect(20, 20, 600, 322), visibleScreenFrame=rect(0, 0, 1200, 900),
                 contentBounds=rect(0, 0, 600, 300), violations=[], fullNativeFramesMeasured=True,
                 alignmentRectanglesSubstituted=False, fullVisibleFramesChecked=True, controlsDoNotOverlap=True,
@@ -381,6 +391,252 @@ class FileTests(unittest.TestCase):
             big = root/'too-big'; big.write_bytes(b'12345')
             with self.assertRaises(ValueError): C.COMMON.read(big, 4)
             with self.assertRaises(ValueError): C.COMMON.read(root/'missing')
+
+
+# Retained246 chain-close-failure-dark-layout.json SHA256: 5ae6117a90b7e09a739ece74c954b6a1ad092adeaddc86dfa7364b78601b91bf
+RETAINED246_CLOSE_CONTROLS = [{'accessibilityLabel': '关闭',
+  'accessibilityValue': '',
+  'class': 'NSButton',
+  'enabled': True,
+  'fullFrame': {'height': 32, 'width': 60, 'x': 11, 'y': 9},
+  'fullFrameContained': True,
+  'fullScreenFrame': {'height': 32, 'width': 60, 'x': 213, 'y': 440},
+  'hidden': False,
+  'hitTest': True,
+  'id': 'capture-chain-close',
+  'insideScrollableViewport': True,
+  'requiredTextSizeAtActualWidth': [60, 32],
+  'text': '关闭',
+  'titleFits': True,
+  'toolTip': '',
+  'untruncatedCellSize': [60, 32],
+  'visibleRect': {'height': 298, 'width': 620, 'x': -11, 'y': -257}},
+ {'accessibilityLabel': '',
+  'accessibilityValue': '关闭',
+  'class': 'NSButtonTextField',
+  'enabled': True,
+  'fontPointSize': 13,
+  'fullFrame': {'height': 16, 'width': 38, 'x': 22, 'y': 19},
+  'fullFrameContained': True,
+  'fullScreenFrame': {'height': 16, 'width': 38, 'x': 224, 'y': 450},
+  'fullTextTooltipAndAccessibility': False,
+  'hidden': False,
+  'id': 'native-control-86',
+  'insideScrollableViewport': True,
+  'intentionalTruncation': False,
+  'lineBreakMode': 4,
+  'maximumNumberOfLines': 0,
+  'requiredTextSizeAtActualWidth': [33.797665369649806, 16],
+  'text': '关闭',
+  'textFits': True,
+  'textWraps': False,
+  'toolTip': '',
+  'untruncatedCellSize': [33.797665369649806, 16],
+  'visibleRect': {'height': 298, 'width': 620, 'x': -22, 'y': -263}},
+ {'accessibilityLabel': '返回管理',
+  'accessibilityValue': '',
+  'class': 'NSButton',
+  'enabled': False,
+  'fullFrame': {'height': 32, 'width': 86, 'x': 69, 'y': 9},
+  'fullFrameContained': True,
+  'fullScreenFrame': {'height': 32, 'width': 86, 'x': 271, 'y': 440},
+  'hidden': False,
+  'hitTest': True,
+  'id': 'capture-chain-manage',
+  'insideScrollableViewport': True,
+  'requiredTextSizeAtActualWidth': [86, 32],
+  'text': '返回管理',
+  'titleFits': True,
+  'toolTip': '',
+  'untruncatedCellSize': [86, 32],
+  'visibleRect': {'height': 298, 'width': 620, 'x': -69, 'y': -257}},
+ {'accessibilityLabel': '',
+  'accessibilityValue': '返回管理',
+  'class': 'NSButtonTextField',
+  'enabled': False,
+  'fontPointSize': 13,
+  'fullFrame': {'height': 16, 'width': 64, 'x': 80, 'y': 19},
+  'fullFrameContained': True,
+  'fullScreenFrame': {'height': 16, 'width': 64, 'x': 282, 'y': 450},
+  'fullTextTooltipAndAccessibility': False,
+  'hidden': False,
+  'id': 'native-control-89',
+  'insideScrollableViewport': True,
+  'intentionalTruncation': False,
+  'lineBreakMode': 4,
+  'maximumNumberOfLines': 0,
+  'requiredTextSizeAtActualWidth': [59.59533073929961, 16],
+  'text': '返回管理',
+  'textFits': True,
+  'textWraps': False,
+  'toolTip': '',
+  'untruncatedCellSize': [59.59533073929961, 16],
+  'visibleRect': {'height': 298, 'width': 620, 'x': -80, 'y': -263}}]
+
+class NativeAncestryTests(unittest.TestCase):
+    def with_child(self, phase='chain-copy-failure'):
+        artifact=artifacts(phase)[0]
+        rows=artifact['layout']['controls'];parent=rows[0]
+        child=control('native-control-999',99,'NSTextField')
+        child.update(**{'class':'NSButtonTextField'},controlKind='textField',
+            viewPath=parent['viewPath']+[0,0],parentControlID=parent['id'],controlAncestorIDs=[parent['id']],
+            fullFrame=rect(22,15,100,20),fullScreenFrame=rect(42,35,100,20),visibleRect=rect(0,0,100,20))
+        rows.append(child);artifact['layout']['nativeControlCount']=len(rows)
+        return artifact,parent,child
+
+    def test_native_button_text_descendant_keeps_full_text_and_geometry_checks(self):
+        artifact,parent,child=self.with_child()
+        C.layout(artifact,'chain-copy-failure')
+        child['class']='AnotherNativeTextFieldSubclass'
+        C.layout(artifact,'chain-copy-failure')
+        child['requiredTextSizeAtActualWidth'][1]=30
+        with self.assertRaises(ValueError):C.layout(artifact,'chain-copy-failure')
+        child['requiredTextSizeAtActualWidth'][1]=20
+        child['fullFrame']['x']=599
+        with self.assertRaises(ValueError):C.layout(artifact,'chain-copy-failure')
+
+    def test_ordinary_button_title_child_cannot_gain_truncation_by_own_tooltip(self):
+        artifact,parent,child=self.with_child()
+        child.update(untruncatedCellSize=[1200,20],textFits=False,intentionalTruncation=True,
+                     fullTextTooltipAndAccessibility=True,toolTip=child['text'],accessibilityValue=child['text'])
+        with self.assertRaisesRegex(ValueError,'button title descendant is clipped'):
+            C.layout(artifact,'chain-copy-failure')
+
+    def test_missing_foreign_cyclic_duplicate_and_forged_ancestry_fail_closed(self):
+        for mutation in ('missing-parent','missing-path','missing-kind','missing-ancestors','foreign-parent','cycle',
+                         'forged-parent','duplicate-path','foreign-window','unowned-root','forged-origin',
+                         'wrong-role','wrong-title','hidden-owner','unnested-private-class','nested-product-button'):
+            artifact,parent,child=self.with_child();rows=artifact['layout']['controls']
+            if mutation=='missing-parent':del child['parentControlID']
+            elif mutation=='missing-path':del child['viewPath']
+            elif mutation=='missing-kind':del child['controlKind']
+            elif mutation=='missing-ancestors':del child['controlAncestorIDs']
+            elif mutation=='foreign-parent':child['parentControlID']='not-in-owned-window'
+            elif mutation=='cycle':child.update(parentControlID=child['id'],controlAncestorIDs=[child['id']])
+            elif mutation=='forged-parent':child.update(parentControlID=rows[1]['id'],controlAncestorIDs=[rows[1]['id']])
+            elif mutation=='duplicate-path':child['viewPath']=parent['viewPath'].copy()
+            elif mutation=='foreign-window':child['ownerWindowNumber']=13
+            elif mutation=='unowned-root':child['descendantOfOwnedContent']=False
+            elif mutation=='forged-origin':child['identifierIsExplicit']=True
+            elif mutation=='wrong-role':child['controlKind']='button'
+            elif mutation=='wrong-title':child['text']='Different independent label'
+            elif mutation=='hidden-owner':parent['hidden']=True
+            elif mutation=='unnested-private-class':child.update(viewPath=[99],parentControlID=None,controlAncestorIDs=[])
+            else:parent.update(viewPath=rows[1]['viewPath']+[1],parentControlID=rows[1]['id'],controlAncestorIDs=[rows[1]['id']])
+            with self.subTest(mutation=mutation),self.assertRaises(ValueError):C.layout(artifact,'chain-copy-failure')
+
+    def test_native_child_may_overlap_only_its_own_ancestors(self):
+        artifact,parent,child=self.with_child()
+        # A non-clipping native descendant may extend beyond its owner; it still
+        # must fit the owned window and cannot overlap any independent control.
+        child['fullFrame']=rect(22,25,100,30)
+        child['fullScreenFrame']=rect(42,45,100,30)
+        with self.assertRaisesRegex(ValueError,'independent full controls overlap'):
+            C.layout(artifact,'chain-copy-failure')
+        artifact,parent,child=self.with_child()
+        sibling=copy.deepcopy(child);sibling.update(id='native-control-998',viewPath=parent['viewPath']+[1])
+        artifact['layout']['controls'].append(sibling);artifact['layout']['nativeControlCount']+=1
+        with self.assertRaisesRegex(ValueError,'independent full controls overlap'):
+            C.layout(artifact,'chain-copy-failure')
+
+    def test_retained246_native_metrics_still_reject_real_sibling_overlap(self):
+        # Frame/text measurements below are verbatim246 observations. Only the
+        # new tree metadata is synthetic, so this never certifies the old run.
+        rows=[]
+        for index,observed in enumerate(RETAINED246_CLOSE_CONTROLS):
+            kind='NSButton' if index%2==0 else 'NSTextField'
+            row=control(observed['id'],index,kind);row.update(copy.deepcopy(observed))
+            row['controlKind']='button' if index%2==0 else 'textField'
+            if index%2:
+                owner=rows[index-1]
+                row.update(viewPath=owner['viewPath']+[0],parentControlID=owner['id'],controlAncestorIDs=[owner['id']])
+            rows.append(row)
+        ancestry=C.control_ancestry(rows,12)
+        leaves=[(row['id'],C.rectangle(row['fullFrame'],'retained frame')) for row in rows]
+        C.check_control_overlap(leaves[:2],ancestry)
+        with self.assertRaisesRegex(ValueError,'independent full controls overlap'):
+            C.check_control_overlap(leaves,ancestry)
+        self.assertEqual(rows[0]['fullFrame'],dict(x=11,y=9,width=60,height=32))
+        self.assertEqual(rows[1]['fullFrame'],dict(x=22,y=19,width=38,height=16))
+        self.assertEqual(rows[2]['fullFrame'],dict(x=69,y=9,width=86,height=32))
+
+    def long_manager(self):
+        artifact=artifacts('chain-manager')[0]
+        rows={row['id']:row for row in artifact['layout']['controls']}
+        for identifier in ('capture-chain-name','capture-chain-source'):
+            row=rows[identifier];row['text']='长名称'*20
+            row.update(toolTip=row['text'],accessibilityValue=row['text'],untruncatedCellSize=[1200,20])
+            if identifier=='capture-chain-name':row.update(textFits=False,intentionalTruncation=True)
+            else:row.update(titleFits=False,selectedItemTitle=row['text'])
+        return artifact,rows
+
+    def test_only_known_editable_name_and_source_popup_allow_long_text(self):
+        artifact,rows=self.long_manager()
+        C.layout(artifact,'chain-manager')
+        rows['capture-chain-name'].update(lineBreakMode=2,intentionalTruncation=False)
+        C.layout(artifact,'chain-manager')
+        rows['capture-chain-close'].update(titleFits=False,untruncatedCellSize=[1200,20],
+            sourcePopupLongTitleAlternative=True,toolTip=rows['capture-chain-close']['text'],
+            accessibilityValue=rows['capture-chain-close']['text'])
+        with self.assertRaisesRegex(ValueError,'button title clipped'):C.layout(artifact,'chain-manager')
+
+    def test_long_name_rejects_missing_scrollability_or_full_text_and_forged_role(self):
+        for key,bad in [('textScrollable',False),('textEditable',False),('textSelectable',False),
+                        ('accessibilityValue','…'),('toolTip','…'),('class','NSButton'),
+                        ('editableNameLongTextAlternative',False)]:
+            artifact,rows=self.long_manager();rows['capture-chain-name'][key]=bad
+            with self.subTest(key=key),self.assertRaises(ValueError):C.layout(artifact,'chain-manager')
+        artifact,rows=self.long_manager();del rows['capture-chain-name']['textScrollable']
+        with self.assertRaises(ValueError):C.layout(artifact,'chain-manager')
+        artifact,rows=self.long_manager();rows['capture-chain-name']['alignmentFrame']['width']=319
+        with self.assertRaises(ValueError):C.layout(artifact,'chain-manager')
+
+    def test_long_source_rejects_missing_alternative_small_width_and_clipped_hit(self):
+        for key,bad in [('accessibilityValue','…'),('toolTip','…'),('selectedItemTitle','…'),
+                        ('titleLineBreakMode',2),('hitTest',False),('class','NSButton'),
+                        ('sourcePopupLongTitleAlternative',False)]:
+            artifact,rows=self.long_manager();rows['capture-chain-source'][key]=bad
+            with self.subTest(key=key),self.assertRaises(ValueError):C.layout(artifact,'chain-manager')
+        for target in ('alignmentFrame','fullFrame'):
+            artifact,rows=self.long_manager();rows['capture-chain-source'][target]['width']=319
+            with self.subTest(target=target),self.assertRaises(ValueError):C.layout(artifact,'chain-manager')
+        artifact,rows=self.long_manager();rows['capture-chain-source']['fullFrame']['height']=10
+        with self.assertRaises(ValueError):C.layout(artifact,'chain-manager')
+
+    def test_only_verified_source_title_child_can_inherit_full_accessible_title(self):
+        artifact,rows=self.long_manager();parent=rows['capture-chain-source']
+        child=control('native-control-997',97,'NSTextField')
+        child.update(**{'class':'NSButtonTextField'},viewPath=parent['viewPath']+[0],
+            parentControlID=parent['id'],controlAncestorIDs=[parent['id']],
+            text=parent['text'],toolTip='',accessibilityLabel='',accessibilityValue='',
+            fullFrame=rect(22,155,100,20),fullScreenFrame=rect(42,175,100,20),visibleRect=rect(0,0,100,20),
+            untruncatedCellSize=[1200,20],requiredTextSizeAtActualWidth=[100,20],
+            lineBreakMode=2,textFits=False,intentionalTruncation=False,
+            fullTextTooltipAndAccessibility=False,inheritedSourceTitleAlternative=True)
+        artifact['layout']['controls'].append(child);artifact['layout']['nativeControlCount']+=1
+        C.layout(artifact,'chain-manager')
+        for mutation in ('foreign-parent','mismatched-title','parent-missing-AX','bad-height','false-inheritance','unrelated-overlap'):
+            changed=copy.deepcopy(artifact);item=changed['layout']['controls'][-1]
+            if mutation=='foreign-parent':item['parentControlID']='capture-chain-close'
+            elif mutation=='mismatched-title':item['text']='other'
+            elif mutation=='parent-missing-AX':changed['layout']['controls'][4]['accessibilityValue']='…'
+            elif mutation=='bad-height':item['requiredTextSizeAtActualWidth'][1]=40
+            elif mutation=='false-inheritance':item['inheritedSourceTitleAlternative']=False
+            else:item['fullFrame']['y']=120;item['fullScreenFrame']['y']=140
+            with self.subTest(mutation=mutation),self.assertRaises(ValueError):C.layout(changed,'chain-manager')
+
+    def test_fixture_emits_real_paths_roles_and_parent_identity_without_class_skip(self):
+        source=(SCRIPTS.parent/'Sources/PicShot/CaptureChainUIPreviewFixture.swift').read_text()
+        for token in ('recordViewPaths(root, path: [])','control.window?.windowNumber',
+                      'control.isDescendant(of: root) && control.window === window',
+                      'controlAncestors.append(controlIDs[ObjectIdentifier(parent)]',
+                      'row["parentControlID"] = controlAncestors.first',
+                      'row["controlAncestorIDs"] = controlAncestors',
+                      'lhs.0.isDescendant(of: rhs.0) || rhs.0.isDescendant(of: lhs.0)',
+                      'overlap.width > 0.5 && overlap.height > 0.5'):
+            self.assertIn(token,source)
+        self.assertNotIn('NSButtonTextField',source)
+
 
 
 if __name__ == '__main__':

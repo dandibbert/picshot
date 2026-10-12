@@ -165,21 +165,34 @@ import XCTest
         f.controller.present(); XCTAssertTrue(f.controller.window?.isVisible == true)
     }
 
-    func testCloseCancelsOldRunExactlyOnceEvenIfManagerIsImmediatelyReleased() throws {
+    func testCloseCancelsOldRunExactlyOnceEvenIfManagerIsImmediatelyReleased() async throws {
         _ = NSApplication.shared
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PicShot-ChainClose-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = try CaptureChainStore(directory: directory), definition = try definition()
         try store.add(definition)
-        var controller: CaptureChainController? = CaptureChainController(store: store)
-        weak var weakController = controller
+        weak var weakController: CaptureChainController?
+        var retiredClose: ((UUID?, UInt64) -> Void)?
         let oldID = UUID(), newID = UUID()
         var activeID = oldID, cancelled: [UUID] = []
-        controller?.onClose = { id, _ in if let id, id == activeID { cancelled.append(id) } }
-        controller?.update(snapshot: snapshot(definition, id: oldID, status: .running(index: 0), bytes: 256))
-        controller?.present(); controller?.window?.close(); controller = nil
-        XCTAssertEqual(cancelled, [oldID]); XCTAssertNil(weakController)
+        autoreleasepool {
+            var controller: CaptureChainController? = CaptureChainController(store: store)
+            weakController = controller
+            controller?.onClose = { id, _ in if let id, id == activeID { cancelled.append(id) } }
+            retiredClose = controller?.onClose
+            controller?.update(snapshot: snapshot(definition, id: oldID, status: .running(index: 0), bytes: 256))
+            controller?.present(); controller?.window?.close(); controller = nil
+            XCTAssertEqual(cancelled, [oldID], "Close must synchronously deliver its owned cancellation")
+        }
+        let deadline = ProcessInfo.processInfo.systemUptime + 3
+        while !autoreleasepool(invoking: { weakController == nil }), ProcessInfo.processInfo.systemUptime < deadline {
+            await drainCommands()
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertNil(weakController, "A real ownership cycle must fail bounded native close drainage")
+        XCTAssertEqual(cancelled, [oldID])
         activeID = newID
+        retiredClose?(oldID, 0)
         XCTAssertEqual(cancelled, [oldID], "Retiring the old manager cannot cancel the new run")
     }
 
@@ -268,8 +281,10 @@ import XCTest
                 let name: NSTextField = try self.view("name", in: f.controller)
                 let source: NSPopUpButton = try self.view("source", in: f.controller)
                 XCTAssertTrue(name.isDescendant(of: content) && source.isDescendant(of: content))
-                XCTAssertEqual(name.bounds.width, source.bounds.width, accuracy: 0.001,
+                XCTAssertEqual(name.alignmentRect(forFrame: name.frame).width,
+                    source.alignmentRect(forFrame: source.frame).width, accuracy: 0.001,
                     "The cross-row width relationship must survive native manager construction")
+                XCTAssertGreaterThanOrEqual(name.alignmentRect(forFrame: name.frame).width, 320)
                 f.controller.update(snapshot: self.snapshot(definition, id: UUID(), status: .failed(index: 1, message: "复制失败"),
                     receipts: [.init(output: .quickSavePNG, value: .saved(URL(fileURLWithPath: "/tmp/a.png"), byteCount: 120))], bytes: 256))
                 try self.checkedLayout(window, mode: mode.rawValue + "-failed")
@@ -289,6 +304,31 @@ import XCTest
             XCTAssertTrue(cell.toolTip?.contains(longName) == true)
             XCTAssertTrue(cell.accessibilityLabel()?.contains(longName) == true)
             try self.checkedLayout(try XCTUnwrap(f.controller.window), mode: "long-names")
+            let longPreset = try self.makePreset(name: String(repeating: "长预设", count: 15))
+            let longSource = try CaptureChainDefinition(name: longName, source: .preset(longPreset.id), outputs: [.copy])
+            let narrow = try self.fixture(definition: longSource, presets: [longPreset]); defer { narrow.close() }
+            let narrowWindow = try XCTUnwrap(narrow.controller.window)
+            narrowWindow.setContentSize(NSSize(width: 600, height: 600))
+            for mode in [NSAppearance.Name.aqua, .darkAqua] {
+                try self.ready(narrow.controller, appearance: mode)
+                try self.checkedLayout(narrowWindow, mode: mode.rawValue + "-narrow-long-inputs")
+                XCTAssertEqual(narrowWindow.contentView?.bounds.width, 600)
+                XCTAssertEqual(narrowWindow.contentView?.bounds.height, 600)
+            }
+            let longField: NSTextField = try self.view("name", in: narrow.controller)
+            let longPicker: NSPopUpButton = try self.view("source", in: narrow.controller)
+            XCTAssertEqual(longField.stringValue, longName)
+            XCTAssertEqual(longField.accessibilityValue() as? String, longName)
+            XCTAssertEqual(longPicker.toolTip, "预设：" + longPreset.name)
+            XCTAssertEqual(longPicker.accessibilityValue() as? String, "预设：" + longPreset.name)
+            let savedIndex = narrow.store.index
+            longField.selectText(nil)
+            let editor = try XCTUnwrap(longField.currentEditor() as? NSTextView)
+            let end = NSRange(location: (longName as NSString).length, length: 0)
+            editor.setSelectedRange(end); editor.scrollRangeToVisible(end)
+            XCTAssertEqual(editor.string, longName)
+            XCTAssertEqual(editor.selectedRange(), end)
+            XCTAssertEqual(narrow.store.index, savedIndex, "Reading/editing a long input must not persist a definition")
         }
     }
 
@@ -317,10 +357,10 @@ import XCTest
     private func definition() throws -> CaptureChainDefinition {
         try CaptureChainDefinition(name: "工作截图", source: .region, outputs: [.quickSavePNG, .copy])
     }
-    private func makePreset() throws -> CapturePreset {
+    private func makePreset(name: String = "工作区域") throws -> CapturePreset {
         let display = try CapturePresetDisplay(uuid: UUID(), frame: .init(x: 0, y: 0, width: 800, height: 600),
             pixelWidth: 800, pixelHeight: 600, rotationDegrees: 0)
-        return try CapturePreset(name: "工作区域", delay: .none, display: display,
+        return try CapturePreset(name: name, delay: .none, display: display,
             topLeftFrame: .init(x: 10, y: 20, width: 200, height: 100),
             pixelFrame: .init(x: 10, y: 20, width: 200, height: 100))
     }

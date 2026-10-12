@@ -389,11 +389,23 @@ enum CaptureChainUIPreviewFixture {
             violations.append("Full owned window outside usable display")
         }
         let views = descendants(root)
+        let controlIDs = Dictionary(uniqueKeysWithValues: views.enumerated().compactMap { entry -> (ObjectIdentifier, String)? in
+            let (index, view) = entry
+            guard let control = view as? NSControl else { return nil }
+            return (ObjectIdentifier(control), control.identifier?.rawValue ?? "native-control-\(index)")
+        })
+        var viewPaths: [ObjectIdentifier: [Int]] = [:]
+        func recordViewPaths(_ view: NSView, path: [Int]) {
+            viewPaths[ObjectIdentifier(view)] = path
+            for (index, child) in view.subviews.enumerated() { recordViewPaths(child, path: path + [index]) }
+        }
+        recordViewPaths(root, path: [])
         var leaves: [(NSView, String, CGRect)] = []
         for (index, view) in views.enumerated() where view is NSControl {
             guard let control = view as? NSControl else { continue }
             let id = control.identifier?.rawValue ?? "native-control-\(index)"
             let frame = control.convert(control.bounds, to: root)
+            let alignment = control.convert(control.alignmentRect(forFrame: control.bounds), to: root)
             var row: [String: Any] = ["id": id, "class": String(describing: type(of: control)),
                 "fullFrame": rect(frame), "fullScreenFrame": rect(window.convertToScreen(control.convert(control.bounds, to: nil))),
                 "hidden": control.isHiddenOrHasHiddenAncestor, "enabled": control.isEnabled,
@@ -401,10 +413,20 @@ enum CaptureChainUIPreviewFixture {
                 "accessibilityLabel": control.accessibilityLabel() ?? "",
                 "accessibilityValue": control.accessibilityValue() as? String ?? ""]
             let button = control as? NSButton, field = control as? NSTextField
+            row["controlKind"] = button != nil ? "button" : field != nil ? "textField"
+                : control is NSTableView ? "tableView" : control is NSScroller ? "scroller" : "other"
+            row["identifierIsExplicit"] = control.identifier != nil
+            row["viewPath"] = viewPaths[ObjectIdentifier(control)] ?? []
+            row["ownerWindowNumber"] = control.window?.windowNumber ?? -1
+            row["descendantOfOwnedContent"] = control.isDescendant(of: root) && control.window === window
+            if id == "capture-chain-name" || id == "capture-chain-source" { row["alignmentFrame"] = rect(alignment) }
             let text = button?.title ?? field?.stringValue ?? ""
             row["text"] = text
             if let field {
                 row["textWraps"] = field.cell?.wraps ?? false
+                row["textEditable"] = field.isEditable
+                row["textSelectable"] = field.isSelectable
+                row["textScrollable"] = field.cell?.isScrollable ?? false
                 row["lineBreakMode"] = field.lineBreakMode.rawValue
                 row["maximumNumberOfLines"] = field.maximumNumberOfLines
             }
@@ -413,12 +435,20 @@ enum CaptureChainUIPreviewFixture {
             row["untruncatedCellSize"] = [required.width, required.height]
             row["requiredTextSizeAtActualWidth"] = [wrapped.width, wrapped.height]
             var inViewport = true
+            var controlAncestors: [String] = []
+            var nearestControl: NSControl?
             var ancestor = control.superview
             while let value = ancestor {
+                if let parent = value as? NSControl {
+                    if nearestControl == nil { nearestControl = parent }
+                    controlAncestors.append(controlIDs[ObjectIdentifier(parent)] ?? "unreported-control")
+                }
                 if let clip = value as? NSClipView,
                    !clip.bounds.insetBy(dx: -0.5, dy: -0.5).contains(control.convert(control.bounds, to: clip)) { inViewport = false }
                 ancestor = value.superview
             }
+            row["parentControlID"] = controlAncestors.first.map { $0 as Any } ?? NSNull()
+            row["controlAncestorIDs"] = controlAncestors
             row["insideScrollableViewport"] = inViewport
             if !control.isHiddenOrHasHiddenAncestor && inViewport && (button != nil || field != nil) {
                 let contained = frame.width > 0 && frame.height > 0 && root.bounds.insetBy(dx: -0.5, dy: -0.5).contains(frame)
@@ -431,7 +461,21 @@ enum CaptureChainUIPreviewFixture {
                     row["hitTest"] = hitMatches
                     let fits = frame.width + 0.5 >= required.width && frame.height + 0.5 >= required.height
                     row["titleFits"] = fits
-                    if !fits || !hitMatches { violations.append(id + " title or native hit target does not fit") }
+                    var longSourceAlternative = false
+                    if id == "capture-chain-source", let popup = button as? NSPopUpButton {
+                        let mode = popup.cell?.lineBreakMode ?? .byClipping
+                        let truncates = mode == .byTruncatingHead || mode == .byTruncatingTail || mode == .byTruncatingMiddle
+                        row["selectedItemTitle"] = popup.selectedItem?.title ?? ""
+                        row["titleLineBreakMode"] = mode.rawValue
+                        longSourceAlternative = alignment.width >= 320 && frame.height + 0.5 >= required.height
+                            && truncates && popup.selectedItem?.title == text && popup.toolTip == text
+                            && popup.accessibilityValue() as? String == text
+                        row["sourcePopupLongTitleAlternative"] = longSourceAlternative
+                        if alignment.width < 320 { violations.append(id + " usable alignment width is below 320") }
+                    }
+                    if (!fits && !longSourceAlternative) || !hitMatches {
+                        violations.append(id + " title or native hit target does not fit")
+                    }
                 }
                 if let field, !text.isEmpty {
                     let isTruncating = field.lineBreakMode == .byTruncatingTail || field.lineBreakMode == .byTruncatingMiddle
@@ -444,7 +488,35 @@ enum CaptureChainUIPreviewFixture {
                     row["textFits"] = fits; row["intentionalTruncation"] = isTruncating && !fits
                     row["fullTextTooltipAndAccessibility"] = fullAlternative
                     row["fontPointSize"] = field.font?.pointSize ?? 0
-                    if (field.font?.pointSize ?? 0) < 11 || (!fits && !(isTruncating && fullAlternative)) {
+                    var longNameAlternative = false
+                    if id == "capture-chain-name" {
+                        longNameAlternative = alignment.width >= 320 && field.isEditable && field.isSelectable
+                            && field.cell?.isScrollable == true && verticalFit && field.toolTip == text
+                            && field.accessibilityValue() as? String == text
+                        row["editableNameLongTextAlternative"] = longNameAlternative
+                        if alignment.width < 320 || !field.isEditable || !field.isSelectable || field.cell?.isScrollable != true {
+                            violations.append(id + " usable editable/scrollable name input missing")
+                        }
+                    }
+                    var inheritedSourceAlternative = false
+                    if let popup = nearestControl as? NSPopUpButton,
+                       popup.identifier?.rawValue == "capture-chain-source" {
+                        let ownerFrame = popup.convert(popup.bounds, to: root)
+                        let ownerAlignment = popup.convert(popup.alignmentRect(forFrame: popup.bounds), to: root)
+                        let ownerRequired = popup.cell?.cellSize ?? .zero
+                        let mode = popup.cell?.lineBreakMode ?? .byClipping
+                        let truncates = mode == .byTruncatingHead || mode == .byTruncatingTail || mode == .byTruncatingMiddle
+                        inheritedSourceAlternative = verticalFit && ownerAlignment.width >= 320
+                            && ownerFrame.height + 0.5 >= ownerRequired.height && truncates
+                            && popup.title == text && popup.selectedItem?.title == text && popup.toolTip == text
+                            && popup.accessibilityValue() as? String == text
+                    }
+                    row["inheritedSourceTitleAlternative"] = inheritedSourceAlternative
+                    if nearestControl is NSButton && !fits && !inheritedSourceAlternative {
+                        violations.append(id + " native button title descendant is clipped")
+                    }
+                    if (field.font?.pointSize ?? 0) < 11 || (!fits && !longNameAlternative && !inheritedSourceAlternative
+                        && !(id != "capture-chain-name" && isTruncating && fullAlternative)) {
                         violations.append(id + " visible text does not fit or lacks full accessible alternative")
                     }
                 }
@@ -465,7 +537,8 @@ enum CaptureChainUIPreviewFixture {
         return ["passed": violations.isEmpty && !rows.isEmpty, "phase": phase,
             "windowTitle": window.title, "windowFrame": rect(window.frame), "contentBounds": rect(root.bounds),
             "visibleScreenFrame": visibleScreen.map(rect) ?? [:],
-            "windowVisible": window.isVisible, "controls": rows, "violations": violations,
+            "windowVisible": window.isVisible, "windowNumber": window.windowNumber,
+            "nativeControlCount": rows.count, "controls": rows, "violations": violations,
             "fullNativeFramesMeasured": true, "alignmentRectanglesSubstituted": false,
             "fullVisibleFramesChecked": violations.isEmpty,
             "controlsDoNotOverlap": !violations.contains(where: { $0.contains(" overlaps ") })]
