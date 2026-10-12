@@ -1,4 +1,4 @@
-# Full continuous-scrolling qualification retains the accepted feature and resource gates.
+# Full experimental qualification includes verified automatic-scroll admission; all ordinary gates remain intact.
 name: Native macOS build and verification
 on:
   push:
