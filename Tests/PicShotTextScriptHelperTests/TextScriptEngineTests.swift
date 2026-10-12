@@ -19,11 +19,36 @@ final class TextScriptEngineTests: XCTestCase {
         expect(.emptyOutput, source: "return ''; ")
     }
 
-    func testSyntaxAndThrownPayloadHaveFixedDiagnostics() {
+    func testSyntaxAndThrownPayloadHaveFixedDiagnostics() throws {
         expect(.syntaxError, source: "return (")
         expect(.syntaxError, source: "}; globalThis.compromised = true; function ignored(){")
         expect(.scriptException, source: "throw 'synthetic-private-exception';")
         expect(.scriptException, source: "throw { toString() { throw 'must-not-run'; }, get stack() { throw 'must-not-run'; } };")
+        let callerProbe = """
+        try {
+            return arguments.callee.caller === null ? 'blocked' : 'exposed';
+        } catch {
+            return 'blocked';
+        }
+        """
+        XCTAssertEqual(try TextScriptEngine.transform(source: callerProbe, text: "x"), "blocked")
+        let tamperedThrow = """
+        Object.prototype.toString = function() { throw 'must-not-run'; };
+        Function.prototype.call = function() { throw 'must-not-run'; };
+        Function.prototype.apply = function() { throw 'must-not-run'; };
+        globalThis.fn = function() { return 'forged'; };
+        globalThis.failure = 'forged';
+        globalThis.text = 'forged';
+        throw new Proxy({}, { get() { throw 'must-not-run'; } });
+        """
+        expect(.scriptException, source: tamperedThrow)
+        let tamperedReturn = """
+        Object.defineProperty(Object.prototype, 'value', { get() { throw 'must-not-run'; } });
+        Function.prototype.call = function() { throw 'must-not-run'; };
+        globalThis.failure = text;
+        return text;
+        """
+        XCTAssertEqual(try TextScriptEngine.transform(source: tamperedReturn, text: "unchanged"), "unchanged")
     }
 
     func testOnlyPrimitiveStringsAcceptedWithoutCoercion() {

@@ -31,19 +31,27 @@ enum TextScriptEngine {
         JSValueProtect(context, function)
         defer { JSValueUnprotect(context, function) }
 
+        let boundary = try makeExceptionBoundary(in: context)
+        JSValueProtect(context, boundary)
+        defer { JSValueUnprotect(context, boundary) }
+        guard let failure = JSObjectMake(context, nil, nil) else { throw TextScriptDiagnostic.runtimeUnavailable }
+        JSValueProtect(context, failure)
+        defer { JSValueUnprotect(context, failure) }
+
         let inputString = try makeString(text)
         defer { JSStringRelease(inputString) }
         guard let input = JSValueMakeString(context, inputString) else { throw TextScriptDiagnostic.runtimeUnavailable }
         JSValueProtect(context, input)
         defer { JSValueUnprotect(context, input) }
-        var argument: JSValueRef? = input
+        let arguments: [JSValueRef?] = [function, input, failure]
         exception = nil
-        let result = withUnsafePointer(to: &argument) {
-            JSObjectCallAsFunction(context, function, nil, 1, $0, &exception)
+        let result = arguments.withUnsafeBufferPointer {
+            JSObjectCallAsFunction(context, boundary, nil, $0.count, $0.baseAddress, &exception)
         }
         guard exception == nil, let result else { throw TextScriptDiagnostic.scriptException }
         JSValueProtect(context, result)
         defer { JSValueUnprotect(context, result) }
+        guard !JSValueIsStrictEqual(context, result, failure) else { throw TextScriptDiagnostic.scriptException }
         // Primitive check precedes conversion. Promise, boxed String, Proxy and all other
         // objects are rejected without calling their coercion hooks.
         guard JSValueIsString(context, result) else { throw TextScriptDiagnostic.outputNotString }
@@ -59,6 +67,28 @@ enum TextScriptEngine {
         let output = String(decoding: units, as: UTF16.self)
         guard output.utf8.count <= TextScriptLimits.outputUTF8Bytes else { throw TextScriptDiagnostic.outputTooLarge }
         return output
+    }
+
+    /// Catch user-thrown values inside JavaScript: JSC's C API exception-reporting path
+    /// may stringify them even if native code never examines its exception pointer.
+    /// This strict, unexported wrapper uses only lexical parameters and a direct call.
+    /// It never inspects the caught value, a result property, or a mutable global API.
+    private static func makeExceptionBoundary(in context: JSGlobalContextRef) throws -> JSObjectRef {
+        let functionParameter = try makeString("fn")
+        defer { JSStringRelease(functionParameter) }
+        let textParameter = try makeString("text")
+        defer { JSStringRelease(textParameter) }
+        let failureParameter = try makeString("failure")
+        defer { JSStringRelease(failureParameter) }
+        let body = try makeString("\"use strict\"; try { return fn(text); } catch { return failure; }")
+        defer { JSStringRelease(body) }
+        let parameters: [JSStringRef?] = [functionParameter, textParameter, failureParameter]
+        var exception: JSValueRef?
+        let boundary = parameters.withUnsafeBufferPointer {
+            JSObjectMakeFunction(context, nil, UInt32($0.count), $0.baseAddress, body, nil, 1, &exception)
+        }
+        guard exception == nil, let boundary else { throw TextScriptDiagnostic.runtimeUnavailable }
+        return boundary
     }
 
     /// Some JavaScriptCore versions install a console even when inspection is disabled.
