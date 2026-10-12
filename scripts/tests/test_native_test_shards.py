@@ -400,7 +400,7 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
         inventory = self.current_source_inventory()
         plan = shards.make_plan(inventory, '', 'a' * 40, process_count=4)
         record = self.execute_pin_inventory_guard(plan)
-        self.assertEqual((record['discoveredCount'], record['discoveredClassCount']), (2203, 250))
+        self.assertEqual((record['discoveredCount'], record['discoveredClassCount']), (2208, 250))
         live = json.loads((Path(__file__).parents[1] / 'live-scroll-additive-tests.json').read_text())
         self.assertEqual(len(live), 156)
         self.assertEqual(live, sorted(set(live)))
@@ -409,22 +409,31 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(('\n'.join(live) + '\n').encode()).hexdigest(),
                          'a9c4eb4840fe1716651b164c9fc4c27c639738360adcb1a1d20030366b682f64')
         self.assertTrue(set(live).issubset(inventory))
+        feedback = json.loads((Path(__file__).parents[1] / 'save-feedback-native-tests.json').read_text())
+        self.assertEqual(set(feedback), {'baseline241', 'added'})
+        self.assertEqual(len(feedback['baseline241']), 9)
+        self.assertEqual(len(feedback['added']), 5)
+        self.assertEqual(record['additiveSaveFeedbackIDs'], feedback['added'])
+        self.assertEqual(feedback['added'], sorted(set(feedback['added'])))
+        self.assertEqual(sorted(feedback['baseline241'] + feedback['added']),
+                         [name for name in inventory if '.SaveWorkflowUITests/' in name])
+        additions = live + feedback['added']
         live_inventory, live_plan = inventory, plan
-        inventory = [name for name in live_inventory if name not in live]
+        inventory = [name for name in live_inventory if name not in additions]
         self.assertEqual((len(inventory), len({name.split('/')[0] for name in inventory})), (2047, 232))
         self.assertEqual(hashlib.sha256(('\n'.join(inventory) + '\n').encode()).hexdigest(),
                          '926ac5674df90163b949fe461f0d4589ef72c8fc3215fa00b927564aae57cb44')
         plan = shards.make_plan(inventory, '', 'a' * 40, process_count=4)
-        self.assertEqual([len(shard['tests']) for shard in live_plan['shards']], [582, 498, 583, 540])
+        self.assertEqual([len(shard['tests']) for shard in live_plan['shards']], [582, 498, 583, 545])
         for old_shard, current_shard in zip(plan['shards'], live_plan['shards']):
-            self.assertEqual([name for name in current_shard['tests'] if name not in live], old_shard['tests'])
+            self.assertEqual([name for name in current_shard['tests'] if name not in additions], old_shard['tests'])
         live_selection = re.search(r"--selection-regex '([^']+)'", self.step(
             'Plan exhaustive and focused native test processes'))[1]
         for count in (2, 4):
             current_focused = shards.make_plan(live_inventory, live_selection, 'a' * 40, process_count=count)
             old_focused = shards.make_plan(inventory, live_selection, 'a' * 40, process_count=count)
-            self.assertEqual(current_focused['selectedTests'], sorted(old_focused['selectedTests'] + live))
-            self.assertEqual(len(current_focused['selectedTests']), 1671)
+            self.assertEqual(current_focused['selectedTests'], sorted(old_focused['selectedTests'] + additions))
+            self.assertEqual(len(current_focused['selectedTests']), 1676)
         pins = json.loads((Path(__file__).parents[1] / 'pin-management-native-additions.json').read_text())
         self.assertEqual(len(pins), 49)
         self.assertEqual(pins, sorted(set(pins)))

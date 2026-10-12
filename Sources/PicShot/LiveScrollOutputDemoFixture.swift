@@ -105,7 +105,10 @@ enum LiveScrollOutputDemoFixture {
             try FileManager.default.createDirectory(at: savedDirectory, withIntermediateDirectories: false)
             try FileManager.default.createDirectory(at: spool, withIntermediateDirectories: false)
             let approved = try SaveWorkflowUIPreviewFixture.canonicalExistingDirectory(savedDirectory)
-            try SaveWorkflowSettings(baseURL: approved, filenameTemplate: "owned-long-output-{counter}").save(to: settingsDefaults)
+            // Exercise a genuinely overflowing mixed-script path without approaching
+            // the service's 180-byte component or 1,024-byte total path limits.
+            let longName = "owned-long-output-" + String(repeating: "capture-segment-", count: 6) + "长截图保存结果-{counter}"
+            try SaveWorkflowSettings(baseURL: approved, filenameTemplate: longName).save(to: settingsDefaults)
             let output = SaveWorkflowPresenter(defaults: settingsDefaults)
             presenter = output
             output.onPresent = { saveAdmissions += 1; saveJob = $0 }
@@ -170,10 +173,25 @@ enum LiveScrollOutputDemoFixture {
             report["savedPNGFileSHA256"] = hash(bytes)
             report["savedPNGByteCount"] = bytes.count
             report["savedFilename"] = result.savedURL.lastPathComponent
-            report["saveFeedback"] = job.statusLabel.stringValue
-            report["saveFeedbackArtifacts"] = try appearanceSnapshots(window: unwrap(job.window, "Save window missing"),
-                stem: "output-save-feedback", directory: directory)
             try bytes.write(to: directory.appendingPathComponent("output-published-long.png"), options: .atomic)
+            report["savedPath"] = result.savedURL.path
+            report["saveFeedback"] = job.statusLabel.stringValue
+            let normalFeedback = try saveFeedbackSnapshots(job: job, contentWidth: 460,
+                savedPath: result.savedURL.path, stem: "output-save-feedback", directory: directory)
+            let narrowFeedback = try saveFeedbackSnapshots(job: job, contentWidth: 320,
+                savedPath: result.savedURL.path, stem: "output-save-feedback-narrow", directory: directory)
+            report["saveFeedbackArtifacts"] = normalFeedback
+            report["saveFeedbackNarrowArtifacts"] = narrowFeedback
+            // Preserve all four native images and raw geometry before a layout
+            // assertion can fail, so a clipped status remains diagnosable.
+            try JSONSerialization.data(withJSONObject: ["normal": normalFeedback, "narrow": narrowFeedback],
+                options: [.prettyPrinted, .sortedKeys])
+                .write(to: directory.appendingPathComponent("output-save-feedback-layout.json"), options: .atomic)
+            try require(result.savedURL.lastPathComponent.utf8.count <= 180 && result.savedURL.path.utf8.count <= 1_024,
+                        "Owned long save path exceeded the service bounds")
+            try require((normalFeedback + narrowFeedback).allSatisfy {
+                ($0["layout"] as? [String: Any])?["passed"] as? Bool == true
+            }, "Save outcome or full native control frames are clipped; see output-save-feedback-layout.json")
             try require(savedComparison["passed"] as? Bool == true, "Published PNG differs from the owned source union")
             try await until("Successful Save did not retire the session", seconds: 5) { owner.isClosedForVerification }
             report["savePublicationRetiredSession"] = true
@@ -363,6 +381,81 @@ enum LiveScrollOutputDemoFixture {
             artifacts.append(facts)
         }
         return artifacts
+    }
+
+    private static func saveFeedbackSnapshots(job: SaveWorkflowController, contentWidth: CGFloat,
+                                              savedPath: String, stem: String, directory: URL) throws -> [[String: Any]] {
+        let window = try unwrap(job.window, "Save window missing")
+        let content = try unwrap(window.contentView, "Save content missing")
+        let previousSize = content.bounds.size, previousAppearance = window.appearance
+        defer { window.setContentSize(previousSize); window.appearance = previousAppearance }
+        window.setContentSize(CGSize(width: contentWidth, height: 190))
+        var artifacts: [[String: Any]] = []
+        for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+            window.appearance = NSAppearance(named: appearance)
+            content.needsDisplay = true
+            content.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            let layout = try saveFeedbackLayout(job: job, content: content, savedPath: savedPath)
+            let image = try nativeImage(view: content, window: window)
+            let filename = stem + "-" + name + ".png"
+            try writePNG(image, directory.appendingPathComponent(filename))
+            var facts = try imageFacts(image)
+            facts["filename"] = filename; facts["appearance"] = name; facts["layout"] = layout
+            facts["rendering"] = "Actual owned native content with effective-appearance window background composed"
+            artifacts.append(facts)
+        }
+        return artifacts
+    }
+
+    private static func saveFeedbackLayout(job: SaveWorkflowController, content: NSView,
+                                           savedPath: String) throws -> [String: Any] {
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap { descendants($0) } }
+        func rect(_ value: CGRect) -> [String: CGFloat] {
+            ["x": value.minX, "y": value.minY, "width": value.width, "height": value.height]
+        }
+        let status = job.statusLabel, detail = job.detailLabel
+        let notes = descendants(content).compactMap { $0 as? NSTextField }.filter { $0 !== status && $0 !== detail }
+        try require(notes.count == 1, "Expected the production Save note")
+        let note = notes[0]
+        let controls: [(String, NSView)] = [("status", status), ("detail", detail), ("note", note), ("close", job.closeButton)]
+        let frames = controls.map { $0.1.convert($0.1.bounds, to: content) }
+        let visible = controls.allSatisfy { !$0.1.isHiddenOrHasHiddenAncestor && $0.1.alphaValue == 1 }
+        let contained = frames.allSatisfy { $0.width > 0 && $0.height > 0
+            && content.bounds.insetBy(dx: -0.5, dy: -0.5).contains($0) }
+        var separated = true
+        for index in frames.indices {
+            for previous in 0..<index {
+                let overlap = frames[index].intersection(frames[previous])
+                if !overlap.isNull && overlap.width > 0.5 && overlap.height > 0.5 { separated = false }
+            }
+        }
+        let statusCell = try unwrap(status.cell, "Native Save status cell missing")
+        let detailCell = try unwrap(detail.cell, "Native Save detail cell missing")
+        let noteCell = try unwrap(note.cell, "Native Save note cell missing")
+        // The native cell, given actual width and unconstrained height, supplies
+        // the required height. No alignment-rect substitution or fit relaxation.
+        let statusHeight = statusCell.cellSize(forBounds: CGRect(x: 0, y: 0, width: status.bounds.width, height: 10_000)).height
+        let noteHeight = noteCell.cellSize(forBounds: CGRect(x: 0, y: 0, width: note.bounds.width, height: 10_000)).height
+        let statusWidth = statusCell.cellSize.width, detailWidth = detailCell.cellSize.width
+        let statusAX = status.accessibilityValue() as? String ?? ""
+        let detailAX = detail.accessibilityValue() as? String ?? ""
+        let fits = statusHeight > 0 && statusHeight <= status.bounds.height + 0.5
+            && statusWidth > 0 && statusWidth <= status.bounds.width + 0.5
+            && noteHeight > 0 && noteHeight <= note.bounds.height + 0.5
+        let independent = status.stringValue == "文件已安全保存" && statusAX == status.stringValue
+            && detail.stringValue == savedPath && detail.toolTip == savedPath && detailAX == savedPath
+            && detail.maximumNumberOfLines == 1 && detailCell.lineBreakMode == .byTruncatingMiddle
+            && detailWidth > detail.bounds.width
+        return ["passed": visible && contained && separated && fits && independent && job.window?.isVisible == true,
+            "contentBounds": rect(content.bounds), "windowVisible": job.window?.isVisible == true,
+            "controlsVisible": visible,
+            "frames": Dictionary(uniqueKeysWithValues: zip(controls.map { $0.0 }, frames.map { rect($0) })),
+            "statusText": status.stringValue, "statusAccessibilityValue": statusAX,
+            "statusRequiredTextHeight": statusHeight, "statusRequiredUntruncatedWidth": statusWidth,
+            "noteRequiredTextHeight": noteHeight, "detailRequiredUntruncatedWidth": detailWidth,
+            "detailText": detail.stringValue, "detailToolTip": detail.toolTip ?? "", "detailAccessibilityValue": detailAX,
+            "detailMaximumNumberOfLines": detail.maximumNumberOfLines,
+            "detailTruncatesMiddle": detailCell.lineBreakMode == .byTruncatingMiddle]
     }
 
     private static func nativeImage(view: NSView, window: NSWindow? = nil) throws -> CGImage {

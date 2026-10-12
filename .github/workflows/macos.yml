@@ -78,6 +78,23 @@ jobs:
         native.need(not skipped,'Live scrolling cases cannot be skipped')
         Path('dist/live-scroll-test-inventory.json').write_text(json.dumps({'passed':passed,'skipped':skipped,'count':len(expected)},indent=2)+'\n')
         PY
+    - name: Verify visible Save status and unchanged Save workflows
+      if: ${{ contains(github.event.head_commit.message || '', '[save-feedback]') && steps.compile_live_scroll_tests.outcome == 'success' }}
+      timeout-minutes: 8
+      run: |
+        python3 scripts/run-bounded-command.py --timeout-seconds 420 --log dist/live-scroll-save-feedback-tests.log --report dist/live-scroll-save-feedback-tests.json -- swift test --skip-build --filter SaveWorkflowUITests
+        python3 - <<'PYTHON'
+        import importlib.util,json
+        from pathlib import Path
+        spec=importlib.util.spec_from_file_location('native','scripts/native-test-shards.py')
+        native=importlib.util.module_from_spec(spec);spec.loader.exec_module(native)
+        inventory=json.loads(Path('scripts/save-feedback-native-tests.json').read_text())
+        expected=sorted(inventory['baseline241'] + inventory['added'])
+        native.need(len(expected)==len(set(expected)), 'Save feedback inventory contains duplicates')
+        passed,skipped=native.case_results(Path('dist/live-scroll-save-feedback-tests.log').read_text(),expected)
+        native.need(not skipped,'Save feedback cases cannot be skipped')
+        Path('dist/live-scroll-save-feedback-inventory.json').write_text(json.dumps({'passed':passed,'skipped':skipped,'count':len(expected)},indent=2)+'\n')
+        PYTHON
     # One diagnostic pair only; ordinary product defaults remain unchanged.
     # Existing40min job cap is independent of individual worst-case stage bounds.
     - name: Compare exact final PNG write bridge in two fresh resource cells
@@ -876,8 +893,20 @@ jobs:
                   and all(native.SPECIFIER.fullmatch(case) and '.LiveScroll' in case for case in added),
                   'Explicit live-scroll inventory is invalid')
               native.need(set(added).issubset(inventory), 'Complete native inventory is missing a required additive live-scroll method')
-              original = [case for case in inventory if case not in set(added)]
-              original_shards = [[case for case in shard['tests'] if case not in set(added)] for shard in plan['shards']]
+              feedback = json.loads(native.bounded_text(Path('scripts/save-feedback-native-tests.json'), 16*1024))
+              native.need(type(feedback) is dict and set(feedback) == {'baseline241', 'added'}, 'Save feedback inventory schema differs')
+              feedback_added = feedback['added']
+              native.need(type(feedback_added) is list and feedback_added == sorted(set(feedback_added)) and feedback_added
+                  and all(native.SPECIFIER.fullmatch(case) and case.startswith('PicShotTests.SaveWorkflowUITests/') for case in feedback_added),
+                  'Explicit Save feedback additions are invalid')
+              native.need(type(feedback['baseline241']) is list and len(feedback['baseline241']) == 9
+                  and feedback['baseline241'] == sorted(set(feedback['baseline241']))
+                  and not (set(feedback_added) & set(feedback['baseline241']))
+                  and sorted(feedback['baseline241'] + feedback_added) == [case for case in inventory if case.startswith('PicShotTests.SaveWorkflowUITests/')],
+                  'Save feedback class lost or added an unrecorded method')
+              additions = set(added) | set(feedback_added)
+              original = [case for case in inventory if case not in additions]
+              original_shards = [[case for case in shard['tests'] if case not in additions] for shard in plan['shards']]
               native.need(len(original) == 2047 and len({case.split('/')[0] for case in original}) == 232
                   and hashlib.sha256(('\n'.join(original)+'\n').encode()).hexdigest() ==
                       '926ac5674df90163b949fe461f0d4589ef72c8fc3215fa00b927564aae57cb44'
@@ -889,6 +918,7 @@ jobs:
                   'Pin class inventory differs from the four original methods')
               record.update(planSHA256=digest(plan_path), discoveredCount=len(inventory), discoveredClassCount=len({case.split('/')[0] for case in inventory}),
                   preserved214Methods=len(original), additiveLiveScrollMethods=len(added), additiveLiveScrollIDs=added,
+                  additiveSaveFeedbackMethods=len(feedback_added), additiveSaveFeedbackIDs=feedback_added,
                   discoverySHA256=digest(Path('dist/native-test-discovery.log')),
                   fixtureSHA256=digest(Path('Tests/PicShotTests/PinAnchoredEditingTests.swift')))
               for label, expected in (('method', [method]), ('class', class_ids)):
@@ -4564,8 +4594,20 @@ jobs:
                   and all(native.SPECIFIER.fullmatch(case) and '.LiveScroll' in case for case in added),
                   'Explicit live-scroll inventory is invalid')
               native.need(set(added).issubset(inventory), 'Complete native inventory is missing a required additive live-scroll method')
-              original = [case for case in inventory if case not in set(added)]
-              original_shards = [[case for case in shard['tests'] if case not in set(added)] for shard in plan['shards']]
+              feedback = json.loads(native.bounded_text(Path('scripts/save-feedback-native-tests.json'), 16*1024))
+              native.need(type(feedback) is dict and set(feedback) == {'baseline241', 'added'}, 'Save feedback inventory schema differs')
+              feedback_added = feedback['added']
+              native.need(type(feedback_added) is list and feedback_added == sorted(set(feedback_added)) and feedback_added
+                  and all(native.SPECIFIER.fullmatch(case) and case.startswith('PicShotTests.SaveWorkflowUITests/') for case in feedback_added),
+                  'Explicit Save feedback additions are invalid')
+              native.need(type(feedback['baseline241']) is list and len(feedback['baseline241']) == 9
+                  and feedback['baseline241'] == sorted(set(feedback['baseline241']))
+                  and not (set(feedback_added) & set(feedback['baseline241']))
+                  and sorted(feedback['baseline241'] + feedback_added) == [case for case in inventory if case.startswith('PicShotTests.SaveWorkflowUITests/')],
+                  'Save feedback class lost or added an unrecorded method')
+              additions = set(added) | set(feedback_added)
+              original = [case for case in inventory if case not in additions]
+              original_shards = [[case for case in shard['tests'] if case not in additions] for shard in plan['shards']]
               native.need(len(original) == 2047 and len({case.split('/')[0] for case in original}) == 232
                   and hashlib.sha256(('\n'.join(original)+'\n').encode()).hexdigest() ==
                       '926ac5674df90163b949fe461f0d4589ef72c8fc3215fa00b927564aae57cb44'
@@ -4577,6 +4619,7 @@ jobs:
                   'Pin class inventory differs from the four original methods')
               record.update(planSHA256=digest(plan_path), discoveredCount=len(inventory), discoveredClassCount=len({case.split('/')[0] for case in inventory}),
                   preserved214Methods=len(original), additiveLiveScrollMethods=len(added), additiveLiveScrollIDs=added,
+                  additiveSaveFeedbackMethods=len(feedback_added), additiveSaveFeedbackIDs=feedback_added,
                   discoverySHA256=digest(Path('dist/native-test-discovery.log')),
                   fixtureSHA256=digest(Path('Tests/PicShotTests/PinAnchoredEditingTests.swift')))
               for label, expected in (('method', [method]), ('class', class_ids)):

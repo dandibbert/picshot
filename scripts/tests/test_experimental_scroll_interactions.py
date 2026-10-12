@@ -66,6 +66,22 @@ def output_demo():
                     outputPixelSHA256='a'*64, sourcePixelSHA256='a'*64)
     def artifacts():
         return [dict(appearance=x, filename='output-fixture-'+x+'.png', width=480, height=60) for x in ('light','dark')]
+    filename = 'owned-long-output-' + 'capture-segment-' * 6 + '长截图保存结果-1.png'
+    saved_path = '/private/tmp/PicShot-LiveOutput-owned/saved/' + filename
+    def feedback_artifacts(width):
+        def rect(x, y, w, h): return dict(x=x, y=y, width=w, height=h)
+        stem = 'output-save-feedback-' if width == 460 else 'output-save-feedback-narrow-'
+        return [dict(appearance=appearance, filename=stem+appearance+'.png', width=width, height=190,
+            canonicalRGBAPixelSHA256=('c' if appearance == 'light' else 'd')*64,
+            layout=dict(passed=True, contentBounds=rect(0, 0, width, 190),
+                windowVisible=True, controlsVisible=True,
+                frames=dict(status=rect(18, 152, width-36, 20), detail=rect(18, 128, width-36, 18),
+                            note=rect(18, 78, width-36, 32), close=rect(width-88, 32, 70, 32)),
+                statusText='文件已安全保存', statusAccessibilityValue='文件已安全保存',
+                statusRequiredTextHeight=20, statusRequiredUntruncatedWidth=110, noteRequiredTextHeight=32,
+                detailRequiredUntruncatedWidth=1200, detailText=saved_path, detailToolTip=saved_path,
+                detailAccessibilityValue=saved_path, detailMaximumNumberOfLines=1, detailTruncatesMiddle=True))
+            for appearance in ('light', 'dark')]
     return dict(status='passed', productSessionClosed=True, privateTemporaryRootRemoved=True, cleanupSafe=True,
         canonicalPrivateTemporaryRoot=True, realScreenCaptureClaimed=False, screenCaptureAPICalled=False,
         permissionRequested=False, globalInputPosted=False, networkUsed=False,
@@ -76,7 +92,9 @@ def output_demo():
             copyRecipientAttempts=1, saveJobAdmissions=1, editorCallbacks=0, importCallbacks=0,
             saveMenuIdentifier='scroll.live.quickSave', saveSelector='quickSavePressed',
             rejectedCopyComparison=comparison(704), savedPNGComparison=comparison(704),
-            controlArtifacts=artifacts(), saveFeedbackArtifacts=artifacts()),
+            savedPath=saved_path, savedFilename=filename, saveFeedback='文件已安全保存',
+            controlArtifacts=artifacts(), saveFeedbackArtifacts=feedback_artifacts(460),
+            saveFeedbackNarrowArtifacts=feedback_artifacts(320)),
         singleViewportPin=dict(status='passed', productSessionClosed=True, pinControllersClosed=True,
             cleanupSafe=True, singleViewportUnchanged=True, persistedAndReopened=True, independentPublishedPNGDecode=True, pinCallbacks=1,
             unexpectedCallbacks=0, visibleNativePinCount=1, menuIdentifier='scroll.live.pin', selector='pinPressed',
@@ -108,6 +126,77 @@ class ExperimentalInteractionTests(unittest.TestCase):
                       [dict(appearance=x,filename='../outside.png',width=480,height=60) for x in ('light','dark')]]:
             changed=output_demo(); changed['stitchedCopyFailureThenSave']['controlArtifacts']=value
             with self.assertRaises(ValueError): C.output_fields(changed)
+
+    def test_save_feedback_missing_and_invalid_geometry_fail_closed(self):
+        for key in ('saveFeedbackArtifacts', 'saveFeedbackNarrowArtifacts'):
+            baseline = output_demo()['stitchedCopyFailureThenSave'][key][0]
+            paths = []
+            def visit(row, path=()):
+                for name, value in row.items():
+                    current = path + (name,)
+                    paths.append(current)
+                    if type(value) is dict: visit(value, current)
+            visit({name: value for name, value in baseline.items() if name != 'appearance'})
+            for path in paths:
+                for replacement in ('DELETE', None, float('nan'), True):
+                    if replacement is True and self.lookup(baseline, path) is True: continue
+                    with self.subTest(artifacts=key, path=path, replacement=replacement):
+                        changed = output_demo(); artifact = changed['stitchedCopyFailureThenSave'][key][0]
+                        row = artifact
+                        for name in path[:-1]: row = row[name]
+                        if replacement == 'DELETE': del row[path[-1]]
+                        else: row[path[-1]] = replacement
+                        with self.assertRaises(ValueError): C.output_fields(changed)
+
+    def test_save_feedback_rejects_clipping_overlap_and_path_lost_from_accessibility(self):
+        mutations = [
+            (('frames', 'status', 'y'), 175),
+            (('frames', 'detail', 'x'), -1),
+            (('frames', 'note', 'width'), 460),
+            (('frames', 'close', 'height'), 170),
+            (('frames', 'detail', 'y'), 145),
+            (('statusRequiredTextHeight',), 20.51),
+            (('noteRequiredTextHeight',), 32.51),
+            (('statusRequiredUntruncatedWidth',), 1000),
+            (('detailRequiredUntruncatedWidth',), 200),
+            (('statusText',), '/private/tmp/a-long-path.png 文件已安全保存'),
+            (('statusAccessibilityValue',), ''),
+            (('detailText',), '…/result.png'),
+            (('detailToolTip',), '…/result.png'),
+            (('detailAccessibilityValue',), '…/result.png'),
+            (('detailMaximumNumberOfLines',), 3),
+            (('detailTruncatesMiddle',), False),
+            (('windowVisible',), False),
+            (('controlsVisible',), False),
+            (('passed',), False),
+        ]
+        for key in ('saveFeedbackArtifacts', 'saveFeedbackNarrowArtifacts'):
+            for index in (0, 1):
+                for path, value in mutations:
+                    with self.subTest(artifacts=key, index=index, path=path):
+                        changed = output_demo(); row = changed['stitchedCopyFailureThenSave'][key][index]['layout']
+                        for name in path[:-1]: row = row[name]
+                        row[path[-1]] = value
+                        with self.assertRaises(ValueError): C.output_fields(changed)
+        changed = output_demo()
+        layout = changed['stitchedCopyFailureThenSave']['saveFeedbackArtifacts'][0]['layout']
+        layout['statusRequiredTextHeight'] = 20.5
+        C.output_fields(changed)  # A half point of native rounding, never an extra line.
+
+    def test_save_feedback_requires_both_widths_appearances_and_bounded_mixed_script_path(self):
+        for key in ('saveFeedbackArtifacts', 'saveFeedbackNarrowArtifacts'):
+            for value in ([], None):
+                changed = output_demo(); changed['stitchedCopyFailureThenSave'][key] = value
+                with self.assertRaises(ValueError): C.output_fields(changed)
+            for field, value in [('width', 461), ('height', 191), ('appearance', 'light'),
+                                 ('filename', '../outside.png'), ('canonicalRGBAPixelSHA256', 'broken')]:
+                changed = output_demo(); changed['stitchedCopyFailureThenSave'][key][1][field] = value
+                with self.subTest(key=key, field=field), self.assertRaises(ValueError): C.output_fields(changed)
+        for field, value in [('savedPath', 'relative/path.png'), ('savedPath', '/'+'a'*1024),
+                             ('savedFilename', 'short.png'), ('savedFilename', 'a'*181+'.png'),
+                             ('saveFeedback', '已完成')]:
+            changed = output_demo(); changed['stitchedCopyFailureThenSave'][field] = value
+            with self.subTest(field=field, value=value), self.assertRaises(ValueError): C.output_fields(changed)
 
     def test_complete_interaction_contract_without_memory_eligibility(self):
         C.demo_fields(demo())
@@ -272,10 +361,14 @@ class ExperimentalInteractionTests(unittest.TestCase):
                 names={'output-owned-numbered-reference.png','output-published-long.png','output-published-single-pin.png'}
                 for row,key in [(output['stitchedCopyFailureThenSave'],'controlArtifacts'),
                                 (output['stitchedCopyFailureThenSave'],'saveFeedbackArtifacts'),
+                                (output['stitchedCopyFailureThenSave'],'saveFeedbackNarrowArtifacts'),
                                 (output['singleViewportPin'],'controlArtifacts'),(output['singleViewportPin'],'nativePinArtifacts')]:
                     names.update(x['filename'] for x in row[key])
                 for name in names:(output_root/name).write_bytes(visual)
                 C.save(output_root/'live-scroll-output.json',output)
+                C.save(output_root/'output-save-feedback-layout.json',
+                       dict(normal=output['stitchedCopyFailureThenSave']['saveFeedbackArtifacts'],
+                            narrow=output['stitchedCopyFailureThenSave']['saveFeedbackNarrowArtifacts']))
                 records={C.EVIDENCE/'package-identity.json':installed,C.EVIDENCE/'demo/demo.json':d,
                          C.EVIDENCE/'demo/demo.json.launcher.json':launcher,
                          C.EVIDENCE/'demo-launch.json':inner,Path('dist/experimental-scroll-installed-report.json'):outer}
@@ -287,6 +380,16 @@ class ExperimentalInteractionTests(unittest.TestCase):
                     path.write_bytes(b'\x89PNG\r\n\x1a\nfixture' if filename.endswith('.png') else b'GIF89afixture')
                 with patch.object(C,'source_record',return_value=source):
                     receipt=C.qualify();self.assertEqual(receipt['status'],'passed')
+                    layout_path=output_root/'output-save-feedback-layout.json'
+                    layout=C.load(layout_path);changed_layout=copy.deepcopy(layout)
+                    del changed_layout['narrow'][1]['layout']['statusRequiredTextHeight']
+                    C.save(layout_path,changed_layout)
+                    with self.assertRaises(ValueError):C.qualify()
+                    C.save(layout_path,layout)
+                    narrow_image=output_root/output['stitchedCopyFailureThenSave']['saveFeedbackNarrowArtifacts'][1]['filename']
+                    narrow_image.unlink()
+                    with self.assertRaises(ValueError):C.qualify()
+                    narrow_image.write_bytes(visual)
                     for path,value in records.items():
                         for key in value:
                             if key in ('illustratedCase','ordinaryTextCase','movementCase','realStream'):continue
@@ -384,7 +487,7 @@ class WorkflowSelectionTests(unittest.TestCase):
             self.assertIn('PicShot-EXPERIMENTAL-macos-',step)
             self.assertNotIn('testing-qualification.json',step)
 
-    def test_current_2203_inventory_and_original_2047_ids(self):
+    def test_current_2208_inventory_and_original_2047_ids(self):
         # Same portable source sentinel as native-test-shards; actual discovery
         # and all current native IDs still execute in the unchanged workflow.
         inventory=[]
@@ -398,11 +501,15 @@ class WorkflowSelectionTests(unittest.TestCase):
             module=path.relative_to(REPO/'Tests').parts[0]
             inventory.extend(module+'.'+classes[0]+'/'+method for method in methods)
         inventory=sorted(inventory)
-        self.assertEqual(len(inventory),2203)
-        self.assertEqual(len(set(inventory)),2203)
+        self.assertEqual(len(inventory),2208)
+        self.assertEqual(len(set(inventory)),2208)
         live=json.loads((REPO/'scripts/live-scroll-additive-tests.json').read_text())
         self.assertEqual(len(live),156);self.assertTrue(set(live).issubset(inventory))
-        original=[name for name in inventory if name not in set(live)]
+        feedback=json.loads((REPO/'scripts/save-feedback-native-tests.json').read_text())
+        with patch.object(C, 'load', return_value=feedback):
+            feedback_added=C.feedback_additions(inventory)
+        self.assertEqual(len(feedback_added),5)
+        original=[name for name in inventory if name not in set(live) | feedback_added]
         self.assertEqual(len(original),2047)
         self.assertEqual(hashlib.sha256(('\n'.join(original)+'\n').encode()).hexdigest(),
                          '926ac5674df90163b949fe461f0d4589ef72c8fc3215fa00b927564aae57cb44')

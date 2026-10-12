@@ -246,7 +246,7 @@ def output_fields(output):
         pixel_hash = comparison.get('outputPixelSHA256')
         need(type(pixel_hash) is str and re.fullmatch('[0-9a-f]{64}', pixel_hash) is not None
              and pixel_hash == comparison.get('sourcePixelSHA256'), key + ': exact pixel digest differs')
-    for row, key in [(save, 'controlArtifacts'), (save, 'saveFeedbackArtifacts'),
+    for row, key in [(save, 'controlArtifacts'), (save, 'saveFeedbackArtifacts'), (save, 'saveFeedbackNarrowArtifacts'),
                      (pin, 'controlArtifacts'), (pin, 'nativePinArtifacts')]:
         artifacts = row.get(key)
         need(type(artifacts) is list and len(artifacts) == 2
@@ -258,6 +258,64 @@ def output_fields(output):
                  and name.endswith('.png'), 'Unsafe or absent native output image')
             number(artifact.get('width'), 'output image width', 1, 4000000)
             number(artifact.get('height'), 'output image height', 1, 4000000)
+
+
+    save_feedback_fields(save)
+
+
+def save_feedback_fields(save):
+    """Recompute full-frame/text-fit claims from native measurements, not flags."""
+    outcome = '文件已安全保存'
+    fields(save, dict(saveFeedback=outcome), 'save feedback')
+    path, filename = save.get('savedPath'), save.get('savedFilename')
+    need(type(path) is str and path.startswith('/') and '..' not in Path(path).parts
+         and len(path.encode('utf-8')) <= 1024, 'Missing or invalid saved path')
+    need(type(filename) is str and Path(path).name == filename and Path(filename).name == filename
+         and 100 <= len(filename.encode('utf-8')) <= 180
+         and 'capture-segment-' in filename and '长截图保存结果-' in filename
+         and filename.endswith('.png'), 'Bounded long ASCII/Unicode save filename required')
+
+    def rect(row, label):
+        need(type(row) is dict and set(row) == {'x', 'y', 'width', 'height'}, label + ': missing full frame')
+        return (number(row.get('x'), label + '.x', -4000000, 4000000),
+                number(row.get('y'), label + '.y', -4000000, 4000000),
+                number(row.get('width'), label + '.width', .01, 4000000),
+                number(row.get('height'), label + '.height', .01, 4000000))
+
+    for key, width, stem in [('saveFeedbackArtifacts', 460, 'output-save-feedback-'),
+                             ('saveFeedbackNarrowArtifacts', 320, 'output-save-feedback-narrow-')]:
+        for artifact in save[key]:
+            fields(artifact, dict(width=width, height=190, filename=stem + artifact['appearance'] + '.png'), key)
+            digest = artifact.get('canonicalRGBAPixelSHA256')
+            need(type(digest) is str and re.fullmatch('[0-9a-f]{64}', digest) is not None,
+                 key + ': native snapshot pixel digest missing')
+            layout = artifact.get('layout')
+            fields(layout, dict(passed=True, windowVisible=True, controlsVisible=True,
+                statusText=outcome, statusAccessibilityValue=outcome,
+                detailText=path, detailToolTip=path, detailAccessibilityValue=path,
+                detailMaximumNumberOfLines=1, detailTruncatesMiddle=True), key + '.layout')
+            bounds = rect(layout.get('contentBounds'), 'save content')
+            need(bounds == (0, 0, width, 190), 'Compact Save content bounds differ')
+            frames = layout.get('frames')
+            need(type(frames) is dict and set(frames) == {'status', 'detail', 'note', 'close'},
+                 'Every Save text/control full frame is required')
+            measured = {name: rect(frame, name) for name, frame in frames.items()}
+            for name, (x, y, w, h) in measured.items():
+                need(x >= -.5 and y >= -.5 and x + w <= width + .5 and y + h <= 190.5,
+                     name + ': full frame clipped outside Save window')
+            values = list(measured.items())
+            for index, (name, (x, y, w, h)) in enumerate(values):
+                for previous, (ox, oy, ow, oh) in values[:index]:
+                    overlap_w, overlap_h = min(x+w, ox+ow)-max(x, ox), min(y+h, oy+oh)-max(y, oy)
+                    need(overlap_w <= .5 or overlap_h <= .5, name + '/' + previous + ': full frames overlap')
+            # 0.5 point allows native subpixel rounding, never another text line.
+            for role, height_key in [('status', 'statusRequiredTextHeight'), ('note', 'noteRequiredTextHeight')]:
+                required = number(layout.get(height_key), height_key, .01, 10000)
+                need(required <= measured[role][3] + .5, role + ': native required text height is clipped')
+            status_width = number(layout.get('statusRequiredUntruncatedWidth'), 'status native width', .01, 10000)
+            need(status_width <= measured['status'][2] + .5, 'Save outcome text is horizontally clipped')
+            detail_width = number(layout.get('detailRequiredUntruncatedWidth'), 'detail native width', .01, 10000)
+            need(detail_width > measured['detail'][2], 'Saved path did not exercise native truncation')
 
 
 def qualify():
@@ -303,9 +361,15 @@ def qualify():
     output_report = load(output_root/'live-scroll-output.json')
     need(output_report == demo['outputCase'], 'Output subreport differs from installed session report')
     files.append(output_root/'live-scroll-output.json')
+    feedback_layout_path = output_root/'output-save-feedback-layout.json'
+    saved_output = output_report['stitchedCopyFailureThenSave']
+    need(load(feedback_layout_path) == dict(normal=saved_output['saveFeedbackArtifacts'],
+         narrow=saved_output['saveFeedbackNarrowArtifacts']), 'Persisted Save layout differs from session evidence')
+    files.append(feedback_layout_path)
     output_names = {'output-owned-numbered-reference.png', 'output-published-long.png', 'output-published-single-pin.png'}
     for row, key in [(output_report['stitchedCopyFailureThenSave'], 'controlArtifacts'),
                      (output_report['stitchedCopyFailureThenSave'], 'saveFeedbackArtifacts'),
+                     (output_report['stitchedCopyFailureThenSave'], 'saveFeedbackNarrowArtifacts'),
                      (output_report['singleViewportPin'], 'controlArtifacts'),
                      (output_report['singleViewportPin'], 'nativePinArtifacts')]:
         output_names.update(x['filename'] for x in row[key])
@@ -331,6 +395,22 @@ def validate_outcomes(steps):
         fields(steps.get(name), dict(outcome='skipped', conclusion='skipped'), 'excluded gate ' + name)
 
 
+
+def feedback_additions(inventory):
+    feedback = load(Path('scripts/save-feedback-native-tests.json'))
+    need(set(feedback) == {'baseline241', 'added'}, 'Save feedback native inventory schema differs')
+    for key, count in [('baseline241', 9), ('added', 5)]:
+        methods = feedback[key]
+        need(type(methods) is list and len(methods) == count
+             and all(type(name) is str and re.fullmatch(r'PicShotTests\.SaveWorkflowUITests/test\w+', name) for name in methods)
+             and methods == sorted(set(methods)), 'Save feedback ' + key + ' inventory differs')
+    need(not set(feedback['baseline241']) & set(feedback['added'])
+         and sorted(feedback['baseline241'] + feedback['added'])
+         == [name for name in inventory if name.startswith('PicShotTests.SaveWorkflowUITests/')],
+         'Save feedback class lost or added an unrecorded test')
+    return set(feedback['added'])
+
+
 def final():
     source = source_record()
     receipt = qualify()
@@ -349,11 +429,12 @@ def final():
             ('full', 'native-tests-plan.json', 'native-test-shards', 'test-report.json'),
             ('focused', 'focused-tests-plan.json', 'focused-test-shards', 'critical-tests-report.json')):
         plan = native.checked_plan(Path('dist')/planfile, source['sourceCommit'])
-        need(len(plan['discoveredTests']) == 2203, 'Current2203 native inventory required')
+        need(len(plan['discoveredTests']) == 2208, 'Current2208 native inventory required')
         if kind == 'full':
             live = json.loads(read(Path('scripts/live-scroll-additive-tests.json')))
             need(len(live) == 156 and set(live).issubset(plan['discoveredTests']), 'Current156 live methods required')
-            stable = [name for name in plan['discoveredTests'] if name not in set(live)]
+            feedback = feedback_additions(plan['discoveredTests'])
+            stable = [name for name in plan['discoveredTests'] if name not in set(live) | feedback]
             need(len(stable) == 2047 and hashlib.sha256(('\n'.join(stable)+'\n').encode()).hexdigest()
                  == '926ac5674df90163b949fe461f0d4589ef72c8fc3215fa00b927564aae57cb44', 'Stable214 inventory changed')
             need(plan['selectedTests'] == plan['discoveredTests'], 'Full suite narrowed')

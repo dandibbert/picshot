@@ -74,6 +74,14 @@ struct SaveWorkflowSummary {
     let byteCount: Int
     let clipboardOutcome: SaveWorkflowClipboardOutcome
     init(_ result: SaveWorkflowResult) { savedURL = result.savedURL; byteCount = result.byteCount; clipboardOutcome = result.clipboardOutcome }
+    var statusText: String {
+        switch clipboardOutcome {
+        case .copied: return "已保存并复制同一份编码文件内容"
+        case .failed: return "复制失败，已保存的文件仍然保留，可重试复制"
+        case .cancelledAfterSave: return "文件已完成保存；关闭操作取消了后续复制"
+        case .notRequested: return "文件已安全保存"
+        }
+    }
 }
 
 @MainActor
@@ -87,6 +95,7 @@ final class SaveWorkflowController: NSWindowController, NSWindowDelegate {
     private var savedForCopy: SaveWorkflowResult?
     var retainedClipboardBytes: Int { savedForCopy?.byteCount ?? 0 }
     let statusLabel = NSTextField(wrappingLabelWithString: "准备保存最终图片…")
+    let detailLabel = NSTextField(labelWithString: "")
     let closeButton = NSButton(title: "取消", target: nil, action: nil)
     let retryCopyButton = NSButton(title: "重试复制", target: nil, action: nil)
     private let spinner = NSProgressIndicator()
@@ -129,7 +138,18 @@ final class SaveWorkflowController: NSWindowController, NSWindowDelegate {
         super.init(window: window); window.delegate = self
         let stack = NSStackView(); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 12
         stack.translatesAutoresizingMaskIntoConstraints = false; window.contentView!.addSubview(stack)
-        statusLabel.maximumNumberOfLines = 3; statusLabel.identifier = .init("saveWorkflow.status"); stack.addArrangedSubview(statusLabel)
+        statusLabel.maximumNumberOfLines = 2; statusLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        statusLabel.setContentCompressionResistancePriority(.required, for: .vertical)
+        statusLabel.identifier = .init("saveWorkflow.status"); statusLabel.setAccessibilityLabel("保存状态"); stack.addArrangedSubview(statusLabel)
+        // The outcome always has its own space. Long paths/errors may truncate
+        // visually, but their complete value remains available to hover and AX.
+        detailLabel.font = .systemFont(ofSize: 11); detailLabel.textColor = .secondaryLabelColor
+        detailLabel.maximumNumberOfLines = 1; detailLabel.lineBreakMode = .byTruncatingMiddle
+        detailLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        detailLabel.setContentCompressionResistancePriority(.required, for: .vertical)
+        detailLabel.identifier = .init("saveWorkflow.detail"); stack.addArrangedSubview(detailLabel)
+        stack.setCustomSpacing(4 + statusLabel.alignmentRectInsets.bottom + detailLabel.alignmentRectInsets.top, after: statusLabel)
+        showStatus("准备保存最终图片…")
         let note = NSTextField(wrappingLabelWithString: "只保存已合成的最终结果。已有文件不会被替换；取消不会修改原图。")
         if copyAfterSaving, let artifact, artifact.options.format != .png {
             note.stringValue = "复制实际保存格式的编码数据。WebP / AVIF / PDF 能否作为图片粘贴取决于目标应用；未提供通用 PNG 剪贴板兼容层。"
@@ -140,11 +160,13 @@ final class SaveWorkflowController: NSWindowController, NSWindowDelegate {
         retryCopyButton.target = self; retryCopyButton.action = #selector(retryCopy); retryCopyButton.isHidden = true; retryCopyButton.identifier = .init("saveWorkflow.retryCopy")
         let spacer = NSView(); spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         let row = NSStackView(views: [spinner, spacer, retryCopyButton, closeButton]); row.spacing = 8; stack.addArrangedSubview(row)
+        row.setCustomSpacing(max(row.spacing, 2 + retryCopyButton.alignmentRectInsets.right + closeButton.alignmentRectInsets.left), after: retryCopyButton)
         NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo: window.contentView!.leadingAnchor, constant: 18),
             stack.trailingAnchor.constraint(equalTo: window.contentView!.trailingAnchor, constant: -18),
             stack.topAnchor.constraint(equalTo: window.contentView!.topAnchor, constant: 18),
             stack.bottomAnchor.constraint(lessThanOrEqualTo: window.contentView!.bottomAnchor, constant: -16),
-            statusLabel.widthAnchor.constraint(equalTo: stack.widthAnchor), note.widthAnchor.constraint(equalTo: stack.widthAnchor), row.widthAnchor.constraint(equalTo: stack.widthAnchor)])
+            statusLabel.widthAnchor.constraint(equalTo: stack.widthAnchor), detailLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            note.widthAnchor.constraint(equalTo: stack.widthAnchor), row.widthAnchor.constraint(equalTo: stack.widthAnchor)])
     }
     required init?(coder: NSCoder) { fatalError() }
     func start() {
@@ -153,7 +175,7 @@ final class SaveWorkflowController: NSWindowController, NSWindowDelegate {
             do { try await Task.sleep(nanoseconds: 300_000_000_000) } catch { return }
             guard let self, self.result == nil, self.state != .closed else { return }
             self.timedOut = true; self.token.cancel(); self.input?.clear(); self.saveInput?.clear(); self.task?.cancel()
-            self.statusLabel.stringValue = "保存超过 5 分钟，已请求取消；原图和已完成文件会保留。"
+            self.showStatus("保存超时；已请求取消", detail: "保存超过 5 分钟；原图和已完成文件会保留。", detailName: "错误详情")
             self.state = .failed; self.spinner.stopAnimation(nil); self.cancelPanels(); self.revealForDecision()
         }
         task = Task { @MainActor [weak self] in
@@ -177,7 +199,7 @@ final class SaveWorkflowController: NSWindowController, NSWindowDelegate {
                     counter: try SaveWorkflowCounter.next(in: self.defaults), timeZoneIdentifier: TimeZone.current.identifier)
                 var behavior: SaveWorkflowCollisionBehavior? = nil, selectedURL: URL?
                 while true {
-                    try self.token.check(); self.state = .saving; self.statusLabel.stringValue = "正在保存完整文件…"
+                    try self.token.check(); self.state = .saving; self.showStatus("正在保存完整文件…")
                     do {
                         let saved = try await self.publish(prepared, context: context, behavior: behavior, selectedURL: selectedURL)
                         let outcome = self.copyAfterSaving ? SaveWorkflowService.copySaved(saved, cancellation: self.token, copier: self.copier) : saved
@@ -203,7 +225,8 @@ final class SaveWorkflowController: NSWindowController, NSWindowDelegate {
             } catch {
                 if self.state != .closed {
                     self.state = .failed; self.spinner.stopAnimation(nil); self.statusLabel.textColor = .systemRed
-                    self.statusLabel.stringValue = error.localizedDescription + "\n原图仍然保留，可关闭后重试。"; self.closeButton.title = "关闭"
+                    self.showStatus("保存失败；原图仍然保留，可关闭后重试。", detail: error.localizedDescription, detailName: "错误详情")
+                    self.closeButton.title = "关闭"
                     self.revealForDecision()
                 }
             }
@@ -213,7 +236,7 @@ final class SaveWorkflowController: NSWindowController, NSWindowDelegate {
     private func prepareArtifact() async throws -> ImageExportArtifact {
         if let artifact { return artifact }
         guard let snapshot else { throw SaveWorkflowError.invalidArtifact }
-        state = .encoding; statusLabel.stringValue = "正在编码最终 PNG…"
+        state = .encoding; showStatus("正在编码最终 PNG…")
         let holder = ImageExportJobInput(snapshot), token = token; input = holder
         return try await withCheckedThrowingContinuation { continuation in
             ImageExportService.queue.addOperation {
@@ -240,7 +263,7 @@ final class SaveWorkflowController: NSWindowController, NSWindowDelegate {
         }
     }
     private func chooseFolder() async -> URL? {
-        state = .choosingFolder; statusLabel.stringValue = "请选择快速保存目录，此选择会记入保存设置。"
+        state = .choosingFolder; showStatus("请选择快速保存目录", detail: "此选择会记入保存设置。")
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
         panel.canCreateDirectories = true; panel.title = "选择快速保存文件夹"; panel.prompt = "使用此文件夹"; folderPanel = panel
         return await withCheckedContinuation { continuation in
@@ -270,15 +293,13 @@ final class SaveWorkflowController: NSWindowController, NSWindowDelegate {
     }
     private func showResult() {
         guard let result else { return }; state = .completed; spinner.stopAnimation(nil); closeButton.title = "完成"
-        let tail: String
-        switch result.clipboardOutcome {
-        case .copied: tail = "已复制同一份编码文件内容"
-        case .failed: tail = "复制失败，已保存的文件仍然保留，可重试复制"
-        case .cancelledAfterSave: tail = "文件已完成保存；关闭操作取消了后续复制"
-        case .notRequested: tail = "文件已安全保存"
-        }
-        statusLabel.toolTip = result.savedURL.path
-        statusLabel.stringValue = result.savedURL.path + "\n" + tail; retryCopyButton.isHidden = result.clipboardOutcome != .failed
+        showStatus(result.statusText, detail: result.savedURL.path, detailName: "保存位置")
+        retryCopyButton.isHidden = result.clipboardOutcome != .failed
+    }
+    private func showStatus(_ text: String, detail: String = "", detailName: String = "保存详情") {
+        statusLabel.stringValue = text; statusLabel.toolTip = text; statusLabel.setAccessibilityValue(text)
+        detailLabel.stringValue = detail; detailLabel.toolTip = detail.isEmpty ? nil : detail
+        detailLabel.setAccessibilityLabel(detailName); detailLabel.setAccessibilityValue(detail); detailLabel.isHidden = detail.isEmpty
     }
     @objc private func retryCopy() {
         guard let savedForCopy, state == .completed else { return }

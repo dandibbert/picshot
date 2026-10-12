@@ -1,0 +1,20 @@
+{
+  "baseline241": [
+    "PicShotTests.SaveWorkflowUITests/testApplicationPresenterReachesCurrentAndOriginalPinExportAndExactCopy",
+    "PicShotTests.SaveWorkflowUITests/testAutosaveOffAndNonFinalActionsDoNotCreateJobs",
+    "PicShotTests.SaveWorkflowUITests/testCancelledQueuedSnapshotsKeepAdmissionUntilQueueDrains",
+    "PicShotTests.SaveWorkflowUITests/testChooseAnotherCollisionPanelCancelPreservesOriginal",
+    "PicShotTests.SaveWorkflowUITests/testFixtureCanonicalDirectoryPassesNoFollowAndRawAliasStillFails",
+    "PicShotTests.SaveWorkflowUITests/testNativeFolderPickerCancelPreservesDraftAndPreferences",
+    "PicShotTests.SaveWorkflowUITests/testNativeWorkflowControlsFilesAndInstalledEvidence",
+    "PicShotTests.SaveWorkflowUITests/testQuietAutomaticCopyIsImmediateAndJobSurvivesEditorClose",
+    "PicShotTests.SaveWorkflowUITests/testRealSettingsPreviewInvalidTemplateAndUncommittedDraft"
+  ],
+  "added": [
+    "PicShotTests.SaveWorkflowUITests/testCancelledCopyAfterSaveKeepsPublishedFileMeaningInSeparateStatus",
+    "PicShotTests.SaveWorkflowUITests/testCopyFailureAndRetryKeepVisibleOutcomeAndExactSavedBytes",
+    "PicShotTests.SaveWorkflowUITests/testDiskFailureKeepsVisibleOutcomeAndFullAccessibleError",
+    "PicShotTests.SaveWorkflowUITests/testLongASCIIAndUnicodeSavePathsKeepOutcomeVisibleAtBothWidths",
+    "PicShotTests.SaveWorkflowUITests/testReadyAndQueuedProgressStayVisibleWithoutPathOrErrorDetail"
+  ]
+}

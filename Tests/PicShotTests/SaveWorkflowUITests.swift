@@ -178,6 +178,171 @@ final class SaveWorkflowUITests: XCTestCase {
         XCTAssertEqual(canonical.path, target.path)
         try SaveWorkflowService.validateBaseDirectory(canonical)
     }
+    func testLongASCIIAndUnicodeSavePathsKeepOutcomeVisibleAtBothWidths() async throws {
+        _ = NSApplication.shared
+        let (defaults, name, root) = try isolated()
+        defer { defaults.removePersistentDomain(forName: name); try? FileManager.default.removeItem(at: root) }
+        let presenter = SaveWorkflowPresenter(defaults: defaults)
+        defer { presenter.cancelAll() }
+        let image = try SaveWorkflowUIPreviewFixture.sourceImage(width: 48, height: 32)
+        for component in [String(repeating: "long-output-", count: 8), String(repeating: "截图资料-é-", count: 6)] {
+            try SaveWorkflowSettings(baseURL: root, relativeFolderTemplate: component + "/" + component,
+                filenameTemplate: component + "-{counter}").save(to: defaults)
+            let job = try XCTUnwrap(presenter.save(image: image))
+            try await SaveWorkflowUIPreviewFixture.until({ job.state == .completed || job.state == .failed }, "Long-path save did not finish")
+            let saved = try XCTUnwrap(job.result)
+            XCTAssertEqual(saved.clipboardOutcome, .notRequested)
+            XCTAssertEqual(job.statusLabel.stringValue, "文件已安全保存")
+            XCTAssertEqual(job.detailLabel.stringValue, saved.savedURL.path)
+            XCTAssertEqual(job.detailLabel.accessibilityLabel(), "保存位置")
+            XCTAssertFalse(job.statusLabel.stringValue.contains(saved.savedURL.path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: saved.savedURL.path))
+            try assertFeedbackAtBothWidths(job, detailIsLong: true)
+            job.cancel(); try await SaveWorkflowUIPreviewFixture.drained(presenter)
+        }
+    }
+
+    func testCopyFailureAndRetryKeepVisibleOutcomeAndExactSavedBytes() async throws {
+        _ = NSApplication.shared
+        let (defaults, name, root) = try isolated()
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally(); defaults.removePersistentDomain(forName: name); try? FileManager.default.removeItem(at: root) }
+        let component = String(repeating: "复制结果-é-", count: 6)
+        try SaveWorkflowSettings(baseURL: root, relativeFolderTemplate: component + "/" + component,
+            filenameTemplate: component + "-{counter}").save(to: defaults)
+        let presenter = SaveWorkflowPresenter(defaults: defaults)
+        defer { presenter.cancelAll() }
+        var copyCalls = 0
+        presenter.clipboardCopier = { bytes, type in
+            copyCalls += 1
+            guard copyCalls > 1 else { return false }
+            board.clearContents(); return board.setData(bytes, forType: .init(type))
+        }
+        let job = try XCTUnwrap(presenter.save(image: SaveWorkflowUIPreviewFixture.sourceImage(width: 48, height: 32), copy: true))
+        try await SaveWorkflowUIPreviewFixture.until({ job.state == .completed || job.state == .failed }, "Copy-failure save did not finish")
+        let saved = try XCTUnwrap(job.result), bytes = try Data(contentsOf: saved.savedURL)
+        XCTAssertEqual(saved.clipboardOutcome, .failed); XCTAssertEqual(copyCalls, 1)
+        XCTAssertEqual(job.statusLabel.stringValue, "复制失败，已保存的文件仍然保留，可重试复制")
+        XCTAssertEqual(job.detailLabel.stringValue, saved.savedURL.path)
+        XCTAssertEqual(job.retainedClipboardBytes, bytes.count)
+        XCTAssertFalse(job.retryCopyButton.isHidden); XCTAssertTrue(job.retryCopyButton.isEnabled)
+        try assertFeedbackAtBothWidths(job, detailIsLong: true)
+        job.retryCopyButton.performClick(nil)
+        XCTAssertEqual(copyCalls, 2); XCTAssertEqual(job.result?.clipboardOutcome, .copied)
+        XCTAssertEqual(job.statusLabel.stringValue, "已保存并复制同一份编码文件内容")
+        XCTAssertEqual(job.detailLabel.stringValue, saved.savedURL.path)
+        XCTAssertTrue(job.retryCopyButton.isHidden); XCTAssertEqual(job.retainedClipboardBytes, 0)
+        XCTAssertEqual(try Data(contentsOf: saved.savedURL), bytes); XCTAssertEqual(board.data(forType: .png), bytes)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: saved.savedURL.deletingLastPathComponent().path), [saved.savedURL.lastPathComponent])
+        try assertFeedbackAtBothWidths(job, detailIsLong: true)
+        job.cancel(); try await SaveWorkflowUIPreviewFixture.drained(presenter)
+    }
+
+    func testDiskFailureKeepsVisibleOutcomeAndFullAccessibleError() async throws {
+        _ = NSApplication.shared
+        let (defaults, name, root) = try isolated()
+        defer { defaults.removePersistentDomain(forName: name); try? FileManager.default.removeItem(at: root) }
+        let missing = root.appendingPathComponent("missing-save-directory", isDirectory: true)
+        try SaveWorkflowSettings(baseURL: missing).save(to: defaults)
+        let presenter = SaveWorkflowPresenter(defaults: defaults)
+        defer { presenter.cancelAll() }
+        var copyCalls = 0
+        presenter.clipboardCopier = { _, _ in copyCalls += 1; return true }
+        let job = try XCTUnwrap(presenter.save(image: SaveWorkflowUIPreviewFixture.sourceImage(width: 48, height: 32), copy: true))
+        try await SaveWorkflowUIPreviewFixture.until({ job.state == .failed }, "Missing save directory did not fail")
+        XCTAssertNil(job.result); XCTAssertEqual(copyCalls, 0)
+        XCTAssertEqual(job.statusLabel.stringValue, "保存失败；原图仍然保留，可关闭后重试。")
+        XCTAssertEqual(job.statusLabel.textColor, .systemRed)
+        XCTAssertEqual(job.detailLabel.stringValue, SaveWorkflowError.unsafeDirectory.localizedDescription)
+        XCTAssertEqual(job.detailLabel.accessibilityLabel(), "错误详情")
+        XCTAssertEqual(job.closeButton.title, "关闭"); XCTAssertTrue(job.retryCopyButton.isHidden)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: missing.path))
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+        try assertFeedbackAtBothWidths(job)
+        job.cancel(); try await SaveWorkflowUIPreviewFixture.drained(presenter)
+    }
+
+    func testReadyAndQueuedProgressStayVisibleWithoutPathOrErrorDetail() async throws {
+        _ = NSApplication.shared
+        let (defaults, name, root) = try isolated()
+        defer { ImageExportService.queue.isSuspended = false; defaults.removePersistentDomain(forName: name); try? FileManager.default.removeItem(at: root) }
+        let image = try SaveWorkflowUIPreviewFixture.sourceImage(width: 48, height: 32)
+        let artifact = try ImageExportService.encode(snapshot: ImageExportSnapshot(image: image), options: .init())
+        for prepared in [false, true] {
+            let job = try SaveWorkflowController(image: prepared ? nil : image, artifact: prepared ? artifact : nil,
+                settings: .init(baseURL: root), defaults: defaults, copyAfterSaving: false)
+            defer { job.cancel() }
+            job.revealForDecision()
+            XCTAssertEqual(job.statusLabel.stringValue, "准备保存最终图片…")
+            try assertFeedbackAtBothWidths(job)
+            ImageExportService.queue.isSuspended = true; job.start()
+            let expectedState: SaveWorkflowController.State = prepared ? .saving : .encoding
+            try await SaveWorkflowUIPreviewFixture.until({ job.state == expectedState }, "Save did not reach queued progress")
+            XCTAssertEqual(job.statusLabel.stringValue, prepared ? "正在保存完整文件…" : "正在编码最终 PNG…")
+            XCTAssertTrue(job.detailLabel.stringValue.isEmpty); XCTAssertTrue(job.detailLabel.isHidden)
+            try assertFeedbackAtBothWidths(job)
+            job.cancel(); ImageExportService.queue.isSuspended = false
+            try await SaveWorkflowUIPreviewFixture.until({ job.jobDrained }, "Cancelled progress job did not drain")
+        }
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+    }
+
+    func testCancelledCopyAfterSaveKeepsPublishedFileMeaningInSeparateStatus() throws {
+        let (defaults, name, root) = try isolated()
+        defer { defaults.removePersistentDomain(forName: name); try? FileManager.default.removeItem(at: root) }
+        let image = try SaveWorkflowUIPreviewFixture.sourceImage(width: 16, height: 12)
+        let artifact = try ImageExportService.encode(snapshot: ImageExportSnapshot(image: image), options: .init())
+        let saved = try SaveWorkflowService.publish(artifact, to: root.appendingPathComponent("outcomes.png"))
+        let cancellation = ImageExportCancellation(); cancellation.cancel()
+        let outcome = SaveWorkflowService.copySaved(saved, cancellation: cancellation) { _, _ in
+            XCTFail("Cancellation after publication must skip copying"); return false
+        }
+        let summary = SaveWorkflowSummary(outcome)
+        XCTAssertEqual(summary.clipboardOutcome, .cancelledAfterSave)
+        XCTAssertEqual(summary.statusText, "文件已完成保存；关闭操作取消了后续复制")
+        XCTAssertFalse(summary.statusText.contains(root.path))
+        XCTAssertEqual(summary.savedURL, saved.savedURL); XCTAssertEqual(summary.byteCount, artifact.byteCount)
+        XCTAssertEqual(try Data(contentsOf: saved.savedURL), artifact.data)
+    }
+
+    private func assertFeedbackAtBothWidths(_ job: SaveWorkflowController, detailIsLong: Bool = false,
+                                           file: StaticString = #filePath, line: UInt = #line) throws {
+        let window = try XCTUnwrap(job.window, file: file, line: line), content = try XCTUnwrap(window.contentView, file: file, line: line)
+        let previousAppearance = window.appearance
+        defer { window.appearance = previousAppearance }
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            window.appearance = try XCTUnwrap(NSAppearance(named: appearance), file: file, line: line)
+            for width in [CGFloat(460), 320, 460] {
+                window.setContentSize(CGSize(width: width, height: 190)); window.layoutIfNeeded(); content.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+                XCTAssertEqual(content.bounds.width, width, accuracy: 0.5, file: file, line: line)
+                XCTAssertEqual(content.bounds.height, 190, accuracy: 0.5, file: file, line: line)
+                XCTAssertFalse(job.statusLabel.isHiddenOrHasHiddenAncestor, file: file, line: line)
+                XCTAssertEqual(job.statusLabel.accessibilityLabel(), "保存状态", file: file, line: line)
+                XCTAssertEqual(job.statusLabel.accessibilityValue() as? String, job.statusLabel.stringValue, file: file, line: line)
+                let needed = try XCTUnwrap(job.statusLabel.cell, file: file, line: line).cellSize(forBounds:
+                    NSRect(x: 0, y: 0, width: job.statusLabel.bounds.width, height: 1_000))
+                XCTAssertGreaterThanOrEqual(job.statusLabel.bounds.height + 0.5, needed.height, "Complete outcome must fit", file: file, line: line)
+                let controls = descendants(content).compactMap { $0 as? NSControl }.filter { !$0.isHiddenOrHasHiddenAncestor }
+                let frames = controls.map { $0.convert($0.bounds, to: content) }
+                for (index, frame) in frames.enumerated() {
+                    XCTAssertGreaterThan(frame.width, 0, file: file, line: line); XCTAssertGreaterThan(frame.height, 0, file: file, line: line)
+                    XCTAssertTrue(content.bounds.insetBy(dx: -0.5, dy: -0.5).contains(frame), "Visible feedback/control must fit: \(controls[index])", file: file, line: line)
+                    for other in frames.dropFirst(index + 1) { XCTAssertFalse(frame.intersects(other), "Feedback and controls must not overlap", file: file, line: line) }
+                }
+                XCTAssertTrue(job.closeButton.isEnabled, file: file, line: line)
+                if !job.detailLabel.stringValue.isEmpty {
+                    XCTAssertFalse(job.detailLabel.isHiddenOrHasHiddenAncestor, file: file, line: line)
+                    XCTAssertEqual(job.detailLabel.maximumNumberOfLines, 1, file: file, line: line)
+                    XCTAssertEqual(job.detailLabel.lineBreakMode, .byTruncatingMiddle, file: file, line: line)
+                    XCTAssertEqual(job.detailLabel.toolTip, job.detailLabel.stringValue, file: file, line: line)
+                    XCTAssertEqual(job.detailLabel.accessibilityValue() as? String, job.detailLabel.stringValue, file: file, line: line)
+                    let detailCell = try XCTUnwrap(job.detailLabel.cell, file: file, line: line)
+                    XCTAssertGreaterThanOrEqual(job.detailLabel.bounds.height + 0.5, detailCell.cellSize.height, file: file, line: line)
+                    if detailIsLong { XCTAssertGreaterThan(detailCell.cellSize.width, job.detailLabel.bounds.width, "Fixture must require visual truncation", file: file, line: line) }
+                } else { XCTAssertTrue(job.detailLabel.isHidden, file: file, line: line) }
+            }
+        }
+    }
     private func isolated() throws -> (UserDefaults, String, URL) {
         let name = "PicShot-SaveWorkflowUITests-" + UUID().uuidString
         let root = try SaveWorkflowUIPreviewFixture.makeTemporaryRoot(name: name)
