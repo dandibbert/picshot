@@ -21,13 +21,20 @@ jobs:
       id: build_text_script_gate
       timeout-minutes: 8
       run: |
+        python3 -m unittest discover -s scripts/tests -p test_text_script_crash_collector.py
         python3 scripts/run-bounded-command.py --timeout-seconds 360 --log dist/text-script-build.log --report dist/text-script-build-command.json -- python3 scripts/build-text-script-runtime-gate.py --output "$PWD/dist/text-script-runtime-gate" --source "$GITHUB_SHA"
     - name: Verify actual helper capabilities resources and owned termination
+      id: native_text_script_gate
       if: ${{ !cancelled() && steps.build_text_script_gate.outcome == 'success' }}
       timeout-minutes: 4
       run: |
         python3 scripts/run-bounded-command.py --timeout-seconds 180 --log dist/text-script-native.log --report dist/text-script-native-command.json -- "$PWD/dist/text-script-runtime-gate/PicShotTextScriptGate.app/Contents/MacOS/PicShotTextScriptGate" --app "$PWD/dist/text-script-runtime-gate/PicShotTextScriptGate.app" --output "$PWD/dist/text-script-runtime-gate/evidence" --source "$GITHUB_SHA"
         python3 scripts/check-text-script-runtime-gate.py --directory "$PWD/dist/text-script-runtime-gate" --source "$GITHUB_SHA"
+    - name: Retain only the failed owned helper crash reason
+      if: ${{ !cancelled() && steps.native_text_script_gate.outcome == 'failure' }}
+      timeout-minutes: 1
+      run: |
+        python3 scripts/collect-text-script-crash.py --directory "$PWD/dist/text-script-runtime-gate" --source "$GITHUB_SHA" --command-report "$PWD/dist/text-script-native-command.json"
     - name: Preserve bounded native text runtime decision evidence
       if: ${{ always() }}
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
