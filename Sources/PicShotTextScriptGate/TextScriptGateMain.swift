@@ -324,7 +324,7 @@ enum TextScriptGateMain {
             guard let text = String(data: line, encoding: .utf8), let childPID = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)), childPID > 1 else { throw GateError.fixture }
             pid = childPID; queue = kqueue()
             guard queue >= 0 else { throw GateError.fixture }
-            var registration = kevent(ident: UInt(childPID), filter: Int16(EVFILT_PROC), flags: UInt16(EV_ADD | EV_ENABLE | EV_ONESHOT), fflags: UInt32(NOTE_EXIT | NOTE_EXITSTATUS), data: 0, udata: nil)
+            var registration = kevent(ident: UInt(childPID), filter: Int16(EVFILT_PROC), flags: UInt16(EV_ADD | EV_ENABLE | EV_ONESHOT), fflags: UInt32(NOTE_EXIT) | UInt32(NOTE_EXITSTATUS), data: 0, udata: nil)
             guard kevent(queue, &registration, 1, nil, 0, nil) == 0 else { throw GateError.fixture }
             var reparented = false, stdoutEOF = false, stderrEOF = false
             var observedStatus: Int?
