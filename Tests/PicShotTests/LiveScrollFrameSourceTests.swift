@@ -12,22 +12,31 @@ final class LiveScrollFrameSourceTests: XCTestCase {
     func testProtocolSourceProducesOwnedFrameAndSupportsPauseMoveResume() async throws {
         let fixture = try Self.image(width: 16, height: 32)
         let source: any LiveScrollFrameSource = try LiveScrollVerificationFrameSource(region: region, displayBounds: display) { fixture }
+        XCTAssertNil(source.automaticScrollWatermark)
         try await source.start()
+        XCTAssertNil(source.automaticScrollWatermark)
         let firstResult = try await source.nextFrame(timeout: 0.1)
         let first = try XCTUnwrap(firstResult)
         XCTAssertEqual(first.image.width, 16); XCTAssertEqual(first.image.height, 32)
         XCTAssertEqual(first.region, region)
         XCTAssertFalse(first.image === fixture)
+        XCTAssertEqual(source.automaticScrollWatermark,
+                       LiveScrollFrameWatermark(generation: first.generation, sequence: first.sequence))
         try await source.pauseAndDrain()
+        XCTAssertNil(source.automaticScrollWatermark)
         let moved = region.offsetBy(dx: 40, dy: 60)
         try source.moveRegion(to: moved)
         try await source.resume()
+        XCTAssertNil(source.automaticScrollWatermark)
         let secondResult = try await source.nextFrame(timeout: 0.1)
         let second = try XCTUnwrap(secondResult)
         XCTAssertEqual(second.region, moved)
         XCTAssertGreaterThan(second.generation, first.generation)
         XCTAssertGreaterThan(second.sequence, first.sequence)
+        XCTAssertEqual(source.automaticScrollWatermark,
+                       LiveScrollFrameWatermark(generation: second.generation, sequence: second.sequence))
         try await source.stop()
+        XCTAssertNil(source.automaticScrollWatermark)
         do { try await source.resume(); XCTFail("Stopped source resumed") }
         catch LiveScrollSourceError.stopped { }
     }
@@ -39,6 +48,7 @@ final class LiveScrollFrameSourceTests: XCTestCase {
         try await source.start()
         let idle = try await source.nextFrame(timeout: 0.01)
         XCTAssertNil(idle)
+        XCTAssertNil(source.automaticScrollWatermark)
         produce = true
         let frame = try await source.nextFrame(timeout: 0.1)
         XCTAssertNotNil(frame)

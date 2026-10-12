@@ -18,6 +18,7 @@ struct LiveScrollCaptureSnapshot: Equatable {
     var showsAutoScroll = true
     var canAutoScroll = false
     var autoScrolling = false
+    var autoScrollUnavailableReason = "自动滚动需要辅助功能权限"
     var axis: ScrollAxis = .vertical
     var canChangeAxis = true
     var showsReverseCrop = false
@@ -486,7 +487,7 @@ final class LiveScrollToolbarView: NSView {
         showsAutoScroll = snapshot.showsAutoScroll
         autoButton.isHidden = !showsAutoScroll; autoButton.isEnabled = snapshot.canAutoScroll && !snapshot.busy
         autoButton.contentTintColor = snapshot.autoScrolling ? .systemGreen : .labelColor
-        autoButton.toolTip = snapshot.autoScrolling ? "停止自动滚动" : (snapshot.canAutoScroll ? "自动滚动" : "自动滚动需要辅助功能权限")
+        autoButton.toolTip = snapshot.autoScrolling ? "停止自动滚动" : (snapshot.canAutoScroll ? "自动滚动" : snapshot.autoScrollUnavailableReason)
         autoButton.setAccessibilityLabel(snapshot.autoScrolling ? "停止自动滚动" : "自动滚动")
         moreButton.isEnabled = true; cancelButton.isEnabled = true
         moreButton.toolTip = snapshot.showsReverseCrop ? "移动选区 · 方向 · 反向裁剪 · 导入 · 帮助" : "移动选区 · 方向 · 导入 · 帮助"

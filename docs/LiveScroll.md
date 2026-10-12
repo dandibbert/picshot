@@ -31,3 +31,13 @@ The current requested order is live scrolling usability, action chains/scripts, 
 ## Native verification boundary
 
 The first focused build 217 stopped on an explicitly typed numeric-literal correction in a new test; it produced no runtime evidence. The next native demonstration uses the same production session callbacks for both controlled injected input and, separately, actual ScreenCaptureKit input from an owned helper application. The real-stream result must state permission preflight, received/consumed buffers, output comparison and cleanup. Missing permission is reported as blocked and never treated as a passed screen-capture test. No OS permission is requested by these verification phases.
+
+## Automatic scrolling admission candidate after build234
+
+Build234 was delivered as a separate opt-in ARM experimental ZIP after current-source native, model and installed-package checks. Stable214 remains separate. The failed227 warm/late scrolling RSS gates and unverified real ScreenCaptureKit acquisition remain unresolved; the delivered interactions do not establish full PixPin parity or overall memory stability.
+
+The next narrow correction gates automatic input on a verified first/current viewport. Exactly one scroll input may be outstanding. Nil frames, duplicate pixels and frames already accepted by the producer before the post-input fence cannot release another input. A later matched forward change must advance both the event's original viewport and the immediately preceding accepted viewport. Partial forward movement is valid; reverse movement or a failed seam stops automation while preserving manual capture and the last good output.
+
+The existing0.35-second minimum between inputs is unchanged. A3-second no-progress threshold is checked by the serial sampling loop, including idle returns; a pending read or assembly can delay the visible stop message. The UI says only that verified movement was not observed, since this cannot distinguish page end, slow rendering or intercepted input. The stop explanation survives duplicate frames. Pause, movement, Finish, Cancel, permission loss and capture limits do not silently rearm Auto. The producer fence bounds already-queued callbacks; it is not a claim of real SCK presentation-time causality.
+
+Native verification will use the production session with intercepted input into an owned numbered AppKit scrolling document, plus deterministic source/clock regression cases. It neither posts global events nor requests Accessibility/Screen Recording permission. Current native results for this candidate are pending. No unchanged disputed memory cell is rerun.

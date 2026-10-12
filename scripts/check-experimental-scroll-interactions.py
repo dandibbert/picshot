@@ -162,7 +162,7 @@ def runner(row, timeout, grace, label):
 def demo_fields(demo):
     fields(demo, dict(status='passed', installerAcceptance=False, permissionRequested=False,
                      globalInputPosted=False, privateUserContent=False, networkUsed=False), 'demo')
-    for name in ('illustratedCase', 'ordinaryTextCase', 'movementCase'):
+    for name in ('illustratedCase', 'ordinaryTextCase', 'movementCase', 'automaticCase'):
         case = demo.get(name)
         fields(case, dict(status='passed', productSessionClosed=True), name)
         fields(case, {'finishCallbacks' if name == 'movementCase' else 'finishButtonCompletionCallbacks': 1}, name)
@@ -191,6 +191,27 @@ def demo_fields(demo):
            trailingMouseUpIgnored=True), 'Escape rollback')
     fields(move.get('dragAppearanceEvidence'), dict(light='live-scroll-movement-native-drag.png',
            dark='live-scroll-movement-native-dark-drag.png', restoredAppearance='aqua'), 'drag appearance')
+    auto = demo['automaticCase']
+    fields(auto, dict(productSessionControllerExercised=True, sessionSamplingLoopReimplementedByFixture=False,
+        automaticInputLoopReimplementedByFixture=False, captureMode='injected-rendered-owned-window',
+        globalInputPosted=False, realScreenCaptureClaimed=False, permissionRequested=False,
+        autoDisabledBeforeVerifiedSeed=True, nativeAutoButtonStartedSession=True,
+        nativeStopButtonStoppedInput=True, nativeAutoButtonRestartedSession=True,
+        manualCaptureActiveAfterStopButton=True, manualCaptureActiveAfterNoProgress=True,
+        manualRecoveryAfterNoProgress=True, noProgressStoppedAtNativeEnd=True,
+        noProgressTerminalInputCount=1, matchedForwardProgressBeforeEveryFollowingInput=True,
+        completionCallbacksBeforeFinish=0, outputWidth=640, outputHeight=1120,
+        fixedHeaderDetectedPixels=36, ownedWindowClosed=True), 'automatic')
+    number(auto.get('noProgressStopSecondsSinceLastInput'), 'automatic stop', 3, 22)
+    number(auto.get('minimumAutomaticIntervalWithinRunSeconds'), 'automatic interval', .35 - .000001)
+    number(auto.get('minimumAutomaticIntervalSeconds'), 'automatic global interval', .35 - .000001)
+    number(auto.get('nativeAutomaticInputCount'), 'automatic input count', 6, 64)
+    number(auto.get('observedGrowingPreviewUpdates'), 'automatic preview growth', 4)
+    number(auto.get('storyFrames'), 'automatic story frames', 1, 36)
+    calibration = auto.get('referenceInitialViewportCalibration')
+    fields(calibration, dict(passed=True, dimensionsMatch=True, exactEquality=True), 'automatic initial reference')
+    for key in ('meanAbsoluteRGBAError', 'fractionOfChannelsDifferingByMoreThan8'):
+        need(number(calibration.get(key), 'automatic calibration.' + key) == 0, 'Initial reference pixels differ')
     real = demo.get('realStream', {})
     need(type(real) is dict, 'Missing real stream report')
     need(real.get('status') == 'passed' or (real.get('status') == 'blocked'
@@ -270,10 +291,10 @@ def final():
             ('full', 'native-tests-plan.json', 'native-test-shards', 'test-report.json'),
             ('focused', 'focused-tests-plan.json', 'focused-test-shards', 'critical-tests-report.json')):
         plan = native.checked_plan(Path('dist')/planfile, source['sourceCommit'])
-        need(len(plan['discoveredTests']) == 2160, 'Current2160 native inventory required')
+        need(len(plan['discoveredTests']) == 2178, 'Current2178 native inventory required')
         if kind == 'full':
             live = json.loads(read(Path('scripts/live-scroll-additive-tests.json')))
-            need(len(live) == 113 and set(live).issubset(plan['discoveredTests']), 'Current113 live methods required')
+            need(len(live) == 131 and set(live).issubset(plan['discoveredTests']), 'Current131 live methods required')
             stable = [name for name in plan['discoveredTests'] if name not in set(live)]
             need(len(stable) == 2047 and hashlib.sha256(('\n'.join(stable)+'\n').encode()).hexdigest()
                  == '926ac5674df90163b949fe461f0d4589ef72c8fc3215fa00b927564aae57cb44', 'Stable214 inventory changed')

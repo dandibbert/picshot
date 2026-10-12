@@ -23,7 +23,7 @@ def demo():
                   globalInputPosted=False, privateUserContent=False, networkUsed=False,
                   realStream=dict(status='blocked', permissionAlreadyGranted=False),
                   realScreenCaptureValidated=False)
-    for name in ('illustratedCase', 'ordinaryTextCase', 'movementCase'):
+    for name in ('illustratedCase', 'ordinaryTextCase', 'movementCase', 'automaticCase'):
         result[name] = dict(status='passed', productSessionClosed=True,
             **{'finishCallbacks' if name == 'movementCase' else 'finishButtonCompletionCallbacks': 1},
             **{'referenceComparison' if name == 'movementCase' else 'nativeReferenceComparison': copy.deepcopy(comparison)})
@@ -43,6 +43,18 @@ def demo():
                             captureResumed=True, trailingMouseUpIgnored=True),
         dragAppearanceEvidence=dict(light='live-scroll-movement-native-drag.png',
                                     dark='live-scroll-movement-native-dark-drag.png', restoredAppearance='aqua'))
+    result['automaticCase'].update(productSessionControllerExercised=True,
+        sessionSamplingLoopReimplementedByFixture=False, automaticInputLoopReimplementedByFixture=False,
+        captureMode='injected-rendered-owned-window', globalInputPosted=False, realScreenCaptureClaimed=False,
+        permissionRequested=False, autoDisabledBeforeVerifiedSeed=True, nativeAutoButtonStartedSession=True,
+        nativeStopButtonStoppedInput=True, nativeAutoButtonRestartedSession=True,
+        manualCaptureActiveAfterStopButton=True, manualCaptureActiveAfterNoProgress=True,
+        manualRecoveryAfterNoProgress=True, noProgressStoppedAtNativeEnd=True, noProgressTerminalInputCount=1,
+        matchedForwardProgressBeforeEveryFollowingInput=True, completionCallbacksBeforeFinish=0,
+        outputWidth=640, outputHeight=1120, fixedHeaderDetectedPixels=36, ownedWindowClosed=True,
+        noProgressStopSecondsSinceLastInput=3.1, minimumAutomaticIntervalWithinRunSeconds=.4, minimumAutomaticIntervalSeconds=.4,
+        nativeAutomaticInputCount=12, observedGrowingPreviewUpdates=9, storyFrames=24,
+        referenceInitialViewportCalibration=copy.deepcopy(comparison))
     return result
 
 
@@ -310,7 +322,7 @@ class WorkflowSelectionTests(unittest.TestCase):
             self.assertIn('PicShot-EXPERIMENTAL-macos-',step)
             self.assertNotIn('testing-qualification.json',step)
 
-    def test_current_2160_inventory_and_original_2047_ids(self):
+    def test_current_2178_inventory_and_original_2047_ids(self):
         # Same portable source sentinel as native-test-shards; actual discovery
         # and all current native IDs still execute in the unchanged workflow.
         inventory=[]
@@ -324,10 +336,10 @@ class WorkflowSelectionTests(unittest.TestCase):
             module=path.relative_to(REPO/'Tests').parts[0]
             inventory.extend(module+'.'+classes[0]+'/'+method for method in methods)
         inventory=sorted(inventory)
-        self.assertEqual(len(inventory),2160)
-        self.assertEqual(len(set(inventory)),2160)
+        self.assertEqual(len(inventory),2178)
+        self.assertEqual(len(set(inventory)),2178)
         live=json.loads((REPO/'scripts/live-scroll-additive-tests.json').read_text())
-        self.assertEqual(len(live),113);self.assertTrue(set(live).issubset(inventory))
+        self.assertEqual(len(live),131);self.assertTrue(set(live).issubset(inventory))
         original=[name for name in inventory if name not in set(live)]
         self.assertEqual(len(original),2047)
         self.assertEqual(hashlib.sha256(('\n'.join(original)+'\n').encode()).hexdigest(),

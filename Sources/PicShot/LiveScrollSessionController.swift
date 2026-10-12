@@ -45,8 +45,23 @@ final class LiveScrollSessionController {
     }
     private var regionDrag: RegionDrag?
     private var samples = 0
-    private var lastAutoEvent: TimeInterval = 0
-    private var sameViewportCount = 0
+    private var lastAutoEvent: TimeInterval = -.infinity
+    private let automaticScrollPermission: () -> Bool
+    private let automaticScrollInput: ((CGEvent) throws -> Void)?
+    private let automaticProgressTimeout: TimeInterval = 3
+    private struct AutomaticObservation {
+        let frame: LiveScrollFrameWatermark
+        let viewportOffset: Int
+    }
+    private struct PendingAutomaticStep {
+        let fence: LiveScrollFrameWatermark
+        let viewportOffset: Int
+        let sentAt: TimeInterval
+    }
+    private var lastAutomaticObservation: AutomaticObservation?
+    private var lastConsumedFrame: LiveScrollFrameWatermark?
+    private var pendingAutomaticStep: PendingAutomaticStep?
+    private var automaticStopMessage: String?
     private var previousApplication: NSRunningApplication?
     private let maximumDuration: TimeInterval = 180
     private let maximumSamples = 2400
@@ -54,9 +69,13 @@ final class LiveScrollSessionController {
     init(onComplete: @escaping (CGImage) throws -> Void, onImport: @escaping () -> Void,
          onCopy: ((CGImage) -> Void)? = nil,
          resourceStorageParent: URL = FileManager.default.temporaryDirectory,
-         monotonicNow: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
+         monotonicNow: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+         automaticScrollPermission: @escaping () -> Bool = { AXIsProcessTrusted() },
+         automaticScrollInput: ((CGEvent) throws -> Void)? = nil) {
         self.resourceStorageParent = resourceStorageParent
         self.monotonicNow = monotonicNow
+        self.automaticScrollPermission = automaticScrollPermission
+        self.automaticScrollInput = automaticScrollInput
         self.onComplete = onComplete; self.onImport = onImport
         self.onCopy = onCopy ?? { copyImage($0) }
     }
@@ -179,7 +198,7 @@ final class LiveScrollSessionController {
         controls = LiveScrollCaptureController(actions: actions)
         snapshot.canChangeAxis = true
         snapshot.showsAutoScroll = true
-        snapshot.canAutoScroll = AXIsProcessTrusted()
+        snapshot.canAutoScroll = false
         placeControls()
     }
 
@@ -210,7 +229,7 @@ final class LiveScrollSessionController {
     private func updateCaptureLimit() -> Bool {
         if samples >= maximumSamples || activeCaptureDuration >= maximumDuration {
             pauseCaptureClock(); captureLimitReached = true
-            paused = true; automatic = false
+            paused = true; clearAutomaticState()
         }
         return captureLimitReached
     }
@@ -231,14 +250,20 @@ final class LiveScrollSessionController {
                 }
                 do {
                     guard let frame = try await source.nextFrame(timeout: 0.75) else {
-                        if self.automatic { self.sameViewportCount += 1; try self.performAutomaticStep(source: source) }
+                        if self.automatic { self.performAutomaticStep(source: source) }
                         continue
                     }
                     self.samples += 1
+                    guard self.acceptFrameIdentity(frame, source: source) else {
+                        if self.automatic, self.pendingAutomaticStep != nil {
+                            self.performAutomaticStep(source: source)
+                        }
+                        continue
+                    }
                     let update = try await assembler.observe(frame.image)
                     try Task.checkCancellation()
                     guard self.generation == token, !self.retired else { break }
-                    self.sameViewportCount = update.state.viewportOffset == self.lastState.viewportOffset ? self.sameViewportCount + 1 : 0
+                    let previousOffset = self.lastState.viewportOffset
                     self.lastState = update.state
                     self.snapshot.pixelWidth = update.state.width; self.snapshot.pixelHeight = update.state.height
                     self.snapshot.acceptedFrames = update.state.acceptedObservations
@@ -248,15 +273,15 @@ final class LiveScrollSessionController {
                     self.snapshot.previewPositionVerified = update.state.matched && !update.state.previewUnavailable
                         && !self.paused && self.regionDrag == nil
                     if let image = update.preview { self.controls?.updatePreview(image: image, viewportFraction: update.viewport) }
-                    self.setStatus(update.state.message, kind: update.state.matched && !update.state.previewUnavailable ? .capturing : .warning)
-                    if self.automatic {
-                        if update.state.matched { try self.performAutomaticStep(source: source) }
-                        else { self.automatic = false; self.setStatus("自动滚动已停，稍往回滚接回长图", kind: .warning) }
-                    }
+                    self.observeAutomaticProgress(frame: frame, previousOffset: previousOffset)
+                    self.setStatus(self.automaticStopMessage ?? update.state.message,
+                        kind: self.automaticStopMessage != nil ? .warning :
+                            (update.state.matched && !update.state.previewUnavailable ? .capturing : .warning))
+                    if self.automatic { self.performAutomaticStep(source: source) }
                 } catch is CancellationError { break }
                 catch {
                     guard self.generation == token, !self.retired else { break }
-                    self.paused = true; self.automatic = false
+                    self.paused = true; self.clearAutomaticState()
                     self.pauseCaptureClock(); self.snapshot.previewPositionVerified = false
                     try? await source.pauseAndDrain()
                     self.setStatus("\(error.localizedDescription) 已保留当前长图，可继续或完成", kind: .error)
@@ -274,7 +299,15 @@ final class LiveScrollSessionController {
         snapshot.canMoveRegion = !deliveryCompleted && !finishing && !captureLimitReached && transition == nil && regionDrag == nil && source != nil
         snapshot.canImport = !deliveryCompleted && lastState.width == 0 && !finishing
         snapshot.autoScrolling = automatic; snapshot.axis = axis
-        snapshot.canAutoScroll = !deliveryCompleted && !finishing && !captureLimitReached && !paused && transition == nil && regionDrag == nil && source != nil && AXIsProcessTrusted()
+        let automaticAllowed = automaticScrollPermission()
+        let currentVerified = snapshot.previewPositionVerified && lastAutomaticObservation != nil
+            && source?.automaticScrollWatermark != nil
+        snapshot.canAutoScroll = !deliveryCompleted && !finishing && !captureLimitReached && !paused
+            && transition == nil && regionDrag == nil && source != nil && automaticAllowed
+            && (automatic || currentVerified)
+        snapshot.autoScrollUnavailableReason = captureLimitReached ? "本次捕获已达上限，可完成已有长图" :
+            (!automaticAllowed ? "自动滚动需要辅助功能权限" :
+                (paused ? "继续捕获并验证当前位置后可自动滚动" : "等待选区画面接上后可自动滚动"))
         if captureLimitReached { snapshot.canChangeAxis = false }
         if deliveryCompleted { snapshot.canFinish = false; snapshot.canCopy = false; snapshot.canChangeAxis = false }
         controls?.update(snapshot: snapshot)
@@ -286,7 +319,7 @@ final class LiveScrollSessionController {
             setStatus("已达到本次捕获上限，可完成保存已有长图", kind: .paused); return
         }
         let token = generation
-        automatic = false
+        clearAutomaticState()
         snapshot.busy = true; snapshot.canPause = false; snapshot.canMoveRegion = false
         snapshot.previewPositionVerified = false
         snapshot.status = paused ? "正在继续…" : "正在暂停…"; controls?.update(snapshot: snapshot)
@@ -343,7 +376,7 @@ final class LiveScrollSessionController {
 
     private func finish(copyOnly: Bool) {
         guard !finishing, !retired, !deliveryCompleted, transition == nil, regionDrag == nil, lastState.width > 0, let source, let assembler else { return }
-        finishing = true; paused = true; automatic = false
+        finishing = true; paused = true; clearAutomaticState()
         pauseCaptureClock(); snapshot.previewPositionVerified = false
         setStatus("正在完成长截图…", kind: .finishing)
         transition = Task { [weak self] in
@@ -375,24 +408,157 @@ final class LiveScrollSessionController {
         }
     }
 
-    private func toggleAutomatic() {
-        guard !deliveryCompleted, !finishing, !paused, !captureLimitReached, regionDrag == nil, source != nil else { return }
-        guard AXIsProcessTrusted() else { setStatus("自动滚动需要辅助功能权限；仍可直接手动滚动", kind: .warning); return }
-        automatic.toggle(); sameViewportCount = 0
-        if automatic, let source { do { try performAutomaticStep(source: source) } catch { automatic = false; setStatus(error.localizedDescription, kind: .warning); return } }
-        setStatus(automatic ? "自动滚动中 · 可随时暂停或完成" : "已停止自动滚动，可继续手动滚动", kind: .capturing)
+    /// Source implementations reject retired generations before delivery. Keep
+    /// the session boundary defensive too: stale metadata cannot mutate accepted
+    /// pixels or acknowledge automatic progress in an injected/delayed source.
+    private func acceptFrameIdentity(_ frame: LiveScrollScreenSource.Frame,
+                                     source: any LiveScrollFrameSource) -> Bool {
+        let mark = LiveScrollFrameWatermark(generation: frame.generation, sequence: frame.sequence)
+        if let producer = source.automaticScrollWatermark {
+            guard mark.generation == producer.generation, mark.sequence <= producer.sequence else { return false }
+        }
+        if let previous = lastConsumedFrame {
+            guard mark.generation > previous.generation ||
+                (mark.generation == previous.generation && mark.sequence > previous.sequence) else { return false }
+        }
+        lastConsumedFrame = mark
+        return true
     }
-    private func performAutomaticStep(source: any LiveScrollFrameSource) throws {
-        guard !paused, automatic, AXIsProcessTrusted(), let region else { automatic = false; return }
-        try source.validateTarget()
-        let now = ProcessInfo.processInfo.systemUptime
-        guard now - lastAutoEvent >= 0.35 else { return }
-        if sameViewportCount > 18 { automatic = false; setStatus("页面已无移动，可完成截图", kind: .paused); return }
-        let amount = Int32(max(12, min(120, (axis == .vertical ? region.height : region.width) * 0.14)))
-        guard let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2,
-            wheel1: axis == .vertical ? -amount : 0, wheel2: axis == .horizontal ? -amount : 0, wheel3: 0) else { return }
-        event.location = CGPoint(x: source.displayBounds.minX + region.midX, y: source.displayBounds.minY + region.midY)
-        event.post(tap: .cghidEventTap); lastAutoEvent = now
+
+    private func clearAutomaticState() {
+        automatic = false; pendingAutomaticStep = nil
+        lastAutomaticObservation = nil; automaticStopMessage = nil
+    }
+
+    private func stopAutomatic(_ message: String) {
+        automatic = false; pendingAutomaticStep = nil
+        automaticStopMessage = message
+        setStatus(message, kind: .warning)
+    }
+
+    private func toggleAutomatic() {
+        guard !deliveryCompleted, !finishing, !paused, !captureLimitReached,
+              transition == nil, regionDrag == nil, !retired, let source else { return }
+        if automatic {
+            stopAutomatic("已停止自动滚动，可继续手动滚动")
+            return
+        }
+        guard automaticScrollPermission() else {
+            stopAutomatic("自动滚动需要辅助功能权限；仍可直接手动滚动")
+            return
+        }
+        guard snapshot.previewPositionVerified, lastAutomaticObservation != nil,
+              source.automaticScrollWatermark != nil else {
+            stopAutomatic("等待选区画面接上后再开始自动滚动")
+            return
+        }
+        automatic = true; pendingAutomaticStep = nil; automaticStopMessage = nil
+        performAutomaticStep(source: source)
+        if automatic { setStatus("自动滚动中 · 可随时暂停或完成", kind: .capturing) }
+    }
+
+    /// Matching establishes observed progress, not causal acknowledgement of an
+    /// OS input event. A producer fence rejects frames already queued at emission;
+    /// no comparison mixes SCK presentation timestamps with the session clock.
+    private func observeAutomaticProgress(frame: LiveScrollScreenSource.Frame, previousOffset: Int) {
+        guard !paused, regionDrag == nil, !finishing, !retired else {
+            lastAutomaticObservation = nil; return
+        }
+        guard lastState.matched, !lastState.previewUnavailable else {
+            lastAutomaticObservation = nil
+            if automatic { stopAutomatic("自动滚动已停，稍往回滚接回长图；已有内容保留") }
+            return
+        }
+        let mark = LiveScrollFrameWatermark(generation: frame.generation, sequence: frame.sequence)
+        if let previous = lastAutomaticObservation {
+            guard mark.generation == previous.frame.generation else {
+                lastAutomaticObservation = nil
+                if automatic { stopAutomatic("画面来源已变化，自动滚动已停；可手动继续") }
+                return
+            }
+            guard mark.sequence > previous.frame.sequence else { return }
+        }
+        lastAutomaticObservation = AutomaticObservation(frame: mark, viewportOffset: lastState.viewportOffset)
+        if automatic {
+            if let pending = pendingAutomaticStep {
+                guard monotonicNow() - pending.sentAt < automaticProgressTimeout else {
+                    stopAutomatic("自动滚动已停：未确认页面移动；可手动继续或完成")
+                    return
+                }
+                guard mark.generation == pending.fence.generation else {
+                    stopAutomatic("画面来源已变化，自动滚动已停；可手动继续")
+                    return
+                }
+                if lastState.viewportOffset < pending.viewportOffset {
+                    stopAutomatic("检测到向回滚动，自动滚动已停；已有内容保留")
+                } else if mark.sequence > pending.fence.sequence,
+                          lastState.viewportOffset > pending.viewportOffset,
+                          lastState.viewportOffset > previousOffset {
+                    pendingAutomaticStep = nil
+                }
+            } else if lastState.viewportOffset < previousOffset {
+                stopAutomatic("检测到向回滚动，自动滚动已停；已有内容保留")
+            }
+        } else if lastState.viewportOffset != previousOffset {
+            // Manual recovery replaces a stale stop notice only after an actual
+            // matched movement. Duplicate frames cannot erase its explanation.
+            automaticStopMessage = nil
+        }
+    }
+
+    private func performAutomaticStep(source: any LiveScrollFrameSource) {
+        guard automatic, !paused, !finishing, !retired, !deliveryCompleted,
+              transition == nil, regionDrag == nil, let region else { return }
+        // Let the sampling loop perform its existing asynchronous drain at the
+        // cap. Do not set paused here and skip that owned teardown boundary.
+        guard samples < maximumSamples, activeCaptureDuration < maximumDuration else { return }
+        guard automaticScrollPermission() else {
+            stopAutomatic("辅助功能权限不可用，自动滚动已停；仍可手动继续")
+            return
+        }
+        let now = monotonicNow()
+        if let pending = pendingAutomaticStep {
+            if now - pending.sentAt >= automaticProgressTimeout {
+                stopAutomatic("自动滚动已停：未确认页面移动；可手动继续或完成")
+            }
+            return
+        }
+        guard snapshot.previewPositionVerified, let observation = lastAutomaticObservation,
+              now - lastAutoEvent >= 0.35 else { return }
+        do {
+            try source.validateTarget()
+            guard let before = source.automaticScrollWatermark,
+                  before.generation == observation.frame.generation else {
+                stopAutomatic("画面来源尚未就绪，自动滚动已停；可手动继续")
+                return
+            }
+            let amount = Int32(max(12, min(120, (axis == .vertical ? region.height : region.width) * 0.14)))
+            guard let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2,
+                wheel1: axis == .vertical ? -amount : 0, wheel2: axis == .horizontal ? -amount : 0, wheel3: 0) else {
+                stopAutomatic("无法创建滚动操作；仍可手动继续")
+                return
+            }
+            event.location = CGPoint(x: source.displayBounds.minX + region.midX,
+                                     y: source.displayBounds.minY + region.midY)
+            let offset = lastState.viewportOffset
+            if let automaticScrollInput { try automaticScrollInput(event) }
+            else { event.post(tap: .cghidEventTap) }
+            // A test sink or native callback can synchronously initiate closure.
+            // Never install a pending operation after ownership/lifecycle changed.
+            guard automatic, !paused, !finishing, !retired, !deliveryCompleted,
+                  transition == nil, regionDrag == nil else { return }
+            guard let fence = source.automaticScrollWatermark,
+                  fence.generation == observation.frame.generation else {
+                stopAutomatic("画面来源已变化，自动滚动已停；可手动继续")
+                return
+            }
+            lastAutoEvent = now
+            pendingAutomaticStep = PendingAutomaticStep(fence: fence, viewportOffset: offset, sentAt: now)
+            snapshot.previewPositionVerified = false
+            setStatus("自动滚动中 · 等待画面接上", kind: .capturing)
+        } catch {
+            stopAutomatic("自动滚动已停：\(error.localizedDescription)；已有长图保留，可手动继续或完成")
+        }
     }
 
     /// Dragging moves only the visible proposal. Acquisition is drained once;
@@ -403,7 +569,7 @@ final class LiveScrollSessionController {
         let drag = RegionDrag(id: id, generation: generation, wasPaused: paused,
                               originalRegion: source.region)
         regionDrag = drag
-        paused = true; automatic = false; pauseCaptureClock()
+        paused = true; clearAutomaticState(); pauseCaptureClock()
         snapshot.previewPositionVerified = false
         setStatus("拖动选区 · 松开后继续验证接缝，Esc 取消", kind: .paused)
         transition = Task { [weak self] in
@@ -477,7 +643,6 @@ final class LiveScrollSessionController {
                     guard !self.retired, self.generation == drag.generation else { return }
                     self.paused = false; self.resumeCaptureClock()
                 }
-                self.sameViewportCount = 0
                 if let target = source.target { NSRunningApplication(processIdentifier: target.pid)?.activate(options: []) }
                 let status = self.captureLimitReached ? "已达到本次捕获上限，可完成保存已有长图" :
                     (cancelled ? "已取消移动，原选区和长图保留" : "选区已移动，滚动后继续验证接缝")
@@ -509,7 +674,7 @@ final class LiveScrollSessionController {
         guard transition == nil, regionDrag == nil, !finishing, !retired, !deliveryCompleted,
               !captureLimitReached, let source, let screen else { return }
         let wasPaused = paused
-        paused = true; automatic = false
+        paused = true; clearAutomaticState()
         pauseCaptureClock(); snapshot.previewPositionVerified = false
         snapshot.busy = true; snapshot.status = "正在准备移动选区…"; controls?.update(snapshot: snapshot)
         transition = Task { [weak self] in
@@ -547,7 +712,7 @@ final class LiveScrollSessionController {
         guard !deliveryCompleted, !captureLimitReached, regionDrag == nil, next != axis,
               lastState.acceptedObservations <= 1, transition == nil, !finishing,
               let source, let original = assembler else { return }
-        paused = true; automatic = false
+        paused = true; clearAutomaticState()
         pauseCaptureClock(); snapshot.previewPositionVerified = false
         snapshot.busy = true; snapshot.status = "正在切换方向…"; controls?.update(snapshot: snapshot)
         transition = Task { [weak self] in
@@ -579,12 +744,13 @@ final class LiveScrollSessionController {
     }
     func cancel() {
         guard !retired else { return }
+        clearAutomaticState()
         transition?.cancel(); sampling?.cancel(); mover?.cancel()
         Task { [weak self] in await self?.retire() }
     }
     private func retire() async {
         guard !retired else { return }
-        retired = true; generation &+= 1; paused = true; automatic = false
+        retired = true; generation &+= 1; paused = true; clearAutomaticState()
         pauseCaptureClock(); regionDrag = nil
         controls?.teardown(); controls = nil
         sampling?.cancel()

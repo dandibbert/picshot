@@ -55,6 +55,8 @@ enum LiveScrollUsabilityDemoFixture {
         guard illustrated["productSessionClosed"] as? Bool == true else {
             report["status"] = "failed"
             report["ordinaryTextCase"] = ["status": "blocked", "reason": "Prior owned product session did not close"]
+            report["automaticCase"] = ["status": "blocked", "productSessionClosed": false,
+                                       "reason": "Prior owned product session did not close"]
             try writeReport(report, directory)
             throw DemoFailure(errorDescription: "Previous native demo session cleanup was not confirmed")
         }
@@ -62,8 +64,17 @@ enum LiveScrollUsabilityDemoFixture {
             capture: capture, directory: directory, plain: true)
         report["ordinaryTextCase"] = plain
         try writeReport(report, directory)
-        let movement: [String: Any]
+        let automatic: [String: Any]
         if plain["productSessionClosed"] as? Bool == true {
+            automatic = await automaticCycle(screen: screen, directory: directory)
+        } else {
+            automatic = ["status": "blocked", "productSessionClosed": false,
+                         "reason": "Previous owned product session cleanup was not confirmed"]
+        }
+        report["automaticCase"] = automatic
+        try writeReport(report, directory)
+        let movement: [String: Any]
+        if automatic["productSessionClosed"] as? Bool == true {
             movement = await verifyMovement(evidenceDirectory: directory.appendingPathComponent("movement"))
         } else {
             movement = ["status": "blocked", "productSessionClosed": false,
@@ -89,6 +100,7 @@ enum LiveScrollUsabilityDemoFixture {
         let realOutcomeAcceptable = realStream["status"] as? String == "passed"
             || (realStream["status"] as? String == "blocked" && !realPermission)
         let passed = illustrated["status"] as? String == "passed" && plain["status"] as? String == "passed"
+            && automatic["status"] as? String == "passed"
             && movement["status"] as? String == "passed" && realOutcomeAcceptable
         report["status"] = passed ? "passed" : "failed"
         report["elapsedSeconds"] = ProcessInfo.processInfo.systemUptime - start
@@ -331,6 +343,288 @@ enum LiveScrollUsabilityDemoFixture {
             report["status"] = "failed"
             report["cleanupError"] = "Product session did not report closed after bounded closeForVerification"
         }
+        report["elapsedSeconds"] = ProcessInfo.processInfo.systemUptime - start
+        if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: directory.appendingPathComponent(prefix + "-product-session.json"), options: .atomic)
+        }
+        return report
+    }
+
+    /// One bounded native automatic-scroll scenario. Only the product session
+    /// emits automatic input; the fixture observes and routes it to its own view.
+    private static func automaticCycle(screen: NSScreen, directory: URL) async -> [String: Any] {
+        let prefix = "live-scroll-automatic"
+        let start = ProcessInfo.processInfo.systemUptime
+        let boundedOffset = 640
+        let visible = screen.visibleFrame
+        let window = NSWindow(contentRect: CGRect(x: visible.midX - 390, y: visible.midY - 200,
+            width: CGFloat(width), height: CGFloat(height)), styleMask: .borderless, backing: .buffered, defer: false)
+        window.title = "PicShot · Bounded native automatic scrolling"
+        window.isReleasedWhenClosed = false; window.hasShadow = false
+        window.backgroundColor = .white; window.appearance = NSAppearance(named: .aqua)
+        let viewport = DemoViewport(frame: CGRect(x: 0, y: 0, width: width, height: height))
+        // Preserve the numbered drawing exactly; shorten only its native extent.
+        viewport.document.setFrameSize(CGSize(width: width, height: height - headerHeight + boundedOffset))
+        window.contentView = viewport; window.orderFrontRegardless(); window.displayIfNeeded()
+        defer { window.close() }
+        let capture = CaptureSource(viewport: viewport, filter: nil,
+            reason: "Automatic input is intercepted into this owned native view; acquisition uses owned AppKit pixels, not SCStream or third-party content.")
+        var completedImage: CGImage?, completedCount = 0, frameRequests = 0
+        var phase = "awaiting-seed"
+        var inputTrace: [[String: Any]] = [], trace: [[String: Any]] = [], story: [CGImage] = []
+        var inputTimes: [Double] = [], inputPhases: [String] = [], inputOffsets: [Int] = [], inputSamples: [Int] = []
+        var growths = 0, lastHeight = 0, lastArtifact = -1.0
+        var firstGrowth: Double?, firstInput: Double?
+        var stopClicked = false, restartClicked = false
+        weak var observedSession: LiveScrollSessionController?
+        let session = LiveScrollSessionController(onComplete: { image in
+            completedImage = image; completedCount += 1
+        }, onImport: {}, automaticScrollPermission: { true }, automaticScrollInput: { event in
+            let native = try unwrap(NSEvent(cgEvent: event), "Cannot convert product automatic wheel event")
+            let elapsed = ProcessInfo.processInfo.systemUptime - start
+            let before = viewport.offset
+            let state = observedSession?.stateForVerification
+            let samples = observedSession?.sampledFramesForVerification ?? 0
+            viewport.scrollView.scrollWheel(with: native)
+            viewport.scrollView.reflectScrolledClipView(viewport.scrollView.contentView)
+            window.displayIfNeeded()
+            inputTimes.append(elapsed); inputPhases.append(phase)
+            inputOffsets.append(state?.viewportOffset ?? -1); inputSamples.append(samples)
+            if firstInput == nil { firstInput = elapsed }
+            inputTrace.append(["seconds": elapsed, "phase": phase,
+                "nativeOffsetBefore": before, "nativeOffsetAfter": viewport.offset,
+                "acceptedOffsetBeforeInput": state?.viewportOffset ?? -1,
+                "acceptedObservationsBeforeInput": state?.acceptedObservations ?? 0,
+                "previewPositionVerifiedBeforeInput": observedSession?.snapshotForVerification.previewPositionVerified ?? false,
+                "sampledFramesBeforeInput": samples, "frameProviderCallsBeforeInput": frameRequests,
+                "productStatusBeforeInput": observedSession?.snapshotForVerification.status ?? "",
+                "pixelDeltaY": event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1),
+                "continuous": event.getIntegerValueField(.scrollWheelEventIsContinuous)])
+        })
+        observedSession = session
+        var report: [String: Any] = ["status": "running", "productSessionControllerExercised": true,
+            "captureMode": capture.mode, "scope": "owned bounded numbered native document",
+            "realScreenCaptureClaimed": false, "globalInputPosted": false,
+            "permissionRequested": false, "accessibilityPermissionInjectedForOwnedInputOnly": true,
+            "sessionSamplingLoopReimplementedByFixture": false,
+            "automaticInputLoopReimplementedByFixture": false,
+            "inputRoute": "Unchanged product CGEvent converted to NSEvent and delivered to owned NSScrollView.scrollWheel(with:); no global posting",
+            "buttonInputRoute": "accepted native hit-test/mouse helper PortableSettingsUIPreviewFixture.click",
+            "seedDelaySeconds": 0.3, "freshFrameDelaySeconds": 0.1,
+            "boundedDocumentHeight": height - headerHeight + boundedOffset,
+            "expectedNativeEndOffset": boundedOffset, "expectedOutputWidth": width,
+            "expectedOutputHeight": height + boundedOffset, "limitation": capture.reason]
+        do {
+            let initial = try await capture.image()
+            try await session.startForVerification(targetFrame: window.frame, screen: screen, nextImage: {
+                frameRequests += 1
+                try await Task.sleep(nanoseconds: frameRequests == 1 ? 300_000_000 : 100_000_000)
+                return try await capture.image()
+            })
+            let controls = try unwrap(session.controlsForVerification, "Automatic demo controls are missing")
+            for panel in [controls.toolbarWindow, controls.previewWindow, controls.outlineWindow, controls.handleWindow] {
+                panel?.appearance = NSAppearance(named: .aqua)
+            }
+            let auto = try unwrap(findButton("scroll.live.autoScroll", in: controls.toolbarWindow?.contentView),
+                                  "Actual Auto/Stop button missing")
+            let thumbnail = try unwrap(controls.previewWindow?.contentView as? LiveScrollThumbnailView,
+                                       "Automatic demo thumbnail is missing")
+            report["autoDisabledBeforeVerifiedSeed"] = !auto.isEnabled && inputTimes.isEmpty
+                && session.stateForVerification.acceptedObservations == 0
+            try require(report["autoDisabledBeforeVerifiedSeed"] as? Bool == true,
+                        "Automatic input became available before a verified seed")
+            try writePNG(try scene(window: window, controls: controls, caption: "Auto waits for the delayed native seed"),
+                         directory.appendingPathComponent(prefix + "-waiting-for-seed.png"))
+            try await waitFor("Automatic demo did not verify its delayed native seed", timeout: 6) {
+                session.snapshotForVerification.previewPositionVerified && auto.isEnabled
+            }
+            report["firstVerifiedPreviewMilliseconds"] = milliseconds(since: start)
+            let firstMarker = thumbnail.viewportMarker
+            lastHeight = session.stateForVerification.height
+            let firstScene = try scene(window: window, controls: controls, caption: "Verified seed · actual Auto button ready")
+            story.append(firstScene)
+            try writePNG(firstScene, directory.appendingPathComponent(prefix + "-native-first-window.png"))
+            phase = "initial-auto"
+            try PortableSettingsUIPreviewFixture.click(auto)
+            report["nativeAutoButtonStartedSession"] = session.snapshotForVerification.autoScrolling && inputTimes.count == 1
+            try require(report["nativeAutoButtonStartedSession"] as? Bool == true,
+                        "Actual Auto button did not start the session's automatic input")
+            while true {
+                let state = session.stateForVerification
+                let snapshot = session.snapshotForVerification
+                let elapsed = ProcessInfo.processInfo.systemUptime - start
+                if state.height > lastHeight {
+                    growths += 1; lastHeight = state.height
+                    if firstGrowth == nil { firstGrowth = elapsed }
+                }
+                trace.append(["seconds": elapsed, "phase": phase, "nativeOffset": viewport.offset,
+                    "acceptedOffset": state.viewportOffset, "outputHeight": state.height,
+                    "acceptedObservations": state.acceptedObservations, "matched": state.matched,
+                    "automaticInputs": inputTimes.count, "autoScrolling": snapshot.autoScrolling,
+                    "paused": snapshot.paused, "productStatus": snapshot.status])
+                if elapsed - lastArtifact >= 0.5, story.count < 35 {
+                    let image = try scene(window: window, controls: controls,
+                        caption: String(format: "%.1f s · automatic · %d px · actual PicShot session", elapsed, state.height))
+                    story.append(image); lastArtifact = elapsed
+                    try writePNG(image, directory.appendingPathComponent(String(format: prefix + "-frame-%02d.png", story.count)))
+                }
+                // Exercise the actual Stop affordance before resuming the same
+                // session. There is no fixture task producing automatic wheels.
+                if !stopClicked, state.viewportOffset >= 201, snapshot.autoScrolling {
+                    try PortableSettingsUIPreviewFixture.click(auto)
+                    stopClicked = true; phase = "stopped-by-button"
+                    let stoppedCount = inputTimes.count
+                    let stoppedSamples = session.sampledFramesForVerification
+                    try writePNG(try scene(window: window, controls: controls, caption: "Actual Stop button · manual capture stays active"),
+                                 directory.appendingPathComponent(prefix + "-native-stopped-window.png"))
+                    try await Task.sleep(nanoseconds: 450_000_000)
+                    try await waitFor("Stopped automatic session did not join its current viewport", timeout: 5) {
+                        session.stateForVerification.viewportOffset == Int(viewport.offset.rounded())
+                            && session.snapshotForVerification.previewPositionVerified && auto.isEnabled
+                    }
+                    report["nativeStopButtonStoppedInput"] = !session.snapshotForVerification.autoScrolling
+                        && inputTimes.count == stoppedCount
+                    report["manualCaptureActiveAfterStopButton"] = !session.snapshotForVerification.paused
+                        && session.sampledFramesForVerification > stoppedSamples
+                    try require(report["nativeStopButtonStoppedInput"] as? Bool == true
+                        && report["manualCaptureActiveAfterStopButton"] as? Bool == true,
+                        "Actual Stop button failed to stop input while retaining manual capture")
+                    phase = "resumed-auto"
+                    try PortableSettingsUIPreviewFixture.click(auto)
+                    restartClicked = true
+                    report["nativeAutoButtonRestartedSession"] = session.snapshotForVerification.autoScrolling
+                    try require(session.snapshotForVerification.autoScrolling, "Actual Auto button did not restart")
+                } else if !snapshot.autoScrolling {
+                    break
+                }
+                try require(elapsed < 22, "Bounded automatic demo exceeded its deadline")
+                try await Task.sleep(nanoseconds: 100_000_000)
+            }
+            let stoppedAt = ProcessInfo.processInfo.systemUptime - start
+            let stoppedSnapshot = session.snapshotForVerification
+            let endState = session.stateForVerification
+            let timeoutSeconds = stoppedAt - (inputTimes.last ?? stoppedAt)
+            report["noProgressStopStatus"] = stoppedSnapshot.status
+            report["noProgressStopSecondsSinceLastInput"] = timeoutSeconds
+            report["noProgressStoppedAtNativeEnd"] = !stoppedSnapshot.autoScrolling
+                && stoppedSnapshot.status.contains("未确认页面移动")
+                && Int(viewport.offset.rounded()) == boundedOffset && endState.viewportOffset == boundedOffset
+            report["automaticEndOutputHeight"] = endState.height
+            report["noProgressTerminalInputCount"] = inputTrace.filter {
+                ($0["nativeOffsetBefore"] as? CGFloat) == CGFloat(boundedOffset)
+                    && ($0["nativeOffsetAfter"] as? CGFloat) == CGFloat(boundedOffset)
+            }.count
+            try writePNG(try scene(window: window, controls: controls,
+                caption: "Document end · automatic input stopped · manual capture available"),
+                directory.appendingPathComponent(prefix + "-native-no-progress-window.png"))
+            try require(report["noProgressStoppedAtNativeEnd"] as? Bool == true && timeoutSeconds >= 3,
+                        "Automatic scrolling did not stop at the bounded end after its no-progress deadline")
+            try require(report["noProgressTerminalInputCount"] as? Int == 1,
+                        "More than one automatic input was pending without native forward progress")
+            let stoppedInputCount = inputTimes.count
+            let samplesAtEnd = session.sampledFramesForVerification
+            try await Task.sleep(nanoseconds: 450_000_000)
+            report["manualCaptureActiveAfterNoProgress"] = !session.snapshotForVerification.paused
+                && session.sampledFramesForVerification > samplesAtEnd && inputTimes.count == stoppedInputCount
+            try scroll(viewport.scrollView, pixels: -40)
+            try await waitFor("Manual reverse after automatic stop did not rejoin", timeout: 5) {
+                session.stateForVerification.viewportOffset == boundedOffset - 40
+            }
+            try scroll(viewport.scrollView, pixels: 40)
+            try await waitFor("Manual return after automatic stop did not rejoin", timeout: 5) {
+                session.stateForVerification.viewportOffset == boundedOffset
+            }
+            report["manualRecoveryWheelEvents"] = 2
+            report["manualRecoveryAfterNoProgress"] = session.stateForVerification.matched
+                && !session.snapshotForVerification.autoScrolling && inputTimes.count == stoppedInputCount
+            let finalState = session.stateForVerification
+            let finalMarker = thumbnail.viewportMarker
+            report["fixedHeaderDetectedPixels"] = finalState.fixedLeading
+            report["viewportMarkerPresentAtStartAndEnd"] = firstMarker != nil && finalMarker != nil
+            report["viewportMarkerShrankAsDocumentGrew"] = (finalMarker?.height ?? .infinity) < (firstMarker?.height ?? 0)
+            let finalScene = try scene(window: window, controls: controls, caption: "Ready to finish · bounded automatic output retained")
+            story.append(finalScene)
+            try writePNG(finalScene, directory.appendingPathComponent(prefix + "-native-finished-window.png"))
+            let finish = try unwrap(findButton("scroll.live.finish", in: controls.toolbarWindow?.contentView),
+                                    "Actual Finish button missing after automatic capture")
+            report["completionCallbacksBeforeFinish"] = completedCount
+            try require(finish.isEnabled && completedCount == 0, "Automatic stop finished output prematurely or disabled Finish")
+            try PortableSettingsUIPreviewFixture.click(finish)
+            try await waitFor("Automatic demo Finish did not deliver its image", timeout: 8) { completedImage != nil }
+            let output = try unwrap(completedImage, "Automatic demo Finish returned no image")
+            try writePNG(output, directory.appendingPathComponent(prefix + "-finished.png"))
+            report["outputWidth"] = output.width; report["outputHeight"] = output.height
+            let reference = try numberedReference(initial: initial, totalHeight: height + boundedOffset, illustrated: true)
+            try writePNG(reference, directory.appendingPathComponent(prefix + "-reference.png"))
+            let referenceStart = try unwrap(reference.cropping(to: CGRect(x: 0, y: 0, width: width, height: height)),
+                                             "Automatic reference has no initial viewport")
+            let calibration = try nativeRasterComparison(referenceStart, initial)
+            let comparison = try nativeRasterComparison(output, reference)
+            report["referenceInitialViewportCalibration"] = calibration
+            report["nativeReferenceComparison"] = comparison
+            report["referenceMethod"] = "Fresh native numbered document from origin to bounded end; only original 36px header reused; every RGBA pixel normalized identically and compared"
+            var intervals: [Double] = [], withinRunIntervals: [Double] = []
+            var freshProgressBeforeEveryFollowingInput = true
+            for index in 1..<inputTimes.count {
+                intervals.append(inputTimes[index] - inputTimes[index - 1])
+                guard inputPhases[index] == inputPhases[index - 1] else { continue }
+                withinRunIntervals.append(inputTimes[index] - inputTimes[index - 1])
+                freshProgressBeforeEveryFollowingInput = freshProgressBeforeEveryFollowingInput
+                    && inputOffsets[index] > inputOffsets[index - 1] && inputSamples[index] > inputSamples[index - 1]
+            }
+            report["minimumAutomaticIntervalSeconds"] = intervals.min() ?? -1
+            report["minimumAutomaticIntervalWithinRunSeconds"] = withinRunIntervals.min() ?? -1
+            report["matchedForwardProgressBeforeEveryFollowingInput"] = freshProgressBeforeEveryFollowingInput
+            try require(stopClicked && restartClicked && inputTimes.count >= 6 && growths >= 4,
+                        "Automatic demo did not show progressive preview updates and actual Stop/restart controls")
+            try require((intervals.min() ?? 0) >= 0.35 - 0.000001 && freshProgressBeforeEveryFollowingInput,
+                        "Automatic input ignored its minimum interval or verified forward progress")
+            try require(report["manualCaptureActiveAfterNoProgress"] as? Bool == true
+                && report["manualRecoveryAfterNoProgress"] as? Bool == true,
+                "No-progress stop disabled manual capture or emitted further automatic input")
+            try require(finalState.fixedLeading == headerHeight && completedCount == 1
+                && firstMarker != nil && finalMarker != nil,
+                "Automatic output lost its sticky header, viewport marker, or unique Finish callback")
+            try require(output.width == width && output.height == height + boundedOffset
+                && calibration["passed"] as? Bool == true && comparison["passed"] as? Bool == true,
+                "Automatic Finish differs from the full bounded native numbered document reference")
+            report["status"] = "passed"
+        } catch {
+            report["status"] = "failed"; report["error"] = error.localizedDescription
+            if let controls = session.controlsForVerification,
+               let image = try? scene(window: window, controls: controls, caption: "Automatic demo failure · retained native UI") {
+                try? writePNG(image, directory.appendingPathComponent(prefix + "-failure.png"))
+            }
+        }
+        report["nativeAutomaticInputCount"] = inputTimes.count
+        report["automaticInputTimesSeconds"] = inputTimes
+        report["automaticInputTrace"] = inputTrace; report["trace"] = trace
+        report["observedGrowingPreviewUpdates"] = growths
+        report["firstAutomaticInputMilliseconds"] = firstInput.map { $0 * 1000 } ?? -1
+        report["firstGrowthMillisecondsFromInput"] = firstGrowth.flatMap { growth in firstInput.map { (growth - $0) * 1000 } } ?? -1
+        report["finishButtonCompletionCallbacks"] = completedCount
+        report["frameProviderCalls"] = frameRequests
+        report["productSampledFrames"] = session.sampledFramesForVerification
+        report["productStatus"] = session.snapshotForVerification.status
+        report["retainedOutputHeight"] = session.stateForVerification.height
+        report["storyFrames"] = story.count
+        if !story.isEmpty {
+            try? writeGIF(story, directory.appendingPathComponent(prefix + "-interaction.gif"))
+            try? writePNG(contactSheet(story), directory.appendingPathComponent(prefix + "-contact-sheet.png"))
+        }
+        await session.closeForVerification()
+        report["productSessionClosed"] = session.isClosedForVerification
+        if !session.isClosedForVerification {
+            report["status"] = "failed"
+            report["cleanupError"] = "Automatic product session did not report closed after bounded closeForVerification"
+        }
+        report["finishButtonCompletionCallbacks"] = completedCount
+        if report["status"] as? String == "passed", completedCount != 1 {
+            report["status"] = "failed"
+            report["completionError"] = "Automatic capture did not retain exactly one completion through closure"
+        }
+        window.close()
+        report["ownedWindowClosed"] = !window.isVisible
         report["elapsedSeconds"] = ProcessInfo.processInfo.systemUptime - start
         if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: directory.appendingPathComponent(prefix + "-product-session.json"), options: .atomic)

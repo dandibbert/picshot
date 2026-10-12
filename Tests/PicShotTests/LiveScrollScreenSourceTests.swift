@@ -14,6 +14,61 @@ final class LiveScrollScreenSourceTests: XCTestCase {
         init(_ value: Int) { self.value = value }
     }
 
+    func testProducerWatermarkIncludesQueuedReplacementAndSurvivesConsumption() async throws {
+        let mailbox = LiveScrollFrameMailbox<Marker>()
+        XCTAssertNil(mailbox.frameWatermark)
+        mailbox.activate(generation: 21, width: 80, height: 60)
+        XCTAssertNil(mailbox.frameWatermark)
+        mailbox.offer(Marker(1), generation: 21, sequence: 1)
+        let first = try await mailbox.next(generation: 21, timeout: 0.1)
+        XCTAssertEqual(first?.value, 1)
+        XCTAssertEqual(mailbox.frameWatermark, LiveScrollFrameWatermark(generation: 21, sequence: 1))
+        mailbox.offer(Marker(2), generation: 21, sequence: 2)
+        mailbox.offer(Marker(3), generation: 21, sequence: 3)
+        // The input fence must include pixels already queued while frame 1 is processed.
+        XCTAssertEqual(mailbox.counters.pendingFrames, 1)
+        XCTAssertEqual(mailbox.frameWatermark, LiveScrollFrameWatermark(generation: 21, sequence: 3))
+        let latest = try await mailbox.next(generation: 21, timeout: 0.1)
+        XCTAssertEqual(latest?.value, 3)
+        XCTAssertEqual(mailbox.counters.pendingFrames, 0)
+        XCTAssertEqual(mailbox.frameWatermark, LiveScrollFrameWatermark(generation: 21, sequence: 3))
+        mailbox.close(generation: 21)
+        XCTAssertNil(mailbox.frameWatermark)
+    }
+
+    func testProducerWatermarkResetsOnActivationAndRejectsOldGenerationChanges() {
+        let mailbox = LiveScrollFrameMailbox<Marker>()
+        mailbox.activate(generation: 22, width: 80, height: 60)
+        mailbox.offer(Marker(8), generation: 22, sequence: 8)
+        XCTAssertEqual(mailbox.frameWatermark, LiveScrollFrameWatermark(generation: 22, sequence: 8))
+        mailbox.activate(generation: 23, width: 80, height: 60)
+        XCTAssertNil(mailbox.frameWatermark)
+        mailbox.offer(Marker(9), generation: 22, sequence: 9)
+        XCTAssertNil(mailbox.frameWatermark)
+        mailbox.offer(Marker(1), generation: 23, sequence: 1)
+        mailbox.offer(Marker(10), generation: 22, sequence: 10)
+        mailbox.close(generation: 22)
+        XCTAssertEqual(mailbox.frameWatermark, LiveScrollFrameWatermark(generation: 23, sequence: 1))
+        XCTAssertEqual(mailbox.counters.rejectedFrames, 2)
+        mailbox.close(generation: 23)
+        XCTAssertNil(mailbox.frameWatermark)
+        mailbox.offer(Marker(2), generation: 23, sequence: 2)
+        XCTAssertNil(mailbox.frameWatermark)
+        XCTAssertEqual(mailbox.counters.rejectedFrames, 3)
+    }
+
+    func testUnsequencedProducerCannotExposeAnEarlierWatermark() {
+        let mailbox = LiveScrollFrameMailbox<Marker>()
+        mailbox.activate(generation: 24, width: 80, height: 60)
+        mailbox.offer(Marker(1), generation: 24)
+        XCTAssertNil(mailbox.frameWatermark)
+        mailbox.offer(Marker(2), generation: 24, sequence: 2)
+        XCTAssertNotNil(mailbox.frameWatermark)
+        mailbox.offer(Marker(3), generation: 24)
+        XCTAssertNil(mailbox.frameWatermark)
+        mailbox.close(generation: 24)
+    }
+
     func testSlowConsumerRetainsOnlyNewestFrameAndReleasesReplacedObject() async throws {
         let mailbox = LiveScrollFrameMailbox<Marker>()
         mailbox.activate(generation: 1, width: 800, height: 600)

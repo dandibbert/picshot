@@ -36,6 +36,7 @@ final class LiveScrollScreenSource {
     private(set) var confirmedStops = 0
 
     var counters: LiveScrollFrameCounters { mailbox.counters }
+    var automaticScrollWatermark: LiveScrollFrameWatermark? { mailbox.frameWatermark }
 
     private let displayIdentity: DisplayIdentity
     private let mailbox = LiveScrollFrameMailbox<LiveScrollPixelFrame>()
@@ -425,7 +426,8 @@ private final class LiveScrollStreamOutput: NSObject, SCStreamOutput, SCStreamDe
         let time = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         guard time.isNumeric, time.seconds.isFinite else { mailbox.recordIncomplete(generation: generation); return }
         sequence &+= 1
-        mailbox.offer(LiveScrollPixelFrame(buffer: buffer, sequence: sequence, timestamp: time.seconds), generation: generation)
+        mailbox.offer(LiveScrollPixelFrame(buffer: buffer, sequence: sequence, timestamp: time.seconds),
+                      generation: generation, sequence: sequence)
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {

@@ -1,5 +1,12 @@
 import Foundation
 
+/// Identity of the latest accepted producer callback, including a queued frame.
+/// This does not establish when ScreenCaptureKit presented the captured pixels.
+struct LiveScrollFrameWatermark: Sendable, Equatable {
+    let generation: UInt64
+    let sequence: UInt64
+}
+
 /// Metadata only. These counters never contain screenshot bytes, hashes or window titles.
 struct LiveScrollFrameCounters: Equatable, Sendable {
     var receivedFrames: UInt64 = 0
@@ -25,6 +32,7 @@ final class LiveScrollFrameMailbox<Element>: @unchecked Sendable {
     private var generation: UInt64 = 0
     private var accepting = false
     private var pending: Element?
+    private var latestFrameSequence: UInt64?
     private var failure: Error = CancellationError()
     private var waiter: (id: UUID, continuation: CheckedContinuation<Bool, Error>)?
     private var timer: DispatchSourceTimer?
@@ -34,11 +42,19 @@ final class LiveScrollFrameMailbox<Element>: @unchecked Sendable {
         locked { var result = statistics; result.waitingReaders = waiter == nil ? 0 : 1; return result }
     }
 
+    /// Consumption leaves the producer identity intact; closure makes it unavailable.
+    var frameWatermark: LiveScrollFrameWatermark? {
+        locked {
+            guard accepting, let sequence = latestFrameSequence else { return nil }
+            return LiveScrollFrameWatermark(generation: generation, sequence: sequence)
+        }
+    }
+
     func activate(generation: UInt64, width: Int, height: Int) {
         let previous = locked { () -> CheckedContinuation<Bool, Error>? in
             let previous = waiter?.continuation
             waiter = nil; timer?.cancel(); timer = nil
-            self.generation = generation; accepting = true; pending = nil
+            self.generation = generation; accepting = true; pending = nil; latestFrameSequence = nil
             statistics.pendingFrames = 0
             statistics.pixelWidth = width; statistics.pixelHeight = height
             return previous
@@ -59,12 +75,13 @@ final class LiveScrollFrameMailbox<Element>: @unchecked Sendable {
         }
     }
 
-    func offer(_ value: Element, generation: UInt64) {
+    func offer(_ value: Element, generation: UInt64, sequence: UInt64? = nil) {
         let ready = locked { () -> CheckedContinuation<Bool, Error>? in
             guard accepting, self.generation == generation else {
                 statistics.rejectedFrames &+= 1; return nil
             }
             statistics.receivedFrames &+= 1
+            latestFrameSequence = sequence
             if pending != nil { statistics.replacedFrames &+= 1 }
             pending = value
             statistics.pendingFrames = 1; statistics.peakPendingFrames = 1

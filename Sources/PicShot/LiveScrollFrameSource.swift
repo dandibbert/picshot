@@ -8,6 +8,8 @@ protocol LiveScrollFrameSource: AnyObject {
     var region: CGRect { get }
     var displayBounds: CGRect { get }
     var target: LiveScrollScreenSource.Target? { get }
+    /// Producer callback fence, not a presentation-time or input-causality claim.
+    var automaticScrollWatermark: LiveScrollFrameWatermark? { get }
     func start() async throws
     func nextFrame(timeout: TimeInterval) async throws -> LiveScrollScreenSource.Frame?
     func pauseAndDrain() async throws
@@ -15,6 +17,11 @@ protocol LiveScrollFrameSource: AnyObject {
     func stop() async throws
     func moveRegion(to proposed: CGRect) throws
     func validateTarget() throws
+}
+
+extension LiveScrollFrameSource {
+    /// Sources without a producer fence remain available for manual capture.
+    var automaticScrollWatermark: LiveScrollFrameWatermark? { nil }
 }
 
 extension LiveScrollScreenSource: LiveScrollFrameSource { }
@@ -38,6 +45,8 @@ final class LiveScrollVerificationFrameSource: LiveScrollFrameSource {
     private var terminalRequested = false
     private var readInFlight = false
     private var readDrain: CheckedContinuation<Void, Never>?
+
+    var automaticScrollWatermark: LiveScrollFrameWatermark? { mailbox.frameWatermark }
 
     private enum State { case idle, running, draining, paused, stopped, failed }
     private struct Worker {
@@ -164,7 +173,7 @@ final class LiveScrollVerificationFrameSource: LiveScrollFrameSource {
         expectedPixelSize = pixels
         sequence &+= 1
         mailbox.offer(LiveScrollScreenSource.Frame(image: image, sequence: sequence, generation: token,
-            timestamp: ProcessInfo.processInfo.systemUptime, region: region), generation: token)
+            timestamp: ProcessInfo.processInfo.systemUptime, region: region), generation: token, sequence: sequence)
     }
 
     private func halt(terminal: Bool) async throws {
