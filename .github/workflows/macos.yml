@@ -434,6 +434,7 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       - name: Test bounded CI command runner and annotation evidence checker
+        id: current_gate_01
         timeout-minutes: 2
         run: |
           python3 -m unittest discover -s scripts/tests -p test_run_bounded_command.py -v
@@ -451,21 +452,33 @@ jobs:
           python3 -m unittest discover -s scripts/tests -p test_multiwindow_resource_smoke_selection.py -v
           python3 -m unittest discover -s scripts/tests -p test_check_editable_annotation_report.py -v
       - name: Check portable settings evidence contract
+        id: current_gate_02
         timeout-minutes: 2
         run: |
           python3 -m unittest discover -s scripts/tests -p test_check_portable_settings.py -v
           python3 -O -m unittest discover -s scripts/tests -p test_check_portable_settings.py -v
       - name: Check pin management evidence contract
+        id: current_gate_03
         timeout-minutes: 2
         run: |
           python3 -m unittest discover -s scripts/tests -p test_check_pin_management.py -v
           python3 -O -m unittest discover -s scripts/tests -p test_check_pin_management.py -v
+      - name: Check experimental scrolling interaction evidence contract
+        id: experimental_scroll_contract
+        if: ${{ contains(github.event.head_commit.message || '', '[experimental-scroll-interactions]') }}
+        timeout-minutes: 2
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_experimental_scroll_interactions.py -v
+          PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p test_experimental_scroll_interactions.py -v
       - name: Check explicit live scrolling testing classification
+        id: scroll_testing_contract
+        if: ${{ !contains(github.event.head_commit.message || '', '[experimental-scroll-interactions]') }}
         timeout-minutes: 2
         run: |
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p 'test_live_scroll_testing_classification.py' -v
           PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p 'test_live_scroll_testing_classification.py' -v
       - name: Check installed drawing default product and source contracts
+        id: current_gate_04
         timeout-minutes: 4
         run: |
           set -o pipefail
@@ -474,6 +487,7 @@ jobs:
             PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p "$picshot_contract_pattern" -v 2>&1 | tee -a dist/installed-default-contracts.log
           done
       - name: Check installed default contracts with Python assertions disabled
+        id: current_gate_05
         timeout-minutes: 4
         run: |
           set -o pipefail
@@ -481,6 +495,7 @@ jobs:
             PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p "$picshot_contract_pattern" -v 2>&1 | tee -a dist/installed-default-contracts-optimized.log
           done
       - name: Prepare verified codec dependencies before native tests
+        id: current_gate_06
         timeout-minutes: 15
         run: >-
           python3 scripts/run-bounded-command.py --timeout-seconds 840
@@ -492,6 +507,7 @@ jobs:
       # Keep compilation outside the eight-minute execution gates. Inner
       # deadlines leave time for process cleanup and report/log publication.
       - name: Compile debug app
+        id: current_gate_07
         timeout-minutes: 8
         run: >-
           python3 scripts/run-bounded-command.py --timeout-seconds 420
@@ -508,14 +524,17 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
       - name: Compile native tests
+        id: current_gate_08
         timeout-minutes: 10
         run: >-
           python3 scripts/run-bounded-command.py --timeout-seconds 540
           --log dist/test-build.log --report dist/test-build-report.json
           -- swift build --build-tests
       - name: Build dedicated native codec helper for actual lifecycle tests
+        id: current_gate_09
         run: swift build --product PicShotCodecHelper
       - name: Plan exhaustive and focused native test processes
+        id: current_gate_10
         timeout-minutes: 2
         run: |
           python3 -m unittest discover -s scripts/tests -p test_native_test_shards.py -v
@@ -523,6 +542,7 @@ jobs:
           python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$NATIVE_TEST_PROCESS_COUNT" --output dist/native-tests-plan.json
           python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$FOCUSED_TEST_PROCESS_COUNT" --selection-regex 'LiveScroll|AnnotationStyle|LocalAnnotationShortcut|PortableAnnotationPreferences|PortableSettings|AnnotationToolbarOrder|DrawingRaster|EditableProductResource|EditableProductRetirement|EditableComponent|PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|AnnotationEditing|CaptureAspectRatio|CaptureRatio|MultiWindow|ImageOutputDecoration|EditorOutput|PinOriginalCurrent|ManualScroll|ScrollPreview|ScrollSequencePreview|AnnotationFreehand|AnnotationTextLine|NumberedCallout|AutomaticMosaic|RepeatedRegion|AutomaticPinOCR|PinOCR|TextResultSourceSelection|PinManagement|PinWorkflow|LaTeXPin|PinLaTeX|PinGroup|PinDesktop|EditorToolbarHierarchy|SaveWorkflow|OwnedVideoExportStage|ImageBacking|Codec|NativeExport|AnimatedWebP|WebPContainer|RecordingWebP|CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingInput|RecordingHotKey|RecordingTransport|RecordingCommandCoordinator|SettingsAndMenuTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' --output dist/focused-tests-plan.json
       - name: Reproduce settings interaction and recording regressions
+        id: current_gate_11
         # Additive early reproduction preserves the five recording and twelve settings UI IDs,
         # adding current style/local-key/import regressions. Keep each 420s process cap.
         timeout-minutes: 16
@@ -560,6 +580,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
       - name: Verify existing live scrolling pixels ownership cancellation and storage before resource qualification
+        id: current_gate_12
         timeout-minutes: 8
         run: |
           python3 scripts/run-bounded-command.py --timeout-seconds 420 --log dist/live-scroll-tests.log --report dist/live-scroll-tests.json -- swift test --skip-build --filter LiveScroll
@@ -585,17 +606,47 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
       - name: Package signed native app for early pixel review
+        id: current_gate_13
         run: |
           mkdir -p dist
           set -o pipefail
           bash scripts/package.sh 2>&1 | tee dist/package.log
       - name: Build owned scrolling target for installed live-session verification
+        id: current_gate_14
         timeout-minutes: 3
         run: python3 scripts/run-bounded-command.py --timeout-seconds 150 --log dist/live-scroll-target-build.log --report dist/live-scroll-target-build.json -- bash scripts/build-live-scroll-target.sh "$PWD/.build/LiveScrollTarget.app"
+      - name: Bind current experimental source and select unchanged installed demo prefix
+        id: experimental_scroll_prepare
+        if: ${{ contains(github.event.head_commit.message || '', '[experimental-scroll-interactions]') }}
+        timeout-minutes: 2
+        env:
+          PICSHOT_EXPERIMENTAL_SCROLL_INTERACTIONS: 'true'
+          PICSHOT_TRIGGER_MESSAGE: ${{ github.event.head_commit.message || '' }}
+        run: python3 scripts/check-experimental-scroll-interactions.py prepare
+      - name: Verify current experimental scrolling interactions from the actual ZIP
+        id: experimental_scroll_demo
+        if: ${{ contains(github.event.head_commit.message || '', '[experimental-scroll-interactions]') }}
+        timeout-minutes: 14
+        run: |
+          picshot_scroll_prefix=$(cat dist/experimental-scroll-interactions/installed-demo-prefix.sh)
+          python3 scripts/run-bounded-command.py --timeout-seconds 780 --grace-seconds 10 \
+            --log dist/experimental-scroll-installed.log --report dist/experimental-scroll-installed-report.json \
+            -- bash -c "$picshot_scroll_prefix" scripts/live-scroll-installed.sh \
+            "$PWD/dist/PicShot-0.22.0-macos-${{ matrix.arch }}.zip" \
+            "$PWD/dist/live-scroll-installed" "$GITHUB_SHA"
+      - name: Require direct release Escape rollback visible HUD and stale marker evidence
+        id: experimental_scroll_receipt
+        if: ${{ contains(github.event.head_commit.message || '', '[experimental-scroll-interactions]') }}
+        timeout-minutes: 2
+        env:
+          PICSHOT_EXPERIMENTAL_SCROLL_INTERACTIONS: 'true'
+          PICSHOT_TRIGGER_MESSAGE: ${{ github.event.head_commit.message || '' }}
+        run: python3 scripts/check-experimental-scroll-interactions.py qualify
       # Four fresh launches retain600s each plus compilation and owned cleanup.
       # The pre-existing318/346min whole-job cap remains an independent outer cap;
       # it does not promise every nested stage can simultaneously use its maximum.
       - name: Verify continuous scrolling and bounded resources from the actual ZIP
+        if: ${{ !contains(github.event.head_commit.message || '', '[experimental-scroll-interactions]') }}
         id: live_scroll_resource
         # Preserve this step's original failure. Only the separately audited
         # testing classifier below may permit the remaining independent gates.
@@ -608,7 +659,8 @@ jobs:
           "${{ github.workspace }}/dist/PicShot-0.22.0-macos-${{ matrix.arch }}.zip"
           "${{ github.workspace }}/dist/live-scroll-installed" "${{ github.sha }}"
       - name: Classify explicit scrolling testing eligibility without changing resource results
-        if: ${{ !cancelled() && (steps.live_scroll_resource.outcome == 'success' || steps.live_scroll_resource.outcome == 'failure') }}
+        id: scroll_testing_classification
+        if: ${{ !contains(github.event.head_commit.message || '', '[experimental-scroll-interactions]') && !cancelled() && (steps.live_scroll_resource.outcome == 'success' || steps.live_scroll_resource.outcome == 'failure') }}
         timeout-minutes: 2
         run: |
           picshot_scroll_executable_sha=$(shasum -a 256 dist/PicShot.app/Contents/MacOS/PicShot | cut -d ' ' -f 1)
@@ -657,6 +709,7 @@ jobs:
           retention-days: 14
           compression-level: 6
       - name: Render native UI from installed ZIP before slow verification
+        id: current_gate_15
         run: |
           set -o pipefail
           bash scripts/ui-preview.sh 2>&1 | tee dist/ui-preview.log
@@ -669,6 +722,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
       - name: Check installed recording exports before slow native gates
+        id: current_gate_16
         # 660s launcher (unchanged 600s app + 6s owned cleanup), 330s reader,
         # 140s bounded identity/extraction commands, 70s cleanup/report reserve
         # (including existing-wrapper termination grace). Orchestration only.
@@ -687,6 +741,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
       - name: Measure codec and image backing in fresh installed processes
+        id: current_gate_17
         timeout-minutes: 8
         run: |
           set -o pipefail
@@ -705,12 +760,14 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
       - name: Verify installed production staging routes and portable fidelity contract
+        id: current_gate_18
         timeout-minutes: 3
         run: |
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_codec_fidelity_only.py -v
           PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p test_codec_fidelity_only.py -v
           python3 scripts/check-codec-staging-defaults.py dist/evidence/codec-attribution --source "$GITHUB_SHA" --webp verifiedBytesOnly --avif legacyPreview --report dist/codec-fidelity-metadata/default-routes.json
       - name: Verify actual staged final and preview pixels from installed ZIP
+        id: current_gate_19
         timeout-minutes: 106
         run: >-
           python3 scripts/run-bounded-command.py --timeout-seconds 6240 --max-log-bytes 1048576
@@ -766,6 +823,7 @@ jobs:
             dist/codec-fidelity-metadata/outer.json
           if-no-files-found: warn
       - name: Reproduce the exact pin Apply regression before broader native gates
+        id: current_gate_20
         # Method first, then its four-method class. Each keeps 420s native,
         # 5s TERM grace and 8MiB log cap: 2 * (420s + 10s cleanup) + 60s = 920s.
         timeout-minutes: 16
@@ -889,6 +947,7 @@ jobs:
               (root/'regression-report.json').write_text(json.dumps(record, indent=2)+'\n')
           PYTHON
       - name: Check annotation, GIF, recording durability and inference boundaries
+        id: current_gate_21
         # Intel: 4 * (420s command + 10s cleanup allowance) + 60s stage overhead
         # = 1780s within 30 minutes. ARM keeps two processes within 16 minutes.
         timeout-minutes: ${{ matrix.arch == 'x86_64' && 30 || 16 }}
@@ -919,11 +978,13 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
       - name: Recover actual abruptly terminated synthetic recording from installed app
+        id: current_gate_22
         timeout-minutes: 4
         run: |
           set -o pipefail
           bash scripts/recording-recovery-smoke.sh 2>&1 | tee dist/recording-recovery.log
       - name: Test native modules
+        id: current_gate_23
         # Both architectures have four 420s processes; 4 * 430s + 60s = 1780s.
         # Discovery has its own unchanged 2-minute stage; aggregation is included here.
         timeout-minutes: 30
@@ -954,6 +1015,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
       - name: Validate native inference with approved pinned original model fixtures
+        id: current_gate_24
         run: |
           set -o pipefail
           python3 scripts/fetch-model-fixtures.py 2>&1 | tee dist/model-download.log
@@ -965,10 +1027,35 @@ jobs:
           swift build --product PicShotMLHelper
           swift test --skip-build --filter 'FormulaEngineTests|RecordedModelOutputTests|SmartEraseEngineTests' 2>&1 | tee dist/model-inference.log
       - name: Install and launch both formats, render native UI, measure repeated cycles
+        id: current_gate_25
         run: |
           set -o pipefail
           bash scripts/smoke.sh 2>&1 | tee dist/smoke.log
+      - name: Record current experimental distribution after every ordinary remaining gate
+        id: experimental_scroll_distribution
+        if: ${{ contains(github.event.head_commit.message || '', '[experimental-scroll-interactions]') }}
+        timeout-minutes: 2
+        env:
+          PICSHOT_EXPERIMENTAL_SCROLL_INTERACTIONS: 'true'
+          PICSHOT_TRIGGER_MESSAGE: ${{ github.event.head_commit.message || '' }}
+          PICSHOT_WORKFLOW_STEPS: ${{ toJSON(steps) }}
+        run: python3 scripts/check-experimental-scroll-interactions.py final
+      - name: Bound new experimental scrolling evidence archive
+        if: ${{ always() && contains(github.event.head_commit.message || '', '[experimental-scroll-interactions]') }}
+        timeout-minutes: 3
+        run: python3 scripts/check-experimental-scroll-interactions.py archive
+      - name: Upload bounded current experimental scrolling evidence
+        if: ${{ always() && contains(github.event.head_commit.message || '', '[experimental-scroll-interactions]') }}
+        timeout-minutes: 2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-EXPERIMENTAL-Scroll-Interactions-${{ matrix.arch }}-${{ github.sha }}
+          path: dist/experimental-scroll-evidence/evidence.zip
+          compression-level: 0
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Record testing-only distribution after all remaining qualification steps
+        if: ${{ !contains(github.event.head_commit.message || '', '[experimental-scroll-interactions]') }}
         run: |
           python3 - <<'PYTHON'
           import hashlib, json, os
@@ -1037,6 +1124,7 @@ jobs:
           retention-days: 14
           compression-level: 6
       - name: Check split installer transfer budgets
+        if: ${{ !contains(github.event.head_commit.message || '', '[experimental-scroll-interactions]') }}
         run: |
           python3 - <<'PYTHON'
           from pathlib import Path
@@ -1059,6 +1147,7 @@ jobs:
                   raise SystemExit(f"{extension.upper()} artifact exceeds transfer budget")
           PYTHON
       - name: Upload ZIP installer and provenance
+        if: ${{ !contains(github.event.head_commit.message || '', '[experimental-scroll-interactions]') }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: PicShot-TESTING-macos-${{ matrix.arch }}-ZIP-${{ github.sha }}
@@ -1073,6 +1162,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Upload DMG installer and provenance
+        if: ${{ !contains(github.event.head_commit.message || '', '[experimental-scroll-interactions]') }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: PicShot-TESTING-macos-${{ matrix.arch }}-DMG-${{ github.sha }}
@@ -1083,6 +1173,38 @@ jobs:
             dist/PicShot-*.build-info.json.sha256
             dist/live-scroll-testing-qualification.json
             dist/testing-package-distribution.json
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload current experimental ZIP installer and provenance
+        if: ${{ success() && contains(github.event.head_commit.message || '', '[experimental-scroll-interactions]') && steps.experimental_scroll_distribution.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-EXPERIMENTAL-macos-${{ matrix.arch }}-ZIP-${{ github.sha }}
+          path: |
+            dist/PicShot-*.zip
+            dist/PicShot-*.zip.sha256
+            dist/PicShot-*.build-info.json
+            dist/PicShot-*.build-info.json.sha256
+            dist/experimental-scroll-interactions/source-identity.json
+            dist/experimental-scroll-interactions/interaction-receipt.json
+            dist/experimental-scroll-interactions/experimental-distribution.json
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload current experimental DMG installer and provenance
+        if: ${{ success() && contains(github.event.head_commit.message || '', '[experimental-scroll-interactions]') && steps.experimental_scroll_distribution.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-EXPERIMENTAL-macos-${{ matrix.arch }}-DMG-${{ github.sha }}
+          path: |
+            dist/PicShot-*.dmg
+            dist/PicShot-*.dmg.sha256
+            dist/PicShot-*.build-info.json
+            dist/PicShot-*.build-info.json.sha256
+            dist/experimental-scroll-interactions/source-identity.json
+            dist/experimental-scroll-interactions/interaction-receipt.json
+            dist/experimental-scroll-interactions/experimental-distribution.json
           compression-level: 0
           if-no-files-found: error
           retention-days: 14

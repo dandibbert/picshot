@@ -6,7 +6,7 @@ This is the replacement product path under development after the 0.21.0/build214
 
 Choose a region directly from the menu, or use Long Capture beside an existing screenshot selection. Scroll the underlying application normally. A nonactivating nearby toolbar and live thumbnail remain visible. Ordinary reverse scrolling changes the current viewport and reconnects the matcher without deleting captured coverage. Finish/Edit and Copy flush the last verified viewport and end capture. Pause preserves data. Uncertain alignment keeps the last good result and asks for a small reverse scroll without opening a large window or taking application focus.
 
-Moving the selected region during active capture drains the current stream, constrains dragging to the scrolling axis, preserves target-window identity and pixel extent, then resumes with a fresh stream generation and verified overlap. A cancelled move preserves the old region. A paused move may use either axis but must remain in the same target window and display.
+Use the persistent “移动” handle to drag the selection directly while the nearby toolbar and last good preview remain visible. During active capture, movement pauses and drains acquisition, constrains dragging to the scrolling axis and preserves target-window identity and pixel extent. Mouse release applies the final position once draining completes; resumed observations must establish verified overlap before the preview marker turns green. Escape or focus loss restores the old region. A paused move may use either axis but must remain in the same target window and display, and it stays paused afterward. The More menu’s full-screen mover remains a fallback. Movement is not uninterrupted acquisition. An orange dashed preview marker describes the last known position while current alignment is unverified.
 
 ## Acquisition and ownership
 
@@ -16,7 +16,7 @@ Moving the selected region during active capture drains the current stream, cons
 
 `LiveScrollDocument` stores only newly exposed immutable pixel strips. Fixed leading/trailing edges appear once. Cached reduced tiles create bounded incremental previews without repeatedly decoding the historical full-resolution sources. Intermediate verified movement may appear in a transient preview before a durable keyframe; Finish/Copy must commit that same final verified viewport before publishing it. Previous accepted coverage is never silently shortened.
 
-Limits remain60MP output,32768-pixel maximum edge,512MiB private temporary storage and100 durable source additions. Screen observations are separately bounded to2400 and180seconds including pauses. Thumbnail storage is capped at4MiB and each shown preview at1MP/1024 pixels per edge. These are component limits, not a whole-process RSS or GPU-memory guarantee.
+Limits remain60MP output,32768-pixel maximum edge,512MiB private temporary storage and100 durable source additions. Screen observations are separately bounded to2400 samples and180seconds of active acquisition. Paused, draining and moving intervals do not consume that time budget; the sample cap is unchanged. Once either cap is reached, Continue and movement are disabled while Finish and Copy retain the accepted image. Cached preview tiles are capped at4MiB; the document preview is capped at1MP/1024 pixels per edge, and the displayed thumbnail independently owns at most262,144 pixels/1024 pixels per edge. These are component limits, not a whole-process RSS or GPU-memory guarantee.
 
 ## Verification scope
 
