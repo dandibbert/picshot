@@ -1,4 +1,4 @@
-# Full experimental qualification includes verified automatic-scroll admission; all ordinary gates remain intact.
+# Full experimental qualification includes checked Copy and transactional long-capture Save/Pin; all ordinary gates remain intact.
 name: Native macOS build and verification
 on:
   push:
