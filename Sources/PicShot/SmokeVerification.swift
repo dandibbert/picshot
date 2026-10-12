@@ -27,6 +27,31 @@ enum RecordingInputExportSmokeSelection {
                 try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]).write(to: url, options: .atomic)
                 NSApp.terminate(nil); return
             }
+            if ProcessInfo.processInfo.environment["PICSHOT_TEXT_SCRIPT_DEMO_ONLY"] == "1" {
+                var payload: [String: Any]
+                do { payload = try await TextScriptUIPreviewFixture.verify(evidenceDirectory: directory) }
+                catch {
+                    let evidence = directory.appendingPathComponent("text-script-demo.json")
+                    payload = (try? Data(contentsOf: evidence)).flatMap {
+                        (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any]
+                    } ?? ["schemaVersion": 1]
+                    payload["status"] = "failed"; payload["error"] = error.localizedDescription
+                }
+                payload["sourceCommit"] = Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String ?? "unknown"
+                payload["version"] = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
+                payload["build"] = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
+                payload["bundlePath"] = Bundle.main.bundleURL.resolvingSymlinksInPath().path
+                payload["executablePath"] = Bundle.main.executableURL?.resolvingSymlinksInPath().path ?? ""
+                payload["arguments"] = CommandLine.arguments
+                payload["installerAcceptance"] = false; payload["independentValidationRequired"] = true
+                do {
+                    if FileManager.default.fileExists(atPath: history.directory.path) { try FileManager.default.removeItem(at: history.directory) }
+                    payload["historyDirectoryRemoved"] = !FileManager.default.fileExists(atPath: history.directory.path)
+                } catch { payload["status"] = "failed"; payload["launcherCleanupError"] = error.localizedDescription }
+                try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
+                    .write(to: url, options: .atomic)
+                NSApp.terminate(nil); return
+            }
             if ProcessInfo.processInfo.environment["PICSHOT_CAPTURE_CHAIN_DEMO_ONLY"] == "1" {
                 var payload: [String: Any]
                 do { payload = try await CaptureChainUIPreviewFixture.verify(evidenceDirectory: directory) }

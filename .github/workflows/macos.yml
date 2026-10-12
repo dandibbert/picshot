@@ -75,6 +75,14 @@ jobs:
         python3 -O -m unittest discover -s scripts/tests -p 'test_capture_chain_demo.py'
         python3 -m unittest discover -s scripts/tests -p 'test_capture_chain_launcher_timeout.py'
         python3 -O -m unittest discover -s scripts/tests -p 'test_capture_chain_launcher_timeout.py'
+    - name: Check text script packaging and installed evidence contracts
+      if: ${{ contains(github.event.head_commit.message || '', '[text-script-integration]') }}
+      timeout-minutes: 2
+      run: |
+        python3 -m unittest discover -s scripts/tests -p 'test_text_script_package.py'
+        python3 -O -m unittest discover -s scripts/tests -p 'test_text_script_package.py'
+        python3 -m unittest discover -s scripts/tests -p 'test_text_script_demo.py'
+        python3 -O -m unittest discover -s scripts/tests -p 'test_text_script_demo.py'
     - name: Build native dependencies
       timeout-minutes: 15
       run: python3 scripts/run-bounded-command.py --timeout-seconds 840 --log dist/live-scroll-dependencies.log --report dist/live-scroll-dependencies.json -- python3 scripts/build-native-codecs.py --arch arm64
@@ -105,6 +113,26 @@ jobs:
         mkdir -p dist/capture-chain-demo
         swift scripts/launch-smoke-app.swift "$PWD/dist/PicShot.app" "$PWD/dist/capture-chain-demo/demo.json"
         python3 scripts/check-capture-chain-demo.py --report dist/capture-chain-demo/demo.json --source "$GITHUB_SHA"
+    - name: Demonstrate actual local OCR sandboxed script and checked text retry
+      if: ${{ always() && contains(github.event.head_commit.message || '', '[text-script-integration]') && steps.package_live_scroll.outcome == 'success' }}
+      timeout-minutes: 5
+      env:
+        PICSHOT_TEXT_SCRIPT_DEMO_ONLY: '1'
+      run: |
+        mkdir -p dist/text-script-demo
+        swift scripts/launch-smoke-app.swift "$PWD/dist/PicShot.app" "$PWD/dist/text-script-demo/text-script-installed.json"
+        python3 scripts/check-text-script-demo.py --report dist/text-script-demo/text-script-installed.json --source "$GITHUB_SHA" --package-proof dist/text-script-package-proof.json --source-root .
+    - name: Preserve early native text script evidence
+      if: ${{ always() && contains(github.event.head_commit.message || '', '[text-script-integration]') }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Text-Script-Demo-${{ github.sha }}
+        path: |
+          dist/text-script-demo/
+          dist/text-script-package-proof.json
+        if-no-files-found: warn
+        retention-days: 14
+        compression-level: 6
     - name: Preserve early native capture-chain evidence
       if: ${{ always() && contains(github.event.head_commit.message || '', '[capture-chain]') && steps.package_live_scroll.outcome == 'success' }}
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -184,6 +212,22 @@ jobs:
         native.need(not skipped,'Capture chain cases cannot be skipped')
         Path('dist/capture-chain-test-inventory.json').write_text(json.dumps({'passed':passed,'skipped':skipped,'count':len(expected)},indent=2)+'\n')
         PYTHON
+    - name: Verify text script catalog editor execution and existing runtime methods
+      if: ${{ always() && contains(github.event.head_commit.message || '', '[text-script-integration]') && steps.compile_live_scroll_tests.outcome == 'success' }}
+      timeout-minutes: 8
+      run: |
+        python3 scripts/run-bounded-command.py --timeout-seconds 420 --log dist/text-script-tests.log --report dist/text-script-tests.json -- swift test --skip-build --filter TextScript
+        python3 - <<'PYTHON'
+        import importlib.util,json
+        from pathlib import Path
+        spec=importlib.util.spec_from_file_location('native','scripts/native-test-shards.py')
+        native=importlib.util.module_from_spec(spec);spec.loader.exec_module(native)
+        expected=json.loads(Path('scripts/text-script-integration-tests.json').read_text())
+        native.need(type(expected) is list and expected==sorted(set(expected)) and len(expected)>14, 'Text script inventory differs')
+        passed,skipped=native.case_results(Path('dist/text-script-tests.log').read_text(),expected)
+        native.need(not skipped, 'Text script methods cannot be skipped')
+        Path('dist/text-script-test-inventory.json').write_text(json.dumps({'passed':passed,'skipped':skipped,'count':len(expected)},indent=2)+'\n')
+        PYTHON
     # One diagnostic pair only; ordinary product defaults remain unchanged.
     # Existing40min job cap is independent of individual worst-case stage bounds.
     - name: Compare exact final PNG write bridge in two fresh resource cells
@@ -256,6 +300,8 @@ jobs:
           dist/capture-chain-demo/
           dist/capture-chain-*.log
           dist/capture-chain-*.json
+          dist/text-script-*.log
+          dist/text-script-*.json
         if-no-files-found: error
         retention-days: 14
         compression-level: 6

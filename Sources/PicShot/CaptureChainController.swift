@@ -10,6 +10,7 @@ import PicShotCore
     var onRetry: ((UUID, UInt64) -> Void)?
     var onCancel: ((UUID, UInt64) -> Void)?
     var onClose: ((UUID?, UInt64) -> Void)?
+    var onManageTextScripts: (() -> Void)?
 
     private(set) var commandGeneration: UInt64 = 0
     private(set) var displayedSnapshot: CaptureChainSnapshot?
@@ -47,6 +48,7 @@ import PicShotCore
     private let closeButton = NSButton(title: "关闭", target: nil, action: nil)
     private let manageButton = NSButton(title: "返回管理", target: nil, action: nil)
     private let resultButton = NSButton(title: "查看结果", target: nil, action: nil)
+    private let textScriptsButton = NSButton(title: "文字脚本…", target: nil, action: nil)
 
     init(store: CaptureChainStore, presets: [CapturePreset] = []) {
         self.store = store; self.presets = presets
@@ -172,12 +174,13 @@ import PicShotCore
         configure(closeButton, "close", #selector(closeAction)); closeButton.keyEquivalent = "\u{1b}"
         configure(manageButton, "manage", #selector(showManager))
         configure(resultButton, "result", #selector(showResult))
+        configure(textScriptsButton, "text-scripts", #selector(showTextScripts))
         let editing = row([createButton, saveButton, discardButton, NSView(), deleteButton])
         currentLabel.font = .systemFont(ofSize: 11); currentLabel.textColor = .secondaryLabelColor
         currentLabel.lineBreakMode = .byTruncatingTail
         currentLabel.identifier = NSUserInterfaceItemIdentifier("capture-chain-current")
         currentLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let current = row([currentLabel, selectButton])
+        let current = row([currentLabel, textScriptsButton, selectButton])
         style(status, id: "status"); status.maximumNumberOfLines = 2
         style(runStatus, id: "run-status"); runStatus.maximumNumberOfLines = 2
         runStatus.font = .systemFont(ofSize: 12, weight: .medium)
@@ -310,6 +313,7 @@ import PicShotCore
         cancelButton.isHidden = !hasActiveRun
         manageButton.isHidden = !showingProgress; manageButton.isEnabled = !hasActiveRun && !pendingCommand
         resultButton.isHidden = showingProgress || displayedSnapshot == nil
+        textScriptsButton.isEnabled = canEdit && !hasUnsavedDraft
         rebuildOutputs()
     }
     private func setShowingProgress(_ value: Bool) {
@@ -327,6 +331,10 @@ import PicShotCore
     @objc private func showResult() {
         guard displayedSnapshot != nil, !pendingCommand else { return }
         invalidateCommands(); setShowingProgress(true)
+    }
+    @objc private func showTextScripts() {
+        guard canEdit && !hasUnsavedDraft else { return }
+        invalidateCommands(); onManageTextScripts?()
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int { store.definitions.count }
@@ -465,15 +473,37 @@ import PicShotCore
         case .idle: heading = "准备运行"
         case .capturing: heading = "正在截图…"
         case .running(let index): heading = "正在执行第 \(index + 1) 个操作…"
+        case .preparingText(.recognize): heading = "正在识别文字…"
+        case .preparingText(.transform): heading = "正在运行文字脚本…"
+        case .preparingText(.copy): heading = "正在复制文字…"
+        case .textFailed(_, let failure): heading = "操作未完成：" + failure.message
+        case .waitingForTextCleanup(let failure): heading = failure.message + " 正在等待脚本进程清理…"
         case .failed(_, let message): heading = "操作未完成：" + message
         case .captureFailed(let message): heading = "截图未完成：" + message + " 请重新运行。"
         case .cancelling: heading = "正在取消，等待当前操作结束…"
         case .completed: heading = "全部完成"
-        case .cancelled: heading = snapshot.receipts.isEmpty ? "已取消" : "已取消后续操作；以下已完成结果仍然保留"
+        case .cancelled: heading = snapshot.receipts.isEmpty && snapshot.textReceipt == nil ? "已取消" : "已取消后续操作；以下已完成结果仍然保留"
         }
         runStatus.stringValue = snapshot.definition.name + " · " + heading
         runStatus.toolTip = runStatus.stringValue; runStatus.setAccessibilityLabel(runStatus.stringValue)
         runStatus.textColor = snapshot.status.canRetry ? .systemRed : .labelColor
+        if snapshot.isTextScript {
+            if let receipt = snapshot.textReceipt {
+                addReceiptLabel("已复制文字到剪贴板（\(receipt.characterCount) 个字符）", index: 0)
+            } else {
+                let detail: String
+                switch snapshot.status {
+                case .cancelled, .captureFailed: detail = "未复制文字"
+                case .textFailed(.copy, _): detail = "复制失败；重试只复制已准备好的文字，不会重新截图、识别或执行脚本。"
+                case .textFailed(.transform, _): detail = "脚本失败；重试使用本次识别文字和已冻结的脚本。修改脚本前请先取消运行。"
+                case .textFailed(.recognize, _): detail = "识别失败；重试使用本次区域截图。"
+                case .waitingForTextCleanup: detail = "等待已启动脚本退出并清理管道，期间不能重试或开始新截图。"
+                default: detail = "区域截图 → 本机文字识别 → 文字脚本 → 复制"
+                }
+                addReceiptLabel(detail, index: 0)
+            }
+            return
+        }
         for (index, output) in snapshot.definition.outputs.enumerated() {
             let detail: String
             if let receipt = snapshot.receipts.first(where: { $0.output == output }) {

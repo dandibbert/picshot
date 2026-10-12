@@ -54,6 +54,11 @@ import ImageIO
     weak var capturePresetController: CapturePresetController?
     private var captureChainStore: CaptureChainStore?
     private var captureChainObservation: AnyCancellable?
+    private var textScriptStore: TextScriptStore?
+    private var textScriptObservation: AnyCancellable?
+    private weak var textScriptController: TextScriptController?
+    var textScriptManagerForVerification: TextScriptController? { textScriptController }
+    private let isolatedTextScriptDependencies: ((TextScriptDefinition) throws -> CaptureChainRunner.TextDependencies)?
     private weak var captureChainController: CaptureChainController?
     var captureChainManagerForVerification: CaptureChainController? { captureChainController }
     private(set) var activeCaptureChain: CaptureChainRunner?
@@ -74,7 +79,7 @@ import ImageIO
     private var editorAdmissionNotices = EditorAdmissionNotices()
     let smoke=ProcessInfo.processInfo.environment["PICSHOT_SMOKE_REPORT"]
     override init(){
-        editorAdmission = EditorAdmissionPolicy(); editorAdmissionNoticeOverride = nil; isolatedSaveWorkflow = nil; isolatedChainDependencies = nil
+        editorAdmission = EditorAdmissionPolicy(); editorAdmissionNoticeOverride = nil; isolatedSaveWorkflow = nil; isolatedChainDependencies = nil; isolatedTextScriptDependencies = nil
         if ProcessInfo.processInfo.environment["PICSHOT_SMOKE_REPORT"] != nil {history=HistoryStore(directory:FileManager.default.temporaryDirectory.appendingPathComponent("PicShot-Smoke-\(UUID().uuidString)"))} else {history=HistoryStore()}
         super.init()
         // Smoke must neither read nor write the user's saved session or preferences.
@@ -88,11 +93,14 @@ import ImageIO
     init(history: HistoryStore, isolatedDefaults: UserDefaults, editorAdmission: EditorAdmissionPolicy = .init(), admissionNotice: (() -> Void)? = nil,
          chainStore: CaptureChainStore? = nil,
          presetStore: CapturePresetStore? = nil,
-         chainDependencies: ((CaptureChainDefinition) throws -> CaptureChainRunner.Dependencies)? = nil) {
+         chainDependencies: ((CaptureChainDefinition) throws -> CaptureChainRunner.Dependencies)? = nil,
+         textScriptStore: TextScriptStore? = nil,
+         textScriptDependencies: ((TextScriptDefinition) throws -> CaptureChainRunner.TextDependencies)? = nil) {
         self.history = history; self.editorAdmission = editorAdmission; editorAdmissionNoticeOverride = admissionNotice
         isolatedSaveWorkflow = SaveWorkflowPresenter(defaults: isolatedDefaults, isSmoke: true)
         self.captureChainStore = chainStore; isolatedChainDependencies = chainDependencies
         self.capturePresetStore = presetStore
+        self.textScriptStore = textScriptStore; isolatedTextScriptDependencies = textScriptDependencies
         super.init()
     }
     func applicationDidFinishLaunching(_ notification:Notification){
@@ -142,11 +150,13 @@ import ImageIO
         recordingHotKeyObservation?.cancel(); recordingHotKeyObservation = nil
         activeCaptureChain?.cancel(); captureChainObservation?.cancel(); captureChainObservation = nil
         capturePresetObservation?.cancel(); capturePresetObservation = nil
+        textScriptObservation?.cancel(); textScriptObservation = nil
         hotKeys?.invalidate();captureTask?.cancel();barcodeTask?.cancel()
         do{try pinSession?.prepareForTermination()}catch{NSLog("Could not save pin presentation before exit: %@",error.localizedDescription)}
     }
     func applicationShouldTerminate(_ sender:NSApplication)->NSApplication.TerminateReply {
         if hasActiveCaptureChain { manageCaptureChains(); return .terminateCancel }
+        if textScriptController?.requestApplicationTermination() == false { return .terminateCancel }
         if let activeLiveScroll { activeLiveScroll.show(); return .terminateCancel }
         // A failed disk write has no durable copy. Quit must not silently release
         // the only owner; Save or explicit Discard in the panel resolves it first.
@@ -180,6 +190,12 @@ import ImageIO
                     })
                 if self.pendingCaptureRecovery.blocksCapture {
                     self.showPendingCapture(); sender.reply(toApplicationShouldTerminate:false); return
+                }
+                if self.hasActiveCaptureChain {
+                    self.manageCaptureChains(); sender.reply(toApplicationShouldTerminate:false); return
+                }
+                if self.textScriptController?.requestApplicationTermination() == false {
+                    sender.reply(toApplicationShouldTerminate:false); return
                 }
                 self.isTerminating=true
                 sender.reply(toApplicationShouldTerminate:true)
@@ -373,44 +389,65 @@ import ImageIO
             let item = menu.addItem(withTitle: "动作链暂不可用，请打开管理查看", action: nil, keyEquivalent: "")
             item.isEnabled = false
         }
+        if smoke == nil && isolatedSaveWorkflow == nil || textScriptStore != nil {
+            menu.addItem(.separator())
+            menu.addItem(withTitle: "管理文字脚本…", action: #selector(manageTextScripts), keyEquivalent: "").target = self
+            do {
+                for definition in try textScriptCatalog().definitions {
+                    let item = menu.addItem(withTitle: "文字：" + definition.name,
+                        action: #selector(runTextScriptItem(_:)), keyEquivalent: "")
+                    item.target = self; item.representedObject = definition.id.uuidString
+                    item.toolTip = "选区截图 → 本地识别 → 已保存脚本 → 复制文字"
+                    item.isEnabled = !hasActiveCaptureChain && !busy
+                }
+            } catch {
+                let item = menu.addItem(withTitle: "文字脚本暂不可用，请打开管理查看", action: nil, keyEquivalent: "")
+                item.isEnabled = false
+            }
+        }
     }
     @objc func manageCaptureChains() {
         do {
-            // Refresh the saved-source picker without changing an already
-            // running chain's immutable preset snapshot. Isolated callers only
-            // see the explicitly injected catalog.
-            let presets = capturePresetStore != nil || (smoke == nil && isolatedSaveWorkflow == nil)
-                ? ((try? presetCatalog().presets) ?? []) : []
-            let manager: CaptureChainController
-            if let existing = captureChainController { manager = existing; manager.setPresets(presets) }
-            else {
-                manager = CaptureChainController(store: try chainCatalog(), presets: presets)
-                manager.onRun = { [weak self, weak manager] id, generation in
-                    guard let self, manager?.isCurrentCommand(generation) == true else { return }
-                    _ = self.runCaptureChain(id: id)
-                }
-                manager.onRetry = { [weak self, weak manager] id, generation in
-                    guard let self, manager?.isCurrentCommand(generation) == true,
-                          let runner = self.activeCaptureChain, runner.id == id else { return }
-                    if !runner.retry() { manager?.update(snapshot: runner.snapshot) }
-                }
-                manager.onCancel = { [weak self, weak manager] id, generation in
-                    guard let self, manager?.isCurrentCommand(generation) == true,
-                          let runner = self.activeCaptureChain, runner.id == id else { return }
-                    _ = runner.cancel()
-                }
-                manager.onClose = { [weak self] id, _ in
-                    // The event's original run identity is authoritative. Closing
-                    // an old receipt cannot cancel a later captured image.
-                    guard let id, let runner = self?.activeCaptureChain, runner.id == id else { return }
-                    _ = runner.cancel()
-                }
-                captureChainController = manager; retain(manager)
-            }
-            if let activeCaptureChain { manager.update(snapshot: activeCaptureChain.snapshot) }
-            else if let lastCaptureChainSnapshot { manager.update(snapshot: lastCaptureChainSnapshot) }
+            let manager = try ensureCaptureChainManager()
             manager.present(); NSApp.activate(ignoringOtherApps: true)
         } catch { showError(error) }
+    }
+    private func ensureCaptureChainManager() throws -> CaptureChainController {
+        // Refresh the saved-source picker without changing an already
+        // running chain's immutable preset snapshot. Isolated callers only
+        // see the explicitly injected catalog.
+        let presets = capturePresetStore != nil || (smoke == nil && isolatedSaveWorkflow == nil)
+            ? ((try? presetCatalog().presets) ?? []) : []
+        let manager: CaptureChainController
+        if let existing = captureChainController { manager = existing; manager.setPresets(presets) }
+        else {
+            manager = CaptureChainController(store: try chainCatalog(), presets: presets)
+            manager.onRun = { [weak self, weak manager] id, generation in
+                guard let self, manager?.isCurrentCommand(generation) == true else { return }
+                _ = self.runCaptureChain(id: id)
+            }
+            manager.onRetry = { [weak self, weak manager] id, generation in
+                guard let self, manager?.isCurrentCommand(generation) == true,
+                      let runner = self.activeCaptureChain, runner.id == id else { return }
+                if !runner.retry() { manager?.update(snapshot: runner.snapshot) }
+            }
+            manager.onCancel = { [weak self, weak manager] id, generation in
+                guard let self, manager?.isCurrentCommand(generation) == true,
+                      let runner = self.activeCaptureChain, runner.id == id else { return }
+                _ = runner.cancel()
+            }
+            manager.onClose = { [weak self] id, _ in
+                // The event's original run identity is authoritative. Closing
+                // an old receipt cannot cancel a later captured image.
+                guard let id, let runner = self?.activeCaptureChain, runner.id == id else { return }
+                _ = runner.cancel()
+            }
+            manager.onManageTextScripts = { [weak self] in self?.manageTextScripts() }
+            captureChainController = manager; retain(manager)
+        }
+        if let activeCaptureChain { manager.update(snapshot: activeCaptureChain.snapshot) }
+        else if let lastCaptureChainSnapshot { manager.update(snapshot: lastCaptureChainSnapshot) }
+        return manager
     }
     @objc func runSelectedCaptureChain() {
         do {
@@ -438,32 +475,125 @@ import ImageIO
             let dependencies = try isolatedChainDependencies?(definition) ?? productionChainDependencies(definition)
             if captureChainController == nil { manageCaptureChains() }
             let runner = CaptureChainRunner(definition: definition, dependencies: dependencies)
-            activeCaptureChain = runner
-            hotKeys?.invalidateSelectedCaptureChainCommands(); captureChainController?.invalidateCommands()
-            runner.onChange = { [weak self] snapshot in
-                guard let self, self.activeCaptureChain?.id == snapshot.runID else { return }
-                self.lastCaptureChainSnapshot = snapshot
-                self.captureChainController?.update(snapshot: snapshot)
-            }
-            runner.onTerminal = { [weak self] snapshot in
-                guard let self, self.activeCaptureChain?.id == snapshot.runID else { return }
-                self.lastCaptureChainSnapshot = snapshot; self.activeCaptureChain = nil
-                self.hotKeys?.invalidateSelectedCaptureChainCommands()
-                self.captureChainController?.update(snapshot: snapshot)
-            }
-            mainWindow?.orderOut(nil); captureChainController?.hideForCapture()
-            guard runner.start() else {
-                activeCaptureChain = nil; hotKeys?.invalidateSelectedCaptureChainCommands()
-                captureChainController?.showGuidance("动作链未开始，请重试。")
-                return false
-            }
-            return true
+            return beginCaptureChain(runner)
         } catch {
             if captureChainController == nil { manageCaptureChains() }
             captureChainController?.showError(error)
             return false
         }
     }
+    /// Both image and text actions reserve this same owner before acquisition.
+    private func beginCaptureChain(_ runner: CaptureChainRunner) -> Bool {
+        activeCaptureChain = runner
+        hotKeys?.invalidateSelectedCaptureChainCommands(); captureChainController?.invalidateCommands()
+        textScriptController?.setRunActive(true)
+        runner.onChange = { [weak self] snapshot in
+            guard let self, self.activeCaptureChain?.id == snapshot.runID else { return }
+            self.lastCaptureChainSnapshot = snapshot
+            self.captureChainController?.update(snapshot: snapshot)
+        }
+        runner.onTerminal = { [weak self] snapshot in
+            guard let self, self.activeCaptureChain?.id == snapshot.runID else { return }
+            self.lastCaptureChainSnapshot = snapshot; self.activeCaptureChain = nil
+            self.hotKeys?.invalidateSelectedCaptureChainCommands()
+            self.textScriptController?.setRunActive(false)
+            self.captureChainController?.update(snapshot: snapshot)
+        }
+        mainWindow?.orderOut(nil); captureChainController?.hideForCapture()
+        textScriptController?.hideForCapture()
+        guard runner.start() else {
+            activeCaptureChain = nil; hotKeys?.invalidateSelectedCaptureChainCommands()
+            textScriptController?.setRunActive(false)
+            captureChainController?.showGuidance("动作链未开始，请重试。")
+            return false
+        }
+        return true
+    }
+
+    private func textScriptCatalog() throws -> TextScriptStore {
+        if textScriptStore == nil {
+            guard smoke == nil, isolatedSaveWorkflow == nil else {
+                throw PicShotError.message("此隔离运行未提供文字脚本目录。")
+            }
+            textScriptStore = try TextScriptStore()
+        }
+        guard let store = textScriptStore else { throw PicShotError.message("文字脚本目录暂不可用。") }
+        if textScriptObservation == nil {
+            textScriptObservation = store.$index.dropFirst().sink { [weak self] _ in
+                MainActor.assumeIsolated { self?.textScriptController?.invalidateCommands() }
+            }
+        }
+        return store
+    }
+
+    @objc func manageTextScripts() {
+        do {
+            let editor: TextScriptController
+            if let existing = textScriptController { editor = existing }
+            else {
+                editor = TextScriptController(store: try textScriptCatalog())
+                editor.onRun = { [weak self, weak editor] id, generation in
+                    guard let self, editor?.isCurrentCommand(generation) == true else { return }
+                    if !self.runTextScript(id: id) { editor?.setRunActive(self.hasActiveCaptureChain) }
+                }
+                // This window owns saved definitions only. The shared progress
+                // surface carries the identity-bound cancellation/close command.
+                textScriptController = editor; retain(editor)
+            }
+            editor.setRunActive(hasActiveCaptureChain)
+            editor.present(); NSApp.activate(ignoringOtherApps: true)
+        } catch { showError(error) }
+    }
+
+    @objc func runTextScriptItem(_ item: NSMenuItem) {
+        guard let raw = item.representedObject as? String, let id = UUID(uuidString: raw) else { return }
+        _ = runTextScript(id: id)
+    }
+
+    @discardableResult func runTextScript(id: UUID) -> Bool {
+        guard !isTerminating else { return false }
+        if hasActiveCaptureChain { manageCaptureChains(); return false }
+        guard canStartCapture() else { return false }
+        do {
+            guard let definition = try textScriptCatalog().definition(id: id) else {
+                throw PicShotError.message("此文字脚本已不存在，请重新选择已保存的脚本。")
+            }
+            let dependencies = try isolatedTextScriptDependencies?(definition) ?? productionTextScriptDependencies()
+            let manager = try ensureCaptureChainManager()
+            manager.present()
+            let runner = try CaptureChainRunner(textScript: definition, dependencies: dependencies)
+            return beginCaptureChain(runner)
+        } catch {
+            if textScriptController == nil { manageTextScripts() }
+            textScriptController?.showError(error)
+            return false
+        }
+    }
+
+    private func productionTextScriptDependencies() throws -> CaptureChainRunner.TextDependencies {
+        guard smoke == nil, isolatedSaveWorkflow == nil else {
+            throw PicShotError.message("隔离运行不允许读取屏幕、用户脚本或系统剪贴板。")
+        }
+        let captureOptions = ScreenshotPreferences.options
+        let recognitionOptions = RecognitionOptions()
+        let runtime = CaptureChainTextRuntime()
+        return .init(capture: { [capture] in
+            try await Task.sleep(nanoseconds: 180_000_000)
+            let result = try await capture.captureForEditing(mode: .region, options: captureOptions)
+            try Task.checkCancellation()
+            return try ChainCapture(image: result.image, capturedAt: result.capturedAt,
+                                    encodedBackingBytes: result.encodedBackingBytes)
+        }, recognize: { image in
+            let result = try await RecognitionService.recognize(image, options: recognitionOptions)
+            try Task.checkCancellation()
+            return ChainTextRecognition(text: result.text, truncated: result.document?.isTruncated == true)
+        }, transform: { source, text, requestID in
+            await runtime.transform(source: source, text: text, requestID: requestID)
+        }, copy: { text in try CheckedTextClipboard.copy(text) }, cleanupComplete: { requestID in
+            runtime.cleanupComplete(requestID: requestID)
+        })
+    }
+
     private func productionChainDependencies(_ definition: CaptureChainDefinition) throws -> CaptureChainRunner.Dependencies {
         guard smoke == nil, isolatedSaveWorkflow == nil else { throw PicShotError.message("隔离运行不允许读取屏幕或用户输出设置。") }
         let options = ScreenshotPreferences.options

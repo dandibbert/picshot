@@ -1,5 +1,6 @@
 import AppKit
 import PicShotCore
+import PicShotTextScriptCore
 
 /// Only the already-detached selection crosses the acquisition boundary. In
 /// particular, this owner cannot retain CapturedImage's full-desktop presentation.
@@ -25,6 +26,8 @@ enum CaptureChainStatus: Equatable {
     case idle, capturing, running(index: Int), cancelling
     case failed(index: Int, message: String)
     case captureFailed(message: String)
+    case preparingText(ChainTextPhase), textFailed(ChainTextPhase, ChainTextFailure)
+    case waitingForTextCleanup(ChainTextFailure)
     case completed, cancelled
 
     var isTerminal: Bool {
@@ -36,6 +39,7 @@ enum CaptureChainStatus: Equatable {
 
     var canRetry: Bool {
         if case .failed = self { return true }
+        if case .textFailed = self { return true }
         return false
     }
 }
@@ -57,6 +61,18 @@ struct CaptureChainSnapshot: Equatable {
     let receipts: [CaptureChainReceipt]
     let capturedAt: Date?
     let retainedBytes: Int
+    let isTextScript: Bool
+    let textReceipt: ChainTextCopyReceipt?
+    let retainedTextBytes: Int
+
+    // Default arguments preserve every existing image snapshot call site.
+    init(runID: UUID, definition: CaptureChainDefinition, status: CaptureChainStatus,
+         receipts: [CaptureChainReceipt], capturedAt: Date?, retainedBytes: Int,
+         isTextScript: Bool = false, textReceipt: ChainTextCopyReceipt? = nil, retainedTextBytes: Int = 0) {
+        self.runID = runID; self.definition = definition; self.status = status
+        self.receipts = receipts; self.capturedAt = capturedAt; self.retainedBytes = retainedBytes
+        self.isTextScript = isTextScript; self.textReceipt = textReceipt; self.retainedTextBytes = retainedTextBytes
+    }
 }
 
 /// One capture, one ordered ledger, and one retryable unfinished output. All
@@ -86,6 +102,25 @@ final class CaptureChainRunner {
         }
     }
 
+    struct TextDependencies {
+        let capture: @MainActor () async throws -> ChainCapture
+        let recognize: @MainActor (CGImage) async throws -> ChainTextRecognition
+        let transform: @MainActor (String, String, UUID) async -> ChainTextTransformResult
+        let copy: @MainActor (String) throws -> Void
+        let cleanupComplete: @MainActor (UUID) -> Bool
+        let cancelCapture: @MainActor () -> Void
+
+        init(capture: @escaping @MainActor () async throws -> ChainCapture,
+             recognize: @escaping @MainActor (CGImage) async throws -> ChainTextRecognition,
+             transform: @escaping @MainActor (String, String, UUID) async -> ChainTextTransformResult,
+             copy: @escaping @MainActor (String) throws -> Void,
+             cleanupComplete: @escaping @MainActor (UUID) -> Bool,
+             cancelCapture: @escaping @MainActor () -> Void = {}) {
+            self.capture = capture; self.recognize = recognize; self.transform = transform
+            self.copy = copy; self.cleanupComplete = cleanupComplete; self.cancelCapture = cancelCapture
+        }
+    }
+
     let id: UUID
     var runID: UUID { id }
     let definition: CaptureChainDefinition
@@ -93,32 +128,67 @@ final class CaptureChainRunner {
     private(set) var receipts: [CaptureChainReceipt] = []
     private(set) var capture: ChainCapture?
     private(set) var capturedAt: Date?
-    var retainedBytes: Int { capture?.retainedBytes ?? 0 }
+    let isTextScript: Bool
+    private(set) var textReceipt: ChainTextCopyReceipt?
+    // Byte counts describe retained payloads, not total process RSS or Swift's
+    // allocator overhead. Images and each text phase are accounted separately.
+    var retainedTextBytes: Int {
+        (frozenSource?.utf8.count ?? 0) + (recognizedText?.utf8.count ?? 0) + (transformedText?.utf8.count ?? 0)
+    }
+    var retainedBytes: Int { (capture?.retainedBytes ?? 0) + retainedTextBytes }
     var blocksCapture: Bool { !status.isTerminal }
-    var isAttemptRunning: Bool { task != nil }
+    var isAttemptRunning: Bool { task != nil || cleanupTask != nil }
     var snapshot: CaptureChainSnapshot {
         CaptureChainSnapshot(runID: id, definition: definition, status: status,
-            receipts: receipts, capturedAt: capturedAt, retainedBytes: retainedBytes)
+            receipts: receipts, capturedAt: capturedAt, retainedBytes: retainedBytes,
+            isTextScript: isTextScript, textReceipt: textReceipt, retainedTextBytes: retainedTextBytes)
     }
     var onChange: ((CaptureChainSnapshot) -> Void)?
     var onTerminal: ((CaptureChainSnapshot) -> Void)?
 
     private var dependencies: Dependencies?
+    private var textDependencies: TextDependencies?
+    private var frozenSource: String?
+    private var recognizedText: String?
+    private var transformedText: String?
+    private var pendingCleanupID: UUID?
+    private var cleanupFailure: ChainTextFailure?
+    private var cleanupTask: Task<Void, Never>?
     private var task: Task<Void, Never>?
     private var attemptID: UUID?
     private var cancellationRequested = false
 
     init(definition: CaptureChainDefinition, dependencies: Dependencies, id: UUID = UUID()) {
         self.definition = definition; self.dependencies = dependencies; self.id = id
+        self.isTextScript = false
+    }
+
+    /// The public metadata retains only the same region/copy shape; executable
+    /// source is frozen privately and is dropped when the run drains.
+    init(textScript: TextScriptDefinition, dependencies: TextDependencies, id: UUID = UUID()) throws {
+        definition = try CaptureChainDefinition(id: textScript.id, name: textScript.name, source: .region, outputs: [.copy])
+        self.textDependencies = dependencies; self.id = id; self.isTextScript = true
+        frozenSource = textScript.source
     }
 
     @discardableResult func start() -> Bool {
-        guard status == .idle, task == nil, dependencies != nil else { return false }
+        guard status == .idle, task == nil, dependencies != nil || textDependencies != nil else { return false }
         beginAttempt(status: .capturing)
         return true
     }
 
     @discardableResult func retry() -> Bool {
+        if isTextScript {
+            guard case .textFailed(let phase, _) = status, task == nil, cleanupTask == nil,
+                  pendingCleanupID == nil, textDependencies != nil, !cancellationRequested else { return false }
+            switch phase {
+            case .recognize: guard capture != nil else { return false }
+            case .transform: guard recognizedText != nil, frozenSource != nil else { return false }
+            case .copy: guard transformedText != nil, textReceipt == nil else { return false }
+            }
+            beginAttempt(status: .preparingText(phase))
+            return true
+        }
         guard case .failed(let index, _) = status, index == receipts.count,
               task == nil, capture != nil, dependencies != nil, !cancellationRequested else { return false }
         beginAttempt(status: .running(index: index))
@@ -131,6 +201,15 @@ final class CaptureChainRunner {
         cancellationRequested = true
         status = .cancelling
         task?.cancel()
+        if isTextScript {
+            if previousStatus == .capturing { textDependencies?.cancelCapture() }
+            clearTextBuffers()
+            // The cleanup observer is intentionally not cancelled: admission
+            // remains closed until the helper's owned exit and EOFs are real.
+            if task == nil && pendingCleanupID == nil { retire(.cancelled) }
+            else { onChange?(snapshot) }
+            return true
+        }
         // These hooks only reach the operations owned by this session. Task
         // cancellation also reaches the existing capture service's handler.
         if previousStatus == .capturing { dependencies?.cancelCapture() }
@@ -147,7 +226,8 @@ final class CaptureChainRunner {
         self.status = status
         task = Task { [weak self] in
             guard let self else { return }
-            await self.run(attempt: attempt)
+            if self.isTextScript { await self.runText(attempt: attempt) }
+            else { await self.run(attempt: attempt) }
         }
         onChange?(snapshot)
     }
@@ -246,9 +326,175 @@ final class CaptureChainRunner {
         }
     }
 
+    private enum TextAttemptResult { case succeeded, cancelled, failed(ChainTextFailure) }
+
+    private func runText(attempt: UUID) async {
+        guard isCurrent(attempt) else { return }
+        if cancellationRequested { retire(.cancelled); return }
+        if capture == nil && recognizedText == nil && transformedText == nil {
+            let result = await acquireText(attempt: attempt)
+            guard isCurrent(attempt) else { return }
+            if cancellationRequested { retire(.cancelled); return }
+            switch result {
+            case .succeeded: break
+            case .cancelled: retire(.cancelled); return
+            case .failed(let failure): retire(.captureFailed(message: failure.message)); return
+            }
+        }
+        if recognizedText == nil && transformedText == nil {
+            guard publishTextPhase(.recognize, attempt: attempt) else { return }
+            let result = await recognizeText(attempt: attempt)
+            guard isCurrent(attempt) else { return }
+            if cancellationRequested { retire(.cancelled); return }
+            switch result {
+            case .succeeded: break
+            case .cancelled: retire(.cancelled); return
+            case .failed(let failure): failText(.recognize, failure: failure); return
+            }
+        }
+        if transformedText == nil {
+            guard publishTextPhase(.transform, attempt: attempt) else { return }
+            let requestID = UUID()
+            let result = await transformText(requestID: requestID)
+            guard isCurrent(attempt) else { return }
+            // Observe cleanup ownership before consulting cancellation. The
+            // helper may have returned an unconfirmed exit after Cancel.
+            switch result {
+            case .failed(let failure, cleanupPending: true):
+                waitForOwnedTextCleanup(requestID: requestID, failure: failure); return
+            case .cancelled(cleanupPending: true):
+                cancellationRequested = true; clearTextBuffers()
+                waitForOwnedTextCleanup(requestID: requestID, failure: .runtime(.cancelled)); return
+            default: break
+            }
+            if cancellationRequested { retire(.cancelled); return }
+            switch result {
+            case .succeeded(let output):
+                do { try CheckedTextClipboard.validate(output) }
+                catch let failure as ChainTextFailure { failText(.transform, failure: failure); return }
+                catch { failText(.transform, failure: .invalidResult); return }
+                transformedText = output
+                recognizedText = nil; frozenSource = nil
+            case .failed(let failure, _): failText(.transform, failure: failure); return
+            case .cancelled: retire(.cancelled); return
+            }
+        }
+        guard publishTextPhase(.copy, attempt: attempt) else { return }
+        let result = copyText()
+        guard isCurrent(attempt) else { return }
+        if cancellationRequested { retire(.cancelled); return }
+        switch result {
+        case .succeeded: retire(.completed)
+        case .cancelled: retire(.cancelled)
+        case .failed(let failure): failText(.copy, failure: failure)
+        }
+    }
+
+    private func publishTextPhase(_ phase: ChainTextPhase, attempt: UUID) -> Bool {
+        guard isCurrent(attempt) else { return false }
+        if cancellationRequested { retire(.cancelled); return false }
+        status = .preparingText(phase)
+        onChange?(snapshot)
+        guard isCurrent(attempt) else { return false }
+        if cancellationRequested { retire(.cancelled); return false }
+        return true
+    }
+
+    private func acquireText(attempt: UUID) async -> TextAttemptResult {
+        guard let dependencies = textDependencies else { return .cancelled }
+        do {
+            let selected = try await dependencies.capture()
+            guard isCurrent(attempt), !cancellationRequested else { return .cancelled }
+            capture = selected; capturedAt = selected.capturedAt
+            return .succeeded
+        } catch is CancellationError { return .cancelled }
+        catch CaptureError.cancelled { return .cancelled }
+        catch { return .failed(.captureFailed) }
+    }
+
+    private func recognizeText(attempt: UUID) async -> TextAttemptResult {
+        guard let image = capture?.image, let dependencies = textDependencies else { return .cancelled }
+        do {
+            let result = try await dependencies.recognize(image)
+            guard isCurrent(attempt), !cancellationRequested else { return .cancelled }
+            guard !result.truncated else { return .failed(.truncatedRecognition) }
+            guard !result.text.isEmpty else { return .failed(.emptyRecognition) }
+            guard result.text.utf16.count <= TextScriptLimits.inputUTF16Units else { return .failed(.oversizedRecognition) }
+            recognizedText = result.text
+            capture = nil
+            return .succeeded
+        } catch is CancellationError { return .cancelled }
+        catch { return .failed(.recognitionFailed) }
+    }
+
+    private func transformText(requestID: UUID) async -> ChainTextTransformResult {
+        guard let source = frozenSource, let text = recognizedText, let dependencies = textDependencies else {
+            return .cancelled(cleanupPending: false)
+        }
+        return await dependencies.transform(source, text, requestID)
+    }
+
+    private func copyText() -> TextAttemptResult {
+        guard textReceipt == nil, let text = transformedText, let dependencies = textDependencies else { return .cancelled }
+        do {
+            try CheckedTextClipboard.validate(text)
+            let count = text.count
+            try dependencies.copy(text)
+            // Synchronous commit ledger: no cancellation check, callback or
+            // suspension between acknowledgement and recording this receipt.
+            textReceipt = ChainTextCopyReceipt(characterCount: count)
+            return .succeeded
+        } catch is CancellationError { return .cancelled }
+        catch { return .failed(.clipboardRejected) }
+    }
+
+    private func failText(_ phase: ChainTextPhase, failure: ChainTextFailure) {
+        task = nil; attemptID = nil
+        status = .textFailed(phase, failure)
+        onChange?(snapshot)
+    }
+
+    private func waitForOwnedTextCleanup(requestID: UUID, failure: ChainTextFailure) {
+        task = nil; attemptID = nil
+        pendingCleanupID = requestID; cleanupFailure = failure
+        status = cancellationRequested ? .cancelling : .waitingForTextCleanup(failure)
+        cleanupTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: 100_000_000) } catch { return }
+                guard let self, self.pendingCleanupID == requestID else { return }
+                if self.checkTextCleanup() { return }
+            }
+        }
+        onChange?(snapshot)
+    }
+
+    /// The timer and deterministic tests share this same identity-gated check.
+    /// A released lease permits retry or cancellation only, never late success.
+    @discardableResult func checkTextCleanup() -> Bool {
+        guard let requestID = pendingCleanupID, let dependencies = textDependencies,
+              dependencies.cleanupComplete(requestID) else { return false }
+        // A dependency can reenter Cancel; the owned identity still decides
+        // what drains, and the now-current cancellation flag decides retirement.
+        guard pendingCleanupID == requestID else { return false }
+        let failure = cleanupFailure ?? .invalidResult
+        pendingCleanupID = nil; cleanupFailure = nil
+        cleanupTask?.cancel(); cleanupTask = nil
+        if cancellationRequested { retire(.cancelled) }
+        else { failText(.transform, failure: failure) }
+        return true
+    }
+
+    private func clearTextBuffers() {
+        frozenSource = nil; recognizedText = nil; transformedText = nil
+        if isTextScript { capture = nil }
+    }
+
     private func retire(_ terminalStatus: CaptureChainStatus) {
         guard !status.isTerminal else { return }
-        capture = nil; dependencies = nil; task = nil; attemptID = nil
+        capture = nil; dependencies = nil; textDependencies = nil; task = nil; attemptID = nil
+        clearTextBuffers()
+        pendingCleanupID = nil; cleanupFailure = nil
+        cleanupTask?.cancel(); cleanupTask = nil
         status = terminalStatus
         let change = onChange, terminal = onTerminal
         onChange = nil; onTerminal = nil

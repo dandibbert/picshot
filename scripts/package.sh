@@ -50,12 +50,21 @@ PLIST
 cat > "$app/Contents/Resources/build-info.json" <<JSON
 {"app":"PicShot","version":"$version","architecture":"$arch","sourceCommit":"$sha","minimumMacOS":"14.0","signing":"ad-hoc","notarized":false}
 JSON
+# Preserve the established signing pass for existing helpers/frameworks. Install
+# and sign the text helper afterward so --deep cannot replace its entitlements.
 codesign --force --deep --sign - --identifier local.picshot.app "$app"
+cp "$bin/PicShotTextScriptHelper" "$app/Contents/Helpers/PicShotTextScriptHelper"
+codesign --force --sign - --identifier com.picshot.TextScriptHelper --entitlements scripts/text-script-helper.entitlements "$app/Contents/Helpers/PicShotTextScriptHelper"
+# Re-seal only the outer app; never recursively re-sign the sandboxed helper.
+codesign --force --sign - --identifier local.picshot.app "$app"
 codesign --verify --deep --strict "$app"
 # Prove the installed helper can render after relocation while the original
 # SwiftPM build bundle is unavailable. The verifier restores it before returning.
 python3 scripts/FormulaRender-verify-packaged-runtime.py --app "$app" --build-bundle "$bin/PicShot_PicShotFormulaRenderHelper.bundle"
 codesign --verify --deep --strict "$app"
+# Check the final signed helper and an unmodified relocated copy. This is
+# packaging identity evidence; installed native execution/UI gates stay separate.
+python3 scripts/verify-text-script-package.py --app "$app" --source "$sha" --report dist/text-script-package-proof.json --verify-relocation
 # Diagnostic jobs need the verified signed app, without creating installers.
 if [[ "${PICSHOT_PACKAGE_APP_ONLY:-0}" == "1" ]]; then
   echo "Signed diagnostic application prepared"
@@ -82,4 +91,5 @@ TEXT
 hdiutil create -volname PicShot -srcfolder "$staging" -format UDZO -ov "dist/$base.dmg"
 hdiutil verify "dist/$base.dmg"
 cp "$app/Contents/Resources/build-info.json" "dist/$base.build-info.json"
-(cd dist;for f in "$base.zip" "$base.dmg" "$base.build-info.json";do shasum -a 256 "$f" > "$f.sha256";done)
+cp dist/text-script-package-proof.json "dist/$base.text-script-package-proof.json"
+(cd dist;for f in "$base.zip" "$base.dmg" "$base.build-info.json" "$base.text-script-package-proof.json";do shasum -a 256 "$f" > "$f.sha256";done)
