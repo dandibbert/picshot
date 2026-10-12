@@ -82,8 +82,26 @@ enum LiveScrollUsabilityDemoFixture {
         }
         report["movementCase"] = movement
         try writeReport(report, directory)
-        let realStream: [String: Any]
+        let output: [String: Any]
         if movement["productSessionClosed"] as? Bool == true {
+            let outputDirectory = directory.appendingPathComponent("output-actions")
+            do { output = try await LiveScrollOutputDemoFixture.verify(evidenceDirectory: outputDirectory) }
+            catch {
+                let data = try? Data(contentsOf: outputDirectory.appendingPathComponent("live-scroll-output.json"))
+                if let data, let saved = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+                    output = saved
+                } else {
+                    output = ["status": "failed", "productSessionClosed": false, "error": error.localizedDescription]
+                }
+            }
+        } else {
+            output = ["status": "blocked", "productSessionClosed": false,
+                      "reason": "Previous owned product session cleanup was not confirmed"]
+        }
+        report["outputCase"] = output
+        try writeReport(report, directory)
+        let realStream: [String: Any]
+        if output["productSessionClosed"] as? Bool == true {
             realStream = await LiveScrollRealStreamFixture.run(outputDirectory: directory.appendingPathComponent("real-stream"))
         } else {
             realStream = ["status": "blocked", "permissionAlreadyGranted": permitted,
@@ -101,7 +119,7 @@ enum LiveScrollUsabilityDemoFixture {
             || (realStream["status"] as? String == "blocked" && !realPermission)
         let passed = illustrated["status"] as? String == "passed" && plain["status"] as? String == "passed"
             && automatic["status"] as? String == "passed"
-            && movement["status"] as? String == "passed" && realOutcomeAcceptable
+            && movement["status"] as? String == "passed" && output["status"] as? String == "passed" && realOutcomeAcceptable
         report["status"] = passed ? "passed" : "failed"
         report["elapsedSeconds"] = ProcessInfo.processInfo.systemUptime - start
         try writeReport(report, directory)

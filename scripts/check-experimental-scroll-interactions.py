@@ -212,12 +212,52 @@ def demo_fields(demo):
     fields(calibration, dict(passed=True, dimensionsMatch=True, exactEquality=True), 'automatic initial reference')
     for key in ('meanAbsoluteRGBAError', 'fractionOfChannelsDifferingByMoreThan8'):
         need(number(calibration.get(key), 'automatic calibration.' + key) == 0, 'Initial reference pixels differ')
+    output_fields(demo.get('outputCase'))
     real = demo.get('realStream', {})
     need(type(real) is dict, 'Missing real stream report')
     need(real.get('status') == 'passed' or (real.get('status') == 'blocked'
          and real.get('permissionAlreadyGranted') is False), 'Real stream failed for another reason')
     need(type(demo.get('realScreenCaptureValidated')) is bool
          and demo['realScreenCaptureValidated'] == (real['status'] == 'passed'), 'Real capture report differs')
+
+
+
+def output_fields(output):
+    fields(output, dict(status='passed', productSessionClosed=True, privateTemporaryRootRemoved=True, cleanupSafe=True,
+        canonicalPrivateTemporaryRoot=True, realScreenCaptureClaimed=False, screenCaptureAPICalled=False,
+        permissionRequested=False, globalInputPosted=False, networkUsed=False,
+        userHistoryReadOrWritten=False, standardDefaultsReadOrWritten=False,
+        generalPasteboardReadOrWritten=False), 'output')
+    save = output.get('stitchedCopyFailureThenSave')
+    fields(save, dict(status='passed', productSessionClosed=True, saveJobsDrained=True, cleanupSafe=True,
+        copyFailurePausedDraftAndAlternativePreserved=True, savePublicationRetiredSession=True,
+        savedInsideApprovedPrivateDirectory=True, independentPublishedPNGDecode=True,
+        copyRecipientAttempts=1, saveJobAdmissions=1, editorCallbacks=0, importCallbacks=0,
+        saveMenuIdentifier='scroll.live.quickSave', saveSelector='quickSavePressed'), 'saved output')
+    pin = output.get('singleViewportPin')
+    fields(pin, dict(status='passed', productSessionClosed=True, pinControllersClosed=True, cleanupSafe=True,
+        singleViewportUnchanged=True, persistedAndReopened=True, independentPublishedPNGDecode=True, pinCallbacks=1, unexpectedCallbacks=0,
+        visibleNativePinCount=1, menuIdentifier='scroll.live.pin', selector='pinPressed'), 'pin output')
+    for row, key, height in [(save, 'rejectedCopyComparison', 704), (save, 'savedPNGComparison', 704),
+                             (pin, 'publishedPinComparison', 320), (pin, 'reopenedPinComparison', 320)]:
+        comparison = row.get(key)
+        fields(comparison, dict(passed=True, dimensionsMatch=True, exactCanonicalRGBAEquality=True,
+            width=480, height=height, expectedWidth=480, expectedHeight=height), key)
+        pixel_hash = comparison.get('outputPixelSHA256')
+        need(type(pixel_hash) is str and re.fullmatch('[0-9a-f]{64}', pixel_hash) is not None
+             and pixel_hash == comparison.get('sourcePixelSHA256'), key + ': exact pixel digest differs')
+    for row, key in [(save, 'controlArtifacts'), (save, 'saveFeedbackArtifacts'),
+                     (pin, 'controlArtifacts'), (pin, 'nativePinArtifacts')]:
+        artifacts = row.get(key)
+        need(type(artifacts) is list and len(artifacts) == 2
+             and [x.get('appearance') for x in artifacts if type(x) is dict] == ['light', 'dark'],
+             key + ': both native appearances required')
+        for artifact in artifacts:
+            name = artifact.get('filename')
+            need(type(name) is str and name.startswith('output-') and Path(name).name == name
+                 and name.endswith('.png'), 'Unsafe or absent native output image')
+            number(artifact.get('width'), 'output image width', 1, 4000000)
+            number(artifact.get('height'), 'output image height', 1, 4000000)
 
 
 def qualify():
@@ -259,6 +299,24 @@ def qualify():
         raw = read(path)
         need(raw.startswith(b'\x89PNG\r\n\x1a\n' if filename.endswith('.png') else b'GIF8'), 'Invalid visual: ' + filename)
         files.append(path)
+    output_root = EVIDENCE/'demo/output-actions'
+    output_report = load(output_root/'live-scroll-output.json')
+    need(output_report == demo['outputCase'], 'Output subreport differs from installed session report')
+    files.append(output_root/'live-scroll-output.json')
+    output_names = {'output-owned-numbered-reference.png', 'output-published-long.png', 'output-published-single-pin.png'}
+    for row, key in [(output_report['stitchedCopyFailureThenSave'], 'controlArtifacts'),
+                     (output_report['stitchedCopyFailureThenSave'], 'saveFeedbackArtifacts'),
+                     (output_report['singleViewportPin'], 'controlArtifacts'),
+                     (output_report['singleViewportPin'], 'nativePinArtifacts')]:
+        output_names.update(x['filename'] for x in row[key])
+    for filename in sorted(output_names):
+        path = output_root/filename
+        need(read(path).startswith(b'\x89PNG\r\n\x1a\n'), 'Invalid output evidence PNG')
+        files.append(path)
+    need(sha(output_root/'output-published-long.png') == output_report['stitchedCopyFailureThenSave']['savedPNGFileSHA256'],
+         'Published long PNG bytes differ')
+    need(sha(output_root/'output-published-single-pin.png') == output_report['singleViewportPin']['pinPNGFileSHA256'],
+         'Published pin PNG bytes differ')
     return dict(FLAGS, status='passed', sourceIdentity=source, originalSelectedAssertionsPreserved=True,
                 directDragReleaseEscapeAndStalePreviewVerified=True,
                 observedRealStreamStatus=demo['realStream']['status'],
@@ -291,10 +349,10 @@ def final():
             ('full', 'native-tests-plan.json', 'native-test-shards', 'test-report.json'),
             ('focused', 'focused-tests-plan.json', 'focused-test-shards', 'critical-tests-report.json')):
         plan = native.checked_plan(Path('dist')/planfile, source['sourceCommit'])
-        need(len(plan['discoveredTests']) == 2178, 'Current2178 native inventory required')
+        need(len(plan['discoveredTests']) == 2203, 'Current2203 native inventory required')
         if kind == 'full':
             live = json.loads(read(Path('scripts/live-scroll-additive-tests.json')))
-            need(len(live) == 131 and set(live).issubset(plan['discoveredTests']), 'Current131 live methods required')
+            need(len(live) == 156 and set(live).issubset(plan['discoveredTests']), 'Current156 live methods required')
             stable = [name for name in plan['discoveredTests'] if name not in set(live)]
             need(len(stable) == 2047 and hashlib.sha256(('\n'.join(stable)+'\n').encode()).hexdigest()
                  == '926ac5674df90163b949fe461f0d4589ef72c8fc3215fa00b927564aae57cb44', 'Stable214 inventory changed')

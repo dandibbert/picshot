@@ -55,10 +55,60 @@ def demo():
         noProgressStopSecondsSinceLastInput=3.1, minimumAutomaticIntervalWithinRunSeconds=.4, minimumAutomaticIntervalSeconds=.4,
         nativeAutomaticInputCount=12, observedGrowingPreviewUpdates=9, storyFrames=24,
         referenceInitialViewportCalibration=copy.deepcopy(comparison))
+    result['outputCase'] = output_demo()
     return result
 
 
+def output_demo():
+    def comparison(height):
+        return dict(passed=True, dimensionsMatch=True, exactCanonicalRGBAEquality=True, width=480,
+                    height=height, expectedWidth=480, expectedHeight=height,
+                    outputPixelSHA256='a'*64, sourcePixelSHA256='a'*64)
+    def artifacts():
+        return [dict(appearance=x, filename='output-fixture-'+x+'.png', width=480, height=60) for x in ('light','dark')]
+    return dict(status='passed', productSessionClosed=True, privateTemporaryRootRemoved=True, cleanupSafe=True,
+        canonicalPrivateTemporaryRoot=True, realScreenCaptureClaimed=False, screenCaptureAPICalled=False,
+        permissionRequested=False, globalInputPosted=False, networkUsed=False,
+        userHistoryReadOrWritten=False, standardDefaultsReadOrWritten=False, generalPasteboardReadOrWritten=False,
+        stitchedCopyFailureThenSave=dict(status='passed', productSessionClosed=True, saveJobsDrained=True,
+            cleanupSafe=True, copyFailurePausedDraftAndAlternativePreserved=True, savePublicationRetiredSession=True,
+            savedInsideApprovedPrivateDirectory=True, independentPublishedPNGDecode=True,
+            copyRecipientAttempts=1, saveJobAdmissions=1, editorCallbacks=0, importCallbacks=0,
+            saveMenuIdentifier='scroll.live.quickSave', saveSelector='quickSavePressed',
+            rejectedCopyComparison=comparison(704), savedPNGComparison=comparison(704),
+            controlArtifacts=artifacts(), saveFeedbackArtifacts=artifacts()),
+        singleViewportPin=dict(status='passed', productSessionClosed=True, pinControllersClosed=True,
+            cleanupSafe=True, singleViewportUnchanged=True, persistedAndReopened=True, independentPublishedPNGDecode=True, pinCallbacks=1,
+            unexpectedCallbacks=0, visibleNativePinCount=1, menuIdentifier='scroll.live.pin', selector='pinPressed',
+            publishedPinComparison=comparison(320), reopenedPinComparison=comparison(320),
+            controlArtifacts=artifacts(), nativePinArtifacts=artifacts()))
+
+
 class ExperimentalInteractionTests(unittest.TestCase):
+    def test_output_rejection_lost_draft_duplicate_callback_and_changed_pixels_fail(self):
+        for path, value in [
+            (('stitchedCopyFailureThenSave','copyFailurePausedDraftAndAlternativePreserved'), False),
+            (('stitchedCopyFailureThenSave','saveJobAdmissions'), 2),
+            (('singleViewportPin','persistedAndReopened'), False),
+            (('singleViewportPin','pinCallbacks'), 2),
+            (('singleViewportPin','reopenedPinComparison','sourcePixelSHA256'), 'b'*64),
+            (('stitchedCopyFailureThenSave','savedPNGComparison','height'), 703),
+        ]:
+            with self.subTest(path=path):
+                row=output_demo(); parent=row
+                for key in path[:-1]: parent=parent[key]
+                parent[path[-1]]=value
+                with self.assertRaises(ValueError): C.output_fields(row)
+        for key in output_demo():
+            changed=output_demo(); del changed[key]
+            with self.subTest(missing=key), self.assertRaises(ValueError): C.output_fields(changed)
+
+    def test_output_native_appearances_and_safe_paths_are_required(self):
+        for value in [[], [dict(appearance='light')],
+                      [dict(appearance=x,filename='../outside.png',width=480,height=60) for x in ('light','dark')]]:
+            changed=output_demo(); changed['stitchedCopyFailureThenSave']['controlArtifacts']=value
+            with self.assertRaises(ValueError): C.output_fields(changed)
+
     def test_complete_interaction_contract_without_memory_eligibility(self):
         C.demo_fields(demo())
         for key in ('installerAcceptance', 'fullMemoryQualification', 'testingPackageEligible',
@@ -214,6 +264,18 @@ class ExperimentalInteractionTests(unittest.TestCase):
                     createsNewApplicationInstance=True,ownedExitConfirmed=True,launchedIdentityMatches=True,
                     timeoutSeconds=600,selectedAppPath=app,launchedAppPath=app,
                     launchedExecutablePath=installed['executablePath'],processIdentifier=123,elapsedSeconds=80.0)
+                output_root=C.EVIDENCE/'demo/output-actions';output_root.mkdir(parents=True)
+                visual=b'\x89PNG\r\n\x1a\nfixture'
+                output=d['outputCase']
+                output['stitchedCopyFailureThenSave']['savedPNGFileSHA256']=hashlib.sha256(visual).hexdigest()
+                output['singleViewportPin']['pinPNGFileSHA256']=hashlib.sha256(visual).hexdigest()
+                names={'output-owned-numbered-reference.png','output-published-long.png','output-published-single-pin.png'}
+                for row,key in [(output['stitchedCopyFailureThenSave'],'controlArtifacts'),
+                                (output['stitchedCopyFailureThenSave'],'saveFeedbackArtifacts'),
+                                (output['singleViewportPin'],'controlArtifacts'),(output['singleViewportPin'],'nativePinArtifacts')]:
+                    names.update(x['filename'] for x in row[key])
+                for name in names:(output_root/name).write_bytes(visual)
+                C.save(output_root/'live-scroll-output.json',output)
                 records={C.EVIDENCE/'package-identity.json':installed,C.EVIDENCE/'demo/demo.json':d,
                          C.EVIDENCE/'demo/demo.json.launcher.json':launcher,
                          C.EVIDENCE/'demo-launch.json':inner,Path('dist/experimental-scroll-installed-report.json'):outer}
@@ -322,7 +384,7 @@ class WorkflowSelectionTests(unittest.TestCase):
             self.assertIn('PicShot-EXPERIMENTAL-macos-',step)
             self.assertNotIn('testing-qualification.json',step)
 
-    def test_current_2178_inventory_and_original_2047_ids(self):
+    def test_current_2203_inventory_and_original_2047_ids(self):
         # Same portable source sentinel as native-test-shards; actual discovery
         # and all current native IDs still execute in the unchanged workflow.
         inventory=[]
@@ -336,10 +398,10 @@ class WorkflowSelectionTests(unittest.TestCase):
             module=path.relative_to(REPO/'Tests').parts[0]
             inventory.extend(module+'.'+classes[0]+'/'+method for method in methods)
         inventory=sorted(inventory)
-        self.assertEqual(len(inventory),2178)
-        self.assertEqual(len(set(inventory)),2178)
+        self.assertEqual(len(inventory),2203)
+        self.assertEqual(len(set(inventory)),2203)
         live=json.loads((REPO/'scripts/live-scroll-additive-tests.json').read_text())
-        self.assertEqual(len(live),131);self.assertTrue(set(live).issubset(inventory))
+        self.assertEqual(len(live),156);self.assertTrue(set(live).issubset(inventory))
         original=[name for name in inventory if name not in set(live)]
         self.assertEqual(len(original),2047)
         self.assertEqual(hashlib.sha256(('\n'.join(original)+'\n').encode()).hexdigest(),

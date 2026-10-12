@@ -14,6 +14,9 @@ struct LiveScrollCaptureSnapshot: Equatable {
     var busy = false
     var canFinish = false
     var canCopy = false
+    var canQuickSave = false
+    var canPin = false
+    var pinUnavailableReason = ""
     var canPause = true
     var showsAutoScroll = true
     var canAutoScroll = false
@@ -33,6 +36,8 @@ struct LiveScrollCaptureSnapshot: Equatable {
 struct LiveScrollCaptureActions {
     var finishEdit: () -> Void = {}
     var copy: () -> Void = {}
+    var quickSave: () -> Void = {}
+    var pin: () -> Void = {}
     var pauseResume: () -> Void = {}
     var autoScroll: () -> Void = {}
     var changeAxis: (ScrollAxis) -> Void = { _ in }
@@ -347,6 +352,10 @@ final class LiveScrollCaptureController: NSObject, NSWindowDelegate {
             item.target = self; item.identifier = .init("scroll.live." + id); item.isEnabled = enabled
             menu.addItem(item); return item
         }
+        add("快速保存 PNG…", #selector(quickSavePressed), id: "quickSave", enabled: snapshot.canQuickSave && !snapshot.busy)
+        let pin = add(snapshot.pinUnavailableReason.isEmpty ? "贴到屏幕" : "贴到屏幕（超过 3200 万像素）", #selector(pinPressed), id: "pin", enabled: snapshot.canPin && !snapshot.busy)
+        pin.toolTip = snapshot.pinUnavailableReason.isEmpty ? "保存为可恢复贴图；原尺寸最多 3200 万像素" : snapshot.pinUnavailableReason
+        menu.addItem(.separator())
         add("移动选区…", #selector(movePressed), id: "moveRegion", enabled: snapshot.canMoveRegion && !snapshot.busy)
         menu.addItem(.separator())
         let vertical = add("纵向滚动", #selector(verticalPressed), id: "axis.vertical", enabled: snapshot.canChangeAxis && !snapshot.busy)
@@ -376,6 +385,11 @@ final class LiveScrollCaptureController: NSObject, NSWindowDelegate {
         } else if !snapshot.showsReverseCrop, let reverseItem { menu.removeItem(reverseItem) }
         for item in menu.items {
             switch item.identifier?.rawValue {
+            case "scroll.live.quickSave": item.isEnabled = snapshot.canQuickSave && !snapshot.busy
+            case "scroll.live.pin":
+                item.isEnabled = snapshot.canPin && !snapshot.busy
+                item.title = snapshot.pinUnavailableReason.isEmpty ? "贴到屏幕" : "贴到屏幕（超过 3200 万像素）"
+                item.toolTip = snapshot.pinUnavailableReason.isEmpty ? "保存为可恢复贴图；原尺寸最多 3200 万像素" : snapshot.pinUnavailableReason
             case "scroll.live.moveRegion": item.isEnabled = snapshot.canMoveRegion && !snapshot.busy
             case "scroll.live.axis.vertical":
                 item.isEnabled = snapshot.canChangeAxis && !snapshot.busy
@@ -393,6 +407,8 @@ final class LiveScrollCaptureController: NSObject, NSWindowDelegate {
 
     @objc private func finishPressed() { if !isRetired && snapshot.canFinish && !snapshot.busy { actions?.finishEdit() } }
     @objc private func copyPressed() { if !isRetired && snapshot.canCopy && !snapshot.busy { actions?.copy() } }
+    @objc private func quickSavePressed() { if !isRetired && snapshot.canQuickSave && !snapshot.busy { actions?.quickSave() } }
+    @objc private func pinPressed() { if !isRetired && snapshot.canPin && !snapshot.busy { actions?.pin() } }
     @objc private func pausePressed() { if !isRetired && snapshot.canPause && !snapshot.busy { actions?.pauseResume() } }
     @objc private func autoPressed() { if !isRetired && snapshot.canAutoScroll && !snapshot.busy { actions?.autoScroll() } }
     @objc private func cancelPressed() { cancel() }

@@ -9,7 +9,9 @@ final class LiveScrollSessionController {
     var onClose: (() -> Void)?
     private let onComplete: (CGImage) throws -> Void
     private let onImport: () -> Void
-    private let onCopy: (CGImage) -> Void
+    private let onCopy: (CGImage) throws -> Void
+    private let onPin: ((CGImage) throws -> Void)?
+    private let saveDestination: (any LiveScrollSaveDestination)?
     private let capture = CaptureService()
     private let resourceStorageParent: URL
     private var source: (any LiveScrollFrameSource)?
@@ -67,7 +69,9 @@ final class LiveScrollSessionController {
     private let maximumSamples = 2400
 
     init(onComplete: @escaping (CGImage) throws -> Void, onImport: @escaping () -> Void,
-         onCopy: ((CGImage) -> Void)? = nil,
+         onCopy: ((CGImage) throws -> Void)? = nil,
+         onPin: ((CGImage) throws -> Void)? = nil,
+         saveDestination: (any LiveScrollSaveDestination)? = nil,
          resourceStorageParent: URL = FileManager.default.temporaryDirectory,
          monotonicNow: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
          automaticScrollPermission: @escaping () -> Bool = { AXIsProcessTrusted() },
@@ -77,7 +81,8 @@ final class LiveScrollSessionController {
         self.automaticScrollPermission = automaticScrollPermission
         self.automaticScrollInput = automaticScrollInput
         self.onComplete = onComplete; self.onImport = onImport
-        self.onCopy = onCopy ?? { copyImage($0) }
+        self.onCopy = onCopy ?? { try LiveScrollClipboard.copy($0) }
+        self.onPin = onPin; self.saveDestination = saveDestination
     }
 
     func start(presentation: FrozenCapturePresentation? = nil) {
@@ -169,6 +174,7 @@ final class LiveScrollSessionController {
     var isClosedForVerification: Bool { retired && source == nil && assembler == nil && controls == nil && sampling == nil }
 
     func closeForVerification() async {
+        saveDestination?.cancel()
         transition?.cancel(); sampling?.cancel(); mover?.cancel()
         await retire()
         // A Finish callback may already have started retirement. Keep the
@@ -183,8 +189,10 @@ final class LiveScrollSessionController {
 
     private func installControls() {
         var actions = LiveScrollCaptureActions()
-        actions.finishEdit = { [weak self] in self?.finish(copyOnly: false) }
-        actions.copy = { [weak self] in self?.finish(copyOnly: true) }
+        actions.finishEdit = { [weak self] in self?.finish(.edit) }
+        actions.copy = { [weak self] in self?.finish(.copy) }
+        actions.quickSave = { [weak self] in self?.finish(.save) }
+        actions.pin = { [weak self] in self?.finish(.pin) }
         actions.pauseResume = { [weak self] in self?.togglePause() }
         actions.autoScroll = { [weak self] in self?.toggleAutomatic() }
         actions.changeAxis = { [weak self] axis in self?.changeAxis(axis) }
@@ -298,6 +306,10 @@ final class LiveScrollSessionController {
         snapshot.canPause = !deliveryCompleted && !finishing && !captureLimitReached && transition == nil && regionDrag == nil && source != nil
         snapshot.canMoveRegion = !deliveryCompleted && !finishing && !captureLimitReached && transition == nil && regionDrag == nil && source != nil
         snapshot.canImport = !deliveryCompleted && lastState.width == 0 && !finishing
+        let outputReady = !deliveryCompleted && !finishing && transition == nil && regionDrag == nil && lastState.width > 0
+        snapshot.canQuickSave = outputReady && saveDestination != nil
+        snapshot.canPin = outputReady && onPin != nil && Self.canPin(width: lastState.width, height: lastState.height)
+        snapshot.pinUnavailableReason = lastState.width == 0 || Self.canPin(width: lastState.width, height: lastState.height) ? "" : "贴图最多支持 3200 万像素；可完成并编辑或快速保存原尺寸长图"
         snapshot.autoScrolling = automatic; snapshot.axis = axis
         let automaticAllowed = automaticScrollPermission()
         let currentVerified = snapshot.previewPositionVerified && lastAutomaticObservation != nil
@@ -374,11 +386,37 @@ final class LiveScrollSessionController {
         }
     }
 
-    private func finish(copyOnly: Bool) {
-        guard !finishing, !retired, !deliveryCompleted, transition == nil, regionDrag == nil, lastState.width > 0, let source, let assembler else { return }
+    private enum OutputDestination: Equatable {
+        case edit, copy, save, pin
+        var completedMessage: String {
+            switch self {
+            case .edit: return "长图已完成"
+            case .copy: return "长图已复制"
+            case .save: return "长图已保存"
+            case .pin: return "长图已贴到屏幕"
+            }
+        }
+    }
+
+    static func canPin(width: Int, height: Int) -> Bool {
+        width > 0 && height > 0 && height <= 32_000_000 && width <= 32_000_000 / height
+    }
+
+    private func finish(_ destination: OutputDestination) {
+        guard !finishing, !retired, !deliveryCompleted, transition == nil, regionDrag == nil,
+              lastState.width > 0, let source, let assembler else { return }
+        if destination == .save && saveDestination == nil { return }
+        if destination == .pin {
+            guard onPin != nil else { return }
+            guard Self.canPin(width: lastState.width, height: lastState.height) else {
+                setStatus("贴图最多支持 3200 万像素，当前长图仍保留，可完成并编辑或快速保存", kind: .warning)
+                return
+            }
+        }
         finishing = true; paused = true; clearAutomaticState()
         pauseCaptureClock(); snapshot.previewPositionVerified = false
         setStatus("正在完成长截图…", kind: .finishing)
+        let token = generation
         transition = Task { [weak self] in
             guard let self else { return }
             defer { if !self.retired { self.transition = nil; self.setStatus(self.snapshot.status, kind: self.snapshot.statusKind) } }
@@ -386,22 +424,46 @@ final class LiveScrollSessionController {
                 var teardownWarning: Error?
                 do { try await source.pauseAndDrain() } catch { teardownWarning = error }
                 await self.sampling?.value; self.sampling = nil
+                try Task.checkCancellation()
+                guard !self.retired, self.generation == token else { return }
+                // A final observation may extend the accepted image while the
+                // source drains. Recheck before allocating the full raster.
+                if destination == .pin && !Self.canPin(width: self.lastState.width, height: self.lastState.height) {
+                    throw PicShotError.message("贴图最多支持 3200 万像素，请快速保存原尺寸长图")
+                }
                 let image = try await assembler.finish()
                 try Task.checkCancellation()
-                guard !self.retired else { return }
-                if copyOnly { self.onCopy(image) }
-                else { try self.onComplete(image) }
-                // Delivery is terminal even if stopping the source was not confirmed.
-                // Set this only after the recipient returns successfully, so a
-                // throwing editor/history callback retains the draft and retry.
+                guard !self.retired, self.generation == token else { return }
+                switch destination {
+                case .copy: try self.onCopy(image)
+                case .edit: try self.onComplete(image)
+                case .pin:
+                    guard Self.canPin(width: image.width, height: image.height) else {
+                        throw PicShotError.message("贴图最多支持 3200 万像素，请快速保存原尺寸长图")
+                    }
+                    try self.onPin?(image)
+                case .save:
+                    guard let saveDestination = self.saveDestination else { throw CancellationError() }
+                    self.setStatus("等待保存完成，取消保存后仍可继续处理长图", kind: .finishing)
+                    try await saveDestination.save(image: image, parent: self.controls?.toolbarWindow)
+                }
+                guard !self.retired, self.generation == token else { return }
+                // Only the recipient's confirmed acceptance commits this result.
+                // Save admission, cancelled panels and rejected clipboard/pin
+                // writes leave the paused spool available for another route.
                 self.deliveryCompleted = true
                 if let teardownWarning {
                     self.finishing = false
-                    let warning = "\(copyOnly ? "长图已复制" : "长图已完成")，但采集停止未确认：\(teardownWarning.localizedDescription)。请关闭本次捕获。"
+                    let warning = "\(destination.completedMessage)，但采集停止未确认：\(teardownWarning.localizedDescription)。请关闭本次捕获。"
                     self.deliveryWarning = warning
                     self.setStatus(warning, kind: .warning)
                 } else { await self.retire() }
+            } catch is CancellationError {
+                guard !self.retired, self.generation == token else { return }
+                self.finishing = false
+                self.setStatus("已取消输出，当前长图仍保留，可重试或选择其他方式", kind: .paused)
             } catch {
+                guard !self.retired, self.generation == token else { return }
                 self.finishing = false
                 self.setStatus("\(error.localizedDescription) 当前长图仍保留，可重试", kind: .error)
             }
@@ -745,6 +807,7 @@ final class LiveScrollSessionController {
     func cancel() {
         guard !retired else { return }
         clearAutomaticState()
+        saveDestination?.cancel()
         transition?.cancel(); sampling?.cancel(); mover?.cancel()
         Task { [weak self] in await self?.retire() }
     }
@@ -752,6 +815,7 @@ final class LiveScrollSessionController {
         guard !retired else { return }
         retired = true; generation &+= 1; paused = true; clearAutomaticState()
         pauseCaptureClock(); regionDrag = nil
+        saveDestination?.cancel()
         controls?.teardown(); controls = nil
         sampling?.cancel()
         try? await source?.stop()

@@ -523,6 +523,14 @@ import ImageIO
         controllers.removeAll{$0.window === w};pins.removeAll{$0.window === w}
         if closedSettings{settingsController=nil;refreshHotkeys()}
     }
+    /// Live capture closes its only draft only after durable managed-pin acceptance.
+    /// The legacy transient fallback is not a recoverable output destination.
+    func pinLongCapture(_ image: CGImage) throws {
+        guard let pinSession else {
+            throw pinSessionLoadError ?? PicShotError.message("贴图存储暂不可用，长截图仍保留。请检查后重试。")
+        }
+        try pinSession.add(originalImage: image, currentImage: image)
+    }
     func pin(_ image:CGImage){ _ = pin(originalImage:image,currentImage:image) }
     @discardableResult func pin(originalImage:CGImage,currentImage:CGImage)->Bool{
         if let pinSession {do{try pinSession.add(originalImage:originalImage,currentImage:currentImage);return true}catch{showError(error);return false}}
@@ -709,7 +717,10 @@ import ImageIO
         let controller = LiveScrollSessionController(onComplete: { [weak self] image in
             guard let self else { throw CaptureError.cancelled }
             try self.completeCapture(CapturedImage(image: image, presentation: nil), title: "长截图")
-        }, onImport: { [weak self] in self?.openScrollImporter() })
+        }, onImport: { [weak self] in self?.openScrollImporter() }, onPin: { [weak self] image in
+            guard let self else { throw CaptureError.cancelled }
+            try self.pinLongCapture(image)
+        }, saveDestination: LiveScrollSaveDelivery(presenter: saveWorkflows))
         controller.onClose = { [weak self, weak controller] in
             guard let self, self.activeLiveScroll === controller else { return }
             self.activeLiveScroll = nil
