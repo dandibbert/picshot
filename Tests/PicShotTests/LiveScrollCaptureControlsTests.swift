@@ -22,18 +22,22 @@ final class LiveScrollCaptureControlsTests: XCTestCase {
         let toolbar = try XCTUnwrap(controller.toolbarWindow)
         let outline = try XCTUnwrap(controller.outlineWindow)
         let preview = try XCTUnwrap(controller.previewWindow)
-        for window in [toolbar, outline, preview] {
+        let handle = try XCTUnwrap(controller.handleWindow)
+        for window in [toolbar, outline, preview, handle] {
             XCTAssertFalse(window.canBecomeKey); XCTAssertFalse(window.canBecomeMain)
             XCTAssertTrue(window.styleMask.contains(.nonactivatingPanel))
             XCTAssertEqual(window.sharingType, .none)
             XCTAssertFalse(window.isMovableByWindowBackground)
         }
         XCTAssertFalse(toolbar.ignoresMouseEvents)
+        XCTAssertFalse(handle.ignoresMouseEvents)
+        XCTAssertTrue(screen.contains(handle.frame)); XCTAssertFalse(handle.frame.intersects(target))
+        XCTAssertFalse(handle.frame.intersects(toolbar.frame)); XCTAssertFalse(handle.frame.intersects(preview.frame))
         XCTAssertTrue(outline.ignoresMouseEvents); XCTAssertTrue(preview.ignoresMouseEvents)
         XCTAssertEqual(outline.frame, target.insetBy(dx: -3, dy: -3))
         XCTAssertNil(outline.contentView?.hitTest(CGPoint(x: 20, y: 20)))
         XCTAssertNil(preview.contentView?.hitTest(CGPoint(x: 20, y: 20)))
-        XCTAssertEqual(controller.captureExcludedWindowIDs.count, 3)
+        XCTAssertEqual(controller.captureExcludedWindowIDs.count, 4)
     }
 
     func testPausedAndRecoverableFailureKeepFinishCopyCancelAndRetryUsable() throws {
@@ -173,6 +177,177 @@ final class LiveScrollCaptureControlsTests: XCTestCase {
         let closing = LiveScrollCaptureController(actions: .init(onClose: { calls += 1 }))
         closing.close(); closing.close(); closing.teardown()
         XCTAssertEqual(calls, 1)
+    }
+
+    func testDirectHandleNativeMouseEventsLockActiveAxisAndUseFinalReleasePosition() throws {
+        for axis in [ScrollAxis.vertical, .horizontal] {
+            var ids: [UUID] = [], completions: [(UUID, CGRect?)] = []
+            let controller = LiveScrollCaptureController(actions: .init(beginRegionDrag: { ids.append($0); return true },
+                endRegionDrag: { completions.append(($0, $1)) }))
+            defer { controller.teardown() }
+            var state = active; state.axis = axis
+            controller.show(snapshot: state, targetFrame: target, visibleFrame: screen)
+            let handle = try XCTUnwrap(controller.handleWindow)
+            let view = try XCTUnwrap(handle.contentView as? LiveScrollRegionDragHandle)
+            let start = CGPoint(x: handle.frame.midX, y: handle.frame.midY)
+            let hit = view.convert(handle.convertPoint(fromScreen: start), from: nil)
+            XCTAssertTrue(view.hitTest(view.convert(hit, to: view.superview)) === view)
+            try pointer(.leftMouseDown, window: handle, global: start)
+            XCTAssertEqual(ids.count, 1); XCTAssertTrue(view.isDragging)
+            XCTAssertTrue(handle.canBecomeKey); XCTAssertTrue(handle.firstResponder === view)
+            state.busy = true; state.canMoveRegion = false; controller.update(snapshot: state)
+            XCTAssertTrue(view.isEnabled, "Busy capture preparation must not orphan an accepted drag")
+            try pointer(.leftMouseDragged, window: handle, global: CGPoint(x: start.x + 20, y: start.y + 35))
+            XCTAssertTrue(try XCTUnwrap(controller.toolbarWindow).isVisible)
+            XCTAssertTrue(try XCTUnwrap(controller.previewWindow).isVisible)
+            try pointer(.leftMouseUp, window: handle, global: CGPoint(x: start.x + 40, y: start.y + 60))
+            let expected = target.offsetBy(dx: axis == .vertical ? 0 : 40, dy: axis == .horizontal ? 0 : 60)
+            XCTAssertEqual(completions.count, 1); XCTAssertEqual(completions[0].0, ids[0])
+            XCTAssertEqual(completions[0].1, expected)
+            XCTAssertEqual(controller.outlineWindow?.frame, expected.insetBy(dx: -3, dy: -3))
+            XCTAssertFalse(view.isDragging); XCTAssertFalse(handle.canBecomeKey)
+            try pointer(.leftMouseUp, window: handle, global: start)
+            try pointer(.leftMouseDragged, window: handle, global: start)
+            controller.cancelRegionDrag()
+            XCTAssertEqual(completions.count, 1, "Stray events cannot complete an accepted ID twice")
+        }
+    }
+
+    func testDirectPausedDragClampsToCaptureBoundsWhileHUDStaysInVisibleWorkArea() throws {
+        var completed: CGRect?
+        let controller = LiveScrollCaptureController(actions: .init(beginRegionDrag: { _ in true },
+            endRegionDrag: { _, frame in completed = frame }))
+        defer { controller.teardown() }
+        var state = active; state.paused = true
+        let bounds = screen.insetBy(dx: 0, dy: -40)
+        controller.show(snapshot: state, targetFrame: target, visibleFrame: screen, movementBounds: bounds)
+        let handle = try XCTUnwrap(controller.handleWindow)
+        let start = CGPoint(x: handle.frame.midX, y: handle.frame.midY)
+        try pointer(.leftMouseDown, window: handle, global: start)
+        try pointer(.leftMouseDragged, window: handle, global: CGPoint(x: start.x + 9_000, y: start.y + 9_000))
+        try pointer(.leftMouseUp, window: handle, global: CGPoint(x: start.x + 9_000, y: start.y + 9_000))
+        XCTAssertEqual(completed, CGRect(x: bounds.maxX - target.width, y: bounds.maxY - target.height,
+                                         width: target.width, height: target.height))
+        XCTAssertTrue(screen.contains(try XCTUnwrap(controller.toolbarWindow).frame))
+        XCTAssertTrue(screen.contains(handle.frame))
+    }
+
+    func testDirectDragEscapeAndFocusLossRestoreOriginalFrameAndCompleteOnce() throws {
+        for escape in [true, false] {
+            var ids: [UUID] = [], completions: [(UUID, CGRect?)] = []
+            let controller = LiveScrollCaptureController(actions: .init(beginRegionDrag: { ids.append($0); return true },
+                endRegionDrag: { completions.append(($0, $1)) }))
+            defer { controller.teardown() }
+            controller.show(snapshot: active, targetFrame: target, visibleFrame: screen)
+            let handle = try XCTUnwrap(controller.handleWindow)
+            let start = CGPoint(x: handle.frame.midX, y: handle.frame.midY)
+            try pointer(.leftMouseDown, window: handle, global: start)
+            try pointer(.leftMouseDragged, window: handle, global: CGPoint(x: start.x, y: start.y + 60))
+            XCTAssertNotEqual(controller.outlineWindow?.frame, target.insetBy(dx: -3, dy: -3))
+            if escape {
+                handle.sendEvent(try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: handle.windowNumber, context: nil,
+                    characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53)))
+            } else {
+                // Native focus transition invokes the actual NSWindowDelegate path.
+                handle.resignKey()
+            }
+            XCTAssertEqual(completions.count, 1); XCTAssertEqual(completions.first?.0, ids.first)
+            XCTAssertNil(completions.first?.1)
+            XCTAssertEqual(controller.outlineWindow?.frame, target.insetBy(dx: -3, dy: -3))
+            XCTAssertTrue(try XCTUnwrap(controller.toolbarWindow).isVisible)
+            XCTAssertTrue(try XCTUnwrap(controller.previewWindow).isVisible)
+            try pointer(.leftMouseUp, window: handle, global: start)
+            controller.cancelRegionDrag(); controller.hide(); controller.teardown()
+            XCTAssertEqual(completions.count, 1)
+        }
+    }
+
+    func testDisabledOrRejectedHandleCannotStartDragAndRetiredHandleIsInert() throws {
+        var begins = 0, ends = 0
+        let controller = LiveScrollCaptureController(actions: .init(beginRegionDrag: { _ in begins += 1; return false },
+            endRegionDrag: { _, _ in ends += 1 }))
+        var state = active; state.busy = true
+        controller.show(snapshot: state, targetFrame: target, visibleFrame: screen)
+        let handle = try XCTUnwrap(controller.handleWindow)
+        let view = try XCTUnwrap(handle.contentView as? LiveScrollRegionDragHandle)
+        let start = CGPoint(x: handle.frame.midX, y: handle.frame.midY)
+        try pointer(.leftMouseDown, window: handle, global: start)
+        XCTAssertEqual(begins, 0)
+        state.busy = false; controller.update(snapshot: state)
+        try pointer(.leftMouseDown, window: handle, global: start)
+        try pointer(.leftMouseUp, window: handle, global: start)
+        XCTAssertEqual(begins, 1); XCTAssertEqual(ends, 0); XCTAssertFalse(view.isDragging)
+        controller.teardown()
+        XCTAssertNil(view.begin); XCTAssertNil(view.move); XCTAssertNil(view.end)
+        XCTAssertFalse(view.isEnabled); XCTAssertNil(controller.handleWindow)
+    }
+
+    func testStalePreviewRetainsLastGoodImageWithAmberAccessibleMarkerUntilVerified() throws {
+        let controller = LiveScrollCaptureController(actions: .init(beginRegionDrag: { _ in true }))
+        defer { controller.teardown() }
+        var state = active; state.previewPositionVerified = true
+        controller.show(snapshot: state, targetFrame: target, visibleFrame: screen)
+        let preview = try XCTUnwrap(controller.previewWindow?.contentView as? LiveScrollThumbnailView)
+        let fraction = CGRect(x: 0, y: 0.3, width: 1, height: 0.25)
+        controller.updatePreview(image: try fixtureImage(width: 256, height: 1_024), viewportFraction: fraction)
+        let original = try XCTUnwrap(preview.image)
+        XCTAssertTrue(preview.isPositionVerified); XCTAssertEqual(preview.viewportMarkerColor, .systemGreen)
+        state.previewPositionVerified = false; state.statusKind = .warning
+        controller.update(snapshot: state)
+        XCTAssertTrue(preview.image === original); XCTAssertEqual(preview.viewportFraction, fraction)
+        XCTAssertFalse(preview.isPositionVerified); XCTAssertEqual(preview.viewportMarkerColor, .systemOrange)
+        XCTAssertTrue(try XCTUnwrap(preview.accessibilityLabel()).contains("尚未验证"))
+        XCTAssertFalse(try XCTUnwrap(preview.accessibilityLabel()).contains("绿色"))
+        // Failed allocation/invalid NSImage dimensions must not erase good pixels
+        // or relabel them as verified even if a stale verified snapshot arrives.
+        controller.updatePreview(image: NSImage(size: .zero), viewportFraction: .zero)
+        state.previewPositionVerified = true; controller.update(snapshot: state)
+        XCTAssertTrue(preview.image === original); XCTAssertFalse(preview.isPositionVerified)
+        controller.updatePreview(image: try fixtureImage(width: 256, height: 1_024), viewportFraction: fraction)
+        XCTAssertTrue(preview.isPositionVerified)
+        let handle = try XCTUnwrap(controller.handleWindow)
+        for cancel in [true, false] {
+            let beforeDrag = try XCTUnwrap(preview.image)
+            let start = CGPoint(x: handle.frame.midX, y: handle.frame.midY)
+            try pointer(.leftMouseDown, window: handle, global: start)
+            let acceptedFraction = CGRect(x: 0, y: 0.5, width: 1, height: 0.3)
+            controller.updatePreview(image: try fixtureImage(width: 512, height: 800), viewportFraction: acceptedFraction)
+            controller.update(snapshot: state)
+            let accepted = try XCTUnwrap(preview.image)
+            XCTAssertFalse(accepted === beforeDrag, "An accepted pre-drain observation must keep its corresponding preview")
+            XCTAssertEqual(preview.viewportFraction, acceptedFraction)
+            XCTAssertFalse(preview.isPositionVerified, "An in-flight drag cannot verify even the latest accepted position")
+            XCTAssertEqual(preview.viewportMarkerColor, .systemOrange)
+
+            let latestFraction = CGRect(x: 0, y: 0.6, width: 1, height: 0.25)
+            let source = try fixtureImage(width: 256, height: 800)
+            controller.updatePreview(image: NSImage(cgImage: source, size: CGSize(width: 256, height: 800)),
+                                     viewportFraction: latestFraction)
+            controller.update(snapshot: state)
+            let latest = try XCTUnwrap(preview.image)
+            XCTAssertFalse(latest === accepted)
+            XCTAssertEqual(preview.viewportFraction, latestFraction)
+            XCTAssertFalse(preview.isPositionVerified)
+            XCTAssertTrue(try XCTUnwrap(preview.accessibilityLabel()).contains("尚未验证"))
+
+            if cancel { controller.cancelRegionDrag() }
+            else { try pointer(.leftMouseUp, window: handle, global: start) }
+            XCTAssertFalse(preview.isPositionVerified, "Release alone does not verify the viewport")
+            // A duplicate verified match may carry no replacement preview. The
+            // most recently accepted image/viewport must then be the green pair.
+            controller.update(snapshot: state)
+            XCTAssertTrue(preview.image === latest)
+            XCTAssertEqual(preview.viewportFraction, latestFraction)
+            XCTAssertTrue(preview.isPositionVerified); XCTAssertEqual(preview.viewportMarkerColor, .systemGreen)
+        }
+    }
+
+    private func pointer(_ type: NSEvent.EventType, window: NSWindow, global: CGPoint) throws {
+        let event = try XCTUnwrap(NSEvent.mouseEvent(with: type, location: window.convertPoint(fromScreen: global),
+            modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+            context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1))
+        window.sendEvent(event)
     }
 
     private func fixtureImage(width: Int, height: Int) throws -> CGImage {

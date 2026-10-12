@@ -9,6 +9,11 @@ final class LiveScrollThumbnailView: NSView {
     static let maximumPixels = 262_144
     private(set) var image: CGImage?
     private(set) var viewportFraction: CGRect = .zero
+    private var positionVerified = false
+    private var hasCurrentPreview = false
+    private var dimensions = ""
+    var isPositionVerified: Bool { positionVerified && hasCurrentPreview && image != nil }
+    var viewportMarkerColor: NSColor { isPositionVerified ? .systemGreen : .systemOrange }
     override var isFlipped: Bool { true }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
@@ -16,7 +21,7 @@ final class LiveScrollThumbnailView: NSView {
         super.init(frame: frame)
         identifier = .init("scroll.live.thumbnail")
         setAccessibilityElement(true); setAccessibilityRole(.image)
-        setAccessibilityLabel("滚动拼接预览，绿色框表示当前页面位置")
+        updateAccessibility()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) unavailable") }
 
@@ -33,25 +38,49 @@ final class LiveScrollThumbnailView: NSView {
         LiveScrollCaptureGeometry.viewportMarker(fraction: viewportFraction, imageRect: imageRect)
     }
 
+    func display(positionVerified: Bool, dimensions: String) {
+        self.positionVerified = positionVerified; self.dimensions = dimensions
+        updateAccessibility(); needsDisplay = true
+    }
+
+    private func updateAccessibility() {
+        let prefix = dimensions.isEmpty ? "滚动拼接预览" : "滚动拼接预览，\(dimensions)"
+        setAccessibilityLabel(prefix + (isPositionVerified ? "，绿色框表示已验证的当前页面位置" :
+            "，当前位置尚未验证，橙色框仅表示上次位置"))
+    }
+
     func update(image source: CGImage?, viewportFraction: CGRect) {
-        self.viewportFraction = LiveScrollCaptureGeometry.normalizedViewport(viewportFraction) ?? .zero
-        guard let source else { image = nil; needsDisplay = true; return }
-        image = boundedImage(size: CGSize(width: source.width, height: source.height)) { context, rect in
+        guard let source else {
+            image = nil; self.viewportFraction = .zero; hasCurrentPreview = false
+            updateAccessibility(); needsDisplay = true; return
+        }
+        let next = boundedImage(size: CGSize(width: source.width, height: source.height)) { context, rect in
             context.interpolationQuality = .medium
             context.draw(source, in: rect)
         }
-        needsDisplay = true
+        acceptPreview(next, viewportFraction: viewportFraction)
     }
 
     func update(image source: NSImage, viewportFraction: CGRect) {
-        self.viewportFraction = LiveScrollCaptureGeometry.normalizedViewport(viewportFraction) ?? .zero
-        image = boundedImage(size: source.size) { context, rect in
+        let next = boundedImage(size: source.size) { context, rect in
             NSGraphicsContext.saveGraphicsState()
             NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
             source.draw(in: rect, from: .zero, operation: .copy, fraction: 1, respectFlipped: true, hints: [.interpolation: NSImageInterpolation.medium.rawValue])
             NSGraphicsContext.restoreGraphicsState()
         }
-        needsDisplay = true
+        acceptPreview(next, viewportFraction: viewportFraction)
+    }
+
+    private func acceptPreview(_ next: CGImage?, viewportFraction: CGRect) {
+        // Failed preview generation keeps the last good bounded image and its
+        // last position, while making its uncertainty visible and accessible.
+        hasCurrentPreview = next != nil
+        if let next {
+            image = next
+            self.viewportFraction = LiveScrollCaptureGeometry.normalizedViewport(viewportFraction) ?? .zero
+            if self.viewportFraction.isEmpty { hasCurrentPreview = false }
+        }
+        updateAccessibility(); needsDisplay = true
     }
 
     private func boundedImage(size: CGSize, draw: (CGContext, CGRect) -> Void) -> CGImage? {
@@ -83,7 +112,7 @@ final class LiveScrollThumbnailView: NSView {
         NSImage(cgImage: image, size: CGSize(width: image.width, height: image.height))
             .draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
         if let marker = viewportMarker {
-            NSColor.systemGreen.withAlphaComponent(0.12).setFill()
+            viewportMarkerColor.withAlphaComponent(0.12).setFill()
             NSBezierPath(rect: marker).fill()
             // A very long document can map the viewport to less than a point.
             // Keep a visible outline, clipped to the actual thumbnail bounds.
@@ -91,7 +120,9 @@ final class LiveScrollThumbnailView: NSView {
             NSBezierPath(rect: rect).addClip()
             let visible = CGRect(x: marker.minX, y: marker.minY, width: max(2, marker.width), height: max(2, marker.height))
             let path = NSBezierPath(rect: visible.insetBy(dx: 0.75, dy: 0.75))
-            NSColor.systemGreen.setStroke(); path.lineWidth = 1.5; path.stroke()
+            viewportMarkerColor.setStroke(); path.lineWidth = 1.5
+            if !isPositionVerified { path.setLineDash([3, 2], count: 2, phase: 0) }
+            path.stroke()
             NSGraphicsContext.restoreGraphicsState()
         }
     }

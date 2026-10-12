@@ -124,7 +124,7 @@ enum LiveScrollUsabilityDemoFixture {
                 session.stateForVerification.acceptedObservations > 0
             }
             let controls = try unwrap(session.controlsForVerification, "Product session did not install capture controls")
-            for panel in [controls.toolbarWindow, controls.previewWindow, controls.outlineWindow] {
+            for panel in [controls.toolbarWindow, controls.previewWindow, controls.outlineWindow, controls.handleWindow] {
                 panel?.appearance = NSAppearance(named: .aqua)
             }
             let thumbnail = try unwrap(controls.previewWindow?.contentView as? LiveScrollThumbnailView,
@@ -232,19 +232,37 @@ enum LiveScrollUsabilityDemoFixture {
                 let afterGapPixels = try normalizedPixels(try unwrap(thumbnail.image, "Gap removed the retained thumbnail"))
                 let preserved = afterGap.height == retainedState.height && afterGap.viewportOffset == retainedState.viewportOffset
                     && afterGapPixels == retainedPixels
+                let gapLabel = thumbnail.accessibilityLabel() ?? ""
+                let gapMarkerUnverified = !thumbnail.isPositionVerified
+                let gapMarkerAmber = thumbnail.viewportMarkerColor == .systemOrange
+                let gapAccessibilityUnverified = gapLabel.contains("尚未验证") && !gapLabel.contains("绿色")
+                report["gapRejected"] = true; report["gapPreservedLastValidPreviewAndState"] = preserved
+                report["gapMarkerUnverified"] = gapMarkerUnverified
+                report["gapMarkerAmber"] = gapMarkerAmber
+                report["gapAccessibilityDescribesUnverifiedPosition"] = gapAccessibilityUnverified
+                report["gapAccessibilityLabel"] = gapLabel
+                report["gapRecoveryMatched"] = false; report["gapRecoveryMarkerVerified"] = false
                 try writePNG(try scene(window: window, controls: controls,
                     caption: "Gap warning · actual session retains the last valid long image"),
                     directory.appendingPathComponent("live-scroll-gap-recovery.png"))
+                try require(preserved && gapMarkerUnverified && gapMarkerAmber && gapAccessibilityUnverified,
+                            "Rejected gap changed retained pixels or labeled an unverified page position as current")
                 try scroll(viewport.scrollView, pixels: Int((retainedOffset - viewport.offset).rounded()))
                 try await waitFor("Product session did not recover retained overlap", timeout: 5) {
-                    session.stateForVerification.matched
+                    session.stateForVerification.matched && thumbnail.isPositionVerified
                 }
+                let recoveredLabel = thumbnail.accessibilityLabel() ?? ""
+                report["gapRecoveryMatched"] = session.stateForVerification.matched
+                report["gapRecoveryMarkerVerified"] = thumbnail.isPositionVerified
+                report["gapRecoveryMarkerGreen"] = thumbnail.viewportMarkerColor == .systemGreen
+                report["gapRecoveryAccessibilityDescribesVerifiedPosition"] = recoveredLabel.contains("绿色")
+                    && !recoveredLabel.contains("尚未验证")
+                try require(thumbnail.viewportMarkerColor == .systemGreen && recoveredLabel.contains("绿色")
+                    && !recoveredLabel.contains("尚未验证"), "Recovered overlap did not restore the verified marker and accessibility label")
                 try scroll(viewport.scrollView, pixels: 48)
                 try await waitFor("Product session did not extend after recovery", timeout: 5) {
                     session.stateForVerification.viewportOffset == Int(viewport.offset.rounded())
                 }
-                report["gapRejected"] = true; report["gapPreservedLastValidPreviewAndState"] = preserved
-                report["gapRecoveryMatched"] = true
                 try require(pausePreserved && preserved, "Pause or gap changed the retained output")
             }
             maxOffset = max(maxOffset, Double(viewport.offset))
@@ -257,7 +275,7 @@ enum LiveScrollUsabilityDemoFixture {
             let finalScene = try scene(window: window, controls: controls, caption: "Ready to finish · actual PicShot session")
             story.append(finalScene)
             try writePNG(finalScene, directory.appendingPathComponent(prefix + "-native-finished-window.png"))
-            for panel in [controls.toolbarWindow, controls.previewWindow, controls.outlineWindow] {
+            for panel in [controls.toolbarWindow, controls.previewWindow, controls.outlineWindow, controls.handleWindow] {
                 panel?.appearance = NSAppearance(named: .darkAqua)
             }
             try writePNG(try scene(window: window, controls: controls, caption: "Dark appearance · actual PicShot session"),
@@ -377,7 +395,7 @@ enum LiveScrollUsabilityDemoFixture {
         var actions = LiveScrollCaptureActions()
         actions.finishEdit = { finishClicks += 1 }
         let controls = LiveScrollCaptureController(actions: actions)
-        for panel in [controls.toolbarWindow, controls.previewWindow, controls.outlineWindow] {
+        for panel in [controls.toolbarWindow, controls.previewWindow, controls.outlineWindow, controls.handleWindow] {
             panel?.appearance = NSAppearance(named: .aqua)
         }
         var snapshot = LiveScrollCaptureSnapshot()
@@ -513,7 +531,7 @@ enum LiveScrollUsabilityDemoFixture {
                                        caption: "Finished · numbered rows preserved once, sticky header once")
             story.append(finalScene)
             try writePNG(finalScene, directory.appendingPathComponent("live-scroll-native-finished-window.png"))
-            for panel in [controls.toolbarWindow, controls.previewWindow, controls.outlineWindow] {
+            for panel in [controls.toolbarWindow, controls.previewWindow, controls.outlineWindow, controls.handleWindow] {
                 panel?.appearance = NSAppearance(named: .darkAqua)
             }
             try writePNG(try scene(window: window, controls: controls, caption: "Dark controls · growing preview and viewport marker"),
@@ -584,7 +602,7 @@ enum LiveScrollUsabilityDemoFixture {
                                          directory: URL) async throws -> [String: Any] {
         try scroll(viewport.scrollView, pixels: -Int(viewport.offset.rounded()))
         viewport.document.illustrated = false
-        for panel in [controls.toolbarWindow, controls.previewWindow, controls.outlineWindow] {
+        for panel in [controls.toolbarWindow, controls.previewWindow, controls.outlineWindow, controls.handleWindow] {
             panel?.appearance = NSAppearance(named: .aqua)
         }
         let assembler = LiveScrollAssembler(axis: .vertical, generation: 2)
@@ -709,6 +727,7 @@ enum LiveScrollUsabilityDemoFixture {
         snapshot.acceptedFrames = update.state.acceptedObservations
         snapshot.status = update.state.message
         snapshot.statusKind = update.state.matched ? .capturing : .warning
+        snapshot.previewPositionVerified = update.state.matched && !update.state.previewUnavailable
         snapshot.canFinish = update.state.acceptedObservations > 0; snapshot.canCopy = snapshot.canFinish
         controls.update(snapshot: snapshot)
         if let image = update.preview { controls.updatePreview(image: image, viewportFraction: update.viewport) }
@@ -864,12 +883,14 @@ enum LiveScrollUsabilityDemoFixture {
         let bitmap = try unwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h,
             bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
             colorSpaceName: .deviceRGB, bytesPerRow: w * 4, bitsPerPixel: 32), "Native snapshot allocation failed")
+        bitmap.bitmapData?.initialize(repeating: 0, count: bitmap.bytesPerRow * h)
         bitmap.size = view.bounds.size; view.cacheDisplay(in: view.bounds, to: bitmap)
         return try unwrap(bitmap.cgImage, "Native snapshot was empty")
     }
 
     private static func scene(window: NSWindow, controls: LiveScrollCaptureController, caption: String) throws -> CGImage {
-        let windows = [window, controls.previewWindow, controls.toolbarWindow].compactMap { $0 }
+        let windows = [window, controls.outlineWindow, controls.previewWindow, controls.toolbarWindow,
+                       controls.handleWindow].compactMap { $0 }.filter(\.isVisible)
         var extent = window.frame
         for item in windows { extent = extent.union(item.frame) }
         extent = extent.insetBy(dx: -18, dy: -18)
@@ -969,7 +990,7 @@ extension LiveScrollUsabilityDemoFixture {
             "realScreenCaptureClaimed": false, "permissionRequested": false,
             "globalInputPosted": false, "privateUserContent": false,
             "headerExcluded": true, "newMenuHarness": false,
-            "scope": "Actual Move menu, axis-constrained native drag and Return; provider crops the actual changed source region; continued capture and product Finish"]
+            "scope": "Persistent direct handle, native axis-constrained drag/release and Escape rollback with visible HUD/preview; actual changed source crop, continued capture and product Finish"]
         let started = ProcessInfo.processInfo.systemUptime
         var session: LiveScrollSessionController?
         var ownedWindow: NSWindow?
@@ -1035,6 +1056,9 @@ extension LiveScrollUsabilityDemoFixture {
                 controller.stateForVerification.acceptedObservations > 0
             }
             let controls = try unwrap(controller.controlsForVerification, "Movement controls absent")
+            for panel in [controls.toolbarWindow, controls.previewWindow, controls.outlineWindow, controls.handleWindow] {
+                panel?.appearance = NSAppearance(named: .aqua)
+            }
             var story = [try scene(window: window, controls: controls, caption: "Capture an inner band of the actual native document")]
             try writePNG(story[0], directory.appendingPathComponent("live-scroll-movement-native-first.png"))
             try await movementWheelRun(scrollView, session: controller, count: 90, phase: "before move", trace: &trace)
@@ -1044,55 +1068,143 @@ extension LiveScrollUsabilityDemoFixture {
             let before = controller.stateForVerification
             let cropBefore = source.region.offsetBy(dx: -windowOnDisplay.minX, dy: -windowOnDisplay.minY)
             let beforePixels = try normalizedPixels(try unwrap(nativeImage(scrollView).cropping(to: cropBefore), "Initial crop absent"))
-            story.append(try scene(window: window, controls: controls, caption: "Before Move · live capture remains active"))
-            let more = try unwrap(findButton("scroll.live.more", in: controls.toolbarWindow?.contentView) as? NSPopUpButton,
-                                  "Actual More menu button absent")
-            report["menu"] = try await PinManagementSmokeFixture.activateMenuItemForVerification(more, id: "scroll.live.moveRegion")
-            try await waitFor("Actual Move action did not open the native region view", timeout: 5) {
-                controller.activeMoveViewForVerification != nil
+            story.append(try scene(window: window, controls: controls, caption: "Before drag · live capture and persistent handle"))
+            let handleWindow = try unwrap(controls.handleWindow, "Persistent region drag handle window absent")
+            let handle = try unwrap(handleWindow.contentView as? LiveScrollRegionDragHandle,
+                                    "Persistent region drag handle view absent")
+            let thumbnail = try unwrap(controls.previewWindow?.contentView as? LiveScrollThumbnailView,
+                                       "Movement thumbnail absent")
+            let original = source.region
+            let originalFrame = CGRect(x: screen.frame.minX + original.minX,
+                y: screen.frame.maxY - original.maxY, width: original.width, height: original.height)
+            try require(controls.outlineWindow?.frame == originalFrame.insetBy(dx: -3, dy: -3),
+                        "Persistent outline started with a different source region")
+            try require(handle.isEnabled && handleWindow.isVisible && !handleWindow.ignoresMouseEvents,
+                        "Persistent drag handle is not an available mouse target")
+            let retainedThumbnailPixels = try normalizedPixels(try unwrap(thumbnail.image, "No thumbnail before movement"))
+            let downPoint = CGPoint(x: handleWindow.frame.midX, y: handleWindow.frame.midY)
+            let localPoint = handle.convert(handleWindow.convertPoint(fromScreen: downPoint), from: nil)
+            try require(handle.hitTest(handle.convert(localPoint, to: handle.superview)) === handle,
+                        "Persistent move target was not hit-testable")
+            try movementMouse(.leftMouseDown, screenPoint: downPoint, window: handleWindow)
+            try require(handle.isDragging && handleWindow.isKeyWindow && handleWindow.firstResponder === handle,
+                        "Persistent handle did not receive native drag and Escape focus")
+            // AppKit screen Y increases upward. Moving down 32 points proposes a
+            // +32 display-relative crop; release advances to +48 independently.
+            let draggedPoint = CGPoint(x: downPoint.x + 24, y: downPoint.y - 32)
+            let releasedPoint = CGPoint(x: downPoint.x + 24, y: downPoint.y - 48)
+            try movementMouse(.leftMouseDragged, screenPoint: draggedPoint, window: handleWindow)
+            let proposedFrame = try unwrap(controls.outlineWindow?.frame, "Dragged outline absent").insetBy(dx: 3, dy: 3)
+            let hudVisible = controls.toolbarWindow?.isVisible == true
+            let previewVisible = controls.previewWindow?.isVisible == true
+            let retainedDuringDrag = try normalizedPixels(try unwrap(thumbnail.image, "Drag removed the accepted preview"))
+                == retainedThumbnailPixels
+            let dragLabel = thumbnail.accessibilityLabel() ?? ""
+            let dragAccessibilityUnverified = dragLabel.contains("尚未验证") && !dragLabel.contains("绿色")
+            report["duringDrag"] = ["toolbarVisible": hudVisible, "previewVisible": previewVisible,
+                "handleVisible": handleWindow.isVisible, "lastGoodPreviewPixelsPreserved": retainedDuringDrag,
+                "previewPositionUnverified": !thumbnail.isPositionVerified,
+                "previewMarkerAmber": thumbnail.viewportMarkerColor == .systemOrange,
+                "previewAccessibilityUnverified": dragAccessibilityUnverified,
+                "sourceRegionUnchanged": source.region == original,
+                "fullscreenMoveViewAbsent": controller.activeMoveViewForVerification == nil,
+                "proposedAppKitFrame": movementRect(proposedFrame)]
+            try require(hudVisible && previewVisible && handleWindow.isVisible && retainedDuringDrag,
+                        "Direct dragging hid the HUD/preview or discarded accepted preview pixels")
+            try require(!thumbnail.isPositionVerified && thumbnail.viewportMarkerColor == .systemOrange
+                && dragAccessibilityUnverified && source.region == original
+                && controller.activeMoveViewForVerification == nil,
+                        "A direct drag applied its uncommitted source or claimed a verified preview position")
+            try require(proposedFrame == originalFrame.offsetBy(dx: 0, dy: -32),
+                        "Direct drag failed to move the visible frame along its active axis")
+            let draggingScene = try scene(window: window, controls: controls,
+                caption: "Dragging the handle · HUD and last-good preview stay visible")
+            story.append(draggingScene)
+            try writePNG(draggingScene, directory.appendingPathComponent("live-scroll-movement-native-drag.png"))
+            for panel in [controls.toolbarWindow, controls.previewWindow, controls.outlineWindow, controls.handleWindow] {
+                panel?.appearance = NSAppearance(named: .darkAqua)
             }
-            let moveView = try unwrap(controller.activeMoveViewForVerification, "Native Move view disappeared")
-            let moveWindow = try unwrap(moveView.window, "Native Move window disappeared")
-            try require(moveWindow.isKeyWindow && moveWindow.firstResponder === moveView,
-                        "Native Move view is not the active keyboard destination")
-            let original = moveView.region
-            try require(original == source.region, "Native Move view started with a different source region")
-            let downPoint = CGPoint(x: original.midX, y: original.midY)
-            let draggedPoint = CGPoint(x: downPoint.x + 24, y: downPoint.y + 48)
-            let hitPoint = moveView.convert(downPoint, to: moveView.superview)
-            try require(moveView.hitTest(hitPoint) === moveView, "Native move target was not hit-testable")
-            try movementMouse(.leftMouseDown, point: downPoint, view: moveView)
-            try movementMouse(.leftMouseDragged, point: draggedPoint, view: moveView)
-            try movementMouse(.leftMouseUp, point: draggedPoint, view: moveView)
-            let dragged = moveView.region
-            report["drag"] = ["requestedDelta": [24, 48], "original": movementRect(original),
-                "afterDrag": movementRect(dragged), "crossAxisUnchanged": dragged.minX == original.minX,
-                "sizeUnchanged": dragged.size == original.size, "alongAxisDelta": dragged.minY - original.minY,
-                "route": "owned native window mouseDown/mouseDragged/mouseUp dispatch with hit-test"]
-            try require(dragged.minX == original.minX && dragged.minY == original.minY + 48 && dragged.size == original.size,
-                        "Active capture Move was not constrained to its scroll axis")
-            let overlay = try movementOverlay(window: window, moveView: moveView, screen: screen)
-            story.append(overlay)
-            try writePNG(overlay, directory.appendingPathComponent("live-scroll-movement-native-drag.png"))
-            let enter = try unwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
-                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: moveWindow.windowNumber, context: nil,
-                characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36), "Return event unavailable")
-            moveWindow.sendEvent(enter)
-            try await waitFor("Return did not apply and resume the actual region", timeout: 5) {
-                controller.activeMoveViewForVerification == nil && source.region == dragged
-                    && !controller.snapshotForVerification.busy && !controller.snapshotForVerification.paused
+            let darkDraggingScene = try scene(window: window, controls: controls,
+                caption: "Dark appearance while dragging · persistent controls and retained preview")
+            story.append(darkDraggingScene)
+            try writePNG(darkDraggingScene, directory.appendingPathComponent("live-scroll-movement-native-dark-drag.png"))
+            for panel in [controls.toolbarWindow, controls.previewWindow, controls.outlineWindow, controls.handleWindow] {
+                panel?.appearance = NSAppearance(named: .aqua)
             }
+            report["dragAppearanceEvidence"] = ["light": "live-scroll-movement-native-drag.png",
+                "dark": "live-scroll-movement-native-dark-drag.png", "restoredAppearance": "aqua"]
+            try movementMouse(.leftMouseUp, screenPoint: releasedPoint, window: handleWindow)
+            let dragged = original.offsetBy(dx: 0, dy: 48)
+            try await waitFor("Mouse release did not apply and resume the actual region", timeout: 5) {
+                source.region == dragged && !controller.snapshotForVerification.busy
+                    && !controller.snapshotForVerification.paused && !handle.isDragging
+            }
+            report["drag"] = ["requestedDelta": [24, 48], "requestedAppKitDelta": [24, -48],
+                "lastDragAppKitDelta": [24, -32], "original": movementRect(original),
+                "afterDrag": movementRect(source.region), "crossAxisUnchanged": source.region.minX == original.minX,
+                "sizeUnchanged": source.region.size == original.size, "alongAxisDelta": source.region.minY - original.minY,
+                "finalReleasePositionApplied": source.region == dragged,
+                "route": "owned persistent handle NSWindow.sendEvent mouseDown/mouseDragged/mouseUp with hit-test; global screen points reconverted after every panel move"]
+            try require(source.region.minX == original.minX && source.region.minY == original.minY + 48
+                && source.region.size == original.size,
+                "Active direct Move was not constrained to its scroll axis or ignored final mouse-up position")
             try await waitFor("Changed source crop did not match its real document displacement", timeout: 5) {
                 controller.stateForVerification.viewportOffset == before.viewportOffset + 48
+                    && thumbnail.isPositionVerified
             }
             let cropAfter = source.region.offsetBy(dx: -windowOnDisplay.minX, dy: -windowOnDisplay.minY)
             let afterPixels = try normalizedPixels(try unwrap(nativeImage(scrollView).cropping(to: cropAfter), "Moved crop absent"))
-            report["moveAppliedThroughReturn"] = true
+            report["moveAppliedThroughReturn"] = false
+            report["moveAppliedThroughMouseRelease"] = true
             report["actualSourcePixelsChanged"] = beforePixels != afterPixels
             report["matchedMoveDisplacement"] = controller.stateForVerification.viewportOffset - before.viewportOffset
             report["ownedTargetIdentityUnchanged"] = source.target == target
-            try require(beforePixels != afterPixels, "Moved-region provider returned unchanged pixels")
-            story.append(try scene(window: window, controls: controls, caption: "After Return · the actual cropped region moved 48 px"))
+            try require(beforePixels != afterPixels && source.target == target,
+                        "Moved-region provider returned unchanged pixels or changed its owned target")
+            story.append(try scene(window: window, controls: controls,
+                caption: "Released · actual source moved 48 px and the seam is verified"))
+
+            // Cancel a second real drag after successful capture has resumed.
+            // The source and accepted output must roll back together, and the
+            // pending native mouse-up must not apply the cancelled proposal.
+            let rollbackState = controller.stateForVerification
+            let rollbackThumbnail = try normalizedPixels(try unwrap(thumbnail.image, "No preview before rollback"))
+            let rollbackDown = CGPoint(x: handleWindow.frame.midX, y: handleWindow.frame.midY)
+            let rollbackPoint = CGPoint(x: rollbackDown.x + 18, y: rollbackDown.y - 24)
+            try movementMouse(.leftMouseDown, screenPoint: rollbackDown, window: handleWindow)
+            try movementMouse(.leftMouseDragged, screenPoint: rollbackPoint, window: handleWindow)
+            try require(handle.isDragging && handleWindow.isKeyWindow && handleWindow.firstResponder === handle,
+                        "Second direct drag did not retain native Escape focus")
+            let rollbackProposed = try unwrap(controls.outlineWindow?.frame, "Rollback proposal outline absent").insetBy(dx: 3, dy: 3)
+            try require(rollbackProposed == originalFrame.offsetBy(dx: 0, dy: -72) && source.region == dragged,
+                        "Second drag failed to propose a visible move without applying its source")
+            let escape = try unwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: handleWindow.windowNumber, context: nil,
+                characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53),
+                "Escape event unavailable")
+            handleWindow.sendEvent(escape)
+            try movementMouse(.leftMouseUp, screenPoint: rollbackPoint, window: handleWindow)
+            try await waitFor("Escape did not restore the accepted region and resume capture", timeout: 5) {
+                !controller.snapshotForVerification.busy && !controller.snapshotForVerification.paused
+                    && !handle.isDragging && thumbnail.isPositionVerified
+            }
+            let rollbackPixels = try normalizedPixels(try unwrap(thumbnail.image, "Escape removed the accepted preview"))
+            let rollbackPreserved = source.region == dragged && rollbackPixels == rollbackThumbnail
+                && controller.stateForVerification.height == rollbackState.height
+                && controller.stateForVerification.viewportOffset == rollbackState.viewportOffset
+                && controls.outlineWindow?.frame == originalFrame.offsetBy(dx: 0, dy: -48).insetBy(dx: -3, dy: -3)
+            report["escapeRollback"] = ["passed": rollbackPreserved, "sourceRegionPreserved": source.region == dragged,
+                "acceptedHeightPreserved": controller.stateForVerification.height == rollbackState.height,
+                "acceptedOffsetPreserved": controller.stateForVerification.viewportOffset == rollbackState.viewportOffset,
+                "lastGoodPreviewPixelsPreserved": rollbackPixels == rollbackThumbnail,
+                "captureResumed": !controller.snapshotForVerification.paused,
+                "trailingMouseUpIgnored": source.region == dragged,
+                "route": "owned key handle window sendEvent Escape to actual first responder, followed by native mouse-up"]
+            try require(rollbackPreserved, "Escape or trailing release changed accepted region, output or preview")
+            let rollbackScene = try scene(window: window, controls: controls,
+                caption: "Escape cancels another drag · accepted region and long image preserved")
+            story.append(rollbackScene)
+            try writePNG(rollbackScene, directory.appendingPathComponent("live-scroll-movement-native-rollback.png"))
             try await movementWheelRun(scrollView, session: controller, count: 60, phase: "after move", trace: &trace)
             let expectedOffset = Int(scrollView.contentView.bounds.minY.rounded()) + 48
             try await waitFor("Capture did not continue after moving its region", timeout: 5) {
@@ -1114,7 +1226,7 @@ extension LiveScrollUsabilityDemoFixture {
             report["finishCallbacks"] = completions; report["providerCalls"] = providerCalls
             report["providerRegions"] = providerRegions; report["trace"] = trace
             report["nativeWheelEvents"] = 150
-            report["returnKeyRoute"] = "owned key window sendEvent to actual first responder"
+            report["escapeKeyRoute"] = "owned key handle window sendEvent to actual first responder"
             try writePNG(image, directory.appendingPathComponent("live-scroll-movement-finished.png"))
             try writePNG(expectedImage, directory.appendingPathComponent("live-scroll-movement-reference.png"))
             try writeGIF(try uniformMovementFrames(story), directory.appendingPathComponent("live-scroll-movement-interaction.gif"))
@@ -1160,33 +1272,13 @@ extension LiveScrollUsabilityDemoFixture {
         }
     }
 
-    private static func movementMouse(_ type: NSEvent.EventType, point: CGPoint, view: NSView) throws {
-        let window = try unwrap(view.window, "Move event window absent")
-        let event = try unwrap(NSEvent.mouseEvent(with: type, location: view.convert(point, to: nil),
+    private static func movementMouse(_ type: NSEvent.EventType, screenPoint: CGPoint, window: NSWindow) throws {
+        // The handle panel moves during a drag; convert the fixed global pointer
+        // again for each event, rather than adding deltas to its new local origin.
+        let event = try unwrap(NSEvent.mouseEvent(with: type, location: window.convertPoint(fromScreen: screenPoint),
             modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
             context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1), "Move mouse event unavailable")
         window.sendEvent(event)
-    }
-
-    private static func movementOverlay(window: NSWindow, moveView: NSView, screen: NSScreen) throws -> CGImage {
-        let ownedFrame = CGRect(x: window.frame.minX - screen.frame.minX,
-            y: screen.frame.maxY - window.frame.maxY, width: window.frame.width, height: window.frame.height)
-        let crop = ownedFrame.insetBy(dx: -20, dy: -20).intersection(moveView.bounds).integral
-        let w = Int(crop.width), h = Int(crop.height)
-        let bitmap = try unwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h,
-            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
-            bytesPerRow: w * 4, bitsPerPixel: 32), "Move overlay allocation failed")
-        bitmap.size = crop.size; moveView.cacheDisplay(in: crop, to: bitmap)
-        let overlay = try unwrap(bitmap.cgImage, "Move overlay pixels absent")
-        let context = try unwrap(CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
-            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue), "Move scene allocation failed")
-        context.setFillColor(NSColor(calibratedWhite: 0.9, alpha: 1).cgColor)
-        context.fill(CGRect(x: 0, y: 0, width: w, height: h))
-        let content = try nativeImage(try unwrap(window.contentView, "Owned movement document absent"))
-        context.draw(content, in: CGRect(x: ownedFrame.minX - crop.minX, y: crop.maxY - ownedFrame.maxY,
-                                        width: ownedFrame.width, height: ownedFrame.height))
-        context.draw(overlay, in: CGRect(x: 0, y: 0, width: w, height: h))
-        return try unwrap(context.makeImage(), "Move scene pixels absent")
     }
 
     private static func uniformMovementFrames(_ images: [CGImage]) throws -> [CGImage] {

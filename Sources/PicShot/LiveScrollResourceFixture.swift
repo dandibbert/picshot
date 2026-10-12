@@ -337,7 +337,7 @@ enum LiveScrollResourceFixture {
             context.owners.controls = session.controlsForVerification
             if let controls = session.controlsForVerification {
                 context.owners.thumbnail = controls.previewWindow?.contentView as? LiveScrollThumbnailView
-                context.owners.windows = [controls.toolbarWindow, controls.previewWindow, controls.outlineWindow].compactMap { $0 }.map(WeakWindow.init)
+                context.owners.windows = [controls.toolbarWindow, controls.previewWindow, controls.outlineWindow, controls.handleWindow].compactMap { $0 }.map(WeakWindow.init)
             }
             var previousHeight = 0, growths = 0, reverseSamples = 0, previousOffset = 0
             var firstPreview = false, firstMarker: CGRect?

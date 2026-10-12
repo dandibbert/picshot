@@ -30,7 +30,20 @@ final class LiveScrollSessionController {
     private var deliveryWarning: String?
     private var retired = false
     private var automatic = false
-    private var startedAt: TimeInterval?
+    private let monotonicNow: () -> TimeInterval
+    private var activeCaptureSeconds: TimeInterval = 0
+    private var activeIntervalStartedAt: TimeInterval?
+    private var captureLimitReached = false
+    private enum RegionDragEnd { case cancelled, moved(CGRect) }
+    private struct RegionDrag {
+        let id: UUID
+        let generation: UInt64
+        let wasPaused: Bool
+        let originalRegion: CGRect
+        var drained = false
+        var end: RegionDragEnd?
+    }
+    private var regionDrag: RegionDrag?
     private var samples = 0
     private var lastAutoEvent: TimeInterval = 0
     private var sameViewportCount = 0
@@ -40,8 +53,10 @@ final class LiveScrollSessionController {
 
     init(onComplete: @escaping (CGImage) throws -> Void, onImport: @escaping () -> Void,
          onCopy: ((CGImage) -> Void)? = nil,
-         resourceStorageParent: URL = FileManager.default.temporaryDirectory) {
+         resourceStorageParent: URL = FileManager.default.temporaryDirectory,
+         monotonicNow: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
         self.resourceStorageParent = resourceStorageParent
+        self.monotonicNow = monotonicNow
         self.onComplete = onComplete; self.onImport = onImport
         self.onCopy = onCopy ?? { copyImage($0) }
     }
@@ -96,7 +111,7 @@ final class LiveScrollSessionController {
         guard generation == token, !retired else { throw CancellationError() }
         region = source.region
         placeControls()
-        startedAt = ProcessInfo.processInfo.systemUptime
+        resumeCaptureClock()
         if let target = source.target {
             NSRunningApplication(processIdentifier: target.pid)?.activate(options: [])
         } else { previousApplication?.activate(options: []) }
@@ -130,6 +145,8 @@ final class LiveScrollSessionController {
     var controlsForVerification: LiveScrollCaptureController? { controls }
     var activeMoveViewForVerification: ManualScrollRegionMoveView? { mover?.viewForVerification }
     var sampledFramesForVerification: Int { samples }
+    var activeCaptureDurationForVerification: TimeInterval { activeCaptureDuration }
+    var captureLimitReachedForVerification: Bool { captureLimitReached }
     var isClosedForVerification: Bool { retired && source == nil && assembler == nil && controls == nil && sampling == nil }
 
     func closeForVerification() async {
@@ -153,6 +170,8 @@ final class LiveScrollSessionController {
         actions.autoScroll = { [weak self] in self?.toggleAutomatic() }
         actions.changeAxis = { [weak self] axis in self?.changeAxis(axis) }
         actions.moveRegion = { [weak self] in self?.moveRegion() }
+        actions.beginRegionDrag = { [weak self] id in self?.beginRegionDrag(id: id) ?? false }
+        actions.endRegionDrag = { [weak self] id, frame in self?.endRegionDrag(id: id, frame: frame) }
         actions.importImages = { [weak self] in self?.openImporter() }
         actions.help = { [weak self] in guard let self else { return }; self.setStatus("滚动页面自动接长；接不上时稍往回滚。暂停保留内容，完成进入编辑。", kind: self.snapshot.statusKind) }
         actions.cancel = { [weak self] in self?.cancel() }
@@ -169,18 +188,43 @@ final class LiveScrollSessionController {
         let frame = CGRect(x: screen.frame.minX + region.minX,
                            y: screen.frame.maxY - region.maxY,
                            width: region.width, height: region.height)
-        controls?.show(snapshot: snapshot, targetFrame: frame, visibleFrame: screen.visibleFrame)
+        controls?.show(snapshot: snapshot, targetFrame: frame, visibleFrame: screen.visibleFrame,
+                       movementBounds: screen.frame)
+    }
+
+    private var activeCaptureDuration: TimeInterval {
+        activeCaptureSeconds + (activeIntervalStartedAt.map { max(0, monotonicNow() - $0) } ?? 0)
+    }
+
+    private func pauseCaptureClock() {
+        guard let began = activeIntervalStartedAt else { return }
+        activeCaptureSeconds += max(0, monotonicNow() - began)
+        activeIntervalStartedAt = nil
+    }
+
+    private func resumeCaptureClock() {
+        guard activeIntervalStartedAt == nil, !captureLimitReached, !retired else { return }
+        activeIntervalStartedAt = monotonicNow()
+    }
+
+    private func updateCaptureLimit() -> Bool {
+        if samples >= maximumSamples || activeCaptureDuration >= maximumDuration {
+            pauseCaptureClock(); captureLimitReached = true
+            paused = true; automatic = false
+        }
+        return captureLimitReached
     }
 
     private func startSampling() {
-        guard sampling == nil, !retired, !paused, !finishing, let source, let assembler else { return }
+        guard sampling == nil, !retired, !paused, !finishing, !captureLimitReached,
+              regionDrag == nil, let source, let assembler else { return }
         let token = generation
         sampling = Task { [weak self] in
             guard let self else { return }
             defer { if self.generation == token { self.sampling = nil } }
             while !Task.isCancelled, !self.retired, !self.paused, self.generation == token {
-                if self.samples >= self.maximumSamples || ProcessInfo.processInfo.systemUptime - (self.startedAt ?? 0) >= self.maximumDuration {
-                    self.paused = true; self.automatic = false
+                if self.updateCaptureLimit() {
+                    self.snapshot.previewPositionVerified = false
                     try? await source.pauseAndDrain()
                     self.setStatus("已达到本次捕获上限，可完成保存已有长图", kind: .paused)
                     break
@@ -201,6 +245,8 @@ final class LiveScrollSessionController {
                     self.snapshot.canFinish = update.state.width > 0
                     self.snapshot.canCopy = self.snapshot.canFinish
                     self.snapshot.canChangeAxis = update.state.acceptedObservations <= 1
+                    self.snapshot.previewPositionVerified = update.state.matched && !update.state.previewUnavailable
+                        && !self.paused && self.regionDrag == nil
                     if let image = update.preview { self.controls?.updatePreview(image: image, viewportFraction: update.viewport) }
                     self.setStatus(update.state.message, kind: update.state.matched && !update.state.previewUnavailable ? .capturing : .warning)
                     if self.automatic {
@@ -211,6 +257,7 @@ final class LiveScrollSessionController {
                 catch {
                     guard self.generation == token, !self.retired else { break }
                     self.paused = true; self.automatic = false
+                    self.pauseCaptureClock(); self.snapshot.previewPositionVerified = false
                     try? await source.pauseAndDrain()
                     self.setStatus("\(error.localizedDescription) 已保留当前长图，可继续或完成", kind: .error)
                     break
@@ -220,49 +267,84 @@ final class LiveScrollSessionController {
     }
 
     private func setStatus(_ text: String, kind: LiveScrollCaptureSnapshot.StatusKind) {
+        guard !retired else { return }
         snapshot.status = deliveryWarning ?? text; snapshot.statusKind = deliveryWarning == nil ? kind : .warning
-        snapshot.paused = paused; snapshot.busy = finishing || transition != nil
-        snapshot.canPause = !deliveryCompleted && !finishing && transition == nil && source != nil
-        snapshot.canMoveRegion = !deliveryCompleted && !finishing && transition == nil && source != nil
+        snapshot.paused = paused; snapshot.busy = finishing || transition != nil || regionDrag != nil
+        snapshot.canPause = !deliveryCompleted && !finishing && !captureLimitReached && transition == nil && regionDrag == nil && source != nil
+        snapshot.canMoveRegion = !deliveryCompleted && !finishing && !captureLimitReached && transition == nil && regionDrag == nil && source != nil
         snapshot.canImport = !deliveryCompleted && lastState.width == 0 && !finishing
         snapshot.autoScrolling = automatic; snapshot.axis = axis
-        snapshot.canAutoScroll = !deliveryCompleted && !finishing && !paused && transition == nil && source != nil && AXIsProcessTrusted()
+        snapshot.canAutoScroll = !deliveryCompleted && !finishing && !captureLimitReached && !paused && transition == nil && regionDrag == nil && source != nil && AXIsProcessTrusted()
+        if captureLimitReached { snapshot.canChangeAxis = false }
         if deliveryCompleted { snapshot.canFinish = false; snapshot.canCopy = false; snapshot.canChangeAxis = false }
         controls?.update(snapshot: snapshot)
     }
 
     private func togglePause() {
-        guard transition == nil, !finishing, !retired, !deliveryCompleted, let source else { return }
+        guard transition == nil, regionDrag == nil, !finishing, !retired, !deliveryCompleted, let source else { return }
+        if paused && updateCaptureLimit() {
+            setStatus("已达到本次捕获上限，可完成保存已有长图", kind: .paused); return
+        }
+        let token = generation
         automatic = false
         snapshot.busy = true; snapshot.canPause = false; snapshot.canMoveRegion = false
+        snapshot.previewPositionVerified = false
         snapshot.status = paused ? "正在继续…" : "正在暂停…"; controls?.update(snapshot: snapshot)
         if !paused {
             paused = true
+            pauseCaptureClock(); snapshot.previewPositionVerified = false
             transition = Task { [weak self] in
-                guard let self else { return }; defer { self.transition = nil; self.setStatus(self.snapshot.status, kind: self.snapshot.statusKind) }
+                guard let self else { return }
+                defer {
+                    if !self.retired, self.generation == token {
+                        self.transition = nil; self.setStatus(self.snapshot.status, kind: self.snapshot.statusKind)
+                    }
+                }
                 do {
                     try await source.pauseAndDrain()
-                    await self.sampling?.value; self.sampling = nil
+                    await self.sampling?.value
+                    try Task.checkCancellation()
+                    guard !self.retired, self.generation == token else { return }
+                    self.sampling = nil
                     self.setStatus("已暂停 · 内容保留", kind: .paused)
-                } catch { self.setStatus(error.localizedDescription, kind: .error) }
+                } catch is CancellationError { }
+                catch {
+                    guard !self.retired, self.generation == token else { return }
+                    self.setStatus(error.localizedDescription, kind: .error)
+                }
             }
         } else {
             transition = Task { [weak self] in
-                guard let self else { return }; defer { self.transition = nil; self.setStatus(self.snapshot.status, kind: self.snapshot.statusKind) }
+                guard let self else { return }
+                defer {
+                    if !self.retired, self.generation == token {
+                        self.transition = nil; self.setStatus(self.snapshot.status, kind: self.snapshot.statusKind)
+                    }
+                }
                 do {
-                    await self.sampling?.value; self.sampling = nil
+                    await self.sampling?.value
+                    try Task.checkCancellation()
+                    guard !self.retired, self.generation == token else { return }
+                    self.sampling = nil
                     try await source.resume()
-                    if self.startedAt == nil { self.startedAt = ProcessInfo.processInfo.systemUptime }
-                    self.paused = false; self.setStatus("继续滚动，自动接回已捕获内容", kind: .capturing)
+                    try Task.checkCancellation()
+                    guard !self.retired, self.generation == token else { return }
+                    self.paused = false; self.resumeCaptureClock()
+                    self.setStatus("继续滚动，自动接回已捕获内容", kind: .capturing)
                     self.startSampling()
-                } catch { self.setStatus(error.localizedDescription, kind: .error) }
+                } catch is CancellationError { }
+                catch {
+                    guard !self.retired, self.generation == token else { return }
+                    self.setStatus(error.localizedDescription, kind: .error)
+                }
             }
         }
     }
 
     private func finish(copyOnly: Bool) {
-        guard !finishing, !retired, !deliveryCompleted, transition == nil, lastState.width > 0, let source, let assembler else { return }
+        guard !finishing, !retired, !deliveryCompleted, transition == nil, regionDrag == nil, lastState.width > 0, let source, let assembler else { return }
         finishing = true; paused = true; automatic = false
+        pauseCaptureClock(); snapshot.previewPositionVerified = false
         setStatus("正在完成长截图…", kind: .finishing)
         transition = Task { [weak self] in
             guard let self else { return }
@@ -294,7 +376,7 @@ final class LiveScrollSessionController {
     }
 
     private func toggleAutomatic() {
-        guard !deliveryCompleted, !finishing, !paused, source != nil else { return }
+        guard !deliveryCompleted, !finishing, !paused, !captureLimitReached, regionDrag == nil, source != nil else { return }
         guard AXIsProcessTrusted() else { setStatus("自动滚动需要辅助功能权限；仍可直接手动滚动", kind: .warning); return }
         automatic.toggle(); sameViewportCount = 0
         if automatic, let source { do { try performAutomaticStep(source: source) } catch { automatic = false; setStatus(error.localizedDescription, kind: .warning); return } }
@@ -313,10 +395,122 @@ final class LiveScrollSessionController {
         event.post(tap: .cghidEventTap); lastAutoEvent = now
     }
 
+    /// Dragging moves only the visible proposal. Acquisition is drained once;
+    /// an early mouse-up waits for that boundary before applying a new region.
+    private func beginRegionDrag(id: UUID) -> Bool {
+        guard transition == nil, regionDrag == nil, !finishing, !retired,
+              !deliveryCompleted, !captureLimitReached, let source, screen != nil else { return false }
+        let drag = RegionDrag(id: id, generation: generation, wasPaused: paused,
+                              originalRegion: source.region)
+        regionDrag = drag
+        paused = true; automatic = false; pauseCaptureClock()
+        snapshot.previewPositionVerified = false
+        setStatus("拖动选区 · 松开后继续验证接缝，Esc 取消", kind: .paused)
+        transition = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await source.pauseAndDrain()
+                await self.sampling?.value
+                try Task.checkCancellation()
+                guard !self.retired, self.generation == drag.generation,
+                      self.regionDrag?.id == id else { return }
+                self.sampling = nil; self.transition = nil
+                self.regionDrag?.drained = true
+                if self.regionDrag?.end != nil { self.completeRegionDrag(id: id) }
+                else { self.setStatus("拖动选区 · 松开后继续验证接缝，Esc 取消", kind: .paused) }
+            } catch {
+                guard !self.retired, self.generation == drag.generation,
+                      self.regionDrag?.id == id else { return }
+                self.regionDrag = nil; self.transition = nil
+                self.controls?.cancelRegionDrag()
+                self.region = source.region; self.placeControls()
+                self.setStatus("移动未应用，长图仍保留：\(error.localizedDescription)", kind: .error)
+            }
+        }
+        return true
+    }
+
+    private func endRegionDrag(id: UUID, frame: CGRect?) {
+        guard var drag = regionDrag, drag.id == id, drag.generation == generation,
+              drag.end == nil, !retired else { return }
+        drag.end = frame.map { .moved($0) } ?? .cancelled
+        regionDrag = drag
+        if drag.drained { completeRegionDrag(id: id) }
+    }
+
+    private func completeRegionDrag(id: UUID) {
+        guard transition == nil, let drag = regionDrag, drag.id == id, drag.drained,
+              let end = drag.end, let source, let screen, !retired else { return }
+        transition = Task { [weak self] in
+            guard let self else { return }
+            var applied = false
+            var cancelled = false
+            defer {
+                if !self.retired, self.generation == drag.generation, self.regionDrag?.id == id {
+                    self.regionDrag = nil; self.transition = nil
+                    self.placeControls()
+                    self.setStatus(self.snapshot.status, kind: self.snapshot.statusKind)
+                    if !self.paused { self.startSampling() }
+                }
+            }
+            do {
+                try Task.checkCancellation()
+                guard self.generation == drag.generation else { throw CancellationError() }
+                switch end {
+                case .cancelled: cancelled = true
+                case .moved(let frame):
+                    guard frame.minX.isFinite, frame.minY.isFinite,
+                          frame.width.isFinite, frame.height.isFinite,
+                          frame.size == drag.originalRegion.size else { throw CaptureError.invalidRegion }
+                    var proposed = CGRect(x: frame.minX - screen.frame.minX,
+                        y: screen.frame.maxY - frame.maxY, width: frame.width, height: frame.height)
+                    if !drag.wasPaused {
+                        if self.axis == .vertical { proposed.origin.x = drag.originalRegion.minX }
+                        else { proposed.origin.y = drag.originalRegion.minY }
+                    }
+                    try source.moveRegion(to: proposed)
+                    applied = true; self.region = source.region
+                }
+                if !drag.wasPaused, !self.updateCaptureLimit() {
+                    try await source.resume()
+                    try Task.checkCancellation()
+                    guard !self.retired, self.generation == drag.generation else { return }
+                    self.paused = false; self.resumeCaptureClock()
+                }
+                self.sameViewportCount = 0
+                if let target = source.target { NSRunningApplication(processIdentifier: target.pid)?.activate(options: []) }
+                let status = self.captureLimitReached ? "已达到本次捕获上限，可完成保存已有长图" :
+                    (cancelled ? "已取消移动，原选区和长图保留" : "选区已移动，滚动后继续验证接缝")
+                self.setStatus(status, kind: self.paused ? .paused : .capturing)
+            } catch {
+                guard !self.retired, self.generation == drag.generation else { return }
+                guard !(error is CancellationError), !Task.isCancelled else { return }
+                self.region = source.region
+                // A rejected proposal leaves the original source paused. Try
+                // resuming that source once; a failed resume remains visible.
+                if !applied, !drag.wasPaused, !self.updateCaptureLimit() {
+                    do {
+                        try await source.resume()
+                        try Task.checkCancellation()
+                        guard !self.retired, self.generation == drag.generation else { return }
+                        self.paused = false; self.resumeCaptureClock()
+                    } catch {
+                        guard !self.retired, self.generation == drag.generation else { return }
+                        self.paused = true
+                    }
+                }
+                self.setStatus(applied ? "选区已移动，继续采集失败；长图仍保留" :
+                    "移动未应用，原选区和长图保留：\(error.localizedDescription)", kind: .error)
+            }
+        }
+    }
+
     private func moveRegion() {
-        guard transition == nil, !finishing, !retired, !deliveryCompleted, let source, let screen else { return }
+        guard transition == nil, regionDrag == nil, !finishing, !retired, !deliveryCompleted,
+              !captureLimitReached, let source, let screen else { return }
         let wasPaused = paused
         paused = true; automatic = false
+        pauseCaptureClock(); snapshot.previewPositionVerified = false
         snapshot.busy = true; snapshot.status = "正在准备移动选区…"; controls?.update(snapshot: snapshot)
         transition = Task { [weak self] in
             guard let self else { return }; defer { self.transition = nil; self.setStatus(self.snapshot.status, kind: self.snapshot.statusKind) }
@@ -328,13 +522,19 @@ final class LiveScrollSessionController {
                 let moved = try await mover.choose(screen: screen, region: source.region, movementAxis: wasPaused ? nil : self.axis)
                 try source.moveRegion(to: moved); applied = true
                 self.region = source.region; self.mover = nil
-                if !wasPaused { try await source.resume(); self.paused = false }
+                if !wasPaused, !self.updateCaptureLimit() {
+                    try await source.resume(); self.paused = false; self.resumeCaptureClock()
+                }
                 if let target = source.target { NSRunningApplication(processIdentifier: target.pid)?.activate(options: []) }
-                self.placeControls(); self.setStatus("选区已移动，滚动后继续验证接缝", kind: self.paused ? .paused : .capturing)
+                self.placeControls(); self.setStatus(self.captureLimitReached ? "已达到本次捕获上限，可完成保存已有长图" :
+                    "选区已移动，滚动后继续验证接缝", kind: self.paused ? .paused : .capturing)
                 if !self.paused { self.startSampling() }
             } catch {
                 self.mover = nil; self.region = source.region
-                if !wasPaused { do { try await source.resume(); self.paused = false } catch { self.paused = true } }
+                if !wasPaused, !self.updateCaptureLimit() {
+                    do { try await source.resume(); self.paused = false; self.resumeCaptureClock() }
+                    catch { self.paused = true }
+                }
                 if let target = source.target { NSRunningApplication(processIdentifier: target.pid)?.activate(options: []) }
                 self.placeControls()
                 self.setStatus(applied ? "选区已移动，继续采集失败；长图仍保留" : "移动未应用，已保留原选区和长图", kind: self.paused ? .paused : .capturing)
@@ -344,9 +544,11 @@ final class LiveScrollSessionController {
     }
 
     private func changeAxis(_ next: ScrollAxis) {
-        guard !deliveryCompleted, next != axis, lastState.acceptedObservations <= 1, transition == nil, !finishing,
+        guard !deliveryCompleted, !captureLimitReached, regionDrag == nil, next != axis,
+              lastState.acceptedObservations <= 1, transition == nil, !finishing,
               let source, let original = assembler else { return }
         paused = true; automatic = false
+        pauseCaptureClock(); snapshot.previewPositionVerified = false
         snapshot.busy = true; snapshot.status = "正在切换方向…"; controls?.update(snapshot: snapshot)
         transition = Task { [weak self] in
             guard let self else { return }
@@ -361,8 +563,9 @@ final class LiveScrollSessionController {
                 self.axis = next; self.assembler = fresh; replacement = nil
                 await original.close()
                 self.lastState = seed.state; self.snapshot.axis = next
+                self.snapshot.previewPositionVerified = seed.state.matched && !seed.state.previewUnavailable
                 if let image = seed.preview { self.controls?.updatePreview(image: image, viewportFraction: seed.viewport) }
-                self.paused = false; self.setStatus("方向已切换，继续滚动", kind: .capturing)
+                self.paused = false; self.resumeCaptureClock(); self.setStatus("方向已切换，继续滚动", kind: .capturing)
                 self.startSampling()
             } catch {
                 await replacement?.close()
@@ -382,6 +585,7 @@ final class LiveScrollSessionController {
     private func retire() async {
         guard !retired else { return }
         retired = true; generation &+= 1; paused = true; automatic = false
+        pauseCaptureClock(); regionDrag = nil
         controls?.teardown(); controls = nil
         sampling?.cancel()
         try? await source?.stop()

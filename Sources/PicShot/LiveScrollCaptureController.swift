@@ -24,6 +24,7 @@ struct LiveScrollCaptureSnapshot: Equatable {
     var reverseCrop = false
     var canMoveRegion = true
     var canImport = true
+    var previewPositionVerified = false
 
     var dimensions: String { "\(max(0, pixelWidth)) × \(max(0, pixelHeight)) px" }
 }
@@ -36,14 +37,18 @@ struct LiveScrollCaptureActions {
     var changeAxis: (ScrollAxis) -> Void = { _ in }
     var reverseCrop: (Bool) -> Void = { _ in }
     var moveRegion: () -> Void = {}
+    /// A gesture is accepted before the owner asynchronously pauses and drains.
+    var beginRegionDrag: (UUID) -> Bool = { _ in false }
+    /// Global AppKit capture frame on release; nil on cancellation, once per ID.
+    var endRegionDrag: (UUID, CGRect?) -> Void = { _, _ in }
     var importImages: () -> Void = {}
     var help: () -> Void = {}
     var cancel: () -> Void = {}
     var onClose: () -> Void = {}
 }
 
-/// Three small native surfaces over the live target, with no activation or input
-/// monitors. Neither hiding nor teardown discards or finishes the owner's session.
+/// Small native surfaces over the live target, with no activation or input
+/// monitors. Only the drag handle temporarily takes key focus, for Escape.
 @MainActor
 final class LiveScrollCaptureController: NSObject, NSWindowDelegate {
     private(set) var snapshot = LiveScrollCaptureSnapshot()
@@ -52,17 +57,32 @@ final class LiveScrollCaptureController: NSObject, NSWindowDelegate {
     private(set) var toolbarWindow: NSPanel?
     private(set) var outlineWindow: NSPanel?
     private(set) var previewWindow: NSPanel?
+    private(set) var handleWindow: NSPanel?
     private var surface: LiveScrollToolbarView?
     private var preview: LiveScrollThumbnailView?
     private var actions: LiveScrollCaptureActions?
     private var isShown = false
     private var cancellationRequested = false
     private var closeRequested = false
+    private var targetFrame: CGRect?
+    private var visibleFrame: CGRect?
+    private var movementBounds: CGRect?
+    private var regionDrag: RegionDrag?
+
+    private struct RegionDrag {
+        let id: UUID
+        let start: CGPoint
+        let original: CGRect
+        let visible: CGRect
+        let bounds: CGRect
+        let axis: ScrollAxis?
+        var proposed: CGRect
+    }
 
     /// Supply these to capture filters where application-wide exclusion is absent.
     /// sharingType.none is defense in depth, not SCK display-capture exclusion.
     var captureExcludedWindowIDs: [CGWindowID] {
-        [toolbarWindow, outlineWindow, previewWindow].compactMap { window in
+        [toolbarWindow, outlineWindow, previewWindow, handleWindow].compactMap { window in
             guard let number = window?.windowNumber, number > 0 else { return nil }
             return CGWindowID(number)
         }
@@ -74,13 +94,21 @@ final class LiveScrollCaptureController: NSObject, NSWindowDelegate {
         let toolbar = makePanel(identifier: "scroll.live.toolbar", clickThrough: false)
         let outline = makePanel(identifier: "scroll.live.outline", clickThrough: true)
         let thumbnail = makePanel(identifier: "scroll.live.preview", clickThrough: true)
+        let handle = makePanel(identifier: "scroll.live.moveHandle", clickThrough: false)
         let view = LiveScrollToolbarView(frame: CGRect(origin: .zero, size: LiveScrollCaptureGeometry.toolbarSize))
         let thumbnailView = LiveScrollThumbnailView(frame: CGRect(x: 0, y: 0, width: 112, height: 240))
+        let handleView = LiveScrollRegionDragHandle(frame: CGRect(origin: .zero, size: LiveScrollRegionDragHandle.preferredSize))
         toolbar.contentView = view; outline.contentView = LiveScrollOutlineView(frame: .zero)
         thumbnail.contentView = thumbnailView
+        handle.contentView = handleView
         toolbar.delegate = self
+        handle.delegate = self
         toolbarWindow = toolbar; outlineWindow = outline; previewWindow = thumbnail
+        handleWindow = handle
         surface = view; preview = thumbnailView
+        handleView.begin = { [weak self] point in self?.beginRegionDrag(at: point) ?? false }
+        handleView.move = { [weak self] point in self?.moveRegionDrag(to: point) }
+        handleView.end = { [weak self] point in self?.endRegionDrag(at: point) }
         for (button, selector) in [(view.finishButton, #selector(finishPressed)), (view.copyButton, #selector(copyPressed)),
                                   (view.pauseButton, #selector(pausePressed)), (view.autoButton, #selector(autoPressed)),
                                   (view.cancelButton, #selector(cancelPressed))] {
@@ -106,9 +134,12 @@ final class LiveScrollCaptureController: NSObject, NSWindowDelegate {
         return panel
     }
 
-    /// targetFrame and visibleFrame are global AppKit coordinates, not capture pixels.
-    func show(snapshot: LiveScrollCaptureSnapshot, targetFrame: CGRect, visibleFrame: CGRect) {
+    /// Frames are global AppKit coordinates. Movement may use the full display
+    /// while controls stay in visibleFrame, outside the menu bar and Dock.
+    func show(snapshot: LiveScrollCaptureSnapshot, targetFrame: CGRect, visibleFrame: CGRect,
+              movementBounds: CGRect? = nil) {
         guard !isRetired else { return }
+        self.movementBounds = movementBounds ?? visibleFrame
         update(snapshot: snapshot)
         updatePlacement(targetFrame: targetFrame, visibleFrame: visibleFrame)
         guard placement != nil else { return }
@@ -116,6 +147,7 @@ final class LiveScrollCaptureController: NSObject, NSWindowDelegate {
         outlineWindow?.orderFrontRegardless()
         if placement?.preview.isEmpty == false { previewWindow?.orderFrontRegardless() }
         toolbarWindow?.orderFrontRegardless()
+        handleWindow?.orderFrontRegardless()
     }
 
     func update(snapshot: LiveScrollCaptureSnapshot, actions: LiveScrollCaptureActions? = nil) {
@@ -126,11 +158,16 @@ final class LiveScrollCaptureController: NSObject, NSWindowDelegate {
         if surface?.moreButton.menu == nil { surface?.moreButton.menu = makeMoreMenu() }
         updateMoreMenu()
         (outlineWindow?.contentView as? LiveScrollOutlineView)?.statusKind = snapshot.statusKind
-        preview?.setAccessibilityLabel("滚动拼接预览，\(snapshot.dimensions)，绿色框表示当前页面位置")
+        preview?.display(positionVerified: snapshot.previewPositionVerified && regionDrag == nil,
+                         dimensions: snapshot.dimensions)
+        (handleWindow?.contentView as? LiveScrollRegionDragHandle)?.isEnabled =
+            regionDrag != nil || (snapshot.canMoveRegion && !snapshot.busy)
     }
 
     /// One independently owned bounded raster only. Neither the source image nor
     /// any full-resolution stitched output is retained by this presentation layer.
+    /// Accept pre-drain observations during a drag so cached pixels/viewport stay
+    /// paired with the owner's accepted state; display() keeps their marker amber.
     func updatePreview(image: CGImage?, viewportFraction: CGRect) {
         guard !isRetired else { return }
         preview?.update(image: image, viewportFraction: viewportFraction)
@@ -147,6 +184,7 @@ final class LiveScrollCaptureController: NSObject, NSWindowDelegate {
             hide(); placement = nil; return
         }
         placement = next
+        self.targetFrame = targetFrame; self.visibleFrame = visibleFrame
         toolbarWindow?.setFrame(next.toolbar, display: true)
         // Stroke is wholly outside the captured region. The panel is transparent
         // and click-through, including the empty center covering the target.
@@ -157,11 +195,13 @@ final class LiveScrollCaptureController: NSObject, NSWindowDelegate {
             if isShown { previewWindow?.orderFrontRegardless() }
         }
         surface?.needsLayout = true
+        handleWindow?.setFrame(handleFrame(target: targetFrame, visible: visibleFrame, placement: next), display: true)
     }
 
     func hide() {
+        endRegionDrag(at: nil)
         isShown = false
-        for panel in [toolbarWindow, outlineWindow, previewWindow] { panel?.orderOut(nil) }
+        for panel in [toolbarWindow, outlineWindow, previewWindow, handleWindow] { panel?.orderOut(nil) }
     }
 
     /// Explicit user cancellation only; the owner decides how to retain accepted
@@ -176,18 +216,103 @@ final class LiveScrollCaptureController: NSObject, NSWindowDelegate {
         closeRequested = true
         actions?.onClose()
     }
-    func windowWillClose(_ notification: Notification) { close() }
+    func windowWillClose(_ notification: Notification) {
+        if notification.object as? NSWindow === handleWindow { endRegionDrag(at: nil) }
+        else { close() }
+    }
+    func windowDidResignKey(_ notification: Notification) {
+        if notification.object as? NSWindow === handleWindow { endRegionDrag(at: nil) }
+    }
 
     func teardown() {
         guard !isRetired else { return }
+        endRegionDrag(at: nil)
         isRetired = true; hide(); actions = nil
         surface?.retire(); preview?.update(image: nil as CGImage?, viewportFraction: .zero)
-        for panel in [toolbarWindow, outlineWindow, previewWindow] {
+        (handleWindow?.contentView as? LiveScrollRegionDragHandle)?.retire()
+        for panel in [toolbarWindow, outlineWindow, previewWindow, handleWindow] {
             panel?.delegate = nil; panel?.contentView = nil; panel?.close()
         }
         surface = nil; preview = nil
         toolbarWindow = nil; outlineWindow = nil; previewWindow = nil
+        handleWindow = nil; targetFrame = nil; visibleFrame = nil; movementBounds = nil
         placement = nil
+    }
+
+    private func beginRegionDrag(at point: CGPoint) -> Bool {
+        guard !isRetired, regionDrag == nil, snapshot.canMoveRegion, !snapshot.busy,
+              point.x.isFinite, point.y.isFinite, let targetFrame, let visibleFrame,
+              let movementBounds, LiveScrollCaptureGeometry.isFinite(movementBounds) else { return false }
+        let id = UUID()
+        // Install the gesture before calling the owner: its busy snapshot may be
+        // published synchronously while capture pauses in the background.
+        regionDrag = RegionDrag(id: id, start: point, original: targetFrame, visible: visibleFrame,
+                                bounds: movementBounds, axis: snapshot.paused ? nil : snapshot.axis, proposed: targetFrame)
+        guard actions?.beginRegionDrag(id) == true else {
+            regionDrag = nil
+            update(snapshot: snapshot)
+            return false
+        }
+        guard !isRetired, regionDrag?.id == id else { return false }
+        preview?.display(positionVerified: false, dimensions: snapshot.dimensions)
+        if let panel = handleWindow as? LiveScrollPanel {
+            panel.acceptsDragKeyFocus = true
+            panel.makeKeyWindow()
+            panel.makeFirstResponder(panel.contentView)
+        }
+        return true
+    }
+
+    private func moveRegionDrag(to point: CGPoint) {
+        guard !isRetired, var drag = regionDrag, point.x.isFinite, point.y.isFinite else { return }
+        let dx = drag.axis == .vertical ? 0 : point.x - drag.start.x
+        let dy = drag.axis == .horizontal ? 0 : point.y - drag.start.y
+        var next = drag.original.offsetBy(dx: dx, dy: dy)
+        // Keep the captured size fixed, including when a selection is larger
+        // than the supplied movement area in one dimension.
+        if drag.axis != .vertical, next.width <= drag.bounds.width {
+            next.origin.x = min(max(next.minX, drag.bounds.minX), drag.bounds.maxX - next.width)
+        } else { next.origin.x = drag.original.minX }
+        if drag.axis != .horizontal, next.height <= drag.bounds.height {
+            next.origin.y = min(max(next.minY, drag.bounds.minY), drag.bounds.maxY - next.height)
+        } else { next.origin.y = drag.original.minY }
+        drag.proposed = next; regionDrag = drag
+        updatePlacement(targetFrame: next, visibleFrame: drag.visible)
+    }
+
+    /// Owner-side failure/retirement uses the same one-shot cancellation path.
+    func cancelRegionDrag() { endRegionDrag(at: nil) }
+
+    private func endRegionDrag(at point: CGPoint?) {
+        guard let drag = regionDrag else { return }
+        if let point { moveRegionDrag(to: point) }
+        let proposed = regionDrag?.proposed ?? drag.original
+        regionDrag = nil
+        (handleWindow?.contentView as? LiveScrollRegionDragHandle)?.stopTracking()
+        if point == nil { updatePlacement(targetFrame: drag.original, visibleFrame: drag.visible) }
+        if let panel = handleWindow as? LiveScrollPanel {
+            panel.acceptsDragKeyFocus = false
+            if panel.isKeyWindow { panel.resignKey() }
+        }
+        (handleWindow?.contentView as? LiveScrollRegionDragHandle)?.isEnabled = snapshot.canMoveRegion && !snapshot.busy
+        actions?.endRegionDrag(drag.id, point == nil ? nil : proposed)
+    }
+
+    private func handleFrame(target: CGRect, visible: CGRect, placement: LiveScrollCaptureGeometry.Placement) -> CGRect {
+        let size = LiveScrollRegionDragHandle.preferredSize
+        let candidates = [
+            CGRect(x: target.midX - size.width / 2, y: target.maxY + 3, width: size.width, height: size.height),
+            CGRect(x: target.midX - size.width / 2, y: target.minY - size.height - 3, width: size.width, height: size.height),
+            CGRect(x: target.minX - size.width - 3, y: target.maxY - size.height, width: size.width, height: size.height),
+            CGRect(x: target.maxX + 3, y: target.maxY - size.height, width: size.width, height: size.height)
+        ]
+        let clear: (CGRect) -> Bool = { !$0.intersects(placement.toolbar) && !$0.intersects(placement.preview) }
+        if let outside = candidates.first(where: { visible.contains($0) && !$0.intersects(target) && clear($0) }) { return outside }
+        let corners = [CGPoint(x: target.minX + 4, y: target.maxY - size.height - 4),
+                       CGPoint(x: target.maxX - size.width - 4, y: target.maxY - size.height - 4),
+                       CGPoint(x: target.minX + 4, y: target.minY + 4)]
+        let fallback = corners.map { LiveScrollCaptureGeometry.clamp(CGRect(origin: $0, size: size), to: visible) }
+        return fallback.first(where: clear) ?? fallback[0]
     }
 
     func makeMoreMenu() -> NSMenu {
@@ -259,7 +384,8 @@ final class LiveScrollCaptureController: NSObject, NSWindowDelegate {
 
 @MainActor
 private final class LiveScrollPanel: NSPanel {
-    override var canBecomeKey: Bool { false }
+    var acceptsDragKeyFocus = false
+    override var canBecomeKey: Bool { acceptsDragKeyFocus }
     override var canBecomeMain: Bool { false }
 }
 
