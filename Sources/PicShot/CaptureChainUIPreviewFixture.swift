@@ -15,6 +15,7 @@ enum CaptureChainUIPreviewFixture {
         try files.createDirectory(at: directory, withIntermediateDirectories: true)
         let previousAppearance = NSApp.appearance
         defer { NSApp.appearance = previousAppearance }
+        let execution = ExecutionEvidence()
         var report: [String: Any] = [
             "schemaVersion": 1, "status": "running", "installerAcceptance": false,
             "sourceCommit": Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String ?? "unknown",
@@ -23,8 +24,8 @@ enum CaptureChainUIPreviewFixture {
             "realScreenCaptureClaimed": false, "screenCaptureAPICalled": false,
             "permissionRequested": false, "globalInputPosted": false, "networkUsed": false,
             "userHistoryReadOrWritten": false, "standardDefaultsReadOrWritten": false,
-            "generalPasteboardReadOrWritten": false, "productAppDelegateExercised": true,
-            "productSaveWorkflowDeliveryExercised": true, "productPersistentPinExercised": true,
+            "generalPasteboardReadOrWritten": false, "productAppDelegateExercised": false,
+            "productSaveWorkflowDeliveryExercised": false, "productPersistentPinExercised": false,
             "limitations": ["Synthetic acquisition does not prove desktop selection or ScreenCaptureKit",
                 "The first checked clipboard recipient write is deliberately rejected",
                 "Images show cached owned native content, not a desktop screenshot",
@@ -52,8 +53,9 @@ enum CaptureChainUIPreviewFixture {
             report["sourceReference"] = try imageFacts(expected)
             let successProbes = LifetimeProbes()
             let success = await runCase(retry: true, sourceURL: sourceURL, expected: expected,
-                                        root: owned, directory: directory, probes: successProbes)
+                                        root: owned, directory: directory, probes: successProbes, execution: execution)
             report["saveCopyRetryPin"] = success
+            execution.apply(to: &report)
             safeToRemove = success["cleanupSafe"] as? Bool == true
             try await until("Successful chain owners did not release", seconds: 5) { successProbes.allReleased }
             report["successOwnershipReleased"] = successProbes.facts
@@ -61,7 +63,7 @@ enum CaptureChainUIPreviewFixture {
             if safeToRemove {
                 let closeProbes = LifetimeProbes()
                 let cancelled = await runCase(retry: false, sourceURL: sourceURL, expected: expected,
-                                              root: owned, directory: directory, probes: closeProbes)
+                                              root: owned, directory: directory, probes: closeProbes, execution: execution)
                 report["closeAfterFailure"] = cancelled
                 safeToRemove = cancelled["cleanupSafe"] as? Bool == true
                 try await until("Closed failed-chain owners did not release", seconds: 5) { closeProbes.allReleased }
@@ -85,6 +87,7 @@ enum CaptureChainUIPreviewFixture {
             report["cleanupError"] = "Retained synthetic files because bounded owner drainage was not confirmed"
         }
         report["cleanupSafe"] = safeToRemove && (report["privateTemporaryRootRemoved"] as? Bool == true)
+        execution.apply(to: &report)
         report["elapsedSeconds"] = ProcessInfo.processInfo.systemUptime - started
         if report["cleanupSafe"] as? Bool != true { report["status"] = "failed" }
         try write(report, directory: directory)
@@ -93,7 +96,7 @@ enum CaptureChainUIPreviewFixture {
     }
 
     private static func runCase(retry: Bool, sourceURL: URL, expected: CGImage, root: URL,
-                                directory: URL, probes: LifetimeProbes) async -> [String: Any] {
+                                directory: URL, probes: LifetimeProbes, execution: ExecutionEvidence) async -> [String: Any] {
         let name = retry ? "retry" : "close", suite = "PicShot-CaptureChain-" + UUID().uuidString
         let board = NSPasteboard(name: .init("PicShot-CaptureChain-" + UUID().uuidString))
         let trace = Trace()
@@ -150,7 +153,9 @@ enum CaptureChainUIPreviewFixture {
                         return try ChainCapture(image: image, capturedAt: Date(timeIntervalSince1970: 1_800_000_000))
                     }, savePNG: { image in
                         trace.saves += 1; trace.sameImageAtEveryOutput = trace.sameImageAtEveryOutput && probes.image === image
-                        return await save.save(image: image, parent: probes.manager?.window)
+                        let outcome = await save.save(image: image, parent: probes.manager?.window)
+                        if case .committed = outcome { execution.saveCommitted = true }
+                        return outcome
                     }, copy: { image in
                         trace.copies += 1; trace.sameImageAtEveryOutput = trace.sameImageAtEveryOutput && probes.image === image
                         if trace.copies == 1 {
@@ -159,11 +164,13 @@ enum CaptureChainUIPreviewFixture {
                     }, pin: { image in
                         trace.pins += 1; trace.sameImageAtEveryOutput = trace.sameImageAtEveryOutput && probes.image === image
                         let id = try pins.add(originalImage: image, currentImage: image, title: "编号截图链输出")
+                        execution.pinCommitted = true
                         probes.pinController = pins.liveControllers[id]
                         return id
                     }, cancelSave: { save.cancel() })
                 })
             app = owner; probes.app = owner
+            execution.appInitialized = true
             owner.setupWindow()
             // Install only the existing owned-window retirement callback. Never
             // call applicationDidFinishLaunching or read launch preferences.
@@ -464,6 +471,16 @@ enum CaptureChainUIPreviewFixture {
             "controlsDoNotOverlap": !violations.contains(where: { $0.contains(" overlaps ") })]
     }
 
+    /// Claims are published only after the actual owner or durable output exists.
+    /// An interrupted early fixture keeps the initial report's three flags false.
+    private final class ExecutionEvidence {
+        var appInitialized = false, saveCommitted = false, pinCommitted = false
+        func apply(to report: inout [String: Any]) {
+            report["productAppDelegateExercised"] = appInitialized
+            report["productSaveWorkflowDeliveryExercised"] = saveCommitted
+            report["productPersistentPinExercised"] = pinCommitted
+        }
+    }
     private final class Trace {
         var captures = 0, saves = 0, saveAdmissions = 0, copies = 0, pins = 0
         var managerHiddenDuringCapture = false, historyHiddenDuringCapture = false

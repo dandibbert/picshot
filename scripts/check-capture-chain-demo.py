@@ -318,11 +318,11 @@ def identity(report, launch, source):
     fields(launch, dict(schemaVersion=1, status='exited', launcherExitCode=0, callbackReceived=True,
         createsNewApplicationInstance=True, ownedExitConfirmed=True, launchedIdentityMatches=True,
         captureChainDiagnosticOnly=True, liveScrollDiagnosticOnly=False, earlyWitnessOnly=False,
-        processStartMemoryCaptured=False, timeoutSeconds=600, selectedAppPath=str(app), launchedAppPath=str(app),
+        processStartMemoryCaptured=False, timeoutSeconds=240, selectedAppPath=str(app), launchedAppPath=str(app),
         expectedExecutablePath=str(executable), launchedExecutablePath=str(executable)), 'owned launch')
     need(not any(key in launch for key in ('error', 'interruptedSignal')), 'launch error/interruption')
     integer(launch.get('processIdentifier'), 'owned process', 1)
-    number(launch.get('elapsedSeconds'), 'launch elapsed', .001, 600)
+    number(launch.get('elapsedSeconds'), 'launch elapsed', .001, 240)
     fields(plistlib.loads(COMMON.read(app/'Contents/Info.plist', 1024**2)),
         dict(PicShotSourceCommit=source, CFBundleVersion=build, CFBundleShortVersionString=version,
              CFBundleExecutable='PicShot', CFBundleIdentifier='local.picshot.app'), 'installed plist')

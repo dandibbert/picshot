@@ -187,7 +187,7 @@ def fixture(root):
     dump(evidence/'demo.json.launcher.json', dict(schemaVersion=1, status='exited', launcherExitCode=0,
         callbackReceived=True, createsNewApplicationInstance=True, ownedExitConfirmed=True, launchedIdentityMatches=True,
         captureChainDiagnosticOnly=True, liveScrollDiagnosticOnly=False, earlyWitnessOnly=False,
-        processStartMemoryCaptured=False, timeoutSeconds=600, selectedAppPath=str(app), launchedAppPath=str(app),
+        processStartMemoryCaptured=False, timeoutSeconds=240, selectedAppPath=str(app), launchedAppPath=str(app),
         expectedExecutablePath=str(executable), launchedExecutablePath=str(executable), processIdentifier=100,
         elapsedSeconds=11.))
     for name in ('chain-source-numbered.png', 'chain-saved.png', 'chain-copied.png', 'chain-pin.png',
@@ -325,6 +325,17 @@ class FileTests(unittest.TestCase):
             self.assertFalse(receipt['realScreenCaptureAcceptance'])
             self.assertFalse(receipt['memoryQualification'])
             self.assertEqual(len(receipt['evidenceSHA256']), 27)
+
+    def test_launcher_deadline_cannot_exceed_the_owned_chain_budget(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = fixture(Path(temp))
+            launch_path = path.parent/'demo.json.launcher.json'
+            original = C.COMMON.load(launch_path)
+            for key, bad in [('timeoutSeconds', 600), ('timeoutSeconds', 241), ('timeoutSeconds', 239),
+                             ('elapsedSeconds', 240.001)]:
+                changed = copy.deepcopy(original); changed[key] = bad; dump(launch_path, changed)
+                with self.subTest(key=key, bad=bad), self.assertRaises(ValueError):
+                    C.validate(path, SOURCE)
 
     def test_exact_png_decoder_rejects_damage_bounds_and_transparency(self):
         self.assertEqual(C.decoded_png(SOURCE_PNG, 'test')[:2], (480, 320))

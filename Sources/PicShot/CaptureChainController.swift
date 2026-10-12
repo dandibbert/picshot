@@ -156,7 +156,6 @@ import PicShotCore
         sourcePicker.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let nameRow = row([NSTextField(labelWithString: "名称"), nameField])
         let sourceRow = row([NSTextField(labelWithString: "来源"), sourcePicker])
-        nameField.widthAnchor.constraint(equalTo: sourcePicker.widthAnchor).isActive = true
         outputs.orientation = .vertical; outputs.alignment = .leading; outputs.spacing = 4
         outputs.identifier = NSUserInterfaceItemIdentifier("capture-chain-outputs")
 
@@ -185,6 +184,10 @@ import PicShotCore
         for view in [guidance, scroll, current, nameRow, sourceRow, outputs, editing, status] {
             managerContent.addArrangedSubview(view)
         }
+        // Cross-row constraints require the controls to share an installed
+        // ancestor. The same width relationship is valid once both rows belong
+        // to managerContent; activating it earlier raises NSGenericException.
+        nameField.widthAnchor.constraint(equalTo: sourcePicker.widthAnchor).isActive = true
         for view in [runStatus, receipts] { progressContent.addArrangedSubview(view) }
         for stack in [managerContent, progressContent] {
             stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 8

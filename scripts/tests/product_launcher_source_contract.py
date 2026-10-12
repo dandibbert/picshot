@@ -1,3 +1,21 @@
+# Exactly counted chain deadline hooks; preserve all existing source hashes/assertions.
+CAPTURE_CHAIN_TIMEOUT_HOOKS = (('within \\(Int(effectiveTimeout)) seconds\\n', 'within \\(Int(timeout)) seconds\\n'),
+ ('"appTimeoutSeconds": captureChainDiagnostic ? 240 : 600, "appCleanupSeconds": [3, 3],',
+  '"appTimeoutSeconds": 600, "appCleanupSeconds": [3, 3],'),
+ ('"timeoutSeconds": effectiveTimeout, "elapsedSeconds": Date().timeIntervalSince(launchBegan),',
+  '"timeoutSeconds": timeout, "elapsedSeconds": Date().timeIntervalSince(launchBegan),'),
+ ('// Keep chain observation and owned-app cleanup inside its existing 300-second outer step.\n'
+  'let effectiveTimeout: TimeInterval = captureChainDiagnostic ? 240 : timeout\n'
+  'let deadline = Date().addingTimeInterval(effectiveTimeout)\n',
+  'let deadline = Date().addingTimeInterval(timeout)\n'))
+
+def without_capture_chain_timeout_hooks(test, source):
+    for hook, replacement in CAPTURE_CHAIN_TIMEOUT_HOOKS:
+        test.assertEqual(source.count(hook), 1, "Missing, duplicated or changed chain timeout hook")
+        source = source.replace(hook, replacement, 1)
+    return source
+
+
 """Remove only the literal counted opt-in product, early and staging hooks."""
 
 # Seven literal opt-in chain additions; all previous launcher hashes stay intact.
@@ -33,6 +51,7 @@ CAPTURE_CHAIN_LAUNCHER_HOOKS = (('let captureChainDiagnostic = ProcessInfo.proce
   'launchedIdentityMatches(),\n'))
 
 def without_capture_chain_launcher_hooks(test, source):
+    source = without_capture_chain_timeout_hooks(test, source)
     for hook, replacement in CAPTURE_CHAIN_LAUNCHER_HOOKS:
         test.assertEqual(source.count(hook), 1, "Missing, duplicated or changed chain launcher hook")
         source = source.replace(hook, replacement, 1)

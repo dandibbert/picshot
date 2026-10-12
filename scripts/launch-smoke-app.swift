@@ -338,7 +338,7 @@ func launchedIdentityMatches() -> Bool {
     launchedBundlePath == appURL.resolvingSymlinksInPath().path && launchedExecutablePath == expectedExecutablePath
 }
 pinUIDiagnostic?.record("launch-requested", ["identityBefore": pinUIOwnedIdentity(),
-    "scheduledSampleSeconds": [90, 360], "samplingTimingOrigin": "owned-launch-callback", "appTimeoutSeconds": 600, "appCleanupSeconds": [3, 3],
+    "scheduledSampleSeconds": [90, 360], "samplingTimingOrigin": "owned-launch-callback", "appTimeoutSeconds": captureChainDiagnostic ? 240 : 600, "appCleanupSeconds": [3, 3],
     "directory": pinUIDiagnosticDirectory!, "applicationArguments": configuration.arguments])
 if pinUIDiagnostic?.failed == true { exit(1) }
 NSWorkspace.shared.openApplication(at: appURL, configuration: configuration) { app, error in
@@ -360,7 +360,9 @@ NSWorkspace.shared.openApplication(at: appURL, configuration: configuration) { a
 }
 let diagnosticMode = pinUIDiagnostic != nil ? "" : (ProcessInfo.processInfo.environment["PICSHOT_GIF_DIAGNOSTIC_MODE"] ?? "")
 let timeout: TimeInterval = ["export-only", "decode-only"].contains(diagnosticMode) ? 900 : 600
-let deadline = Date().addingTimeInterval(timeout)
+// Keep chain observation and owned-app cleanup inside its existing 300-second outer step.
+let effectiveTimeout: TimeInterval = captureChainDiagnostic ? 240 : timeout
+let deadline = Date().addingTimeInterval(effectiveTimeout)
 func finish(_ requestedCode: Int32, _ status: String) -> Never {
     pinUIDiagnostic?.finish(status: status, code: requestedCode, identity: pinUIOwnedIdentity)
     let code: Int32 = requestedCode == 0 && pinUIDiagnostic?.failed == true ? 1 : requestedCode
@@ -376,7 +378,7 @@ func finish(_ requestedCode: Int32, _ status: String) -> Never {
         var report: [String: Any] = ["schemaVersion": 1, "status": status,
             "launcherExitCode": Int(code), "selectedAppPath": appURL.resolvingSymlinksInPath().path,
             "createsNewApplicationInstance": configuration.createsNewApplicationInstance,
-            "timeoutSeconds": timeout, "elapsedSeconds": Date().timeIntervalSince(launchBegan),
+            "timeoutSeconds": effectiveTimeout, "elapsedSeconds": Date().timeIntervalSince(launchBegan),
             "callbackReceived": callbackReceived, "ownedExitConfirmed": launched?.isTerminated == true,
             "processStartMemoryCaptured": false,
             "scope": "LaunchServices-owned application lifecycle only; no child memory read and no application exit-code inference"]
@@ -444,7 +446,7 @@ while Date() < deadline && interruptedSignal == nil {
 }
 pinUIDiagnostic?.stopSample("launcher-timeout-or-interruption", identity: pinUIOwnedIdentity)
 pinUIDiagnostic?.record("app-cleanup-started", ["identityBefore": pinUIOwnedIdentity(), "interruptedSignal": interruptedSignal.map(Int.init) ?? 0])
-fputs(interruptedSignal == nil ? "LaunchServices smoke app did not terminate within \(Int(timeout)) seconds\n" : "Owned smoke launch interrupted\n", stderr)
+fputs(interruptedSignal == nil ? "LaunchServices smoke app did not terminate within \(Int(effectiveTimeout)) seconds\n" : "Owned smoke launch interrupted\n", stderr)
 if let launched, !launched.isTerminated, !(recordingInputExportOnly || liveScrollDiagnostic || captureChainDiagnostic) || launchedIdentityMatches(),
    pinUIDiagnostic == nil || pinUIOwnedIdentity()["ownedLiveIdentityMatches"] as? Bool == true {
     _ = launched.terminate()

@@ -264,6 +264,12 @@ import XCTest
                 if f.controller.displayedSnapshot != nil { try self.press("manage", in: f.controller) }
                 let window = try XCTUnwrap(f.controller.window)
                 try self.checkedLayout(window, mode: mode.rawValue + "-manager")
+                let content = try XCTUnwrap(window.contentView)
+                let name: NSTextField = try self.view("name", in: f.controller)
+                let source: NSPopUpButton = try self.view("source", in: f.controller)
+                XCTAssertTrue(name.isDescendant(of: content) && source.isDescendant(of: content))
+                XCTAssertEqual(name.bounds.width, source.bounds.width, accuracy: 0.001,
+                    "The cross-row width relationship must survive native manager construction")
                 f.controller.update(snapshot: self.snapshot(definition, id: UUID(), status: .failed(index: 1, message: "复制失败"),
                     receipts: [.init(output: .quickSavePNG, value: .saved(URL(fileURLWithPath: "/tmp/a.png"), byteCount: 120))], bytes: 256))
                 try self.checkedLayout(window, mode: mode.rawValue + "-failed")
