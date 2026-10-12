@@ -281,7 +281,8 @@ enum LiveScrollOutputDemoFixture {
 
     private static func start(_ owner: LiveScrollSessionController, provider: OwnedProvider, screen: NSScreen) async throws {
         let frame = CGRect(x: screen.visibleFrame.midX - CGFloat(width) / 2,
-            y: screen.visibleFrame.midY - CGFloat(viewportHeight) / 2, width: width, height: viewportHeight)
+            y: screen.visibleFrame.midY - CGFloat(viewportHeight) / 2,
+            width: CGFloat(width), height: CGFloat(viewportHeight))
         try await owner.startForVerification(targetFrame: frame, screen: screen, nextImage: {
             try await Task.sleep(nanoseconds: 30_000_000)
             try Task.checkCancellation()
