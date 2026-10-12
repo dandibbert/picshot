@@ -308,9 +308,30 @@ final class LiveScrollCaptureController: NSObject, NSWindowDelegate {
         ]
         let clear: (CGRect) -> Bool = { !$0.intersects(placement.toolbar) && !$0.intersects(placement.preview) }
         if let outside = candidates.first(where: { visible.contains($0) && !$0.intersects(target) && clear($0) }) { return outside }
+        // A HUD or thumbnail can occupy the midpoint/top candidates while a
+        // different segment of the same edge is free. Check a bounded set of
+        // target/screen/obstacle-aligned origins before covering captured pixels.
+        let obstacles = [placement.toolbar, placement.preview].filter { !$0.isEmpty }
+        let xs = [target.midX - size.width / 2, target.minX, target.maxX - size.width,
+                  visible.minX, visible.maxX - size.width] + obstacles.flatMap { [$0.minX - size.width, $0.maxX] }
+        let ys = [target.midY - size.height / 2, target.minY, target.maxY - size.height,
+                  visible.minY, visible.maxY - size.height] + obstacles.flatMap { [$0.minY - size.height, $0.maxY] }
+        var edges: [CGRect] = []
+        for x in xs {
+            for y in [target.maxY + 3, target.minY - size.height - 3] {
+                edges.append(LiveScrollCaptureGeometry.clamp(CGRect(origin: CGPoint(x: x, y: y), size: size), to: visible))
+            }
+        }
+        for y in ys {
+            for x in [target.minX - size.width - 3, target.maxX + 3] {
+                edges.append(LiveScrollCaptureGeometry.clamp(CGRect(origin: CGPoint(x: x, y: y), size: size), to: visible))
+            }
+        }
+        if let outside = edges.first(where: { visible.contains($0) && !$0.intersects(target) && clear($0) }) { return outside }
         let corners = [CGPoint(x: target.minX + 4, y: target.maxY - size.height - 4),
                        CGPoint(x: target.maxX - size.width - 4, y: target.maxY - size.height - 4),
-                       CGPoint(x: target.minX + 4, y: target.minY + 4)]
+                       CGPoint(x: target.minX + 4, y: target.minY + 4),
+                       CGPoint(x: target.maxX - size.width - 4, y: target.minY + 4)]
         let fallback = corners.map { LiveScrollCaptureGeometry.clamp(CGRect(origin: $0, size: size), to: visible) }
         return fallback.first(where: clear) ?? fallback[0]
     }

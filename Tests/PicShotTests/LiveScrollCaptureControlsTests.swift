@@ -38,6 +38,31 @@ final class LiveScrollCaptureControlsTests: XCTestCase {
         XCTAssertNil(outline.contentView?.hitTest(CGPoint(x: 20, y: 20)))
         XCTAssertNil(preview.contentView?.hitTest(CGPoint(x: 20, y: 20)))
         XCTAssertEqual(controller.captureExcludedWindowIDs.count, 4)
+
+        let selections: [(String, CGRect, Bool)] = [
+            ("lower-left corner", CGRect(x: screen.minX, y: screen.minY, width: target.width, height: target.height), true),
+            ("lower-right corner", CGRect(x: screen.maxX - target.width, y: screen.minY, width: target.width, height: target.height), true),
+            ("upper-left corner", CGRect(x: screen.minX, y: screen.maxY - target.height, width: target.width, height: target.height), true),
+            ("upper-right corner", CGRect(x: screen.maxX - target.width, y: screen.maxY - target.height, width: target.width, height: target.height), true),
+            ("wide with top edge free", CGRect(x: screen.minX, y: screen.minY, width: screen.width, height: screen.height - 80), true),
+            ("wide with bottom edge free", CGRect(x: screen.minX, y: screen.minY + 80, width: screen.width, height: screen.height - 80), true),
+            // The tall cases leave only a narrow outside lane. Its upper portion
+            // holds the preview, so the old four-candidate search went inside.
+            ("tall with right edge free", CGRect(x: screen.minX, y: screen.minY, width: screen.width - 80, height: screen.height), true),
+            ("tall with left edge free", CGRect(x: screen.minX + 80, y: screen.minY, width: screen.width - 80, height: screen.height), true),
+            ("full-screen fallback", screen, false)
+        ]
+        for (name, selection, hasOutsideSpace) in selections {
+            controller.show(snapshot: active, targetFrame: selection, visibleFrame: screen)
+            XCTAssertTrue(handle.isVisible, name)
+            XCTAssertTrue(screen.contains(handle.frame), name)
+            XCTAssertFalse(handle.frame.intersects(toolbar.frame), name)
+            if preview.isVisible { XCTAssertFalse(handle.frame.intersects(preview.frame), name) }
+            if hasOutsideSpace { XCTAssertFalse(handle.frame.intersects(selection), name) }
+            else { XCTAssertTrue(handle.frame.intersects(selection), "Full-screen selection needs an honest inside fallback") }
+            XCTAssertFalse(handle.canBecomeKey, name)
+            XCTAssertTrue(NSApp.keyWindow === previousKey, name)
+        }
     }
 
     func testPausedAndRecoverableFailureKeepFinishCopyCancelAndRetryUsable() throws {
@@ -295,7 +320,7 @@ final class LiveScrollCaptureControlsTests: XCTestCase {
         XCTAssertTrue(preview.isPositionVerified); XCTAssertEqual(preview.viewportMarkerColor, .systemGreen)
         state.previewPositionVerified = false; state.statusKind = .warning
         controller.update(snapshot: state)
-        XCTAssertTrue(preview.image === original); XCTAssertEqual(preview.viewportFraction, fraction)
+        XCTAssertTrue(preview.image === original); assertViewport(preview.viewportFraction, equals: fraction)
         XCTAssertFalse(preview.isPositionVerified); XCTAssertEqual(preview.viewportMarkerColor, .systemOrange)
         XCTAssertTrue(try XCTUnwrap(preview.accessibilityLabel()).contains("尚未验证"))
         XCTAssertFalse(try XCTUnwrap(preview.accessibilityLabel()).contains("绿色"))
@@ -316,7 +341,7 @@ final class LiveScrollCaptureControlsTests: XCTestCase {
             controller.update(snapshot: state)
             let accepted = try XCTUnwrap(preview.image)
             XCTAssertFalse(accepted === beforeDrag, "An accepted pre-drain observation must keep its corresponding preview")
-            XCTAssertEqual(preview.viewportFraction, acceptedFraction)
+            assertViewport(preview.viewportFraction, equals: acceptedFraction)
             XCTAssertFalse(preview.isPositionVerified, "An in-flight drag cannot verify even the latest accepted position")
             XCTAssertEqual(preview.viewportMarkerColor, .systemOrange)
 
@@ -327,7 +352,7 @@ final class LiveScrollCaptureControlsTests: XCTestCase {
             controller.update(snapshot: state)
             let latest = try XCTUnwrap(preview.image)
             XCTAssertFalse(latest === accepted)
-            XCTAssertEqual(preview.viewportFraction, latestFraction)
+            assertViewport(preview.viewportFraction, equals: latestFraction)
             XCTAssertFalse(preview.isPositionVerified)
             XCTAssertTrue(try XCTUnwrap(preview.accessibilityLabel()).contains("尚未验证"))
 
@@ -338,9 +363,19 @@ final class LiveScrollCaptureControlsTests: XCTestCase {
             // most recently accepted image/viewport must then be the green pair.
             controller.update(snapshot: state)
             XCTAssertTrue(preview.image === latest)
-            XCTAssertEqual(preview.viewportFraction, latestFraction)
+            assertViewport(preview.viewportFraction, equals: latestFraction)
             XCTAssertTrue(preview.isPositionVerified); XCTAssertEqual(preview.viewportMarkerColor, .systemGreen)
         }
+    }
+
+    private func assertViewport(_ actual: CGRect, equals expected: CGRect,
+                                file: StaticString = #filePath, line: UInt = #line) {
+        // CGRect intersection normalizes floating-point endpoints. Preserve all
+        // four geometric checks while allowing only rounding-scale error.
+        XCTAssertEqual(actual.origin.x, expected.origin.x, accuracy: 1e-12, file: file, line: line)
+        XCTAssertEqual(actual.origin.y, expected.origin.y, accuracy: 1e-12, file: file, line: line)
+        XCTAssertEqual(actual.width, expected.width, accuracy: 1e-12, file: file, line: line)
+        XCTAssertEqual(actual.height, expected.height, accuracy: 1e-12, file: file, line: line)
     }
 
     private func pointer(_ type: NSEvent.EventType, window: NSWindow, global: CGPoint) throws {

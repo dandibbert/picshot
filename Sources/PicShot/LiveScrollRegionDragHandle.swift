@@ -87,9 +87,24 @@ final class LiveScrollRegionDragHandle: NSView {
     override func draw(_ dirtyRect: NSRect) {
         drawLiveScrollSurface(bounds, appearance: effectiveAppearance)
         let color = isEnabled ? NSColor.labelColor : .disabledControlTextColor
-        let symbol = NSImage(systemSymbolName: "arrow.up.and.down.and.arrow.left.and.right", accessibilityDescription: nil)
-        symbol?.draw(in: CGRect(x: 7, y: 6, width: 14, height: 14), from: .zero,
-                     operation: .sourceOver, fraction: isEnabled ? 0.85 : 0.35)
+        // Direct strokes resolve labelColor in this view's current appearance;
+        // drawing an untinted template NSImage left a black glyph in dark mode.
+        let glyph = CGRect(x: 7, y: 6, width: 14, height: 14)
+        let arrow = NSBezierPath()
+        arrow.move(to: CGPoint(x: glyph.minX + 1, y: glyph.midY))
+        arrow.line(to: CGPoint(x: glyph.maxX - 1, y: glyph.midY))
+        arrow.move(to: CGPoint(x: glyph.midX, y: glyph.minY + 1))
+        arrow.line(to: CGPoint(x: glyph.midX, y: glyph.maxY - 1))
+        for (tip, first, second) in [
+            (CGPoint(x: glyph.minX + 1, y: glyph.midY), CGPoint(x: glyph.minX + 4, y: glyph.midY - 3), CGPoint(x: glyph.minX + 4, y: glyph.midY + 3)),
+            (CGPoint(x: glyph.maxX - 1, y: glyph.midY), CGPoint(x: glyph.maxX - 4, y: glyph.midY - 3), CGPoint(x: glyph.maxX - 4, y: glyph.midY + 3)),
+            (CGPoint(x: glyph.midX, y: glyph.minY + 1), CGPoint(x: glyph.midX - 3, y: glyph.minY + 4), CGPoint(x: glyph.midX + 3, y: glyph.minY + 4)),
+            (CGPoint(x: glyph.midX, y: glyph.maxY - 1), CGPoint(x: glyph.midX - 3, y: glyph.maxY - 4), CGPoint(x: glyph.midX + 3, y: glyph.maxY - 4))
+        ] {
+            arrow.move(to: first); arrow.line(to: tip); arrow.line(to: second)
+        }
+        color.setStroke(); arrow.lineWidth = 1.2
+        arrow.lineCapStyle = .round; arrow.lineJoinStyle = .round; arrow.stroke()
         ("移动" as NSString).draw(in: CGRect(x: 27, y: 5, width: 30, height: 16), withAttributes: [
             .font: NSFont.systemFont(ofSize: 11, weight: .medium), .foregroundColor: color])
     }
