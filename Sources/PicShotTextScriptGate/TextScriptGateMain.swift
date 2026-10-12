@@ -138,7 +138,7 @@ enum TextScriptGateMain {
         await runCase("empty-result-rejected", source: "return '';", diagnostic: .emptyOutput)
         await runCase("oversized-result-rejected", source: "return 'a'.repeat(32769);", diagnostic: .outputTooLarge)
         await runCase("unpaired-surrogate-rejected", source: "return String.fromCharCode(0xD800);", diagnostic: .invalidUnicode)
-        let absentNames = ["require", "process", "fetch", "XMLHttpRequest", "window", "document", "console", "print", "readFile", "ObjC", "NSFileManager", "PicShot", "capabilityProbe", "setTimeout"]
+        let absentNames = ["require", "process", "fetch", "XMLHttpRequest", "window", "document", "console", "ShadowRealm", "print", "readFile", "ObjC", "NSFileManager", "PicShot", "capabilityProbe", "setTimeout"]
         let absenceBody = "return [" + absentNames.map { "typeof " + $0 }.joined(separator: ",") + "].join(',');"
         await runCase("no-host-or-native-probe-apis", source: absenceBody, expected: Array(repeating: "undefined", count: absentNames.count).joined(separator: ","))
         await runCase("maximum-utf16-output", source: "return '😀'.repeat(16384);", expected: String(repeating: "😀", count: 16_384))

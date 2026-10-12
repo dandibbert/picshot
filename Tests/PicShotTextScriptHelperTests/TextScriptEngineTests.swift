@@ -46,10 +46,45 @@ final class TextScriptEngineTests: XCTestCase {
         XCTAssertEqual(try TextScriptEngine.transform(source: "globalThis.syntheticMarker = 42; return 'set';", text: "x"), "set")
         XCTAssertEqual(try TextScriptEngine.transform(source: "return typeof globalThis.syntheticMarker;", text: "x"), "undefined")
         let names = ["fetch", "XMLHttpRequest", "WebSocket", "require", "process", "Deno", "Bun", "ObjC",
-                     "NSFileManager", "NSPasteboard", "window", "document", "setTimeout", "print", "console"]
+                     "NSFileManager", "NSPasteboard", "window", "document", "setTimeout", "print", "console", "ShadowRealm"]
         for name in names {
             XCTAssertEqual(try TextScriptEngine.transform(source: "return typeof " + name + ";", text: "x"), "undefined", name)
         }
+        let consoleAliases = """
+        const absent = () => typeof console === 'undefined' && globalThis.console === undefined &&
+            Reflect.get(globalThis, 'console') === undefined &&
+            Function('return this.console')() === undefined &&
+            (0, eval)('this.console') === undefined;
+        if (!absent()) return 'initial-alias';
+        console = { log() {} };
+        globalThis.console = { log() {} };
+        if (Reflect.set(globalThis, 'console', {}) || !absent()) return 'assignment';
+        if (delete globalThis.console) return 'deletion';
+        if (Reflect.deleteProperty(globalThis, 'console') || !absent()) return 'reflect-deletion';
+        if (Function('delete this.console; this.console = {}; return this.console')() !== undefined)
+            return 'function-alias';
+        const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'console');
+        if (!descriptor || descriptor.value !== undefined || descriptor.writable || descriptor.configurable)
+            return 'descriptor';
+        return absent() ? 'absent' : 'final-alias';
+        """
+        XCTAssertEqual(try TextScriptEngine.transform(source: consoleAliases, text: "x"), "absent")
+        let realmAliases = """
+        const absent = () => typeof ShadowRealm === 'undefined' && globalThis.ShadowRealm === undefined &&
+            Reflect.get(globalThis, 'ShadowRealm') === undefined &&
+            Function('return this.ShadowRealm')() === undefined &&
+            (0, eval)('this.ShadowRealm') === undefined;
+        if (!absent()) return 'initial-alias';
+        ShadowRealm = function() {};
+        globalThis.ShadowRealm = function() {};
+        if (Reflect.set(globalThis, 'ShadowRealm', {}) || !absent()) return 'assignment';
+        if (delete globalThis.ShadowRealm || Reflect.deleteProperty(globalThis, 'ShadowRealm')) return 'deletion';
+        const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'ShadowRealm');
+        if (!descriptor || descriptor.value !== undefined || descriptor.writable || descriptor.configurable)
+            return 'descriptor';
+        return absent() ? 'absent' : 'final-alias';
+        """
+        XCTAssertEqual(try TextScriptEngine.transform(source: realmAliases, text: "x"), "absent")
     }
 
     private func expect(_ diagnostic: TextScriptDiagnostic, source: String, file: StaticString = #filePath, line: UInt = #line) {

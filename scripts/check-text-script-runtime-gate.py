@@ -132,7 +132,8 @@ def check(directory, source, root):
     native = importlib.util.module_from_spec(spec); spec.loader.exec_module(native)
     log = read(directory / 'compile.stdout.log', 8 * 1024 * 1024).decode() + read(directory / 'compile.stderr.log', 8 * 1024 * 1024).decode()
     passed, skipped = native.case_results(log, sorted(expected))
-    need(not skipped and len(passed) == 13, 'Core/helper unit coverage changed or incomplete')
+    need(len(expected) == 14 and not skipped and len(passed) == 14,
+         'Core/helper unit coverage changed or incomplete')
     result = {'status': 'passed', 'sourceCommit': source, 'nativeDecisionCases': len(checks),
               'unitMethodsPassed': len(passed), 'unitMethods': passed,
               'buildIdentitySHA256': digest(read(build_path, 1024 * 1024)),

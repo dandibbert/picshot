@@ -13,6 +13,7 @@ enum TextScriptEngine {
         defer { JSGlobalContextRelease(context) }
         JSGlobalContextSetInspectable(context, false)
         guard !JSGlobalContextIsInspectable(context) else { throw TextScriptDiagnostic.runtimeUnavailable }
+        try disableDefaultHostGlobals(in: context)
 
         let functionName = try makeString("transform")
         defer { JSStringRelease(functionName) }
@@ -58,6 +59,30 @@ enum TextScriptEngine {
         let output = String(decoding: units, as: UTF16.self)
         guard output.utf8.count <= TextScriptLimits.outputUTF8Bytes else { throw TextScriptDiagnostic.outputTooLarge }
         return output
+    }
+
+    /// Some JavaScriptCore versions install a console even when inspection is disabled.
+    /// Remove it and the optional ShadowRealm constructor, which could create another
+    /// realm with default globals, before compiling user source. This only defines the
+    /// available API; the independently verified App Sandbox is a separate boundary.
+    private static func disableDefaultHostGlobals(in context: JSGlobalContextRef) throws {
+        guard let global = JSContextGetGlobalObject(context) else { throw TextScriptDiagnostic.runtimeUnavailable }
+        for identifier in ["console", "ShadowRealm"] {
+            let name = try makeString(identifier)
+            defer { JSStringRelease(name) }
+            var exception: JSValueRef?
+            guard JSObjectDeleteProperty(context, global, name, &exception), exception == nil,
+                  !JSObjectHasProperty(context, global, name) else { throw TextScriptDiagnostic.runtimeUnavailable }
+            let attributes = JSPropertyAttributes(kJSPropertyAttributeReadOnly | kJSPropertyAttributeDontDelete | kJSPropertyAttributeDontEnum)
+            JSObjectSetProperty(context, global, name, JSValueMakeUndefined(context), attributes, &exception)
+            guard exception == nil else { throw TextScriptDiagnostic.runtimeUnavailable }
+            // Verify both immutable replacement and failed deletion with public property APIs.
+            // Any rejection exception is discarded, never inspected or converted to text.
+            JSObjectSetProperty(context, global, name, JSValueMakeBoolean(context, true), JSPropertyAttributes(kJSPropertyAttributeNone), nil)
+            guard !JSObjectDeleteProperty(context, global, name, nil),
+                  let value = JSObjectGetProperty(context, global, name, &exception), exception == nil,
+                  JSValueIsUndefined(context, value) else { throw TextScriptDiagnostic.runtimeUnavailable }
+        }
     }
 
     private static func makeString(_ string: String) throws -> JSStringRef {
