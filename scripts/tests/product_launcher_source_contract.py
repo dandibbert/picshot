@@ -1,5 +1,44 @@
 """Remove only the literal counted opt-in product, early and staging hooks."""
 
+# Seven literal opt-in chain additions; all previous launcher hashes stay intact.
+CAPTURE_CHAIN_LAUNCHER_HOOKS = (('let captureChainDiagnostic = ProcessInfo.processInfo.environment["PICSHOT_CAPTURE_CHAIN_DEMO_ONLY"] '
+  '== "1"\n',
+  ''),
+ ('"PICSHOT_CAPTURE_CHAIN_DEMO_ONLY", ', ''),
+ ('if liveScrollDiagnostic || captureChainDiagnostic || recordingInputExportOnly || pinUIDiagnostic != '
+  'nil {\n',
+  'if liveScrollDiagnostic || recordingInputExportOnly || pinUIDiagnostic != nil {\n'),
+ ('    if liveScrollDiagnostic || captureChainDiagnostic || recordingInputExportOnly || '
+  'ProcessInfo.processInfo.environment["PICSHOT_CODEC_STAGING_MODE"] != nil || '
+  'ProcessInfo.processInfo.environment["PICSHOT_EDITABLE_PRODUCT_MODE"] != nil ||\n',
+  '    if liveScrollDiagnostic || recordingInputExportOnly || '
+  'ProcessInfo.processInfo.environment["PICSHOT_CODEC_STAGING_MODE"] != nil || '
+  'ProcessInfo.processInfo.environment["PICSHOT_EDITABLE_PRODUCT_MODE"] != nil ||\n'),
+ ('        if recordingInputExportOnly || liveScrollDiagnostic || captureChainDiagnostic {\n'
+  '            report["earlyWitnessOnly"] = recordingInputExportOnly\n'
+  '            report["liveScrollDiagnosticOnly"] = liveScrollDiagnostic\n'
+  '            report["captureChainDiagnosticOnly"] = captureChainDiagnostic\n',
+  '        if recordingInputExportOnly || liveScrollDiagnostic {\n'
+  '            report["earlyWitnessOnly"] = recordingInputExportOnly\n'
+  '            report["liveScrollDiagnosticOnly"] = liveScrollDiagnostic\n'),
+ ('        if (liveScrollDiagnostic || captureChainDiagnostic || recordingInputExportOnly || '
+  'ProcessInfo.processInfo.environment["PICSHOT_CODEC_STAGING_MODE"] != nil) && '
+  '!launchedIdentityMatches() {\n',
+  '        if (liveScrollDiagnostic || recordingInputExportOnly || '
+  'ProcessInfo.processInfo.environment["PICSHOT_CODEC_STAGING_MODE"] != nil) && '
+  '!launchedIdentityMatches() {\n'),
+ ('if let launched, !launched.isTerminated, !(recordingInputExportOnly || liveScrollDiagnostic || '
+  'captureChainDiagnostic) || launchedIdentityMatches(),\n',
+  'if let launched, !launched.isTerminated, !(recordingInputExportOnly || liveScrollDiagnostic) || '
+  'launchedIdentityMatches(),\n'))
+
+def without_capture_chain_launcher_hooks(test, source):
+    for hook, replacement in CAPTURE_CHAIN_LAUNCHER_HOOKS:
+        test.assertEqual(source.count(hook), 1, "Missing, duplicated or changed chain launcher hook")
+        source = source.replace(hook, replacement, 1)
+    return source
+
+
 # Reverse only the eight reviewed live-scroll launcher additions. Missing,
 # duplicated or altered hooks fail; existing historical hashes are not refreshed.
 LIVE_SCROLL_LAUNCHER_HOOKS = (('let liveScrollDiagnostic = '
@@ -35,6 +74,7 @@ LIVE_SCROLL_LAUNCHER_HOOKS = (('let liveScrollDiagnostic = '
 
 
 def without_live_scroll_launcher_hooks(test, source):
+    source = without_capture_chain_launcher_hooks(test, source)
     for hook, replacement in LIVE_SCROLL_LAUNCHER_HOOKS:
         test.assertEqual(source.count(hook), 1,
                          "Missing, duplicated or changed live-scroll launcher hook")

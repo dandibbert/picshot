@@ -6,7 +6,8 @@ import Carbon
 enum HotKeyAction: Int, Codable, CaseIterable {
     case capture = 0, clipboardPin = 1, history = 2, restoreLastPin = 3
     case recordingPauseResume = 4, recordingStopSave = 5
-    static let settingsOrder: [HotKeyAction] = [.capture, .clipboardPin, .restoreLastPin, .history, .recordingPauseResume, .recordingStopSave]
+    case runSelectedCaptureChain = 6
+    static let settingsOrder: [HotKeyAction] = [.capture, .clipboardPin, .restoreLastPin, .history, .recordingPauseResume, .recordingStopSave, .runSelectedCaptureChain]
     var requiresActiveRecording: Bool { self == .recordingPauseResume || self == .recordingStopSave }
     var title: String {
         switch self {
@@ -16,6 +17,7 @@ enum HotKeyAction: Int, Codable, CaseIterable {
         case .restoreLastPin: return "恢复上次关闭的贴图"
         case .recordingPauseResume: return "录屏暂停 / 继续"
         case .recordingStopSave: return "录屏停止并保存"
+        case .runSelectedCaptureChain: return "运行所选截图链"
         }
     }
     var defaultBinding: HotKeyBinding? {
@@ -24,7 +26,7 @@ enum HotKeyAction: Int, Codable, CaseIterable {
         case .clipboardPin: return HotKeyBinding(keyCode: 19, modifiers: UInt32(controlKey))
         case .restoreLastPin: return HotKeyBinding(keyCode: 20, modifiers: UInt32(controlKey))
         case .history: return HotKeyBinding(keyCode: 4, modifiers: UInt32(cmdKey | controlKey))
-        case .recordingPauseResume, .recordingStopSave: return nil
+        case .recordingPauseResume, .recordingStopSave, .runSelectedCaptureChain: return nil
         }
     }
 }
@@ -67,7 +69,15 @@ struct HotKeyShortcut: Codable, Equatable {
 struct HotKeyConfiguration: Equatable {
     static let preferenceKey = "hotkeyActions.v1"
     static let legacyPreferenceKey = "hotkeys"
+    static let selectedCaptureChainPreferenceKey = "selectedCaptureChainHotkey.v1"
+    // These are the only action IDs older builds can decode. Keep new local
+    // actions out of this payload even when the runtime configuration grows.
+    private static let legacyActions: Set<HotKeyAction> = [.capture, .clipboardPin, .history,
+        .restoreLastPin, .recordingPauseResume, .recordingStopSave]
     var shortcuts: [HotKeyShortcut]
+    var legacyShortcuts: [HotKeyShortcut] {
+        shortcuts.filter { Self.legacyActions.contains($0.action) }.sorted { $0.action.rawValue < $1.action.rawValue }
+    }
     static var defaults: HotKeyConfiguration {
         HotKeyConfiguration(shortcuts: HotKeyAction.allCases.compactMap { action in
             action.defaultBinding.map { HotKeyShortcut(action: action, binding: $0) }
@@ -92,9 +102,19 @@ struct HotKeyConfiguration: Equatable {
         return nil
     }
     static func read(from defaults: UserDefaults = .standard) -> HotKeyConfiguration {
+        var result = readLegacyActions(from: defaults)
+        // Absence (including an explicit clear) is unassigned. Reads do not
+        // rewrite either key or move action 6 into the old enum array.
+        if let data = defaults.data(forKey: selectedCaptureChainPreferenceKey),
+           let binding = try? JSONDecoder().decode(HotKeyBinding.self, from: data) {
+            result[.runSelectedCaptureChain] = binding
+        }
+        return result
+    }
+    private static func readLegacyActions(from defaults: UserDefaults) -> HotKeyConfiguration {
         if let data = defaults.data(forKey: preferenceKey),
            let shortcuts = try? JSONDecoder().decode([HotKeyShortcut].self, from: data) {
-            return HotKeyConfiguration(shortcuts: shortcuts)
+            return HotKeyConfiguration(shortcuts: shortcuts.filter { legacyActions.contains($0.action) })
         }
         guard let data = defaults.data(forKey: legacyPreferenceKey),
               let legacy = try? JSONDecoder().decode([HotKeyBinding].self, from: data) else { return .defaults }
@@ -109,7 +129,14 @@ struct HotKeyConfiguration: Equatable {
     }
     func save(to defaults: UserDefaults = .standard) throws {
         if let validationMessage { throw PicShotError.message(validationMessage) }
-        defaults.set(try JSONEncoder().encode(shortcuts.sorted { $0.action.rawValue < $1.action.rawValue }), forKey: Self.preferenceKey)
+        // Finish both encodings before either preference changes. The companion
+        // remains invisible to older builds that reject unknown enum IDs.
+        let encoder = JSONEncoder()
+        let legacyData = try encoder.encode(legacyShortcuts)
+        let selectedChainData = try self[.runSelectedCaptureChain].map { try encoder.encode($0) }
+        defaults.set(legacyData, forKey: Self.preferenceKey)
+        if let selectedChainData { defaults.set(selectedChainData, forKey: Self.selectedCaptureChainPreferenceKey) }
+        else { defaults.removeObject(forKey: Self.selectedCaptureChainPreferenceKey) }
     }
 }
 
@@ -194,12 +221,13 @@ enum HotKeyEventPhase: Equatable { case pressed, released }
     private final class Generation {}
     // Runtime IDs are distinct from persisted action IDs. Never reuse an ID in
     // this process, so an old Carbon event cannot acquire a new action meaning.
-    // The scalar saturates rather than wrapping; at most six entries are live.
+    // The scalar saturates rather than wrapping; at most seven entries are live.
     private static var nextRuntimeID: UInt32? = 1
     private let backend: any HotKeyBackend
     private let dispatch: (@escaping @MainActor () -> Void) -> Void
     private var configuration = HotKeyConfiguration(shortcuts: [])
     private var generation = Generation()
+    private var selectedCaptureChainGeneration = Generation()
     private var registrations: [UInt32: HotKeyAction] = [:]
     private var held: Set<UInt32> = []
     private var invalidated = false
@@ -248,6 +276,13 @@ enum HotKeyEventPhase: Equatable { case pressed, released }
         isRecordingActive = active
         rebuildRegistrations()
     }
+    /// Retire queued Run commands when selection or chain admission changes.
+    /// Keep native registrations and held-key state intact, and leave recording
+    /// callbacks deliverable across the boundary.
+    func invalidateSelectedCaptureChainCommands() {
+        guard !invalidated else { return }
+        selectedCaptureChainGeneration = Generation()
+    }
     private func rebuildRegistrations() {
         removeRegistrations()
         failures = []
@@ -269,9 +304,11 @@ enum HotKeyEventPhase: Equatable { case pressed, released }
         if phase == .released { held.remove(id); return }
         guard held.insert(id).inserted else { return }
         let admittedGeneration = generation
+        let admittedChainGeneration = selectedCaptureChainGeneration
         dispatch { [weak self] in
             guard let self, !self.invalidated, self.generation === admittedGeneration,
                   self.registrations[id] == action,
+                  action != .runSelectedCaptureChain || self.selectedCaptureChainGeneration === admittedChainGeneration,
                   self.isRecordingActive || !action.requiresActiveRecording else { return }
             self.onAction?(action)
         }

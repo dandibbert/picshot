@@ -411,6 +411,18 @@ def feedback_additions(inventory):
     return set(feedback['added'])
 
 
+def chain_additions(inventory):
+    chain = load(Path('scripts/capture-chain-native-tests.json'))
+    need(type(chain) is dict and set(chain) == {'added', 'focused'}, 'Chain inventory schema differs')
+    added = chain['added']
+    need(type(added) is list and len(added) == 95 and added == sorted(set(added))
+         and all(type(name) is str and re.fullmatch(r'(?:PicShotCoreTests|PicShotTests)\.(?:CaptureChain\w*Tests|SaveWorkflowDeliveryTests)/test\w+', name) for name in added),
+         'Chain additions differ')
+    need(added == [name for name in inventory if '.CaptureChain' in name or '.SaveWorkflowDeliveryTests/' in name],
+         'Chain methods lost or added outside explicit inventory')
+    return set(added)
+
+
 def final():
     source = source_record()
     receipt = qualify()
@@ -429,12 +441,13 @@ def final():
             ('full', 'native-tests-plan.json', 'native-test-shards', 'test-report.json'),
             ('focused', 'focused-tests-plan.json', 'focused-test-shards', 'critical-tests-report.json')):
         plan = native.checked_plan(Path('dist')/planfile, source['sourceCommit'])
-        need(len(plan['discoveredTests']) == 2208, 'Current2208 native inventory required')
+        need(len(plan['discoveredTests']) == 2303, 'Current2303 native inventory required')
         if kind == 'full':
             live = json.loads(read(Path('scripts/live-scroll-additive-tests.json')))
             need(len(live) == 156 and set(live).issubset(plan['discoveredTests']), 'Current156 live methods required')
             feedback = feedback_additions(plan['discoveredTests'])
-            stable = [name for name in plan['discoveredTests'] if name not in set(live) | feedback]
+            chains = chain_additions(plan['discoveredTests'])
+            stable = [name for name in plan['discoveredTests'] if name not in set(live) | feedback | chains]
             need(len(stable) == 2047 and hashlib.sha256(('\n'.join(stable)+'\n').encode()).hexdigest()
                  == '926ac5674df90163b949fe461f0d4589ef72c8fc3215fa00b927564aae57cb44', 'Stable214 inventory changed')
             need(plan['selectedTests'] == plan['discoveredTests'], 'Full suite narrowed')

@@ -20,8 +20,8 @@ final class RecordingHotKeyTests: XCTestCase {
     }
 
     func testAppendedActionIDsAndUnassignedTransportDefaultsPreserveOriginalDefaults() {
-        XCTAssertEqual(HotKeyAction.allCases.map(\.rawValue), [0, 1, 2, 3, 4, 5])
-        XCTAssertEqual(HotKeyAction.settingsOrder, [.capture, .clipboardPin, .restoreLastPin, .history, .recordingPauseResume, .recordingStopSave])
+        XCTAssertEqual(HotKeyAction.allCases.map(\.rawValue), [0, 1, 2, 3, 4, 5, 6])
+        XCTAssertEqual(HotKeyAction.settingsOrder, [.capture, .clipboardPin, .restoreLastPin, .history, .recordingPauseResume, .recordingStopSave, .runSelectedCaptureChain])
         XCTAssertEqual(HotKeyBinding.defaults.count, 4)
         XCTAssertEqual(HotKeyConfiguration.defaults.shortcuts.map(\.action), [.capture, .clipboardPin, .history, .restoreLastPin])
         for action in [HotKeyAction.recordingPauseResume, .recordingStopSave] {

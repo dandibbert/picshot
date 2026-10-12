@@ -49,6 +49,7 @@ enum StatusMenuLayout {
     func menuNeedsUpdate(_ menu: NSMenu) {
         if menu === status?.menu { rebuildStatusMenu(menu) }
         else if menu.title == "截图预设" { populateCapturePresetsMenu(menu) }
+        else if menu.title == "截图动作链" { populateCaptureChainsMenu(menu) }
     }
     func rebuildStatusMenu(_ menu: NSMenu) {
         menu.removeAllItems(); menu.autoenablesItems = false
@@ -70,7 +71,7 @@ enum StatusMenuLayout {
                 case .scroll: item.action = #selector(scroll)
                 case .record: item.action = #selector(record)
                 case .recoverRecordings: item.action = #selector(recoverRecordings)
-                case .cancelCapture: item.action = #selector(cancelCapture); item.isEnabled = busy
+                case .cancelCapture: item.action = #selector(cancelCapture); item.isEnabled = busy || hasActiveCaptureChain
                 case .clipboardPin: item.action = #selector(pastePin)
                 case .restoreLastPin: item.action = #selector(restoreLastClosedPin); item.isEnabled = pinSession?.store.index.lastArchivedEntry != nil
                 case .morePins:
@@ -93,6 +94,7 @@ enum StatusMenuLayout {
     func additionalCaptureMenu() -> NSMenu {
         let menu = NSMenu(title: "更多截图")
         menu.addItem(withTitle: "截图预设", action: nil, keyEquivalent: "").submenu = capturePresetsMenu()
+        menu.addItem(withTitle: "截图动作链", action: nil, keyEquivalent: "").submenu = captureChainsMenu()
         for (title, action) in [("界面元素截图…", #selector(elementCapture)), ("跨屏区域截图（系统选区）", #selector(systemRegion)), ("窗口截图", #selector(windowCapture)), ("当前屏幕", #selector(full)), ("所有屏幕合成", #selector(allScreens))] { menu.addItem(withTitle: title, action: action, keyEquivalent: "").target = self }
         menu.addItem(.separator())
         for (title, action) in [("多选区域（可减选）", #selector(multiRegionCapture)), ("多边形选区", #selector(polygonCapture)), ("自由形状选区", #selector(freehandCapture))] { menu.addItem(withTitle: title, action: action, keyEquivalent: "").target = self }

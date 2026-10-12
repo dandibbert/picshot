@@ -45,7 +45,8 @@ struct PortableSettingsImportPlan {
 /// Offline, allowlisted settings only. No arbitrary defaults enumeration, capture or
 /// OCR content, history entries, credentials, bookmarks, local paths, window frames,
 /// save-workflow destinations/automatic writes, or recording-input opt-ins enter
-/// the portable document. Persistence snapshots retain only allowlisted keys.
+/// the portable document. Persistence snapshots retain only allowlisted keys,
+/// plus the local chain shortcut required to detect import conflicts.
 ///
 /// Apply is a synchronous main-actor logical transaction: it checks its review
 /// baseline, validates hotkeys before writes, and restores touched raw values after
@@ -101,9 +102,12 @@ struct PortableSettingsImportPlan {
         let incoming = try PortableSettingsDocument.decode(data)
         let baseline = snapshot()
         let current = try currentDocument()
+        var proposedHotkeys = incoming.hotKeyConfiguration
+        proposedHotkeys[.runSelectedCaptureChain] = HotKeyConfiguration.read(from: defaults)[.runSelectedCaptureChain]
+        guard proposedHotkeys.validationMessage == nil else { throw PortableSettingsError.invalidValues }
         let changes = incoming.changes(from: current)
         let mutations = try incoming.mutations(from: current)
-        return PortableSettingsImportPlan(changes: changes, hotKeyConfiguration: incoming.hotKeyConfiguration,
+        return PortableSettingsImportPlan(changes: changes, hotKeyConfiguration: proposedHotkeys,
             changesHotKeys: incoming.hotKeyConfiguration != current.hotKeyConfiguration,
             owner: identity, generation: generation, baseline: baseline,
             persistentBaseline: persistentSnapshot(), mutations: mutations)
@@ -160,7 +164,8 @@ struct PortableSettingsImportPlan {
         [AppAppearancePreference.preferenceKey, ScreenshotPreferences.delayKey, ScreenshotPreferences.cursorKey,
          PinDesktopVisibility.preferenceKey, PinSessionStore.restorePreferenceKey, PinOCRPreferences.automaticPreferenceKey,
          "historyDays", "historyCount", "historyMB", HotKeyConfiguration.preferenceKey,
-         HotKeyConfiguration.legacyPreferenceKey, AnnotationToolbarOrder.preferenceKey,
+         HotKeyConfiguration.legacyPreferenceKey, HotKeyConfiguration.selectedCaptureChainPreferenceKey,
+         AnnotationToolbarOrder.preferenceKey,
          AnnotationStyleSettings.preferenceKey, LocalAnnotationShortcutSettings.preferenceKey]
     }
 
@@ -363,7 +368,7 @@ private struct PortableSettingsDocument: Codable {
         add("historyDays", "历史保留天数", String(a.historyDays), String(b.historyDays))
         add("historyCount", "历史保留张数", String(a.historyCount), String(b.historyCount))
         add("historyMegabytes", "历史大小上限", "\(a.historyMegabytes) MB", "\(b.historyMegabytes) MB")
-        for action in HotKeyAction.settingsOrder {
+        for action in PortableHotKeyAction.allCases.map(\.localAction) {
             add("hotkey.\(action.rawValue)", action.title, old.hotKeyConfiguration[action]?.displayName ?? "未设置", hotKeyConfiguration[action]?.displayName ?? "未设置")
         }
         if let annotationToolOrder {
@@ -406,7 +411,7 @@ private struct PortableSettingsDocument: Codable {
         add("historyMB", a.historyMegabytes, b.historyMegabytes)
         if hotKeyConfiguration != old.hotKeyConfiguration {
             result.append(PortableSettingsMutation(key: HotKeyConfiguration.preferenceKey,
-                value: try JSONEncoder().encode(hotKeyConfiguration.shortcuts)))
+                value: try JSONEncoder().encode(hotKeyConfiguration.legacyShortcuts)))
         }
         if let annotationToolOrder, annotationToolOrder != old.annotationToolOrder {
             result.append(PortableSettingsMutation(key: AnnotationToolbarOrder.preferenceKey, value: annotationToolOrder))

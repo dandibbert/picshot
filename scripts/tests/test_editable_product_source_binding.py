@@ -8,7 +8,8 @@ from pathlib import Path
 import re
 import unittest
 from product_launcher_source_contract import (CODEC_STAGING_LAUNCHER_HOOKS,
-    EARLY_RECORDING_LAUNCHER_HOOKS, LIVE_SCROLL_LAUNCHER_HOOKS,
+    EARLY_RECORDING_LAUNCHER_HOOKS, LIVE_SCROLL_LAUNCHER_HOOKS, CAPTURE_CHAIN_LAUNCHER_HOOKS,
+    without_capture_chain_launcher_hooks,
     without_live_scroll_launcher_hooks, without_pin_ui_diagnostic_launcher_hooks,
     without_staging_only_launcher_hooks, without_codec_staging_launcher_hooks,
     without_early_recording_launcher_hooks, without_product_launcher_hooks)
@@ -88,10 +89,24 @@ class ProductSourceBindingTests(unittest.TestCase):
         self.assertNotIn('PICSHOT_LIVE_SCROLL_',restored)
         self.assertEqual(len(LIVE_SCROLL_LAUNCHER_HOOKS),8)
         for index,(hook,_) in enumerate(LIVE_SCROLL_LAUNCHER_HOOKS):
+            for current, previous in CAPTURE_CHAIN_LAUNCHER_HOOKS:
+                if previous and previous in hook: hook = hook.replace(previous, current)
             for disposition,replacement in [('missing',''),('duplicated',hook+hook),
                     ('changed',hook.replace('liveScrollDiagnostic','otherDiagnostic').replace('LIVE_SCROLL','OTHER_SCROLL').replace('Owned smoke','Other smoke'))]:
                 self.assertNotEqual(replacement,hook)
                 with self.subTest(hook=index,disposition=disposition),self.assertRaises(AssertionError):
+                    without_product_launcher_hooks(self,source.replace(hook,replacement,1))
+
+    def test_capture_chain_launcher_hooks_preserve_exact_owned_identity_and_reject_drift(self):
+        source=(ROOT/'scripts/launch-smoke-app.swift').read_text()
+        restored=without_capture_chain_launcher_hooks(self,source)
+        self.assertNotIn('captureChainDiagnostic',restored)
+        self.assertNotIn('PICSHOT_CAPTURE_CHAIN_DEMO_ONLY',restored)
+        self.assertEqual(len(CAPTURE_CHAIN_LAUNCHER_HOOKS),7)
+        for index,(hook,_) in enumerate(CAPTURE_CHAIN_LAUNCHER_HOOKS):
+            for replacement in ('',hook+hook,hook.replace('captureChainDiagnostic','unownedDiagnostic').replace('CAPTURE_CHAIN','UNOWNED_CHAIN')):
+                self.assertNotEqual(replacement,hook)
+                with self.subTest(hook=index),self.assertRaises(AssertionError):
                     without_product_launcher_hooks(self,source.replace(hook,replacement,1))
 
     def test_non_early_launcher_changes_still_fail_the_historical_hash(self):

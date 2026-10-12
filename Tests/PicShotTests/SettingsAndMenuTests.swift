@@ -100,7 +100,7 @@ final class SettingsAndMenuTests: XCTestCase {
         let pause = try XCTUnwrap(views.first { $0.identifier?.rawValue == "settings.shortcut.4" } as? ShortcutButton)
         let stop = try XCTUnwrap(views.first { $0.identifier?.rawValue == "settings.shortcut.5" } as? ShortcutButton)
         XCTAssertNil(pause.binding); XCTAssertNil(stop.binding)
-        XCTAssertEqual(views.compactMap { $0 as? ShortcutButton }.count, 6)
+        XCTAssertEqual(views.compactMap { $0 as? ShortcutButton }.count, 7)
 
         func press(_ keyCode: UInt16, characters: String, modifiers: NSEvent.ModifierFlags) throws {
             let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers,
@@ -142,7 +142,7 @@ final class SettingsAndMenuTests: XCTestCase {
             controller.selectCategory(.shortcuts); root.layoutSubtreeIfNeeded()
             let views = descendants(root)
             let shortcuts = views.compactMap { $0 as? ShortcutButton }
-            XCTAssertEqual(shortcuts.count, 6)
+            XCTAssertEqual(shortcuts.count, 7)
             let save = try XCTUnwrap(views.compactMap { $0 as? NSButton }.first { $0.title == "保存设置" })
             let saveFrame = root.convert(save.bounds, from: save)
             for button in shortcuts {

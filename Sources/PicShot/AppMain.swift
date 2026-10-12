@@ -50,7 +50,20 @@ import ImageIO
     /// until the editor actually closes, without retaining an extra image.
     private var editorEncodedBackingBytes: [ObjectIdentifier: Int] = [:]
     private var capturePresetStore: CapturePresetStore?
+    private var capturePresetObservation: AnyCancellable?
     weak var capturePresetController: CapturePresetController?
+    private var captureChainStore: CaptureChainStore?
+    private var captureChainObservation: AnyCancellable?
+    private weak var captureChainController: CaptureChainController?
+    var captureChainManagerForVerification: CaptureChainController? { captureChainController }
+    private(set) var activeCaptureChain: CaptureChainRunner?
+    private var lastCaptureChainSnapshot: CaptureChainSnapshot?
+    private let isolatedChainDependencies: ((CaptureChainDefinition) throws -> CaptureChainRunner.Dependencies)?
+    var hasActiveCaptureChain: Bool { activeCaptureChain?.blocksCapture == true }
+    var retainedChainBytes: Int { activeCaptureChain?.retainedBytes ?? 0 }
+    private var retainedCaptureDraftBytes: Int {
+        EditorAdmissionPolicy.sum([pendingCaptureRecovery.retainedBytes, retainedChainBytes])
+    }
     private var barcodeTask: Task<Void, Never>?
     private var barcodeGeneration = UUID()
     weak var barcodeResultController: BarcodeResultController?
@@ -61,7 +74,7 @@ import ImageIO
     private var editorAdmissionNotices = EditorAdmissionNotices()
     let smoke=ProcessInfo.processInfo.environment["PICSHOT_SMOKE_REPORT"]
     override init(){
-        editorAdmission = EditorAdmissionPolicy(); editorAdmissionNoticeOverride = nil; isolatedSaveWorkflow = nil
+        editorAdmission = EditorAdmissionPolicy(); editorAdmissionNoticeOverride = nil; isolatedSaveWorkflow = nil; isolatedChainDependencies = nil
         if ProcessInfo.processInfo.environment["PICSHOT_SMOKE_REPORT"] != nil {history=HistoryStore(directory:FileManager.default.temporaryDirectory.appendingPathComponent("PicShot-Smoke-\(UUID().uuidString)"))} else {history=HistoryStore()}
         super.init()
         // Smoke must neither read nor write the user's saved session or preferences.
@@ -72,9 +85,14 @@ import ImageIO
     }
     /// Inject isolated history/admission for native transaction tests without
     /// restoring or writing the user's pin session or saved preferences.
-    init(history: HistoryStore, isolatedDefaults: UserDefaults, editorAdmission: EditorAdmissionPolicy = .init(), admissionNotice: (() -> Void)? = nil) {
+    init(history: HistoryStore, isolatedDefaults: UserDefaults, editorAdmission: EditorAdmissionPolicy = .init(), admissionNotice: (() -> Void)? = nil,
+         chainStore: CaptureChainStore? = nil,
+         presetStore: CapturePresetStore? = nil,
+         chainDependencies: ((CaptureChainDefinition) throws -> CaptureChainRunner.Dependencies)? = nil) {
         self.history = history; self.editorAdmission = editorAdmission; editorAdmissionNoticeOverride = admissionNotice
         isolatedSaveWorkflow = SaveWorkflowPresenter(defaults: isolatedDefaults, isSmoke: true)
+        self.captureChainStore = chainStore; isolatedChainDependencies = chainDependencies
+        self.capturePresetStore = presetStore
         super.init()
     }
     func applicationDidFinishLaunching(_ notification:Notification){
@@ -92,6 +110,7 @@ import ImageIO
                 case .restoreLastPin:self?.restoreLastClosedPin()
                 case .recordingPauseResume:self?.recordingController?.pauseResumeFromShortcut()
                 case .recordingStopSave:self?.recordingController?.stopAndSaveFromShortcut()
+                case .runSelectedCaptureChain:self?.runSelectedCaptureChain()
                 }
             }
             // Consume the actual published values on the service's MainActor.
@@ -121,10 +140,13 @@ import ImageIO
             NSLog("PicShot exited before recording cleanup completed.")
         }
         recordingHotKeyObservation?.cancel(); recordingHotKeyObservation = nil
+        activeCaptureChain?.cancel(); captureChainObservation?.cancel(); captureChainObservation = nil
+        capturePresetObservation?.cancel(); capturePresetObservation = nil
         hotKeys?.invalidate();captureTask?.cancel();barcodeTask?.cancel()
         do{try pinSession?.prepareForTermination()}catch{NSLog("Could not save pin presentation before exit: %@",error.localizedDescription)}
     }
     func applicationShouldTerminate(_ sender:NSApplication)->NSApplication.TerminateReply {
+        if hasActiveCaptureChain { manageCaptureChains(); return .terminateCancel }
         if let activeLiveScroll { activeLiveScroll.show(); return .terminateCancel }
         // A failed disk write has no durable copy. Quit must not silently release
         // the only owner; Save or explicit Discard in the panel resolves it first.
@@ -181,6 +203,7 @@ import ImageIO
         for (title,action) in [("区域截图",#selector(region)),("界面元素截图…",#selector(elementCapture)),("跨屏区域截图（系统选区）",#selector(systemRegion)),("窗口截图",#selector(windowCapture)),("多窗口合成…",#selector(captureMultipleWindows)),("当前屏幕",#selector(full)),("所有屏幕合成",#selector(allScreens))] {captureMenu.addItem(withTitle:title,action:action,keyEquivalent:"").target=self}
         captureMenu.addItem(withTitle:"导入图片拼接与精细裁剪…",action:#selector(openScrollImporter),keyEquivalent:"").target=self
         captureMenu.addItem(withTitle:"截图预设",action:nil,keyEquivalent:"").submenu=capturePresetsMenu()
+        captureMenu.addItem(withTitle:"截图动作链",action:nil,keyEquivalent:"").submenu=captureChainsMenu()
         captureMenu.addItem(.separator());captureMenu.addItem(withTitle:"取消当前截图",action:#selector(cancelCapture),keyEquivalent:".").target=self
         let editItem=NSMenuItem();menu.addItem(editItem);let edit=NSMenu(title:"编辑");editItem.submenu=edit
         edit.addItem(withTitle:"撤销",action:Selector(("undo:")),keyEquivalent:"z");let redo=edit.addItem(withTitle:"重做",action:Selector(("redo:")),keyEquivalent:"Z");redo.keyEquivalentModifierMask=[.command,.shift]
@@ -220,7 +243,7 @@ import ImageIO
     }
     @objc func full(){startCapture(.fullScreen)}
     @objc func allScreens(){startCapture(.allScreens)}
-    @objc func cancelCapture(){activeLiveScroll?.cancel();captureTask?.cancel();if pendingCaptureRecovery.blocksCapture{showPendingCapture()}}
+    @objc func cancelCapture(){activeCaptureChain?.cancel();activeLiveScroll?.cancel();captureTask?.cancel();if pendingCaptureRecovery.blocksCapture{showPendingCapture()}}
     func startCapture(_ mode:CaptureMode){
         let options=ScreenshotPreferences.options
         runCaptureForEditing { [capture] in try await capture.captureForEditing(mode:mode,options:options) }
@@ -261,6 +284,7 @@ import ImageIO
     /// All screenshot entry points, including scroll/preset acquisition, gate
     /// before hiding windows, delaying, or calling a screenshot API.
     private func canStartCapture() -> Bool {
+        if hasActiveCaptureChain { manageCaptureChains(); return false }
         if pendingCaptureRecovery.blocksCapture { showPendingCapture(); return false }
         if let activeLiveScroll { activeLiveScroll.show(); return false }
         if let activeScrollCapture { activeScrollCapture.showWindow(nil); return false }
@@ -268,7 +292,7 @@ import ImageIO
             isClosed: { $0.isClosed }, focus: { self.focusEditor($0) }) else { return false }
         let editors = controllers.compactMap { $0 as? ImageEditorController }.filter { !$0.isClosed }
         guard CaptureRecoveryPolicy.preflight(editorPolicy: editorAdmission, existingRasterBytes: editorCosts(editors),
-            drainingBytes: drainingProjectionBytes(editors), pendingBytes: pendingCaptureRecovery.retainedBytes) == nil else {
+            drainingBytes: drainingProjectionBytes(editors), pendingBytes: retainedCaptureDraftBytes) == nil else {
             showEditorAdmissionNotice(); return false
         }
         return true
@@ -305,9 +329,180 @@ import ImageIO
             try await capture.captureForEditing(mode: .region, options: options, elementSelection: true)
         }
     }
+    private func chainCatalog() throws -> CaptureChainStore {
+        if captureChainStore == nil {
+            guard smoke == nil, isolatedSaveWorkflow == nil else {
+                throw PicShotError.message("此隔离运行未提供动作链目录。")
+            }
+            captureChainStore = try CaptureChainStore()
+        }
+        guard let store = captureChainStore else { throw CaptureChainError.loadFailed }
+        if captureChainObservation == nil {
+            captureChainObservation = store.$index.dropFirst().sink { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.hotKeys?.invalidateSelectedCaptureChainCommands()
+                    self?.captureChainController?.invalidateCommands()
+                }
+            }
+        }
+        return store
+    }
+    func captureChainsMenu() -> NSMenu {
+        let menu = NSMenu(title: "截图动作链"); menu.delegate = self
+        populateCaptureChainsMenu(menu); return menu
+    }
+    func populateCaptureChainsMenu(_ menu: NSMenu) {
+        menu.removeAllItems(); menu.autoenablesItems = false
+        menu.addItem(withTitle: "管理截图动作链…", action: #selector(manageCaptureChains), keyEquivalent: "").target = self
+        guard smoke == nil || captureChainStore != nil else { return }
+        do {
+            let store = try chainCatalog()
+            let selected = store.selectedID.flatMap { store.definition(id: $0) }
+            let current = menu.addItem(withTitle: selected.map { "运行当前：" + $0.name } ?? "选择当前动作链…",
+                action: #selector(runSelectedCaptureChain), keyEquivalent: "")
+            current.target = self; current.isEnabled = !hasActiveCaptureChain && !busy
+            if !store.definitions.isEmpty { menu.addItem(.separator()) }
+            for definition in store.definitions {
+                let item = menu.addItem(withTitle: definition.name, action: #selector(runCaptureChainItem(_:)), keyEquivalent: "")
+                item.target = self; item.representedObject = definition.id.uuidString
+                item.state = definition.id == store.selectedID ? .on : .off
+                item.toolTip = definition.outputs.map(\.title).joined(separator: " → ")
+                item.isEnabled = !hasActiveCaptureChain && !busy
+            }
+        } catch {
+            let item = menu.addItem(withTitle: "动作链暂不可用，请打开管理查看", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+        }
+    }
+    @objc func manageCaptureChains() {
+        do {
+            // Refresh the saved-source picker without changing an already
+            // running chain's immutable preset snapshot. Isolated callers only
+            // see the explicitly injected catalog.
+            let presets = capturePresetStore != nil || (smoke == nil && isolatedSaveWorkflow == nil)
+                ? ((try? presetCatalog().presets) ?? []) : []
+            let manager: CaptureChainController
+            if let existing = captureChainController { manager = existing; manager.setPresets(presets) }
+            else {
+                manager = CaptureChainController(store: try chainCatalog(), presets: presets)
+                manager.onRun = { [weak self, weak manager] id, generation in
+                    guard let self, manager?.isCurrentCommand(generation) == true else { return }
+                    _ = self.runCaptureChain(id: id)
+                }
+                manager.onRetry = { [weak self, weak manager] id, generation in
+                    guard let self, manager?.isCurrentCommand(generation) == true,
+                          let runner = self.activeCaptureChain, runner.id == id else { return }
+                    if !runner.retry() { manager?.update(snapshot: runner.snapshot) }
+                }
+                manager.onCancel = { [weak self, weak manager] id, generation in
+                    guard let self, manager?.isCurrentCommand(generation) == true,
+                          let runner = self.activeCaptureChain, runner.id == id else { return }
+                    _ = runner.cancel()
+                }
+                manager.onClose = { [weak self] id, _ in
+                    // The event's original run identity is authoritative. Closing
+                    // an old receipt cannot cancel a later captured image.
+                    guard let id, let runner = self?.activeCaptureChain, runner.id == id else { return }
+                    _ = runner.cancel()
+                }
+                captureChainController = manager; retain(manager)
+            }
+            if let activeCaptureChain { manager.update(snapshot: activeCaptureChain.snapshot) }
+            else if let lastCaptureChainSnapshot { manager.update(snapshot: lastCaptureChainSnapshot) }
+            manager.present(); NSApp.activate(ignoringOtherApps: true)
+        } catch { showError(error) }
+    }
+    @objc func runSelectedCaptureChain() {
+        do {
+            guard let id = try chainCatalog().selectedID else {
+                manageCaptureChains()
+                captureChainController?.showGuidance("请先保存动作链，并将它设为当前动作链。快捷键默认未分配。")
+                return
+            }
+            _ = runCaptureChain(id: id)
+        } catch { manageCaptureChains(); captureChainController?.showError(error) }
+    }
+    @objc func runCaptureChainItem(_ item: NSMenuItem) {
+        guard let raw = item.representedObject as? String, let id = UUID(uuidString: raw) else { return }
+        _ = runCaptureChain(id: id)
+    }
+    @discardableResult func runCaptureChain(id: UUID) -> Bool {
+        guard !isTerminating else { return false }
+        if hasActiveCaptureChain { manageCaptureChains(); return false }
+        guard canStartCapture() else {
+            captureChainController?.showGuidance("请先完成当前截图或编辑，再运行动作链。")
+            return false
+        }
+        do {
+            guard let definition = try chainCatalog().definition(id: id) else { throw CaptureChainError.missingDefinition }
+            let dependencies = try isolatedChainDependencies?(definition) ?? productionChainDependencies(definition)
+            if captureChainController == nil { manageCaptureChains() }
+            let runner = CaptureChainRunner(definition: definition, dependencies: dependencies)
+            activeCaptureChain = runner
+            hotKeys?.invalidateSelectedCaptureChainCommands(); captureChainController?.invalidateCommands()
+            runner.onChange = { [weak self] snapshot in
+                guard let self, self.activeCaptureChain?.id == snapshot.runID else { return }
+                self.lastCaptureChainSnapshot = snapshot
+                self.captureChainController?.update(snapshot: snapshot)
+            }
+            runner.onTerminal = { [weak self] snapshot in
+                guard let self, self.activeCaptureChain?.id == snapshot.runID else { return }
+                self.lastCaptureChainSnapshot = snapshot; self.activeCaptureChain = nil
+                self.hotKeys?.invalidateSelectedCaptureChainCommands()
+                self.captureChainController?.update(snapshot: snapshot)
+            }
+            mainWindow?.orderOut(nil); captureChainController?.hideForCapture()
+            guard runner.start() else {
+                activeCaptureChain = nil; hotKeys?.invalidateSelectedCaptureChainCommands()
+                captureChainController?.showGuidance("动作链未开始，请重试。")
+                return false
+            }
+            return true
+        } catch {
+            if captureChainController == nil { manageCaptureChains() }
+            captureChainController?.showError(error)
+            return false
+        }
+    }
+    private func productionChainDependencies(_ definition: CaptureChainDefinition) throws -> CaptureChainRunner.Dependencies {
+        guard smoke == nil, isolatedSaveWorkflow == nil else { throw PicShotError.message("隔离运行不允许读取屏幕或用户输出设置。") }
+        let options = ScreenshotPreferences.options
+        let preset: CapturePreset?
+        switch definition.source {
+        case .region: preset = nil
+        case .preset(let id):
+            guard let existing = try presetCatalog().preset(id: id) else { throw CapturePresetError.missingPreset }
+            preset = existing
+        }
+        let delivery = SaveWorkflowDelivery(presenter: saveWorkflows)
+        return .init(capture: { [capture] in
+            try await Task.sleep(nanoseconds: 180_000_000)
+            let result: CapturedImage
+            if let preset { result = try await capture.capturePreset(preset, showsCursor: options.showsCursor) }
+            else { result = try await capture.captureForEditing(mode: .region, options: options) }
+            try Task.checkCancellation()
+            // The existing crop already owns selected pixels. Do not retain its
+            // separate frozen-desktop presentation across any output await.
+            return try ChainCapture(image: result.image, capturedAt: result.capturedAt,
+                                    encodedBackingBytes: result.encodedBackingBytes)
+        }, savePNG: { [weak self] image in
+            await delivery.save(image: image, parent: self?.captureChainController?.window)
+        }, copy: { image in try LiveScrollClipboard.copy(image) }, pin: { [weak self] image in
+            guard let self, let pins = self.pinSession else {
+                throw self?.pinSessionLoadError ?? PicShotError.message("贴图存储暂不可用，截图仍保留，可重试或取消。")
+            }
+            return try pins.add(originalImage: image, currentImage: image, title: definition.name)
+        }, cancelSave: { delivery.cancel() })
+    }
     private func presetCatalog() throws -> CapturePresetStore {
-        if let capturePresetStore { return capturePresetStore }
-        let store = try CapturePresetStore(); capturePresetStore = store; return store
+        if capturePresetStore == nil { capturePresetStore = try CapturePresetStore() }
+        guard let store = capturePresetStore else { throw CapturePresetError.loadFailed }
+        if capturePresetObservation == nil {
+            capturePresetObservation = store.$presets.dropFirst().sink { [weak self] presets in
+                MainActor.assumeIsolated { self?.captureChainController?.setPresets(presets) }
+            }
+        }
+        return store
     }
     func capturePresetsMenu() -> NSMenu {
         let menu = NSMenu(title: "截图预设"); menu.delegate = self
@@ -444,9 +639,10 @@ import ImageIO
         }
         let transferringPending = transferringPendingID != nil && transferringPendingID == pendingCaptureRecovery.pending?.id
             && pendingCaptureRecovery.pending?.image === image
-        let admittedBytes = CaptureRecoveryPolicy.admissionBytes(incomingBytes: incoming,
-            drainingBytes: drainingProjectionBytes, pendingBytes: pendingCaptureRecovery.retainedBytes,
-            transferringPending: transferringPending)
+        let admittedBytes = EditorAdmissionPolicy.sum([
+            CaptureRecoveryPolicy.admissionBytes(incomingBytes: incoming,
+                drainingBytes: drainingProjectionBytes, pendingBytes: pendingCaptureRecovery.retainedBytes,
+                transferringPending: transferringPending), retainedChainBytes])
         guard editorAdmission.refusal(existingRasterBytes: editorCosts(editors), incomingRasterBytes: admittedBytes) == nil else {
             if showAdmissionNotice && editorAdmissionNotices.recordRefusal() { showEditorAdmissionNotice() }; return false
         }
@@ -474,7 +670,7 @@ import ImageIO
                 try pinSession.add(originalImage: payload.originalImage, currentImage: current, editable: payload)
             }, baseProvenance: baseProvenance)
         c.onLongCapture = { [weak self] selected in
-            guard let self, !self.busy, self.activeLiveScroll == nil, !self.pendingCaptureRecovery.blocksCapture else { return false }
+            guard let self, !self.busy, !self.hasActiveCaptureChain, self.activeLiveScroll == nil, !self.pendingCaptureRecovery.blocksCapture else { return false }
             self.beginLiveScroll(presentation: selected)
             return true
         }
@@ -500,7 +696,8 @@ import ImageIO
         let saved=importedCount > 0 ? "\(importedCount) 张图片已保存到历史记录，暂未打开编辑窗口。\n" : "已保存到历史记录的图片仍可稍后打开。\n"
         let pending = pendingCaptureRecovery.retainedBytes > 0
             ? "待处理截图另占 \(pendingCaptureRecovery.retainedBytes) 字节，已计入新窗口准入。\n" : ""
-        alert.informativeText=saved+pending+"最多同时打开 6 个编辑窗口，估算的保留图像预算为 768 MiB（不是总进程内存上限）。请先保存并关闭不再需要的编辑窗口，再从历史记录打开图片。"
+        let chain = retainedChainBytes > 0 ? "动作链另保留 \(retainedChainBytes) 字节，可在动作链窗口重试或取消。\n" : ""
+        alert.informativeText=saved+pending+chain+"最多同时打开 6 个编辑窗口，估算的保留图像预算为 768 MiB（不是总进程内存上限）。请先保存并关闭不再需要的编辑窗口，再从历史记录打开图片。"
         alert.addButton(withTitle:"知道了");alert.runModal()
     }
     func translateImage(_ image:CGImage){
@@ -660,18 +857,18 @@ import ImageIO
             // Known-full capacity is refused before even a legacy raster decode.
             let currentEditors = controllers.compactMap { $0 as? ImageEditorController }.filter { !$0.isClosed }
             guard CaptureRecoveryPolicy.preflight(editorPolicy: editorAdmission, existingRasterBytes: editorCosts(currentEditors),
-                drainingBytes: drainingProjectionBytes(currentEditors), pendingBytes: pendingCaptureRecovery.retainedBytes) == nil else {
+                drainingBytes: drainingProjectionBytes(currentEditors), pendingBytes: retainedCaptureDraftBytes) == nil else {
                 if editorAdmissionNotices.recordRefusal() { showEditorAdmissionNotice() }; return
             }
             if let descriptor = record.editableCapture {
                 let editors = controllers.compactMap { $0 as? ImageEditorController }.filter { !$0.isClosed }
-                let retained = EditorAdmissionPolicy.sum(editorCosts(editors) + [pendingCaptureRecovery.retainedBytes])
+                let retained = EditorAdmissionPolicy.sum(editorCosts(editors) + [retainedCaptureDraftBytes])
                 let draining = drainingProjectionBytes(editors)
                 let redraw = EditorAdmissionPolicy.rasterBytes(bytesPerRow:
                     EditorAdmissionPolicy.rasterBytes(bytesPerRow: descriptor.base.width, height: 4),
                     height: descriptor.base.height)
                 let incoming = EditorAdmissionPolicy.sum([descriptor.decodedRasterByteEstimate, redraw, draining,
-                    pendingCaptureRecovery.retainedBytes])
+                    retainedCaptureDraftBytes])
                 guard editorAdmission.refusal(existingRasterBytes: editorCosts(editors),
                                               incomingRasterBytes: incoming) == nil else {
                     if editorAdmissionNotices.recordRefusal() { showEditorAdmissionNotice() }; return

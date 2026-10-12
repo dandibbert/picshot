@@ -84,12 +84,39 @@ struct SaveWorkflowSummary {
     }
 }
 
+enum SaveWorkflowFailure: LocalizedError {
+    case operation(Error)
+    case timedOut
+
+    var errorDescription: String? {
+        switch self {
+        case .operation(let error): return error.localizedDescription
+        case .timedOut: return "保存超过 5 分钟；原图和已完成文件会保留。"
+        }
+    }
+}
+
+enum SaveWorkflowTerminalOutcome {
+    case committed(SaveWorkflowSummary)
+    case cancelled
+    case failed(SaveWorkflowFailure)
+}
+
 @MainActor
 final class SaveWorkflowController: NSWindowController, NSWindowDelegate {
     enum State: Equatable { case ready, choosingFolder, encoding, saving, collision, completed, failed, closed }
     private(set) var state: State = .ready
     private(set) var result: SaveWorkflowSummary?
     private(set) var jobDrained = false
+    private var terminalFailure: SaveWorkflowFailure?
+    /// Closing is a cancellation request, not proof that publication failed.
+    /// Only drained work can classify the outcome, and a committed file wins.
+    var terminalOutcome: SaveWorkflowTerminalOutcome? {
+        guard jobDrained else { return nil }
+        if let result { return .committed(result) }
+        if let terminalFailure { return .failed(terminalFailure) }
+        return .cancelled
+    }
     let reservedInputBytes: Int
     let quietAutomatic: Bool
     private var savedForCopy: SaveWorkflowResult?
@@ -175,10 +202,7 @@ final class SaveWorkflowController: NSWindowController, NSWindowDelegate {
         guard state == .ready else { return }; spinner.startAnimation(nil)
         deadline = Task { @MainActor [weak self] in
             do { try await Task.sleep(nanoseconds: 300_000_000_000) } catch { return }
-            guard let self, self.result == nil, self.state != .closed else { return }
-            self.timedOut = true; self.token.cancel(); self.input?.clear(); self.saveInput?.clear(); self.task?.cancel()
-            self.showStatus("保存超时；已请求取消", detail: "保存超过 5 分钟；原图和已完成文件会保留。", detailName: "错误详情")
-            self.state = .failed; self.spinner.stopAnimation(nil); self.cancelPanels(); self.revealForDecision()
+            self?.expireDeadline()
         }
         task = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -234,6 +258,7 @@ final class SaveWorkflowController: NSWindowController, NSWindowDelegate {
             } catch is CancellationError {
                 if !self.timedOut { self.cancel() }
             } catch {
+                if self.terminalFailure == nil { self.terminalFailure = .operation(error) }
                 if self.state != .closed {
                     self.state = .failed; self.spinner.stopAnimation(nil); self.statusLabel.textColor = .systemRed
                     self.showStatus("保存失败；原图仍然保留，可关闭后重试。", detail: error.localizedDescription, detailName: "错误详情")
@@ -243,6 +268,15 @@ final class SaveWorkflowController: NSWindowController, NSWindowDelegate {
             }
             self.deadline?.cancel(); self.deadline = nil
         }
+    }
+    /// The production deadline and deterministic tests share this transition.
+    /// Record its cause before cancellation can resume a suspended operation.
+    func expireDeadline() {
+        guard result == nil, !jobDrained, state != .closed else { return }
+        terminalFailure = .timedOut
+        timedOut = true; token.cancel(); input?.clear(); saveInput?.clear(); task?.cancel()
+        showStatus("保存超时；已请求取消", detail: "保存超过 5 分钟；原图和已完成文件会保留。", detailName: "错误详情")
+        state = .failed; spinner.stopAnimation(nil); cancelPanels(); revealForDecision()
     }
     private func prepareArtifact() async throws -> ImageExportArtifact {
         if let artifact { return artifact }

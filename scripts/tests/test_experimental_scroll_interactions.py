@@ -501,15 +501,23 @@ class WorkflowSelectionTests(unittest.TestCase):
             module=path.relative_to(REPO/'Tests').parts[0]
             inventory.extend(module+'.'+classes[0]+'/'+method for method in methods)
         inventory=sorted(inventory)
-        self.assertEqual(len(inventory),2208)
-        self.assertEqual(len(set(inventory)),2208)
+        self.assertEqual(len(inventory),2303)
+        self.assertEqual(len(set(inventory)),2303)
         live=json.loads((REPO/'scripts/live-scroll-additive-tests.json').read_text())
         self.assertEqual(len(live),156);self.assertTrue(set(live).issubset(inventory))
         feedback=json.loads((REPO/'scripts/save-feedback-native-tests.json').read_text())
         with patch.object(C, 'load', return_value=feedback):
             feedback_added=C.feedback_additions(inventory)
         self.assertEqual(len(feedback_added),5)
-        original=[name for name in inventory if name not in set(live) | feedback_added]
+        chain=json.loads((REPO/'scripts/capture-chain-native-tests.json').read_text())
+        with patch.object(C, 'load', return_value=chain):
+            chain_added=C.chain_additions(inventory)
+        self.assertEqual(len(chain_added),95)
+        for bad in ({}, {'added':chain['added'][:-1], 'focused':chain['focused']},
+                    {**chain,'unexpected':0}):
+            with patch.object(C, 'load', return_value=bad), self.assertRaises(ValueError):
+                C.chain_additions(inventory)
+        original=[name for name in inventory if name not in set(live) | feedback_added | chain_added]
         self.assertEqual(len(original),2047)
         self.assertEqual(hashlib.sha256(('\n'.join(original)+'\n').encode()).hexdigest(),
                          '926ac5674df90163b949fe461f0d4589ef72c8fc3215fa00b927564aae57cb44')

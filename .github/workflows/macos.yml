@@ -23,6 +23,12 @@ jobs:
       run: |
         python3 -m unittest discover -s scripts/tests -p 'test_live_scroll_png_pair.py'
         python3 -O -m unittest discover -s scripts/tests -p 'test_live_scroll_png_pair.py'
+    - name: Check independent capture-chain evidence contracts
+      if: ${{ contains(github.event.head_commit.message || '', '[capture-chain]') }}
+      timeout-minutes: 2
+      run: |
+        python3 -m unittest discover -s scripts/tests -p 'test_capture_chain_demo.py'
+        python3 -O -m unittest discover -s scripts/tests -p 'test_capture_chain_demo.py'
     - name: Build native dependencies
       timeout-minutes: 15
       run: python3 scripts/run-bounded-command.py --timeout-seconds 840 --log dist/live-scroll-dependencies.log --report dist/live-scroll-dependencies.json -- python3 scripts/build-native-codecs.py --arch arm64
@@ -44,6 +50,24 @@ jobs:
         mkdir -p dist/live-scroll-demo
         swift scripts/launch-smoke-app.swift "$PWD/dist/PicShot.app" "$PWD/dist/live-scroll-demo/demo.json"
         python3 -c 'import json; r=json.load(open("dist/live-scroll-demo/demo.json")); assert r["status"] == "passed", r'
+    - name: Demonstrate named capture-chain recovery through actual native controls
+      if: ${{ always() && contains(github.event.head_commit.message || '', '[capture-chain]') && steps.package_live_scroll.outcome == 'success' }}
+      timeout-minutes: 5
+      env:
+        PICSHOT_CAPTURE_CHAIN_DEMO_ONLY: '1'
+      run: |
+        mkdir -p dist/capture-chain-demo
+        swift scripts/launch-smoke-app.swift "$PWD/dist/PicShot.app" "$PWD/dist/capture-chain-demo/demo.json"
+        python3 scripts/check-capture-chain-demo.py --report dist/capture-chain-demo/demo.json --source "$GITHUB_SHA"
+    - name: Preserve early native capture-chain evidence
+      if: ${{ always() && contains(github.event.head_commit.message || '', '[capture-chain]') && steps.package_live_scroll.outcome == 'success' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Capture-Chain-Demo-${{ github.sha }}
+        path: dist/capture-chain-demo/
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 6
     - name: Preserve early native scrolling demonstration
       if: ${{ always() && steps.package_live_scroll.outcome == 'success' }}
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -94,6 +118,25 @@ jobs:
         passed,skipped=native.case_results(Path('dist/live-scroll-save-feedback-tests.log').read_text(),expected)
         native.need(not skipped,'Save feedback cases cannot be skipped')
         Path('dist/live-scroll-save-feedback-inventory.json').write_text(json.dumps({'passed':passed,'skipped':skipped,'count':len(expected)},indent=2)+'\n')
+        PYTHON
+    - name: Verify chain execution cancellation catalog and compatible settings
+      if: ${{ always() && contains(github.event.head_commit.message || '', '[capture-chain]') && steps.compile_live_scroll_tests.outcome == 'success' }}
+      timeout-minutes: 8
+      run: |
+        python3 scripts/run-bounded-command.py --timeout-seconds 420 --log dist/capture-chain-tests.log --report dist/capture-chain-tests.json -- swift test --skip-build --filter 'CaptureChain|SaveWorkflowDelivery|SettingsAndMenuTests|RecordingHotKeyTests'
+        python3 - <<'PYTHON'
+        import importlib.util,json
+        from pathlib import Path
+        spec=importlib.util.spec_from_file_location('native','scripts/native-test-shards.py')
+        native=importlib.util.module_from_spec(spec);spec.loader.exec_module(native)
+        inventory=json.loads(Path('scripts/capture-chain-native-tests.json').read_text())
+        native.need(type(inventory) is dict and set(inventory)=={'added','focused'}, 'Chain inventory schema differs')
+        expected=inventory['focused']
+        native.need(type(expected) is list and expected==sorted(set(expected)) and expected, 'Chain focused inventory differs')
+        native.need(set(inventory['added']).issubset(expected), 'Chain focused inventory omitted an added method')
+        passed,skipped=native.case_results(Path('dist/capture-chain-tests.log').read_text(),expected)
+        native.need(not skipped,'Capture chain cases cannot be skipped')
+        Path('dist/capture-chain-test-inventory.json').write_text(json.dumps({'passed':passed,'skipped':skipped,'count':len(expected)},indent=2)+'\n')
         PYTHON
     # One diagnostic pair only; ordinary product defaults remain unchanged.
     # Existing40min job cap is independent of individual worst-case stage bounds.
@@ -164,6 +207,9 @@ jobs:
           dist/live-scroll-*.log
           dist/live-scroll-*.json
           dist/live-scroll-demo/
+          dist/capture-chain-demo/
+          dist/capture-chain-*.log
+          dist/capture-chain-*.json
         if-no-files-found: error
         retention-days: 14
         compression-level: 6
@@ -557,7 +603,7 @@ jobs:
           python3 -m unittest discover -s scripts/tests -p test_native_test_shards.py -v
           python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/native-test-discovery.log --report dist/native-test-discovery-report.json -- swift test list --skip-build
           python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$NATIVE_TEST_PROCESS_COUNT" --output dist/native-tests-plan.json
-          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$FOCUSED_TEST_PROCESS_COUNT" --selection-regex 'LiveScroll|AnnotationStyle|LocalAnnotationShortcut|PortableAnnotationPreferences|PortableSettings|AnnotationToolbarOrder|DrawingRaster|EditableProductResource|EditableProductRetirement|EditableComponent|PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|AnnotationEditing|CaptureAspectRatio|CaptureRatio|MultiWindow|ImageOutputDecoration|EditorOutput|PinOriginalCurrent|ManualScroll|ScrollPreview|ScrollSequencePreview|AnnotationFreehand|AnnotationTextLine|NumberedCallout|AutomaticMosaic|RepeatedRegion|AutomaticPinOCR|PinOCR|TextResultSourceSelection|PinManagement|PinWorkflow|LaTeXPin|PinLaTeX|PinGroup|PinDesktop|EditorToolbarHierarchy|SaveWorkflow|OwnedVideoExportStage|ImageBacking|Codec|NativeExport|AnimatedWebP|WebPContainer|RecordingWebP|CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingInput|RecordingHotKey|RecordingTransport|RecordingCommandCoordinator|SettingsAndMenuTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' --output dist/focused-tests-plan.json
+          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$FOCUSED_TEST_PROCESS_COUNT" --selection-regex 'CaptureChain|LiveScroll|AnnotationStyle|LocalAnnotationShortcut|PortableAnnotationPreferences|PortableSettings|AnnotationToolbarOrder|DrawingRaster|EditableProductResource|EditableProductRetirement|EditableComponent|PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|AnnotationEditing|CaptureAspectRatio|CaptureRatio|MultiWindow|ImageOutputDecoration|EditorOutput|PinOriginalCurrent|ManualScroll|ScrollPreview|ScrollSequencePreview|AnnotationFreehand|AnnotationTextLine|NumberedCallout|AutomaticMosaic|RepeatedRegion|AutomaticPinOCR|PinOCR|TextResultSourceSelection|PinManagement|PinWorkflow|LaTeXPin|PinLaTeX|PinGroup|PinDesktop|EditorToolbarHierarchy|SaveWorkflow|OwnedVideoExportStage|ImageBacking|Codec|NativeExport|AnimatedWebP|WebPContainer|RecordingWebP|CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingInput|RecordingHotKey|RecordingTransport|RecordingCommandCoordinator|SettingsAndMenuTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' --output dist/focused-tests-plan.json
       - name: Reproduce settings interaction and recording regressions
         id: current_gate_11
         # Additive early reproduction preserves the five recording and twelve settings UI IDs,
@@ -904,7 +950,16 @@ jobs:
                   and not (set(feedback_added) & set(feedback['baseline241']))
                   and sorted(feedback['baseline241'] + feedback_added) == [case for case in inventory if case.startswith('PicShotTests.SaveWorkflowUITests/')],
                   'Save feedback class lost or added an unrecorded method')
-              additions = set(added) | set(feedback_added)
+              chain = json.loads(native.bounded_text(Path('scripts/capture-chain-native-tests.json'), 128*1024))
+              native.need(type(chain) is dict and set(chain) == {'added', 'focused'}, 'Chain inventory schema differs')
+              chain_added = chain['added']
+              native.need(type(chain_added) is list and len(chain_added) == 95 and chain_added == sorted(set(chain_added))
+                  and all(native.SPECIFIER.fullmatch(case) and ('.CaptureChain' in case or '.SaveWorkflowDeliveryTests/' in case) for case in chain_added),
+                  'Explicit chain additions are invalid')
+              native.need(set(chain_added).issubset(inventory)
+                  and chain_added == [case for case in inventory if '.CaptureChain' in case or '.SaveWorkflowDeliveryTests/' in case],
+                  'Chain classes lost or added an unrecorded method')
+              additions = set(added) | set(feedback_added) | set(chain_added)
               original = [case for case in inventory if case not in additions]
               original_shards = [[case for case in shard['tests'] if case not in additions] for shard in plan['shards']]
               native.need(len(original) == 2047 and len({case.split('/')[0] for case in original}) == 232
@@ -919,6 +974,7 @@ jobs:
               record.update(planSHA256=digest(plan_path), discoveredCount=len(inventory), discoveredClassCount=len({case.split('/')[0] for case in inventory}),
                   preserved214Methods=len(original), additiveLiveScrollMethods=len(added), additiveLiveScrollIDs=added,
                   additiveSaveFeedbackMethods=len(feedback_added), additiveSaveFeedbackIDs=feedback_added,
+                  additiveCaptureChainMethods=len(chain_added), additiveCaptureChainIDs=chain_added,
                   discoverySHA256=digest(Path('dist/native-test-discovery.log')),
                   fixtureSHA256=digest(Path('Tests/PicShotTests/PinAnchoredEditingTests.swift')))
               for label, expected in (('method', [method]), ('class', class_ids)):
@@ -4324,7 +4380,7 @@ jobs:
           python3 -m unittest discover -s scripts/tests -p test_native_test_shards.py -v
           python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/native-test-discovery.log --report dist/native-test-discovery-report.json -- swift test list --skip-build
           python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$PICSHOT_REMAINDER_SOURCE" --process-count "$NATIVE_TEST_PROCESS_COUNT" --output dist/native-tests-plan.json
-          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$PICSHOT_REMAINDER_SOURCE" --process-count "$FOCUSED_TEST_PROCESS_COUNT" --selection-regex 'LiveScroll|AnnotationStyle|LocalAnnotationShortcut|PortableAnnotationPreferences|PortableSettings|AnnotationToolbarOrder|DrawingRaster|EditableProductResource|EditableProductRetirement|EditableComponent|PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|AnnotationEditing|CaptureAspectRatio|CaptureRatio|MultiWindow|ImageOutputDecoration|EditorOutput|PinOriginalCurrent|ManualScroll|ScrollPreview|ScrollSequencePreview|AnnotationFreehand|AnnotationTextLine|NumberedCallout|AutomaticMosaic|RepeatedRegion|AutomaticPinOCR|PinOCR|TextResultSourceSelection|PinManagement|PinWorkflow|LaTeXPin|PinLaTeX|PinGroup|PinDesktop|EditorToolbarHierarchy|SaveWorkflow|OwnedVideoExportStage|ImageBacking|Codec|NativeExport|AnimatedWebP|WebPContainer|RecordingWebP|CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingInput|RecordingHotKey|RecordingTransport|RecordingCommandCoordinator|SettingsAndMenuTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' --output dist/focused-tests-plan.json
+          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$PICSHOT_REMAINDER_SOURCE" --process-count "$FOCUSED_TEST_PROCESS_COUNT" --selection-regex 'CaptureChain|LiveScroll|AnnotationStyle|LocalAnnotationShortcut|PortableAnnotationPreferences|PortableSettings|AnnotationToolbarOrder|DrawingRaster|EditableProductResource|EditableProductRetirement|EditableComponent|PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|AnnotationEditing|CaptureAspectRatio|CaptureRatio|MultiWindow|ImageOutputDecoration|EditorOutput|PinOriginalCurrent|ManualScroll|ScrollPreview|ScrollSequencePreview|AnnotationFreehand|AnnotationTextLine|NumberedCallout|AutomaticMosaic|RepeatedRegion|AutomaticPinOCR|PinOCR|TextResultSourceSelection|PinManagement|PinWorkflow|LaTeXPin|PinLaTeX|PinGroup|PinDesktop|EditorToolbarHierarchy|SaveWorkflow|OwnedVideoExportStage|ImageBacking|Codec|NativeExport|AnimatedWebP|WebPContainer|RecordingWebP|CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingInput|RecordingHotKey|RecordingTransport|RecordingCommandCoordinator|SettingsAndMenuTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' --output dist/focused-tests-plan.json
       - name: Require exact2148 discovery and preserve accepted214 method assignments
         id: inventory
         if: ${{ !cancelled() && steps.provenance.outcome == 'success' && steps.discovery.outcome == 'success' }}
@@ -4605,7 +4661,16 @@ jobs:
                   and not (set(feedback_added) & set(feedback['baseline241']))
                   and sorted(feedback['baseline241'] + feedback_added) == [case for case in inventory if case.startswith('PicShotTests.SaveWorkflowUITests/')],
                   'Save feedback class lost or added an unrecorded method')
-              additions = set(added) | set(feedback_added)
+              chain = json.loads(native.bounded_text(Path('scripts/capture-chain-native-tests.json'), 128*1024))
+              native.need(type(chain) is dict and set(chain) == {'added', 'focused'}, 'Chain inventory schema differs')
+              chain_added = chain['added']
+              native.need(type(chain_added) is list and len(chain_added) == 95 and chain_added == sorted(set(chain_added))
+                  and all(native.SPECIFIER.fullmatch(case) and ('.CaptureChain' in case or '.SaveWorkflowDeliveryTests/' in case) for case in chain_added),
+                  'Explicit chain additions are invalid')
+              native.need(set(chain_added).issubset(inventory)
+                  and chain_added == [case for case in inventory if '.CaptureChain' in case or '.SaveWorkflowDeliveryTests/' in case],
+                  'Chain classes lost or added an unrecorded method')
+              additions = set(added) | set(feedback_added) | set(chain_added)
               original = [case for case in inventory if case not in additions]
               original_shards = [[case for case in shard['tests'] if case not in additions] for shard in plan['shards']]
               native.need(len(original) == 2047 and len({case.split('/')[0] for case in original}) == 232
@@ -4620,6 +4685,7 @@ jobs:
               record.update(planSHA256=digest(plan_path), discoveredCount=len(inventory), discoveredClassCount=len({case.split('/')[0] for case in inventory}),
                   preserved214Methods=len(original), additiveLiveScrollMethods=len(added), additiveLiveScrollIDs=added,
                   additiveSaveFeedbackMethods=len(feedback_added), additiveSaveFeedbackIDs=feedback_added,
+                  additiveCaptureChainMethods=len(chain_added), additiveCaptureChainIDs=chain_added,
                   discoverySHA256=digest(Path('dist/native-test-discovery.log')),
                   fixtureSHA256=digest(Path('Tests/PicShotTests/PinAnchoredEditingTests.swift')))
               for label, expected in (('method', [method]), ('class', class_ids)):
