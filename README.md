@@ -16,9 +16,13 @@ Historical ARM **0.19.1/build 185** acceptance covers static WebP's removal of a
 
 Historical ARM **0.19.0/build 180** added local preference/hotkey JSON import/export and ordering of 14 toolbar families; per-tool presets and local tool remapping were absent from that build. ZIP version 18 and guide version 26 were delivered on 10 October 2026 at 08:43:13 UTC; DMG version 18 was saved only. Intel 180 failed its early GIF gate. The [current ledger](docs/PARITY.md#current-arm-0210-and-retained-intel-011-acceptance) preserves these historical boundaries separately from build 191.
 
-## Continuous scrolling work in progress
+## Experimental capture workflow
 
-The new region-first live capture candidate has passed its 84 focused native tests and an actual AppKit demonstration of ordinary numbered text, a fixed header, reversal/recovery and an axis-constrained capture-frame move. The final plain-text, illustrated and moved-region images exactly matched independent native reference pixels. The demo uses an owned-window frame provider through the production session; ScreenCaptureKit permission was unavailable on CI, so it does **not** prove desktop acquisition, Retina crop/scaling or stream exclusion/teardown. Repeated-session resources and full installed acceptance remain pending; **0.21.0/build214 above is still the accepted installer**. See [live scrolling](docs/LiveScroll.md).
+ARM **0.22.0/build248** at `fe284f21588febb65c846ba68a3f250ca906f9bc` has qualified for the explicitly experimental distribution. It adds [named local capture chains](docs/CaptureChains.md): one region/preset capture, ordered Save PNG/checked Copy/durable Pin, retry only unfinished work and cancellation that preserves already committed outputs. It also keeps Save status visible after long paths or the capture parent's closure. JavaScript scripting is not implemented in this delivered feature set.
+
+The current [live scrolling](docs/LiveScroll.md) path includes direct axis drag, pause-excluded active timing, honest stale-position markers, matched-frame-gated Auto and checked Copy/transactional Save/Pin. Controlled native demonstrations use generated window pixels through the production session; they do **not** prove real ScreenCaptureKit permission/callbacks, Retina crop/scaling, window exclusion, global event routing or third-party scrolling quality.
+
+Build248 independently covers all 2,303 native/model IDs and actual ZIP/DMG chain interactions and exact output pixels. Original227 repeated-scroll memory failures remain unresolved and were not rerun or reclassified. The separate default 4K workflow still costs approximately 407.55 MiB RSS after its first cycle, 428.69 MiB at final cleanup and 723.45 MiB kernel peak. Experimental workflow verification is not full memory qualification or complete PixPin parity. Stable214 above remains unchanged; Intel248 native/install stages were unrun after a portable-contract timeout.
 
 ## Build
 
