@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 import unittest
 from product_launcher_source_contract import (CODEC_STAGING_LAUNCHER_HOOKS,
-    EARLY_RECORDING_LAUNCHER_HOOKS, LIVE_SCROLL_LAUNCHER_HOOKS, CAPTURE_CHAIN_LAUNCHER_HOOKS,
+    EARLY_RECORDING_LAUNCHER_HOOKS, LIVE_SCROLL_LAUNCHER_HOOKS, CAPTURE_CHAIN_LAUNCHER_HOOKS, TEXT_SCRIPT_LAUNCHER_HOOKS,
     without_capture_chain_launcher_hooks,
     without_live_scroll_launcher_hooks, without_pin_ui_diagnostic_launcher_hooks,
     without_staging_only_launcher_hooks, without_codec_staging_launcher_hooks,
@@ -91,6 +91,9 @@ class ProductSourceBindingTests(unittest.TestCase):
         for index,(hook,_) in enumerate(LIVE_SCROLL_LAUNCHER_HOOKS):
             for current, previous in CAPTURE_CHAIN_LAUNCHER_HOOKS:
                 if previous and previous in hook: hook = hook.replace(previous, current)
+            for current, previous in TEXT_SCRIPT_LAUNCHER_HOOKS:
+                if previous and previous in hook: hook = hook.replace(previous, current)
+            self.assertEqual(source.count(hook),1)
             for disposition,replacement in [('missing',''),('duplicated',hook+hook),
                     ('changed',hook.replace('liveScrollDiagnostic','otherDiagnostic').replace('LIVE_SCROLL','OTHER_SCROLL').replace('Owned smoke','Other smoke'))]:
                 self.assertNotEqual(replacement,hook)
@@ -104,6 +107,9 @@ class ProductSourceBindingTests(unittest.TestCase):
         self.assertNotIn('PICSHOT_CAPTURE_CHAIN_DEMO_ONLY',restored)
         self.assertEqual(len(CAPTURE_CHAIN_LAUNCHER_HOOKS),7)
         for index,(hook,_) in enumerate(CAPTURE_CHAIN_LAUNCHER_HOOKS):
+            for current, previous in TEXT_SCRIPT_LAUNCHER_HOOKS:
+                if previous and previous in hook: hook = hook.replace(previous, current)
+            self.assertEqual(source.count(hook),1)
             for replacement in ('',hook+hook,hook.replace('captureChainDiagnostic','unownedDiagnostic').replace('CAPTURE_CHAIN','UNOWNED_CHAIN')):
                 self.assertNotEqual(replacement,hook)
                 with self.subTest(hook=index),self.assertRaises(AssertionError):

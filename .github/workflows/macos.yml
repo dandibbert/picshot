@@ -79,6 +79,8 @@ jobs:
       if: ${{ contains(github.event.head_commit.message || '', '[text-script-integration]') }}
       timeout-minutes: 2
       run: |
+        python3 -m unittest discover -s scripts/tests -p 'test_text_script_launcher_source.py'
+        python3 -O -m unittest discover -s scripts/tests -p 'test_text_script_launcher_source.py'
         python3 -m unittest discover -s scripts/tests -p 'test_text_script_package.py'
         python3 -O -m unittest discover -s scripts/tests -p 'test_text_script_package.py'
         python3 -m unittest discover -s scripts/tests -p 'test_text_script_demo.py'

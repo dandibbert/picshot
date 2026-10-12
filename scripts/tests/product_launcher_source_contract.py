@@ -1,3 +1,44 @@
+"""Counted literal reversals preserve historical launcher identity checks."""
+
+# Candidate255 added only these nine text-script diagnostic hooks. Reverse them
+# before every older chain/deadline/scroll/pin/staging/product restoration. Never
+# accept a missing selector as an already-normalized input at this boundary.
+TEXT_SCRIPT_LAUNCHER_HOOKS = (
+    ('let textScriptDiagnostic = ProcessInfo.processInfo.environment["PICSHOT_TEXT_SCRIPT_DEMO_ONLY"] == "1"\n', ''),
+    ('"PICSHOT_TEXT_SCRIPT_DEMO_ONLY", ', ''),
+    ('if liveScrollDiagnostic || captureChainDiagnostic || textScriptDiagnostic || recordingInputExportOnly || pinUIDiagnostic != nil {\n',
+     'if liveScrollDiagnostic || captureChainDiagnostic || recordingInputExportOnly || pinUIDiagnostic != nil {\n'),
+    ('"appTimeoutSeconds": (captureChainDiagnostic || textScriptDiagnostic) ? 240 : 600, "appCleanupSeconds": [3, 3],',
+     '"appTimeoutSeconds": captureChainDiagnostic ? 240 : 600, "appCleanupSeconds": [3, 3],'),
+    ('let effectiveTimeout: TimeInterval = (captureChainDiagnostic || textScriptDiagnostic) ? 240 : timeout\n',
+     'let effectiveTimeout: TimeInterval = captureChainDiagnostic ? 240 : timeout\n'),
+    ('    if liveScrollDiagnostic || captureChainDiagnostic || textScriptDiagnostic || recordingInputExportOnly || ProcessInfo.processInfo.environment["PICSHOT_CODEC_STAGING_MODE"] != nil || ProcessInfo.processInfo.environment["PICSHOT_EDITABLE_PRODUCT_MODE"] != nil ||\n',
+     '    if liveScrollDiagnostic || captureChainDiagnostic || recordingInputExportOnly || ProcessInfo.processInfo.environment["PICSHOT_CODEC_STAGING_MODE"] != nil || ProcessInfo.processInfo.environment["PICSHOT_EDITABLE_PRODUCT_MODE"] != nil ||\n'),
+    ('        if recordingInputExportOnly || liveScrollDiagnostic || captureChainDiagnostic || textScriptDiagnostic {\n'
+     '            report["earlyWitnessOnly"] = recordingInputExportOnly\n'
+     '            report["liveScrollDiagnosticOnly"] = liveScrollDiagnostic\n'
+     '            report["captureChainDiagnosticOnly"] = captureChainDiagnostic\n'
+     '            report["textScriptDiagnosticOnly"] = textScriptDiagnostic\n',
+     '        if recordingInputExportOnly || liveScrollDiagnostic || captureChainDiagnostic {\n'
+     '            report["earlyWitnessOnly"] = recordingInputExportOnly\n'
+     '            report["liveScrollDiagnosticOnly"] = liveScrollDiagnostic\n'
+     '            report["captureChainDiagnosticOnly"] = captureChainDiagnostic\n'),
+    ('        if (liveScrollDiagnostic || captureChainDiagnostic || textScriptDiagnostic || recordingInputExportOnly || ProcessInfo.processInfo.environment["PICSHOT_CODEC_STAGING_MODE"] != nil) && !launchedIdentityMatches() {\n',
+     '        if (liveScrollDiagnostic || captureChainDiagnostic || recordingInputExportOnly || ProcessInfo.processInfo.environment["PICSHOT_CODEC_STAGING_MODE"] != nil) && !launchedIdentityMatches() {\n'),
+    ('if let launched, !launched.isTerminated, !(recordingInputExportOnly || liveScrollDiagnostic || captureChainDiagnostic || textScriptDiagnostic) || launchedIdentityMatches(),\n',
+     'if let launched, !launched.isTerminated, !(recordingInputExportOnly || liveScrollDiagnostic || captureChainDiagnostic) || launchedIdentityMatches(),\n'),
+)
+
+
+def without_text_script_launcher_hooks(test, source):
+    for hook, replacement in TEXT_SCRIPT_LAUNCHER_HOOKS:
+        test.assertEqual(source.count(hook), 1, "Missing, duplicated or changed text-script launcher hook")
+        source = source.replace(hook, replacement, 1)
+    test.assertNotIn('textScriptDiagnostic', source, "Unreviewed text-script launcher addition")
+    test.assertNotIn('PICSHOT_TEXT_SCRIPT_', source, "Unreviewed text-script launcher selector")
+    return source
+
+
 # Exactly counted chain deadline hooks; preserve all existing source hashes/assertions.
 CAPTURE_CHAIN_TIMEOUT_HOOKS = (('within \\(Int(effectiveTimeout)) seconds\\n', 'within \\(Int(timeout)) seconds\\n'),
  ('"appTimeoutSeconds": captureChainDiagnostic ? 240 : 600, "appCleanupSeconds": [3, 3],',
@@ -10,6 +51,7 @@ CAPTURE_CHAIN_TIMEOUT_HOOKS = (('within \\(Int(effectiveTimeout)) seconds\\n', '
   'let deadline = Date().addingTimeInterval(timeout)\n'))
 
 def without_capture_chain_timeout_hooks(test, source):
+    source = without_text_script_launcher_hooks(test, source)
     for hook, replacement in CAPTURE_CHAIN_TIMEOUT_HOOKS:
         test.assertEqual(source.count(hook), 1, "Missing, duplicated or changed chain timeout hook")
         source = source.replace(hook, replacement, 1)
