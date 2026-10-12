@@ -400,14 +400,14 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
         inventory = self.current_source_inventory()
         plan = shards.make_plan(inventory, '', 'a' * 40, process_count=4)
         record = self.execute_pin_inventory_guard(plan)
-        self.assertEqual((record['discoveredCount'], record['discoveredClassCount']), (2160, 246))
+        self.assertEqual((record['discoveredCount'], record['discoveredClassCount']), (2178, 247))
         live = json.loads((Path(__file__).parents[1] / 'live-scroll-additive-tests.json').read_text())
-        self.assertEqual(len(live), 113)
+        self.assertEqual(len(live), 131)
         self.assertEqual(live, sorted(set(live)))
         self.assertEqual(record['additiveLiveScrollIDs'], live)
         self.assertEqual(record['preserved214Methods'], 2047)
         self.assertEqual(hashlib.sha256(('\n'.join(live) + '\n').encode()).hexdigest(),
-                         'e9161499ffbd731fb2e2cc30e457cfbaacf1f33f33257b76fba11b189d5dd191')
+                         '82a75f25e6f31bec28525fbfeb612342d7eddec66e8b8ed8ac79ab6447001d3e')
         self.assertTrue(set(live).issubset(inventory))
         live_inventory, live_plan = inventory, plan
         inventory = [name for name in live_inventory if name not in live]
@@ -415,7 +415,7 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(('\n'.join(inventory) + '\n').encode()).hexdigest(),
                          '926ac5674df90163b949fe461f0d4589ef72c8fc3215fa00b927564aae57cb44')
         plan = shards.make_plan(inventory, '', 'a' * 40, process_count=4)
-        self.assertEqual([len(shard['tests']) for shard in live_plan['shards']], [582, 482, 571, 525])
+        self.assertEqual([len(shard['tests']) for shard in live_plan['shards']], [582, 482, 574, 540])
         for old_shard, current_shard in zip(plan['shards'], live_plan['shards']):
             self.assertEqual([name for name in current_shard['tests'] if name not in live], old_shard['tests'])
         live_selection = re.search(r"--selection-regex '([^']+)'", self.step(
@@ -424,7 +424,7 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
             current_focused = shards.make_plan(live_inventory, live_selection, 'a' * 40, process_count=count)
             old_focused = shards.make_plan(inventory, live_selection, 'a' * 40, process_count=count)
             self.assertEqual(current_focused['selectedTests'], sorted(old_focused['selectedTests'] + live))
-            self.assertEqual(len(current_focused['selectedTests']), 1628)
+            self.assertEqual(len(current_focused['selectedTests']), 1646)
         pins = json.loads((Path(__file__).parents[1] / 'pin-management-native-additions.json').read_text())
         self.assertEqual(len(pins), 49)
         self.assertEqual(pins, sorted(set(pins)))
