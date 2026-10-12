@@ -423,6 +423,110 @@ def chain_additions(inventory):
     return set(added)
 
 
+CHAIN_EVIDENCE_FILES = {'demo.json', 'demo.json.launcher.json', 'capture-chain-demo.json',
+    'chain-source-numbered.png', 'chain-saved.png', 'chain-copied.png', 'chain-pin.png',
+    'chain-pin-reloaded.png', 'chain-close-saved.png', 'chain-catalog.json', 'chain-close-catalog.json'} | {
+    phase + '-' + mode + suffix for phase in ('chain-manager', 'chain-copy-failure', 'chain-result', 'chain-close-failure')
+    for mode in ('light', 'dark') for suffix in ('.png', '-layout.json')}
+
+
+def installed_capture_chains(source, formats):
+    """Rebind retained receipts after smoke removed its installed working bundles.
+
+    The strict chain checker already decoded every raster while each exact app
+    existed. This final read requires those unchanged bytes, identities and both
+    successful bounded commands; it does not rerun native work or memory cells.
+    """
+    need(type(formats.get('formats')) is dict and set(formats['formats']) == {'zip', 'dmg'},
+         'Both actual installed formats required for capture chains')
+    checked = {}
+    for extension in ('zip', 'dmg'):
+        root = Path('dist/evidence')/extension/'capture-chain'
+        need(root.is_dir() and not root.is_symlink(), 'Missing/symlinked installed chain directory')
+        installed = formats['formats'][extension]
+        app = installed.get('bundlePath')
+        need(type(app) is str and app.startswith('/') and '..' not in Path(app).parts
+             and app.endswith('/' + extension + '/PicShot.app'), 'Installed chain bundle path differs')
+        path = root/'capture-chain-receipt.json'
+        receipt = load(path)
+        fields(receipt, dict(schemaVersion=1, status='passed', installerAcceptance=False,
+            realScreenCaptureAcceptance=False, memoryQualification=False, exactDecodedOutputPixels=True,
+            savedReceiptPhysicalBytesVerified=True, unchangedMetadataOnlyCatalogVerified=True,
+            nativeOwnedActionRoute='PortableSettingsUIPreviewFixture.click: owned NSButton.mouseDown with queued mouseUp; NSTableView: owned-nextEvent-sendEvent',
+            scope='Installed native controls and output recipients with injected acquisition; bounded ownership observations only'),
+            extension + ' installed chain receipt')
+        identity = dict(bundlePath=app, executablePath=app+'/Contents/MacOS/PicShot',
+            **{key: source[key] for key in ('sourceCommit', 'build', 'version', 'architecture',
+                'executableSHA256', 'plistSHA256', 'buildInfoSHA256')})
+        fields(receipt.get('sourceIdentity'), identity, extension + ' chain source identity')
+        fields(installed, dict(buildVersion=source['build'], **{key: source[key] for key in
+            ('sourceCommit', 'version', 'architecture', 'executableSHA256', 'plistSHA256', 'buildInfoSHA256')}),
+            extension + ' chain installed identity')
+        hashes = receipt.get('evidenceSHA256')
+        need(type(hashes) is dict and set(hashes) == CHAIN_EVIDENCE_FILES, 'Complete fixed chain evidence set required')
+        total = 0
+        for name, expected in hashes.items():
+            need(type(expected) is str and re.fullmatch('[0-9a-f]{64}', expected), 'Invalid retained chain digest')
+            data = read(root/name)
+            total += len(data)
+            need(total <= 96*1024**2, 'Retained chain evidence exceeds96MiB')
+            need(hashlib.sha256(data).hexdigest() == expected, 'Installed chain evidence changed: '+name)
+        command_hashes = {}
+        for stem, timeout, command in (
+            ('launch', 270, ['swift', 'scripts/launch-smoke-app.swift', app, str((root/'demo.json').resolve())]),
+            ('check', 120, ['python3', 'scripts/check-capture-chain-demo.py', '--report',
+                            str((root/'demo.json').resolve()), '--source', source['sourceCommit']])):
+            report_path, log_path = root/(stem+'-report.json'), root/(stem+'.log')
+            run = load(report_path)
+            runner(run, timeout, 10, extension + ' chain '+stem)
+            fields(run, dict(schema_version=1, max_log_bytes=1048576, command=command), 'bounded chain '+stem)
+            need(log_path.is_file() and not log_path.is_symlink() and log_path.stat().st_size <= 1048576,
+                 'Missing/symlinked/oversized chain command log')
+            log = log_path.read_bytes()
+            need(len(log) <= 1048576 and type(run.get('log_bytes')) is int
+                 and type(run.get('output_bytes')) is int and run['log_bytes'] == run['output_bytes'] == len(log),
+                 'Chain command log byte counts differ')
+            command_hashes[report_path.name] = sha(report_path)
+            command_hashes[log_path.name] = hashlib.sha256(log).hexdigest()
+        checked[extension] = dict(receiptPath=str(path), receiptSHA256=sha(path), sourceIdentity=identity,
+            evidenceSHA256=hashes, boundedCommandSHA256=command_hashes)
+    need(checked['zip']['sourceIdentity']['bundlePath'] != checked['dmg']['sourceIdentity']['bundlePath'],
+         'Installed chain formats reused one bundle')
+    return checked
+
+
+def archive_capture_chains():
+    """Retain bounded per-format diagnostics even when a native witness failed."""
+    output = Path('dist/capture-chain-installed-evidence')
+    for extension in ('zip', 'dmg'):
+        root = Path('dist/evidence')/extension/'capture-chain'
+        if not root.exists():
+            continue
+        need(root.is_dir() and not root.is_symlink(), 'Unsafe installed chain evidence directory')
+        files = sorted(root.iterdir())
+        need(files and len(files) <= 40, 'Installed chain evidence file-count bound')
+        total = 0
+        for path in files:
+            need(path.is_file() and not path.is_symlink() and path.suffix in ('.json', '.png', '.log')
+                 and path.stat().st_size <= 16*1024**2, 'Unsafe/oversized installed chain evidence file')
+            total += path.stat().st_size
+        need(total <= 96*1024**2, 'Installed chain evidence exceeds96MiB')
+        for identity in (Path('dist/evidence/installed-format-identity.json'), ROOT/'source-identity.json',
+                         ROOT/'experimental-distribution.json'):
+            if identity.exists():
+                read(identity, 1024**2)
+                files.append(identity)
+        output.mkdir(parents=True, exist_ok=True)
+        target, partial = output/(extension+'.zip'), output/(extension+'.partial.zip')
+        need(not target.exists() and not target.is_symlink() and not partial.exists() and not partial.is_symlink(),
+             'Fresh installed chain archive destination required')
+        with zipfile.ZipFile(partial, 'x', zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+            for path in files:
+                archive.write(path, str(path))
+        need(partial.stat().st_size < 20*1024**2 - 65536, 'Installed chain archive exceeds20MiB')
+        partial.rename(target)
+
+
 def final():
     source = source_record()
     receipt = qualify()
@@ -435,6 +539,7 @@ def final():
         fields(formats.get('formats', {}).get(extension), dict(buildVersion=source['build'],
                **{key: source[key] for key in ('sourceCommit', 'version', 'architecture', 'executableSHA256',
                                              'plistSHA256', 'buildInfoSHA256')}), 'actual ' + extension)
+    chain_receipts = installed_capture_chains(source, formats)
     spec = importlib.util.spec_from_file_location('native', Path('scripts/native-test-shards.py'))
     native = importlib.util.module_from_spec(spec); spec.loader.exec_module(native)
     for kind, planfile, directory, reportfile in (
@@ -460,6 +565,7 @@ def final():
                   requiredWorkflowOutcomes={key: steps[key] for key in REQUIRED_GATES},
                   interactionReceiptSHA256=sha(ROOT/'interaction-receipt.json'),
                   installedFormatsSHA256=sha(Path('dist/evidence/installed-format-identity.json')),
+                  currentSourceInstalledChainFormats=chain_receipts,
                   requiresUserRealCaptureValidation=True, deliveryRepacked=False)
     save(ROOT/'experimental-distribution.json', record)
     for extension in ('zip', 'dmg'):
@@ -471,6 +577,7 @@ def final():
 
 
 def archive():
+    archive_capture_chains()
     # Only new experimental evidence is packed here. Ordinary evidence stays intact.
     files = sorted(path for root in (ROOT, EVIDENCE) if root.exists() for path in root.rglob('*') if path.is_file())
     files += [path for path in (Path('dist/experimental-scroll-installed.log'),

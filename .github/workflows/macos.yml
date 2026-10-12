@@ -535,6 +535,12 @@ jobs:
         run: |
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_experimental_scroll_interactions.py -v
           PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p test_experimental_scroll_interactions.py -v
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_capture_chain_demo.py -v
+          PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p test_capture_chain_demo.py -v
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_capture_chain_launcher_timeout.py -v
+          PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p test_capture_chain_launcher_timeout.py -v
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_installed_chain_qualification.py -v
+          PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p test_installed_chain_qualification.py -v
       - name: Check explicit live scrolling testing classification
         id: scroll_testing_contract
         if: ${{ !contains(github.event.head_commit.message || '', '[experimental-scroll-interactions]') }}
@@ -1132,6 +1138,26 @@ jobs:
         if: ${{ always() && contains(github.event.head_commit.message || '', '[experimental-scroll-interactions]') }}
         timeout-minutes: 3
         run: python3 scripts/check-experimental-scroll-interactions.py archive
+      - name: Upload bounded installed ZIP capture-chain evidence
+        if: ${{ always() && contains(github.event.head_commit.message || '', '[experimental-scroll-interactions]') }}
+        timeout-minutes: 2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Installed-ZIP-Capture-Chain-${{ matrix.arch }}-${{ github.sha }}
+          path: dist/capture-chain-installed-evidence/zip.zip
+          compression-level: 0
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Upload bounded installed DMG capture-chain evidence
+        if: ${{ always() && contains(github.event.head_commit.message || '', '[experimental-scroll-interactions]') }}
+        timeout-minutes: 2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Installed-DMG-Capture-Chain-${{ matrix.arch }}-${{ github.sha }}
+          path: dist/capture-chain-installed-evidence/dmg.zip
+          compression-level: 0
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Upload bounded current experimental scrolling evidence
         if: ${{ always() && contains(github.event.head_commit.message || '', '[experimental-scroll-interactions]') }}
         timeout-minutes: 2

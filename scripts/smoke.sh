@@ -211,6 +211,21 @@ PY
   else
     bash scripts/editable-annotation-smoke.sh "$app" "$PWD/dist/evidence/$format/editable-annotations" "$(git rev-parse HEAD)" functional
   fi
+  # Check this exact installed format before the EXIT trap removes its bundle.
+  # Acquisition is synthetic; existing broad smoke and resource gates stay above.
+  # Chain observation stays240s plus3s+3s owned cleanup;270s+10s stays below300s.
+  chain_evidence="$PWD/dist/evidence/$format/capture-chain"
+  test ! -e "$chain_evidence"
+  mkdir "$chain_evidence"
+  PICSHOT_CAPTURE_CHAIN_DEMO_ONLY=1 python3 scripts/run-bounded-command.py \
+    --timeout-seconds 270 --grace-seconds 10 --max-log-bytes 1048576 \
+    --log "$chain_evidence/launch.log" --report "$chain_evidence/launch-report.json" \
+    -- swift scripts/launch-smoke-app.swift "$app" "$chain_evidence/demo.json"
+  python3 scripts/run-bounded-command.py \
+    --timeout-seconds 120 --grace-seconds 10 --max-log-bytes 1048576 \
+    --log "$chain_evidence/check.log" --report "$chain_evidence/check-report.json" \
+    -- python3 scripts/check-capture-chain-demo.py \
+    --report "$chain_evidence/demo.json" --source "$(git rev-parse HEAD)"
 done
 # Preserve both complete installer smoke paths before the independent default
 # product gate. Four 620s application wrappers + 120s compilation + 300s decode
