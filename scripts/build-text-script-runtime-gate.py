@@ -87,6 +87,22 @@ def main():
                 raise RuntimeError('Test source copy changed')
             inventory.append({'path': str(source.relative_to(root)),
                               'bytes': source.stat().st_size, 'sha256': sha(source)})
+    helper_plists = {}
+    for name, filename, identifier in [
+            ('PicShotTextScriptHelper', 'text-script-helper-Info.plist', 'com.picshot.TextScriptHelper'),
+            ('PicShotTextScriptTransportFixture', 'text-script-transport-Info.plist', 'com.picshot.TextScriptTransportFixture')]:
+        plist_source = root / 'scripts' / filename
+        metadata = plistlib.loads(plist_source.read_bytes())
+        if metadata.get('CFBundleIdentifier') != identifier or metadata.get('CFBundleExecutable') != name:
+            raise RuntimeError('Embedded helper identity source differs')
+        destination = build / filename
+        shutil.copyfile(plist_source, destination)
+        helper_plists[name] = (destination, metadata)
+        inventory.append({'path': str(plist_source.relative_to(root)),
+                          'bytes': plist_source.stat().st_size, 'sha256': sha(plist_source)})
+    plist_reader = root / 'scripts' / 'read-signed-helper-plist.swift'
+    inventory.append({'path': str(plist_reader.relative_to(root)),
+                      'bytes': plist_reader.stat().st_size, 'sha256': sha(plist_reader)})
     package = '''// swift-tools-version: 5.9
 import PackageDescription
 let package = Package(name: "PicShotTextScriptDecisionGate", platforms: [.macOS(.v14)],
@@ -96,13 +112,17 @@ let package = Package(name: "PicShotTextScriptDecisionGate", platforms: [.macOS(
  targets: [.target(name: "PicShotTextScriptCore"),
            .target(name: "PicShotTextScriptProcess", dependencies: ["PicShotTextScriptCore"],
                    swiftSettings: [.define("TEXT_SCRIPT_GATE")]),
-           .executableTarget(name: "PicShotTextScriptHelper", dependencies: ["PicShotTextScriptCore"]),
-           .executableTarget(name: "PicShotTextScriptTransportFixture", dependencies: ["PicShotTextScriptCore"]),
+           .executableTarget(name: "PicShotTextScriptHelper", dependencies: ["PicShotTextScriptCore"],
+             linkerSettings: [.unsafeFlags(["-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist", "-Xlinker", __HELPER_PLIST__])]),
+           .executableTarget(name: "PicShotTextScriptTransportFixture", dependencies: ["PicShotTextScriptCore"],
+             linkerSettings: [.unsafeFlags(["-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist", "-Xlinker", __FIXTURE_PLIST__])]),
            .executableTarget(name: "PicShotTextScriptGate", dependencies: ["PicShotTextScriptCore", "PicShotTextScriptProcess"],
                              swiftSettings: [.define("TEXT_SCRIPT_GATE")]),
            .testTarget(name: "PicShotTextScriptCoreTests", dependencies: ["PicShotTextScriptCore"]),
            .testTarget(name: "PicShotTextScriptHelperTests", dependencies: ["PicShotTextScriptCore", "PicShotTextScriptHelper"])])
 '''
+    package = package.replace('__HELPER_PLIST__', json.dumps(str(helper_plists['PicShotTextScriptHelper'][0])))
+    package = package.replace('__FIXTURE_PLIST__', json.dumps(str(helper_plists['PicShotTextScriptTransportFixture'][0])))
     (build / 'Package.swift').write_text(package)
     # This package has no external dependencies and cannot invoke the application's
     # codec/model build paths. Compile exactly the inventoried Swift source copies.
@@ -163,8 +183,13 @@ let package = Package(name: "PicShotTextScriptDecisionGate", platforms: [.macOS(
         cdhash = re.search(r'^CDHash=([0-9a-f]+)$', signing_text, re.MULTILINE)
         if not identifier or identifier.group(1) != entry['identifier'] or not cdhash:
             raise RuntimeError('Final helper signing identity differs')
+        observed_plist = json.loads(run(['xcrun', 'swift', str(plist_reader), str(child), entry['identifier']], timeout=30).stdout)
+        if observed_plist != helper_plists[child.name][1]:
+            raise RuntimeError('Signed embedded helper Info.plist differs after outer signing')
         entry.update({'entitlements': decoded, 'sha256': sha(child), 'bytes': child.stat().st_size,
-                      'observedIdentifier': identifier.group(1), 'observedCDHash': cdhash.group(1)})
+                      'observedIdentifier': identifier.group(1), 'observedCDHash': cdhash.group(1),
+                      'observedSignedInfoPlist': observed_plist,
+                      'embeddedInfoPlistSHA256': sha(helper_plists[child.name][0])})
     report = {'schemaVersion': 1, 'sourceCommit': args.source,
               'scope': 'native runtime decision gate only; no app UI or distribution qualification',
               'architecture': run(['uname', '-m']).stdout.strip(),

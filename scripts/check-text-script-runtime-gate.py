@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import plistlib
 import re
 
 CASES = {
@@ -71,6 +72,8 @@ def check(directory, source, root):
         data = read(root / path, 256 * 1024)
         need(len(data) == entry['bytes'] and digest(data) == entry['sha256'], 'Built source inventory differs: ' + path)
     need('scripts/text-script-helper.entitlements' in seen, 'Signed entitlement source not inventoried')
+    need({'scripts/text-script-helper-Info.plist', 'scripts/text-script-transport-Info.plist',
+          'scripts/read-signed-helper-plist.swift'} <= seen, 'Signed plist/readback sources not inventoried')
     app = directory / 'PicShotTextScriptGate.app'
     need(Path(build['appPath']) == app, 'Gate bundle path mismatch')
     need(digest(read(app / 'Contents/MacOS/PicShotTextScriptGate', 32 * 1024 * 1024)) == build['executableSHA256'],
@@ -84,6 +87,13 @@ def check(directory, source, root):
         need(helper['observedIdentifier'] == identifier and helper['entitlements'] == {'com.apple.security.app-sandbox': True},
              'Final helper privileges differ')
         need(digest(read(app / helper['path'], 32 * 1024 * 1024)) == helper['sha256'], 'Signed helper bytes changed')
+        filename = ('text-script-helper-Info.plist' if identifier == 'com.picshot.TextScriptHelper'
+                    else 'text-script-transport-Info.plist')
+        plist_bytes = read(root / 'scripts' / filename, 64 * 1024)
+        expected_plist = plistlib.loads(plist_bytes)
+        need(expected_plist['CFBundleIdentifier'] == identifier and
+             helper['observedSignedInfoPlist'] == expected_plist and
+             helper['embeddedInfoPlistSHA256'] == digest(plist_bytes), 'Signed embedded plist identity differs')
     for row in checks:
         metrics = row.get('metrics')
         if not metrics or not metrics['childLaunched']:
