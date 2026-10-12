@@ -257,7 +257,7 @@ final class LiveScrollCaptureController: NSObject, NSWindowDelegate {
         preview?.display(positionVerified: false, dimensions: snapshot.dimensions)
         if let panel = handleWindow as? LiveScrollPanel {
             panel.acceptsDragKeyFocus = true
-            panel.makeKeyWindow()
+            panel.makeKey()
             panel.makeFirstResponder(panel.contentView)
         }
         return true
