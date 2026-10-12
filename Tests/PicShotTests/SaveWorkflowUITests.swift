@@ -322,7 +322,9 @@ final class SaveWorkflowUITests: XCTestCase {
                 let needed = try XCTUnwrap(job.statusLabel.cell, file: file, line: line).cellSize(forBounds:
                     NSRect(x: 0, y: 0, width: job.statusLabel.bounds.width, height: 1_000))
                 XCTAssertGreaterThanOrEqual(job.statusLabel.bounds.height + 0.5, needed.height, "Complete outcome must fit", file: file, line: line)
-                let controls = descendants(content).compactMap { $0 as? NSControl }.filter { !$0.isHiddenOrHasHiddenAncestor }
+                XCTAssertEqual(job.noteLabel.identifier?.rawValue, "saveWorkflow.note", file: file, line: line)
+                let controls: [NSControl] = [job.statusLabel, job.detailLabel, job.noteLabel, job.retryCopyButton, job.closeButton]
+                    .filter { !$0.isHiddenOrHasHiddenAncestor }
                 let frames = controls.map { $0.convert($0.bounds, to: content) }
                 for (index, frame) in frames.enumerated() {
                     XCTAssertGreaterThan(frame.width, 0, file: file, line: line); XCTAssertGreaterThan(frame.height, 0, file: file, line: line)

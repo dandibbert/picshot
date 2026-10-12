@@ -79,7 +79,7 @@ jobs:
         Path('dist/live-scroll-test-inventory.json').write_text(json.dumps({'passed':passed,'skipped':skipped,'count':len(expected)},indent=2)+'\n')
         PY
     - name: Verify visible Save status and unchanged Save workflows
-      if: ${{ contains(github.event.head_commit.message || '', '[save-feedback]') && steps.compile_live_scroll_tests.outcome == 'success' }}
+      if: ${{ always() && contains(github.event.head_commit.message || '', '[save-feedback]') && steps.compile_live_scroll_tests.outcome == 'success' }}
       timeout-minutes: 8
       run: |
         python3 scripts/run-bounded-command.py --timeout-seconds 420 --log dist/live-scroll-save-feedback-tests.log --report dist/live-scroll-save-feedback-tests.json -- swift test --skip-build --filter SaveWorkflowUITests

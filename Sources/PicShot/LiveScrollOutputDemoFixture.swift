@@ -395,10 +395,27 @@ enum LiveScrollOutputDemoFixture {
             window.appearance = NSAppearance(named: appearance)
             content.needsDisplay = true
             content.layoutSubtreeIfNeeded(); window.displayIfNeeded()
-            let layout = try saveFeedbackLayout(job: job, content: content, savedPath: savedPath)
+            // Preserve pixels and bounded raw owned-window hierarchy before any
+            // measurement can throw; an identification failure must remain visible.
             let image = try nativeImage(view: content, window: window)
             let filename = stem + "-" + name + ".png"
             try writePNG(image, directory.appendingPathComponent(filename))
+            var hierarchy: [[String: Any]] = []
+            func record(_ view: NSView, depth: Int) {
+                guard depth <= 16, hierarchy.count < 128 else { return }
+                let frame = view.convert(view.bounds, to: content)
+                hierarchy.append(["class": String(describing: type(of: view)),
+                    "identifier": view.identifier?.rawValue ?? "", "depth": depth,
+                    "text": (view as? NSTextField)?.stringValue ?? "",
+                    "hidden": view.isHiddenOrHasHiddenAncestor,
+                    "frame": ["x": frame.minX, "y": frame.minY, "width": frame.width, "height": frame.height]])
+                view.subviews.forEach { record($0, depth: depth + 1) }
+            }
+            record(content, depth: 0)
+            try JSONSerialization.data(withJSONObject: ["filename": filename, "hierarchy": hierarchy],
+                options: [.prettyPrinted, .sortedKeys])
+                .write(to: directory.appendingPathComponent(stem + "-" + name + "-hierarchy.json"), options: .atomic)
+            let layout = try saveFeedbackLayout(job: job, content: content, savedPath: savedPath)
             var facts = try imageFacts(image)
             facts["filename"] = filename; facts["appearance"] = name; facts["layout"] = layout
             facts["rendering"] = "Actual owned native content with effective-appearance window background composed"
@@ -409,14 +426,12 @@ enum LiveScrollOutputDemoFixture {
 
     private static func saveFeedbackLayout(job: SaveWorkflowController, content: NSView,
                                            savedPath: String) throws -> [String: Any] {
-        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap { descendants($0) } }
         func rect(_ value: CGRect) -> [String: CGFloat] {
             ["x": value.minX, "y": value.minY, "width": value.width, "height": value.height]
         }
-        let status = job.statusLabel, detail = job.detailLabel
-        let notes = descendants(content).compactMap { $0 as? NSTextField }.filter { $0 !== status && $0 !== detail }
-        try require(notes.count == 1, "Expected the production Save note")
-        let note = notes[0]
+        let status = job.statusLabel, detail = job.detailLabel, note = job.noteLabel
+        try require(note.identifier?.rawValue == "saveWorkflow.note" && note.isDescendant(of: content),
+                    "Owned production Save note is not in its window")
         let controls: [(String, NSView)] = [("status", status), ("detail", detail), ("note", note), ("close", job.closeButton)]
         let frames = controls.map { $0.1.convert($0.1.bounds, to: content) }
         let visible = controls.allSatisfy { !$0.1.isHiddenOrHasHiddenAncestor && $0.1.alphaValue == 1 }

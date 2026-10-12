@@ -96,6 +96,7 @@ final class SaveWorkflowController: NSWindowController, NSWindowDelegate {
     var retainedClipboardBytes: Int { savedForCopy?.byteCount ?? 0 }
     let statusLabel = NSTextField(wrappingLabelWithString: "准备保存最终图片…")
     let detailLabel = NSTextField(labelWithString: "")
+    let noteLabel = NSTextField(wrappingLabelWithString: "只保存已合成的最终结果。已有文件不会被替换；取消不会修改原图。")
     let closeButton = NSButton(title: "取消", target: nil, action: nil)
     let retryCopyButton = NSButton(title: "重试复制", target: nil, action: nil)
     private let spinner = NSProgressIndicator()
@@ -150,7 +151,8 @@ final class SaveWorkflowController: NSWindowController, NSWindowDelegate {
         detailLabel.identifier = .init("saveWorkflow.detail"); stack.addArrangedSubview(detailLabel)
         stack.setCustomSpacing(4 + statusLabel.alignmentRectInsets.bottom + detailLabel.alignmentRectInsets.top, after: statusLabel)
         showStatus("准备保存最终图片…")
-        let note = NSTextField(wrappingLabelWithString: "只保存已合成的最终结果。已有文件不会被替换；取消不会修改原图。")
+        let note = noteLabel
+        note.identifier = .init("saveWorkflow.note")
         if copyAfterSaving, let artifact, artifact.options.format != .png {
             note.stringValue = "复制实际保存格式的编码数据。WebP / AVIF / PDF 能否作为图片粘贴取决于目标应用；未提供通用 PNG 剪贴板兼容层。"
         }
