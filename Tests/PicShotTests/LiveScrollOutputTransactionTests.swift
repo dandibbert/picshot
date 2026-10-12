@@ -166,6 +166,8 @@ final class LiveScrollOutputTransactionTests: XCTestCase {
             let toolbar = try fixture.toolbar()
             let ready = fixture.session.snapshotForVerification
             let saveItem = try fixture.item("quickSave"), pinItem = try fixture.item("pin")
+            let saveAction = try XCTUnwrap(saveItem.action), pinAction = try XCTUnwrap(pinItem.action)
+            let saveTarget = try XCTUnwrap(saveItem.target), pinTarget = try XCTUnwrap(pinItem.target)
             try fixture.dispatch("quickSave")
             try await Self.wait { fixture.save.pending }
             try PortableSettingsUIPreviewFixture.click(toolbar.cancelButton)
@@ -179,8 +181,25 @@ final class LiveScrollOutputTransactionTests: XCTestCase {
             fixture.save.complete()
             try await Self.wait { fixture.save.returned == 1 }
             for _ in 0..<20 { await Task.yield() }
+            XCTAssertNil(saveItem.action); XCTAssertNil(saveItem.target)
+            XCTAssertNil(pinItem.action); XCTAssertNil(pinItem.target)
+            XCTAssertTrue(controls.isRetired)
             controls.update(snapshot: ready)
-            try Self.dispatch(saveItem); try Self.dispatch(pinItem)
+            // Retirement disconnects the menu itself. Still deliver the exact
+            // pre-retirement messages to their retained owner, while a fresh
+            // session is active, to exercise the stale controller guard.
+            try await self.withSession { successor in
+                let successorReady = successor.session.snapshotForVerification
+                XCTAssertTrue(NSApp.sendAction(saveAction, to: saveTarget, from: saveItem))
+                XCTAssertTrue(NSApp.sendAction(pinAction, to: pinTarget, from: pinItem))
+                for _ in 0..<20 { await Task.yield() }
+                XCTAssertEqual(successor.session.snapshotForVerification, successorReady)
+                XCTAssertFalse(successor.session.isClosedForVerification)
+                XCTAssertTrue(successor.save.images.isEmpty)
+                XCTAssertTrue(successor.output.edits.isEmpty); XCTAssertTrue(successor.output.copies.isEmpty)
+                XCTAssertTrue(successor.output.pinAttempts.isEmpty)
+                XCTAssertEqual(successor.output.closes, 0)
+            }
             fixture.session.show()
             XCTAssertTrue(fixture.session.isClosedForVerification)
             XCTAssertNil(fixture.session.controlsForVerification)

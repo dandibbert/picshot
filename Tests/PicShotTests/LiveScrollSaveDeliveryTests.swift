@@ -250,24 +250,42 @@ final class LiveScrollSaveDeliveryTests: XCTestCase {
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
         let image = try source()
-        var job: SaveWorkflowController? = try fixture.makeUnstartedJob(image)
-        weak var weakJob = job
+        var job: SaveWorkflowController?
+        weak var weakJob: SaveWorkflowController?
         var closeCalls = 0, drainCalls = 0, savedCallback: (() -> Void)?
-        job?.onClose = { closeCalls += 1 }
-        job?.onDrained = { drainCalls += 1 }
+        // Scope native creation and close separately; no pool spans the await.
+        try autoreleasepool {
+            job = try fixture.makeUnstartedJob(image)
+            weakJob = job
+            job?.onClose = { closeCalls += 1 }
+            job?.onDrained = { drainCalls += 1 }
+        }
         let delivery = LiveScrollSaveDelivery { _, _, onSaved in
             savedCallback = onSaved
             onSaved(); onSaved()
             return job
         }
         try await delivery.save(image: image, parent: nil)
-        delivery.cancel()
-        XCTAssertEqual(job?.state, .ready)
-        job?.cancel(); savedCallback?(); job?.cancel()
-        XCTAssertEqual(closeCalls, 1)
-        XCTAssertEqual(drainCalls, 1)
-        job = nil
-        XCTAssertNil(weakJob, "Completed delivery must not retain its returned controller")
+        autoreleasepool {
+            delivery.cancel()
+            XCTAssertEqual(job?.state, .ready)
+            job?.cancel(); savedCallback?(); job?.cancel()
+            XCTAssertEqual(closeCalls, 1)
+            XCTAssertEqual(drainCalls, 1)
+            job = nil
+        }
+        let deadline = ProcessInfo.processInfo.systemUptime + 3
+        while !autoreleasepool(invoking: { weakJob == nil }), ProcessInfo.processInfo.systemUptime < deadline {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                DispatchQueue.main.async { continuation.resume() }
+            }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        withExtendedLifetime((delivery, savedCallback)) {
+            XCTAssertNil(weakJob, "Completed delivery must release its returned controller after native close drainage")
+            XCTAssertEqual(closeCalls, 1)
+            XCTAssertEqual(drainCalls, 1)
+        }
     }
 
     func testSynchronousCancelBeforeAdmissionClosesReturnedJobAndIgnoresLateSuccess() async throws {
