@@ -46,7 +46,10 @@ def samples():
 
 class SyntheticPair:
     def __init__(self, directory):
-        self.root = Path(directory) / 'evidence'
+        # macOS TemporaryDirectory may use /var; retain strict reader identity
+        # by canonicalizing only this owned synthetic root before creating files.
+        directory = Path(directory).resolve(strict=True)
+        self.root = directory / 'evidence'
         self.root.mkdir()
         self.app = Path(directory) / 'PicShot.app'
         (self.app / 'Contents/MacOS').mkdir(parents=True)
@@ -225,6 +228,19 @@ class ReaderMutations(unittest.TestCase):
         self.assertEqual(len(result['measurements']['control']['everyMeasuredIncrementBytes']), 8)
         self.assertEqual(len(result['measurements']['control']['lateMeasuredIncrementBytes']), 3)
         self.assertEqual(result['nativeReports']['control']['backingLate'], self.pair.reports['control']['backingLate'])
+
+    def test_owned_fixture_alias_is_canonicalized_but_reader_still_rejects_alias_app(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve(strict=True)
+            physical = root / 'physical'; physical.mkdir()
+            alias = root / 'alias'; alias.symlink_to(physical, target_is_directory=True)
+            pair = SyntheticPair(alias)
+            self.assertEqual(pair.root, physical / 'evidence')
+            self.assertEqual(pair.app, physical / 'PicShot.app')
+            result = pair.run()
+            self.assertTrue(result['evidenceComplete'], result['errors'])
+            with self.assertRaisesRegex(ValueError, 'canonical'):
+                R.bundle_identity(alias / 'PicShot.app', SOURCE)
 
     def test_failed_measurement_still_validates_all_twenty_outputs_and_preserves_observations(self):
         control = self.pair.reports['control']
