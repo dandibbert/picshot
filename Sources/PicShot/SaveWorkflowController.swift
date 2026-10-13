@@ -1,6 +1,27 @@
 import AppKit
 import PicShotCore
 
+/// Init-only diagnostic choice. Keep the accepted preview path as the default
+/// until a separately reviewed matched Save comparison supports a change.
+enum SavePNGPreparationMode: Equatable, Sendable { case legacyPreview, encodedPayload }
+
+/// Keep the genuine artifact alive for the original prepared-value lifetime,
+/// including collision UI and retry. Only fresh candidate PNGs omit a preview.
+private enum SaveWorkflowPreparedOutput: Sendable {
+    case artifact(ImageExportArtifact)
+    case encodedPayload(ImageExportEncodedPayload)
+
+    var payload: ImageExportEncodedPayload {
+        switch self {
+        case .artifact(let artifact): return artifact.encodedPayload
+        case .encodedPayload(let payload): return payload
+        }
+    }
+    var width: Int { payload.width }
+    var height: Int { payload.height }
+    var options: ImageExportOptions { payload.options }
+}
+
 /// Final-output jobs are application-owned and survive capture-editor close.
 /// Count and estimated retained-input admission precede snapshot allocation;
 /// encoded output is separately bounded and this is not a total RSS quota.
@@ -13,6 +34,8 @@ final class SaveWorkflowPresenter {
     static let maximumRetainedInputBytes = 256 * 1_024 * 1_024
     private let defaults: UserDefaults
     private let isSmoke: Bool
+    let pngPreparationMode: SavePNGPreparationMode
+    private let afterPNGPreparationForDiagnostics: (() -> Void)?
     private(set) var controllers: [SaveWorkflowController] = []
     var activeJobCount: Int { controllers.filter { !$0.jobDrained }.count }
     var retainedInputBytes: Int { controllers.reduce(0) { $0 + ($1.jobDrained ? $1.retainedClipboardBytes : $1.reservedInputBytes) } }
@@ -21,7 +44,12 @@ final class SaveWorkflowPresenter {
     var clipboardCopier: ((Data, String) -> Bool)?
     /// Set only by isolated native fixtures; production does not log paths.
     var directoryDiagnostic: ((SaveWorkflowDirectoryDiagnostic) -> Void)?
-    init(defaults: UserDefaults = .standard, isSmoke: Bool = false) { self.defaults = defaults; self.isSmoke = isSmoke }
+    init(defaults: UserDefaults = .standard, isSmoke: Bool = false,
+         pngPreparationMode: SavePNGPreparationMode = .legacyPreview,
+         afterPNGPreparationForDiagnostics: (() -> Void)? = nil) {
+        self.defaults = defaults; self.isSmoke = isSmoke; self.pngPreparationMode = pngPreparationMode
+        self.afterPNGPreparationForDiagnostics = afterPNGPreparationForDiagnostics
+    }
     func cancelAll() { for controller in controllers { controller.cancel() } }
     func canAdmit(inputBytes: Int) -> Bool {
         inputBytes > 0 && controllers.count < Self.maximumJobs && inputBytes <= Self.maximumRetainedInputBytes - retainedInputBytes
@@ -55,7 +83,8 @@ final class SaveWorkflowPresenter {
         }
         do {
             let controller = try SaveWorkflowController(image: image, artifact: artifact, settings: settings, defaults: defaults,
-                copyAfterSaving: copy, quietAutomatic: automatic, reservedInputBytes: reservation, copier: clipboardCopier, directoryDiagnostic: directoryDiagnostic, onSaved: onSaved)
+                copyAfterSaving: copy, pngPreparationMode: pngPreparationMode,
+                afterPNGPreparationForDiagnostics: afterPNGPreparationForDiagnostics, quietAutomatic: automatic, reservedInputBytes: reservation, copier: clipboardCopier, directoryDiagnostic: directoryDiagnostic, onSaved: onSaved)
             controllers.append(controller)
             controller.onClose = { [weak self, weak controller] in
                 guard let controller, controller.jobDrained else { return }; self?.controllers.removeAll { $0 === controller }
@@ -132,11 +161,13 @@ final class SaveWorkflowController: NSWindowController, NSWindowDelegate {
     private var snapshot: ImageExportSnapshot?
     private var artifact: ImageExportArtifact?
     private let copyAfterSaving: Bool
+    let pngPreparationMode: SavePNGPreparationMode
+    private let afterPNGPreparationForDiagnostics: (() -> Void)?
     private let copier: ((Data, String) -> Bool)?
     private let directoryDiagnostic: ((SaveWorkflowDirectoryDiagnostic) -> Void)?
     private let token = ImageExportCancellation()
     private var input: ImageExportJobInput<ImageExportSnapshot>?
-    private var saveInput: ImageExportJobInput<ImageExportArtifact>?
+    private var saveInput: ImageExportJobInput<SaveWorkflowPreparedOutput>?
     private var task: Task<Void, Never>?
     private var deadline: Task<Void, Never>?
     private var timedOut = false
@@ -153,11 +184,14 @@ final class SaveWorkflowController: NSWindowController, NSWindowDelegate {
     private(set) var savePanel: NSSavePanel?
 
     init(image: CGImage?, artifact: ImageExportArtifact?, settings: SaveWorkflowSettings, defaults: UserDefaults,
-         copyAfterSaving: Bool, quietAutomatic: Bool = false, reservedInputBytes: Int = 0,
+         copyAfterSaving: Bool, pngPreparationMode: SavePNGPreparationMode = .legacyPreview,
+         afterPNGPreparationForDiagnostics: (() -> Void)? = nil, quietAutomatic: Bool = false, reservedInputBytes: Int = 0,
          copier: ((Data, String) -> Bool)? = nil, directoryDiagnostic: ((SaveWorkflowDirectoryDiagnostic) -> Void)? = nil,
          onSaved: ((SaveWorkflowResult) -> Void)? = nil) throws {
         guard (image != nil) != (artifact != nil) else { throw SaveWorkflowError.invalidArtifact }
         self.defaults = defaults; self.settings = settings; self.copyAfterSaving = copyAfterSaving
+        self.pngPreparationMode = pngPreparationMode
+        self.afterPNGPreparationForDiagnostics = afterPNGPreparationForDiagnostics
         self.copier = copier; self.directoryDiagnostic = directoryDiagnostic; callback = onSaved; self.artifact = artifact
         self.quietAutomatic = quietAutomatic; self.reservedInputBytes = reservedInputBytes
         if let image { snapshot = try ImageExportSnapshot(image: image) }
@@ -220,7 +254,10 @@ final class SaveWorkflowController: NSWindowController, NSWindowDelegate {
                     self.settings.baseURL = approved; try self.settings.save(to: self.defaults)
                 }
                 try self.token.check()
-                let prepared = try await self.prepareArtifact(); try self.token.check(); self.snapshot = nil
+                let prepared = try await self.prepareOutput(); try self.token.check(); self.snapshot = nil
+                // Optional synchronous scalar observation; never hands out the output
+                // or changes the prepared value's original collision/retry lifetime.
+                if self.artifact == nil { self.afterPNGPreparationForDiagnostics?() }
                 let context = SaveWorkflowContext(width: prepared.width, height: prepared.height,
                     counter: try SaveWorkflowCounter.next(in: self.defaults), timeZoneIdentifier: TimeZone.current.identifier)
                 var behavior: SaveWorkflowCollisionBehavior? = nil, selectedURL: URL?
@@ -278,30 +315,41 @@ final class SaveWorkflowController: NSWindowController, NSWindowDelegate {
         showStatus("保存超时；已请求取消", detail: "保存超过 5 分钟；原图和已完成文件会保留。", detailName: "错误详情")
         state = .failed; spinner.stopAnimation(nil); cancelPanels(); revealForDecision()
     }
-    private func prepareArtifact() async throws -> ImageExportArtifact {
-        if let artifact { return artifact }
+    private func prepareOutput() async throws -> SaveWorkflowPreparedOutput {
+        if let artifact { return .artifact(artifact) }
         guard let snapshot else { throw SaveWorkflowError.invalidArtifact }
         state = .encoding; showStatus("正在编码最终 PNG…")
-        let holder = ImageExportJobInput(snapshot), token = token; input = holder
+        let holder = ImageExportJobInput(snapshot), token = token, mode = pngPreparationMode; input = holder
         return try await withCheckedThrowingContinuation { continuation in
             ImageExportService.queue.addOperation {
                 guard let frozen = holder.take() else { continuation.resume(throwing: CancellationError()); return }
-                do { continuation.resume(returning: try autoreleasepool { try ImageExportService.encode(snapshot: frozen, options: .init(), cancellation: token) }) }
+                do {
+                    let prepared: SaveWorkflowPreparedOutput = try autoreleasepool {
+                        switch mode {
+                        case .legacyPreview:
+                            return .artifact(try ImageExportService.encode(snapshot: frozen, options: .init(), cancellation: token))
+                        case .encodedPayload:
+                            return .encodedPayload(try ImageExportService.encodePNGForSave(snapshot: frozen, cancellation: token))
+                        }
+                    }
+                    continuation.resume(returning: prepared)
+                }
                 catch { continuation.resume(throwing: error) }
             }
         }
     }
-    private func publish(_ artifact: ImageExportArtifact, context: SaveWorkflowContext,
+    private func publish(_ prepared: SaveWorkflowPreparedOutput, context: SaveWorkflowContext,
                          behavior: SaveWorkflowCollisionBehavior?, selectedURL: URL?) async throws -> SaveWorkflowResult {
-        let holder = ImageExportJobInput(artifact), settings = settings, token = token; saveInput = holder
+        let holder = ImageExportJobInput(prepared), settings = settings, token = token; saveInput = holder
         let hooks = SaveWorkflowTestHooks(directoryFailure: directoryDiagnostic)
         return try await withCheckedThrowingContinuation { continuation in
             ImageExportService.queue.addOperation {
-                guard let artifact = holder.take() else { continuation.resume(throwing: CancellationError()); return }
+                guard let prepared = holder.take() else { continuation.resume(throwing: CancellationError()); return }
                 do {
+                    let payload = prepared.payload
                     let result: SaveWorkflowResult
-                    if let selectedURL { result = try SaveWorkflowService.publish(artifact, to: selectedURL, collisionBehavior: behavior ?? .ask, cancellation: token, testHooks: hooks) }
-                    else { result = try SaveWorkflowService.publish(artifact, settings: settings, context: context, collisionBehavior: behavior, cancellation: token, testHooks: hooks) }
+                    if let selectedURL { result = try SaveWorkflowService.publish(payload, to: selectedURL, collisionBehavior: behavior ?? .ask, cancellation: token, testHooks: hooks) }
+                    else { result = try SaveWorkflowService.publish(payload, settings: settings, context: context, collisionBehavior: behavior, cancellation: token, testHooks: hooks) }
                     continuation.resume(returning: result)
                 } catch { continuation.resume(throwing: error) }
             }
@@ -326,7 +374,7 @@ final class SaveWorkflowController: NSWindowController, NSWindowDelegate {
             DispatchQueue.main.async { [weak self] in self?.onCollisionShown?(alert) }
         }
     }
-    private func chooseAnother(_ artifact: ImageExportArtifact, current: URL) async -> URL? {
+    private func chooseAnother(_ artifact: SaveWorkflowPreparedOutput, current: URL) async -> URL? {
         guard state != .closed, let window else { return nil }
         let panel = NSSavePanel(); panel.title = "保存新副本"; panel.prompt = "保存新副本"
         panel.message = "已有文件不会被替换；冲突时将重新询问。"; panel.allowedContentTypes = [artifact.options.format.contentType]

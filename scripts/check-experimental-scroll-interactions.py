@@ -483,7 +483,34 @@ def validate_outcomes(steps):
 
 
 
+SAVE_PAYLOAD_CLASSES = {
+    'PicShotTests.ImageExportPNGStagingTests', 'PicShotTests.SaveWorkflowServiceTests',
+    'PicShotTests.SaveWorkflowDeliveryTests', 'PicShotTests.LiveScrollSaveDeliveryTests',
+    'PicShotTests.SaveWorkflowUITests',
+}
+
+
+def save_payload_additions(inventory):
+    """Exact additive266 coverage; the existing five classes remain complete."""
+    record = load(Path('scripts/save-payload-native-tests.json'))
+    need(type(record) is dict and set(record) == {'added', 'focused'}, 'Save payload inventory schema differs')
+    for key, count, digest in [
+            ('added', 25, '15850dcece2db54991ea8098a603eb842c4e25a014e9c4070a341ff1531fc3f5'),
+            ('focused', 93, 'e36eca20f9669438337cc03892caba4526067ff5b3132bc41ed8dd3bb123a326')]:
+        methods = record[key]
+        need(type(methods) is list and len(methods) == count and methods == sorted(set(methods))
+             and all(type(name) is str and re.fullmatch(r'PicShotTests\.\w+Tests/test\w+', name)
+                     and name.split('/')[0] in SAVE_PAYLOAD_CLASSES for name in methods)
+             and hashlib.sha256(('\n'.join(methods)+'\n').encode()).hexdigest() == digest,
+             'Save payload ' + key + ' inventory differs')
+    need(set(record['added']).issubset(record['focused'])
+         and record['focused'] == [name for name in inventory if name.split('/')[0] in SAVE_PAYLOAD_CLASSES],
+         'Save payload methods lost or added outside explicit inventory')
+    return set(record['added'])
+
+
 def feedback_additions(inventory):
+    payload = save_payload_additions(inventory)
     feedback = load(Path('scripts/save-feedback-native-tests.json'))
     need(set(feedback) == {'baseline241', 'added'}, 'Save feedback native inventory schema differs')
     for key, count in [('baseline241', 9), ('added', 5)]:
@@ -493,19 +520,20 @@ def feedback_additions(inventory):
              and methods == sorted(set(methods)), 'Save feedback ' + key + ' inventory differs')
     need(not set(feedback['baseline241']) & set(feedback['added'])
          and sorted(feedback['baseline241'] + feedback['added'])
-         == [name for name in inventory if name.startswith('PicShotTests.SaveWorkflowUITests/')],
+         == [name for name in inventory if name not in payload and name.startswith('PicShotTests.SaveWorkflowUITests/')],
          'Save feedback class lost or added an unrecorded test')
     return set(feedback['added'])
 
 
 def chain_additions(inventory):
+    payload = save_payload_additions(inventory)
     chain = load(Path('scripts/capture-chain-native-tests.json'))
     need(type(chain) is dict and set(chain) == {'added', 'focused'}, 'Chain inventory schema differs')
     added = chain['added']
     need(type(added) is list and len(added) == 95 and added == sorted(set(added))
          and all(type(name) is str and re.fullmatch(r'(?:PicShotCoreTests|PicShotTests)\.(?:CaptureChain\w*Tests|SaveWorkflowDeliveryTests)/test\w+', name) for name in added),
          'Chain additions differ')
-    need(added == [name for name in inventory if '.CaptureChain' in name or '.SaveWorkflowDeliveryTests/' in name],
+    need(added == [name for name in inventory if name not in payload and ('.CaptureChain' in name or '.SaveWorkflowDeliveryTests/' in name)],
          'Chain methods lost or added outside explicit inventory')
     return set(added)
 
@@ -522,7 +550,7 @@ SCROLL_RECOVERY_ADDITIONS = (
 
 
 def text_script_additions(inventory):
-    """Bind exact264 additions while preserving all263 and accepted248 IDs."""
+    """Bind exact266 additions while preserving all265/263 and accepted248 IDs."""
     added = json.loads(read(Path('scripts/text-script-integration-tests.json')))
     need(type(added) is list and len(added) == 72
          and all(type(name) is str and re.fullmatch(r'PicShot(?:CoreTests|Tests|TextScriptCoreTests|TextScriptHelperTests)\.TextScript\w+Tests/test\w+', name) for name in added)
@@ -534,9 +562,11 @@ def text_script_additions(inventory):
          and inventory == sorted(set(inventory)), 'Native discovery must contain unique sorted IDs')
     need(added == [name for name in inventory if '.TextScript' in name],
          'Text script methods lost or added outside the explicit inventory')
+    payload = save_payload_additions(inventory)
+    preserved265 = [name for name in inventory if name not in payload]
     recovery = set(SCROLL_RECOVERY_ADDITIONS)
     need(recovery.issubset(inventory), 'Explicit264 scroll recovery methods missing or renamed')
-    baseline = [name for name in inventory if name not in recovery]
+    baseline = [name for name in preserved265 if name not in recovery]
     original = [name for name in baseline if name not in set(added)]
     need(len(original) == 2303 and hashlib.sha256(('\n'.join(original)+'\n').encode()).hexdigest()
          == '7366868482823631d5939adc3b411ff4d538c2c59090c2e35ebdea396b9e41ca',
@@ -544,9 +574,12 @@ def text_script_additions(inventory):
     need(len(baseline) == 2375 and len({name.split('/')[0] for name in baseline}) == 267 and hashlib.sha256(('\n'.join(baseline)+'\n').encode()).hexdigest()
          == '0f19081756c225e5b0fede62805ee01693d1409bf6552979ac74db409e3e4aab',
          'Preserved263 native discovery differs from the exact2375 ID union')
-    need(len(inventory) == 2382 and len({name.split('/')[0] for name in inventory}) == 267
+    need(len(preserved265) == 2382 and len({name.split('/')[0] for name in preserved265}) == 267
+         and hashlib.sha256(('\n'.join(preserved265)+'\n').encode()).hexdigest()
+         == 'a88b82f2a8e8828ee7e0ce31b52340106f32f37b8e831599d2859281ed876f7c', 'Preserved265 native discovery differs from the exact2382 ID union')
+    need(len(inventory) == 2407 and len({name.split('/')[0] for name in inventory}) == 267
          and hashlib.sha256(('\n'.join(inventory)+'\n').encode()).hexdigest()
-         == 'a88b82f2a8e8828ee7e0ce31b52340106f32f37b8e831599d2859281ed876f7c', 'Current native discovery differs from the exact2382 ID union')
+         == '89da6aece2514cafafdeea83cebf09a2a927400df4ee4cc4324d923183cf1b9a', 'Current native discovery differs from the exact2407 ID union')
     return set(added)
 
 
@@ -796,14 +829,16 @@ def final():
         plan = native.checked_plan(Path('dist')/planfile, source['sourceCommit'])
         text_ids = text_script_additions(plan['discoveredTests'])
         need(text_ids <= set(plan['selectedTests']), 'All72 script methods must be selected in both plans')
+        payload_ids = save_payload_additions(plan['discoveredTests'])
+        need(payload_ids <= set(plan['selectedTests']), 'All25 Save payload methods must be selected in both plans')
         recovery_ids = set(SCROLL_RECOVERY_ADDITIONS)
         need(recovery_ids <= set(plan['selectedTests']), 'All7 recovery methods must be selected in both plans')
         if kind == 'full':
             live = json.loads(read(Path('scripts/live-scroll-additive-tests.json')))
-            need(len(live) == 163 and set(live).issubset(plan['discoveredTests']), 'Current163 live methods required')
+            need(len(live) == 165 and set(live).issubset(plan['discoveredTests']), 'Current165 live methods required')
             feedback = feedback_additions(plan['discoveredTests'])
             chains = chain_additions(plan['discoveredTests'])
-            stable = [name for name in plan['discoveredTests'] if name not in set(live) | feedback | chains | text_ids]
+            stable = [name for name in plan['discoveredTests'] if name not in set(live) | feedback | chains | text_ids | payload_ids]
             need(len(stable) == 2047 and hashlib.sha256(('\n'.join(stable)+'\n').encode()).hexdigest()
                  == '926ac5674df90163b949fe461f0d4589ef72c8fc3215fa00b927564aae57cb44', 'Stable214 inventory changed')
             need(plan['selectedTests'] == plan['discoveredTests'], 'Full suite narrowed')
@@ -811,6 +846,7 @@ def final():
         need(aggregate == load(Path('dist')/reportfile), 'Native aggregate differs: ' + kind)
         need(not (text_ids & set(aggregate['skippedTests'])), 'Script methods must pass without skips: ' + kind)
         need(not (recovery_ids & set(aggregate['skippedTests'])), 'Recovery methods must pass without skips: ' + kind)
+        need(not (payload_ids & set(aggregate['skippedTests'])), 'Save payload methods must pass without skips: ' + kind)
     record = dict(FLAGS, status='ready-for-user-opted-experimental-distribution', **source,
                   resourceFailurePreserved=PRIOR_FAILURE, remainingWorkflowChecksCompleted=True,
                   currentSourceFullAndFocusedNativeRepeated=True, currentSourceModelSuiteRepeated=True,

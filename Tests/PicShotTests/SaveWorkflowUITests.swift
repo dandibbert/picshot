@@ -36,13 +36,16 @@ final class SaveWorkflowUITests: XCTestCase {
         try await SaveWorkflowUIPreviewFixture.until({ presented && settings.saveWorkflowView.folderPanel == nil }, "Folder cancel did not resolve")
         XCTAssertEqual(settings.saveWorkflowView.baseURL, root); XCTAssertEqual(SaveWorkflowSettings.read(from: defaults), original)
     }
-    func testQuietAutomaticCopyIsImmediateAndJobSurvivesEditorClose() async throws {
+    func testQuietAutomaticCopyIsImmediateAndJobSurvivesEditorClose() async throws { try await checkQuietAutomaticCopyIsImmediateAndJobSurvivesEditorClose(.legacyPreview) }
+    func testEncodedPayloadQuietAutomaticCopyIsImmediateAndJobSurvivesEditorClose() async throws { try await checkQuietAutomaticCopyIsImmediateAndJobSurvivesEditorClose(.encodedPayload) }
+
+    private func checkQuietAutomaticCopyIsImmediateAndJobSurvivesEditorClose(_ mode: SavePNGPreparationMode) async throws {
         _ = NSApplication.shared
         let (defaults, name, root) = try isolated()
         let board = NSPasteboard.withUniqueName()
         defer { ImageExportService.queue.isSuspended = false; board.releaseGlobally(); defaults.removePersistentDomain(forName: name); try? FileManager.default.removeItem(at: root) }
         try SaveWorkflowSettings(baseURL: root, filenameTemplate: "auto-{counter}", autoOnFinalizedAction: true).save(to: defaults)
-        let presenter = SaveWorkflowPresenter(defaults: defaults)
+        let presenter = SaveWorkflowPresenter(defaults: defaults, pngPreparationMode: mode)
         let image = try SaveWorkflowUIPreviewFixture.sourceImage(width: 64, height: 48)
         let editor = ImageEditorController(image: image, onSave: { _ in }, onPin: { _ in }, onOCR: { _ in }, saveWorkflow: presenter,
             copyAction: { image in
@@ -82,12 +85,15 @@ final class SaveWorkflowUITests: XCTestCase {
         XCTAssertEqual(presenter.activeJobCount, 0); XCTAssertTrue(presenter.controllers.isEmpty)
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
     }
-    func testCancelledQueuedSnapshotsKeepAdmissionUntilQueueDrains() async throws {
+    func testCancelledQueuedSnapshotsKeepAdmissionUntilQueueDrains() async throws { try await checkCancelledQueuedSnapshotsKeepAdmissionUntilQueueDrains(.legacyPreview) }
+    func testEncodedPayloadCancelledQueuedSnapshotsKeepAdmissionUntilQueueDrains() async throws { try await checkCancelledQueuedSnapshotsKeepAdmissionUntilQueueDrains(.encodedPayload) }
+
+    private func checkCancelledQueuedSnapshotsKeepAdmissionUntilQueueDrains(_ mode: SavePNGPreparationMode) async throws {
         _ = NSApplication.shared
         let (defaults, name, root) = try isolated()
         defer { ImageExportService.queue.isSuspended = false; defaults.removePersistentDomain(forName: name); try? FileManager.default.removeItem(at: root) }
         try SaveWorkflowSettings(baseURL: root).save(to: defaults)
-        let presenter = SaveWorkflowPresenter(defaults: defaults)
+        let presenter = SaveWorkflowPresenter(defaults: defaults, pngPreparationMode: mode)
         XCTAssertFalse(presenter.canAdmit(inputBytes: SaveWorkflowPresenter.maximumRetainedInputBytes + 1))
         let image = try SaveWorkflowUIPreviewFixture.sourceImage(width: 64, height: 48)
         ImageExportService.queue.isSuspended = true
@@ -99,14 +105,17 @@ final class SaveWorkflowUITests: XCTestCase {
         ImageExportService.queue.isSuspended = false; try await SaveWorkflowUIPreviewFixture.drained(presenter)
         XCTAssertEqual(presenter.retainedInputBytes, 0); XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
     }
-    func testChooseAnotherCollisionPanelCancelPreservesOriginal() async throws {
+    func testChooseAnotherCollisionPanelCancelPreservesOriginal() async throws { try await checkChooseAnotherCollisionPanelCancelPreservesOriginal(.legacyPreview) }
+    func testEncodedPayloadChooseAnotherCollisionPanelCancelPreservesOriginal() async throws { try await checkChooseAnotherCollisionPanelCancelPreservesOriginal(.encodedPayload) }
+
+    private func checkChooseAnotherCollisionPanelCancelPreservesOriginal(_ mode: SavePNGPreparationMode) async throws {
         _ = NSApplication.shared
         let (defaults, name, root) = try isolated()
         defer { defaults.removePersistentDomain(forName: name); try? FileManager.default.removeItem(at: root) }
         try SaveWorkflowSettings(baseURL: root, filenameTemplate: "existing").save(to: defaults)
         let originalURL = root.appendingPathComponent("existing.png"), original = Data("do-not-replace".utf8)
         try original.write(to: originalURL)
-        let presenter = SaveWorkflowPresenter(defaults: defaults)
+        let presenter = SaveWorkflowPresenter(defaults: defaults, pngPreparationMode: mode)
         var chooseAnotherPresented = false
         presenter.onPresent = { job in
             job.onCollisionShown = { $0.buttons[1].performClick(nil) }
@@ -178,11 +187,14 @@ final class SaveWorkflowUITests: XCTestCase {
         XCTAssertEqual(canonical.path, target.path)
         try SaveWorkflowService.validateBaseDirectory(canonical)
     }
-    func testLongASCIIAndUnicodeSavePathsKeepOutcomeVisibleAtBothWidths() async throws {
+    func testLongASCIIAndUnicodeSavePathsKeepOutcomeVisibleAtBothWidths() async throws { try await checkLongASCIIAndUnicodeSavePathsKeepOutcomeVisibleAtBothWidths(.legacyPreview) }
+    func testEncodedPayloadLongASCIIAndUnicodeSavePathsKeepOutcomeVisibleAtBothWidths() async throws { try await checkLongASCIIAndUnicodeSavePathsKeepOutcomeVisibleAtBothWidths(.encodedPayload) }
+
+    private func checkLongASCIIAndUnicodeSavePathsKeepOutcomeVisibleAtBothWidths(_ mode: SavePNGPreparationMode) async throws {
         _ = NSApplication.shared
         let (defaults, name, root) = try isolated()
         defer { defaults.removePersistentDomain(forName: name); try? FileManager.default.removeItem(at: root) }
-        let presenter = SaveWorkflowPresenter(defaults: defaults)
+        let presenter = SaveWorkflowPresenter(defaults: defaults, pngPreparationMode: mode)
         defer { presenter.cancelAll() }
         let image = try SaveWorkflowUIPreviewFixture.sourceImage(width: 48, height: 32)
         for component in [String(repeating: "long-output-", count: 8), String(repeating: "截图资料-é-", count: 6)] {
@@ -261,13 +273,16 @@ final class SaveWorkflowUITests: XCTestCase {
         job.cancel(); try await SaveWorkflowUIPreviewFixture.drained(presenter)
     }
 
-    func testDiskFailureKeepsVisibleOutcomeAndFullAccessibleError() async throws {
+    func testDiskFailureKeepsVisibleOutcomeAndFullAccessibleError() async throws { try await checkDiskFailureKeepsVisibleOutcomeAndFullAccessibleError(.legacyPreview) }
+    func testEncodedPayloadDiskFailureKeepsVisibleOutcomeAndFullAccessibleError() async throws { try await checkDiskFailureKeepsVisibleOutcomeAndFullAccessibleError(.encodedPayload) }
+
+    private func checkDiskFailureKeepsVisibleOutcomeAndFullAccessibleError(_ mode: SavePNGPreparationMode) async throws {
         _ = NSApplication.shared
         let (defaults, name, root) = try isolated()
         defer { defaults.removePersistentDomain(forName: name); try? FileManager.default.removeItem(at: root) }
         let missing = root.appendingPathComponent("missing-save-directory", isDirectory: true)
         try SaveWorkflowSettings(baseURL: missing).save(to: defaults)
-        let presenter = SaveWorkflowPresenter(defaults: defaults)
+        let presenter = SaveWorkflowPresenter(defaults: defaults, pngPreparationMode: mode)
         defer { presenter.cancelAll() }
         var copyCalls = 0
         presenter.clipboardCopier = { _, _ in copyCalls += 1; return true }
@@ -331,6 +346,94 @@ final class SaveWorkflowUITests: XCTestCase {
         XCTAssertFalse(summary.statusText.contains(root.path))
         XCTAssertEqual(summary.savedURL, saved.savedURL); XCTAssertEqual(summary.byteCount, artifact.byteCount)
         XCTAssertEqual(try Data(contentsOf: saved.savedURL), artifact.data)
+    }
+
+    func testFreshPNGCollisionKeepBothRetriesPublicationAndKeepsVisibleSuccess() async throws {
+        _ = NSApplication.shared
+        for mode in [SavePNGPreparationMode.legacyPreview, .encodedPayload] {
+            let (defaults, name, root) = try isolated()
+            defer { defaults.removePersistentDomain(forName: name); try? FileManager.default.removeItem(at: root) }
+            try SaveWorkflowSettings(baseURL: root, filenameTemplate: "existing", collisionBehavior: .ask).save(to: defaults)
+            let existing = root.appendingPathComponent("existing.png"), sentinel = Data("keep-existing".utf8)
+            try sentinel.write(to: existing)
+            let image = try SaveWorkflowUIPreviewFixture.sourceImage(width: 48, height: 32)
+            let expected = try ImageExportService.encode(snapshot: ImageExportSnapshot(image: image), options: .init()).data
+            let presenter = SaveWorkflowPresenter(defaults: defaults, pngPreparationMode: mode)
+            defer { presenter.cancelAll() }
+            var collisions = 0, savedCalls = 0, drainCalls = 0
+            presenter.onPresent = { job in
+                let drained = job.onDrained
+                job.onDrained = { drained?(); drainCalls += 1 }
+                job.onCollisionShown = { alert in collisions += 1; alert.buttons[0].performClick(nil) }
+            }
+            let job = try XCTUnwrap(presenter.save(image: image, onSaved: { _ in savedCalls += 1 }))
+            try await SaveWorkflowUIPreviewFixture.until({ job.jobDrained }, "Keep Both retry did not drain")
+            XCTAssertEqual(job.state, .completed)
+            XCTAssertEqual(collisions, 1); XCTAssertEqual(savedCalls, 1); XCTAssertEqual(drainCalls, 1)
+            XCTAssertEqual(presenter.retainedInputBytes, 0)
+            let result = try XCTUnwrap(job.result)
+            XCTAssertEqual(result.savedURL.lastPathComponent, "existing (1).png")
+            XCTAssertEqual(try Data(contentsOf: result.savedURL), expected)
+            XCTAssertEqual(try Data(contentsOf: existing), sentinel)
+            XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: root.path)), ["existing.png", "existing (1).png"])
+            XCTAssertEqual(job.statusLabel.stringValue, "文件已安全保存")
+            XCTAssertEqual(job.detailLabel.stringValue, result.savedURL.path)
+            XCTAssertTrue(job.window?.isVisible == true)
+            try assertFeedbackAtBothWidths(job)
+            job.cancel(); job.cancel()
+            XCTAssertEqual(drainCalls, 1); XCTAssertTrue(presenter.controllers.isEmpty)
+        }
+    }
+
+    func testPNGPreparationModeDefaultsToLegacyAndIsExplicitlyInherited() throws {
+        _ = NSApplication.shared
+        let (defaults, name, root) = try isolated()
+        defer { defaults.removePersistentDomain(forName: name); try? FileManager.default.removeItem(at: root) }
+        let image = try SaveWorkflowUIPreviewFixture.sourceImage(width: 48, height: 32)
+        let defaultPresenter = SaveWorkflowPresenter(defaults: defaults)
+        XCTAssertEqual(defaultPresenter.pngPreparationMode, .legacyPreview)
+        let defaultJob = try SaveWorkflowController(image: image, artifact: nil, settings: .init(baseURL: root),
+            defaults: defaults, copyAfterSaving: false)
+        defer { defaultJob.cancel() }
+        XCTAssertEqual(defaultJob.pngPreparationMode, .legacyPreview)
+        try SaveWorkflowSettings(baseURL: root).save(to: defaults)
+        for mode in [SavePNGPreparationMode.legacyPreview, .encodedPayload] {
+            let presenter = SaveWorkflowPresenter(defaults: defaults, pngPreparationMode: mode)
+            defer { presenter.cancelAll() }
+            // Close before start to assert mode propagation without scheduling I/O.
+            presenter.onPresent = { $0.cancel() }
+            let job = try XCTUnwrap(presenter.save(image: image))
+            XCTAssertEqual(job.pngPreparationMode, mode)
+            XCTAssertTrue(job.jobDrained); XCTAssertTrue(presenter.controllers.isEmpty)
+        }
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+    }
+
+    func testEncodedPayloadModeKeepsSuppliedArtifactsAndPreviewAdmissionForEveryFormat() async throws {
+        _ = NSApplication.shared
+        let (defaults, name, root) = try isolated()
+        defer { ImageExportService.queue.isSuspended = false; defaults.removePersistentDomain(forName: name); try? FileManager.default.removeItem(at: root) }
+        try SaveWorkflowSettings(baseURL: root).save(to: defaults)
+        let image = try SaveWorkflowUIPreviewFixture.sourceImage(width: 48, height: 32)
+        let preview = try ImageExportService.encode(snapshot: ImageExportSnapshot(image: image), options: .init()).firstPreview
+        for format in ImageExportFormat.allCases {
+            let presenter = SaveWorkflowPresenter(defaults: defaults, pngPreparationMode: .encodedPayload)
+            defer { presenter.cancelAll() }
+            let artifact = ImageExportArtifact(data: Data("supplied-\(format.title)".utf8), options: .init(format: format),
+                width: 48, height: 32, pageCount: 1, firstPreview: preview, sourceURL: nil)
+            let expectedReservation = artifact.byteCount + preview.bytesPerRow * preview.height
+            ImageExportService.queue.isSuspended = true
+            let job = try XCTUnwrap(presenter.save(artifact: artifact, copy: false))
+            try await SaveWorkflowUIPreviewFixture.until({ job.state == .saving }, "Supplied artifact must bypass PNG encoding")
+            XCTAssertEqual(job.reservedInputBytes, expectedReservation)
+            XCTAssertEqual(presenter.retainedInputBytes, expectedReservation)
+            job.cancel()
+            XCTAssertEqual(presenter.retainedInputBytes, expectedReservation, "Cancelled work keeps admission until drain")
+            ImageExportService.queue.isSuspended = false
+            try await SaveWorkflowUIPreviewFixture.drained(presenter)
+            XCTAssertEqual(presenter.retainedInputBytes, 0); XCTAssertTrue(presenter.controllers.isEmpty)
+        }
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
     }
 
     private func assertFeedbackAtBothWidths(_ job: SaveWorkflowController, detailIsLong: Bool = false,

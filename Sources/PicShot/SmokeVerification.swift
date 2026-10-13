@@ -19,6 +19,26 @@ enum RecordingInputExportSmokeSelection {
         let url=URL(fileURLWithPath:report);let directory=url.deletingLastPathComponent()
         do{
             try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
+            if ProcessInfo.processInfo.environment.keys.contains(where: { $0.hasPrefix("PICSHOT_SAVE_PNG_COMPARISON_") }) {
+                var payload: [String: Any]
+                do {
+                    guard let result = try await SavePNGComparisonFixture.runIfRequested(evidenceDirectory: directory) else {
+                        throw PicShotError.message("Save PNG comparison request disappeared")
+                    }
+                    payload = result
+                } catch {
+                    payload = ["schemaVersion": 1, "protocol": SavePNGComparisonFixture.protocolName,
+                        "status": "failed", "error": error.localizedDescription]
+                }
+                // Owned smoke history cleanup also runs for malformed selectors.
+                do {
+                    if FileManager.default.fileExists(atPath: history.directory.path) { try FileManager.default.removeItem(at: history.directory) }
+                    payload["historyDirectoryRemoved"] = !FileManager.default.fileExists(atPath: history.directory.path)
+                } catch { payload["status"] = "failed"; payload["cleanupError"] = error.localizedDescription }
+                payload["arguments"] = CommandLine.arguments
+                try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]).write(to: url, options: .atomic)
+                NSApp.terminate(nil); return
+            }
             if ProcessInfo.processInfo.environment["PICSHOT_LIVE_SCROLL_RESOURCE_MODE"] != nil {
                 defer { try? FileManager.default.removeItem(at: history.directory) }
                 guard let payload = try await LiveScrollResourceFixture.runIfRequested(evidenceDirectory: directory) else {

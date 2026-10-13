@@ -627,41 +627,57 @@ class WorkflowSelectionTests(unittest.TestCase):
             module=path.relative_to(REPO/'Tests').parts[0]
             inventory.extend(module+'.'+classes[0]+'/'+method for method in methods)
         inventory=sorted(inventory)
-        self.assertEqual(len(inventory),2382)
-        self.assertEqual(len(set(inventory)),2382)
+        self.assertEqual(len(inventory),2407)
+        self.assertEqual(len(set(inventory)),2407)
         self.assertEqual(len({name.split('/')[0] for name in inventory}),267)
         self.assertEqual(hashlib.sha256(('\n'.join(inventory)+'\n').encode()).hexdigest(),
+                         '89da6aece2514cafafdeea83cebf09a2a927400df4ee4cc4324d923183cf1b9a')
+        payload=json.loads((REPO/'scripts/save-payload-native-tests.json').read_text())
+        with patch.object(C,'load',return_value=payload):
+            payload_added=C.save_payload_additions(inventory)
+        self.assertEqual((len(payload_added),len(payload['focused'])),(25,93))
+        preserved265=[name for name in inventory if name not in payload_added]
+        self.assertEqual(len(preserved265),2382)
+        self.assertEqual(hashlib.sha256(('\n'.join(preserved265)+'\n').encode()).hexdigest(),
                          'a88b82f2a8e8828ee7e0ce31b52340106f32f37b8e831599d2859281ed876f7c')
+        for bad in ({}, {**payload,'added':payload['added'][:-1]},
+                    {**payload,'focused':payload['focused'][:-1]}, {**payload,'unexpected':0}):
+            with patch.object(C,'load',return_value=bad),self.assertRaises(ValueError):
+                C.save_payload_additions(inventory)
+        for changed in ([name for name in inventory if name!=payload['focused'][0]],
+                        sorted(inventory+['PicShotTests.SaveWorkflowUITests/testUnrecorded'])):
+            with patch.object(C,'load',return_value=payload),self.assertRaises(ValueError):
+                C.save_payload_additions(changed)
         recovery=set(C.SCROLL_RECOVERY_ADDITIONS)
         self.assertEqual(len(recovery),7);self.assertTrue(recovery.issubset(inventory))
-        baseline=[name for name in inventory if name not in recovery]
+        baseline=[name for name in preserved265 if name not in recovery]
         self.assertEqual((len(baseline),len({name.split('/')[0] for name in baseline})),(2375,267))
         self.assertEqual(hashlib.sha256(('\n'.join(baseline)+'\n').encode()).hexdigest(),
                          '0f19081756c225e5b0fede62805ee01693d1409bf6552979ac74db409e3e4aab')
         live=json.loads((REPO/'scripts/live-scroll-additive-tests.json').read_text())
-        self.assertEqual(len(live),163);self.assertTrue(set(live).issubset(inventory))
+        self.assertEqual(len(live),165);self.assertTrue(set(live).issubset(inventory))
         self.assertTrue(recovery.issubset(live))
-        prior_live=[name for name in live if name not in recovery]
+        prior_live=[name for name in live if name not in recovery and name not in payload_added]
         self.assertEqual(len(prior_live),156)
         self.assertEqual(hashlib.sha256(('\n'.join(prior_live)+'\n').encode()).hexdigest(),
                          'a9c4eb4840fe1716651b164c9fc4c27c639738360adcb1a1d20030366b682f64')
         feedback=json.loads((REPO/'scripts/save-feedback-native-tests.json').read_text())
-        with patch.object(C, 'load', return_value=feedback):
+        with patch.object(C,'load',side_effect=lambda path: payload if path.name=='save-payload-native-tests.json' else feedback):
             feedback_added=C.feedback_additions(inventory)
         self.assertEqual(len(feedback_added),5)
         chain=json.loads((REPO/'scripts/capture-chain-native-tests.json').read_text())
-        with patch.object(C, 'load', return_value=chain):
+        with patch.object(C,'load',side_effect=lambda path: payload if path.name=='save-payload-native-tests.json' else chain):
             chain_added=C.chain_additions(inventory)
         self.assertEqual(len(chain_added),95)
         for bad in ({}, {'added':chain['added'][:-1], 'focused':chain['focused']},
                     {**chain,'unexpected':0}):
-            with patch.object(C, 'load', return_value=bad), self.assertRaises(ValueError):
+            with patch.object(C,'load',side_effect=lambda path: payload if path.name=='save-payload-native-tests.json' else bad), self.assertRaises(ValueError):
                 C.chain_additions(inventory)
         script_ids=json.loads((REPO/'scripts/text-script-integration-tests.json').read_text())
-        with patch.object(C, 'read', return_value=json.dumps(script_ids).encode()):
+        with patch.object(C,'read',side_effect=lambda path: (REPO/path).read_bytes()):
             script_added=C.text_script_additions(inventory)
         self.assertEqual(len(script_added),72)
-        original=[name for name in inventory if name not in set(live) | feedback_added | chain_added | script_added]
+        original=[name for name in inventory if name not in set(live) | feedback_added | chain_added | script_added | payload_added]
         self.assertEqual(len(original),2047)
         self.assertEqual(hashlib.sha256(('\n'.join(original)+'\n').encode()).hexdigest(),
                          '926ac5674df90163b949fe461f0d4589ef72c8fc3215fa00b927564aae57cb44')

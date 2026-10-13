@@ -119,6 +119,16 @@ jobs:
     timeout-minutes: 40
     steps:
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+    - name: Check bounded Save PNG pair and unchanged launcher contracts
+      if: ${{ contains(github.event.head_commit.message || '', '[save-payload-comparison]') }}
+      timeout-minutes: 2
+      run: |
+        python3 -m unittest discover -s scripts/tests -p 'test_save_png_comparison.py'
+        python3 -O -m unittest discover -s scripts/tests -p 'test_save_png_comparison.py'
+        python3 -m unittest discover -s scripts/tests -p 'test_save_png_launcher_source.py'
+        python3 -O -m unittest discover -s scripts/tests -p 'test_save_png_launcher_source.py'
+        python3 -m unittest discover -s scripts/tests -p 'test_native_test_shards.py'
+        python3 -O -m unittest discover -s scripts/tests -p 'test_native_test_shards.py'
     - name: Check bounded PNG pair report contracts
       if: ${{ contains(github.event.head_commit.message || '', '[png-boundary-pair]') }}
       timeout-minutes: 2
@@ -304,6 +314,61 @@ jobs:
         native.need(not skipped, 'Text script methods cannot be skipped')
         Path('dist/text-script-test-inventory.json').write_text(json.dumps({'passed':passed,'skipped':skipped,'count':len(expected)},indent=2)+'\n')
         PYTHON
+    - name: Verify Save payload collision cancellation retry and existing writer behavior
+      id: test_save_png
+      if: ${{ always() && contains(github.event.head_commit.message || '', '[save-payload-comparison]') && steps.compile_live_scroll_tests.outcome == 'success' }}
+      timeout-minutes: 8
+      run: |
+        python3 scripts/run-bounded-command.py --timeout-seconds 420 --log dist/save-png-tests.log --report dist/save-png-tests.json -- swift test --skip-build --filter 'ImageExportPNGStagingTests|LiveScrollSaveDeliveryTests|SaveWorkflowDeliveryTests|SaveWorkflowServiceTests|SaveWorkflowUITests'
+        python3 - <<'PYTHON'
+        import importlib.util,json
+        from pathlib import Path
+        spec=importlib.util.spec_from_file_location('native','scripts/native-test-shards.py')
+        native=importlib.util.module_from_spec(spec);spec.loader.exec_module(native)
+        inventory=json.loads(Path('scripts/save-payload-native-tests.json').read_text())
+        native.need(type(inventory) is dict and set(inventory)=={'added','focused'}, 'Save payload inventory schema differs')
+        expected=inventory['focused']
+        native.need(expected==sorted(set(expected)) and len(expected)==93, 'Save payload focused inventory differs')
+        native.need(set(inventory['added']).issubset(expected) and len(inventory['added'])==25, 'Save payload additions differ')
+        passed,skipped=native.case_results(Path('dist/save-png-tests.log').read_text(),expected)
+        native.need(not skipped,'Save payload methods cannot be skipped')
+        Path('dist/save-png-test-inventory.json').write_text(json.dumps({'passed':passed,'skipped':skipped,'count':len(expected)},indent=2)+'\n')
+        PYTHON
+    - name: Observe one matched same-source Save PNG pair and independently validate all outputs
+      if: ${{ contains(github.event.head_commit.message || '', '[save-payload-comparison]') && steps.test_live_scroll.outcome == 'success' && steps.test_save_png.outcome == 'success' }}
+      timeout-minutes: 20
+      run: bash scripts/save-png-comparison.sh "$PWD/dist/PicShot.app" "$PWD/dist/save-png-pair" "${{ github.sha }}"
+    - name: Preserve matched Save PNG reports independently of measurement outcome
+      if: ${{ always() && contains(github.event.head_commit.message || '', '[save-payload-comparison]') }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Save-PNG-Pair-Reports-${{ github.sha }}
+        path: |
+          dist/save-png-tests.log
+          dist/save-png-tests.json
+          dist/save-png-test-inventory.json
+          dist/save-png-pair/parts/save-png-reports.zip
+        if-no-files-found: warn
+        retention-days: 14
+        compression-level: 0
+    - name: Preserve matched control Save PNG outputs
+      if: ${{ always() && contains(github.event.head_commit.message || '', '[save-payload-comparison]') }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Save-PNG-Control-Outputs-${{ github.sha }}
+        path: dist/save-png-pair/parts/save-png-control-outputs.zip
+        if-no-files-found: ignore
+        retention-days: 14
+        compression-level: 0
+    - name: Preserve matched candidate Save PNG outputs
+      if: ${{ always() && contains(github.event.head_commit.message || '', '[save-payload-comparison]') }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Save-PNG-Candidate-Outputs-${{ github.sha }}
+        path: dist/save-png-pair/parts/save-png-candidate-outputs.zip
+        if-no-files-found: ignore
+        retention-days: 14
+        compression-level: 0
     # One diagnostic pair only; ordinary product defaults remain unchanged.
     # Existing40min job cap is independent of individual worst-case stage bounds.
     - name: Compare exact final PNG write bridge in two fresh resource cells
@@ -1130,6 +1195,9 @@ jobs:
                   and all(native.SPECIFIER.fullmatch(case) and '.LiveScroll' in case for case in added),
                   'Explicit live-scroll inventory is invalid')
               native.need(set(added).issubset(inventory), 'Complete native inventory is missing a required additive live-scroll method')
+              save_spec = importlib.util.spec_from_file_location('save_qualification', 'scripts/check-experimental-scroll-interactions.py')
+              save_qualification = importlib.util.module_from_spec(save_spec); save_spec.loader.exec_module(save_qualification)
+              save_added = save_qualification.save_payload_additions(inventory)
               feedback = json.loads(native.bounded_text(Path('scripts/save-feedback-native-tests.json'), 16*1024))
               native.need(type(feedback) is dict and set(feedback) == {'baseline241', 'added'}, 'Save feedback inventory schema differs')
               feedback_added = feedback['added']
@@ -1139,7 +1207,7 @@ jobs:
               native.need(type(feedback['baseline241']) is list and len(feedback['baseline241']) == 9
                   and feedback['baseline241'] == sorted(set(feedback['baseline241']))
                   and not (set(feedback_added) & set(feedback['baseline241']))
-                  and sorted(feedback['baseline241'] + feedback_added) == [case for case in inventory if case.startswith('PicShotTests.SaveWorkflowUITests/')],
+                  and sorted(feedback['baseline241'] + feedback_added) == [case for case in inventory if case.startswith('PicShotTests.SaveWorkflowUITests/') and case not in save_added],
                   'Save feedback class lost or added an unrecorded method')
               chain = json.loads(native.bounded_text(Path('scripts/capture-chain-native-tests.json'), 128*1024))
               native.need(type(chain) is dict and set(chain) == {'added', 'focused'}, 'Chain inventory schema differs')
@@ -1148,12 +1216,12 @@ jobs:
                   and all(native.SPECIFIER.fullmatch(case) and ('.CaptureChain' in case or '.SaveWorkflowDeliveryTests/' in case) for case in chain_added),
                   'Explicit chain additions are invalid')
               native.need(set(chain_added).issubset(inventory)
-                  and chain_added == [case for case in inventory if '.CaptureChain' in case or '.SaveWorkflowDeliveryTests/' in case],
+                  and chain_added == [case for case in inventory if ('.CaptureChain' in case or '.SaveWorkflowDeliveryTests/' in case) and case not in save_added],
                   'Chain classes lost or added an unrecorded method')
               text_spec = importlib.util.spec_from_file_location('text_qualification', 'scripts/check-experimental-scroll-interactions.py')
               text_qualification = importlib.util.module_from_spec(text_spec); text_spec.loader.exec_module(text_qualification)
               text_added = text_qualification.text_script_additions(inventory)
-              additions = set(added) | set(feedback_added) | set(chain_added) | text_added
+              additions = set(added) | set(feedback_added) | set(chain_added) | text_added | save_added
               original = [case for case in inventory if case not in additions]
               original_shards = [[case for case in shard['tests'] if case not in additions] for shard in plan['shards']]
               native.need(len(original) == 2047 and len({case.split('/')[0] for case in original}) == 232
@@ -1170,6 +1238,7 @@ jobs:
                   additiveSaveFeedbackMethods=len(feedback_added), additiveSaveFeedbackIDs=feedback_added,
                   additiveCaptureChainMethods=len(chain_added), additiveCaptureChainIDs=chain_added,
                   additiveTextScriptMethods=len(text_added), additiveTextScriptIDs=sorted(text_added),
+                  additiveSavePayloadMethods=len(save_added), additiveSavePayloadIDs=sorted(save_added),
                   discoverySHA256=digest(Path('dist/native-test-discovery.log')),
                   fixtureSHA256=digest(Path('Tests/PicShotTests/PinAnchoredEditingTests.swift')))
               for label, expected in (('method', [method]), ('class', class_ids)):

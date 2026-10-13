@@ -2,6 +2,7 @@
 import hashlib
 from pathlib import Path
 import unittest
+from save_png_launcher_source_contract import current_save_png_fragment
 from product_launcher_source_contract import (CAPTURE_CHAIN_TIMEOUT_HOOKS, TEXT_SCRIPT_LAUNCHER_HOOKS,
     without_capture_chain_timeout_hooks, without_text_script_launcher_hooks)
 
@@ -19,6 +20,7 @@ class CaptureChainDeadlineTests(unittest.TestCase):
             # longer occurs after the reviewed additive text-script hook.
             for current, previous in TEXT_SCRIPT_LAUNCHER_HOOKS:
                 if previous and previous in hook: hook = hook.replace(previous, current)
+            hook = current_save_png_fragment(hook)
             self.assertEqual(SOURCE.count(hook), 1)
             for replacement in ('', hook + hook, hook.replace('effectiveTimeout', 'unboundedTimeout').replace('240', '301')):
                 if replacement == hook:

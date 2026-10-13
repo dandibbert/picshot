@@ -139,6 +139,70 @@ final class ImageExportPNGStagingTests: XCTestCase {
         XCTAssertNil(configuration.stagedPNGForDiagnostics)
     }
 
+    func testSavePayloadMatchesOrdinaryReferenceAlphaPixelsAndMetadata() throws {
+        for (width, height) in [(73, 61), (1031, 19), (17, 1033)] {
+            let snapshot = try ImageExportSnapshot(image: fixture(width: width, height: height),
+                sourceURL: URL(fileURLWithPath: "/tmp/PicShot-save-payload-source.png"))
+            let payload = try ImageExportService.encodePNGForSave(snapshot: snapshot)
+            let ordinary = try ImageExportService.encode(snapshot: snapshot, options: ImageExportOptions())
+            XCTAssertEqual(payload.data, ordinary.data)
+            XCTAssertEqual(payload.data, try referencePNG(snapshot.image))
+            XCTAssertEqual(payload.options, ordinary.options)
+            XCTAssertEqual(payload.width, width); XCTAssertEqual(payload.height, height)
+            XCTAssertEqual(payload.pageCount, 1); XCTAssertEqual(payload.sourceURL, snapshot.sourceURL)
+            XCTAssertEqual(payload.byteCount, payload.data.count)
+            let adapted = ordinary.encodedPayload
+            XCTAssertEqual(adapted.data, payload.data); XCTAssertEqual(adapted.options, payload.options)
+            XCTAssertEqual(adapted.width, payload.width); XCTAssertEqual(adapted.height, payload.height)
+            XCTAssertEqual(adapted.pageCount, payload.pageCount); XCTAssertEqual(adapted.sourceURL, payload.sourceURL)
+            let source = try XCTUnwrap(CGImageSourceCreateWithData(payload.data as CFData, nil))
+            XCTAssertEqual(CGImageSourceGetType(source) as String?, UTType.png.identifier)
+            XCTAssertEqual(CGImageSourceGetCount(source), 1)
+            let decoded = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+            XCTAssertEqual(try pixels(decoded), try pixels(snapshot.image), "Include transparent, partial-alpha and opaque pixels")
+            XCTAssertNoThrow(try ImageExportService.verify(data: payload.data, options: payload.options,
+                width: width, height: height, expectedPages: payload.pageCount))
+            XCTAssertThrowsError(try ImageExportService.verify(data: payload.data, options: payload.options,
+                width: width + 1, height: height, expectedPages: 1))
+            let referencePreview = try ImageExportService.preview(data: payload.data, format: .png)
+            XCTAssertEqual(try pixels(ordinary.firstPreview), try pixels(referencePreview))
+        }
+    }
+
+    func testSavePayloadKeepsInclusiveLimitsValidationAndPreCancellation() throws {
+        let snapshot = try ImageExportSnapshot(image: fixture())
+        let expected = try ImageExportService.encodePNGForSave(snapshot: snapshot)
+        var limits = ImageExportLimits.standard
+        limits.maximumSourcePixels = snapshot.image.width * snapshot.image.height
+        limits.maximumEncodedBytes = expected.byteCount
+        XCTAssertEqual(try ImageExportService.encodePNGForSave(snapshot: snapshot, limits: limits).data, expected.data)
+        limits.maximumSourcePixels -= 1
+        XCTAssertThrowsError(try ImageExportService.encodePNGForSave(snapshot: snapshot, limits: limits)) {
+            guard case ImageExportError.sourceTooLarge = $0 else { return XCTFail("Unexpected error: \($0)") }
+        }
+        limits.maximumSourcePixels += 1; limits.maximumEncodedBytes -= 1
+        XCTAssertThrowsError(try ImageExportService.encodePNGForSave(snapshot: snapshot, limits: limits)) {
+            guard case ImageExportError.outputTooLarge = $0 else { return XCTFail("Unexpected error: \($0)") }
+        }
+        for invalidField in 0..<5 {
+            var invalid = ImageExportLimits.standard
+            switch invalidField {
+            case 0: invalid.maximumSourcePixels = 0
+            case 1: invalid.maximumEncodedBytes = 0
+            case 2: invalid.maximumPages = 0
+            case 3: invalid.previewDimension = 0
+            default: invalid.maximumPreviewBytes = 3
+            }
+            XCTAssertThrowsError(try ImageExportService.encodePNGForSave(snapshot: snapshot, limits: invalid)) {
+                guard case ImageExportError.invalidOptions = $0 else { return XCTFail("Unexpected error: \($0)") }
+            }
+        }
+        let cancellation = ImageExportCancellation(); cancellation.cancel()
+        XCTAssertThrowsError(try ImageExportService.encodePNGForSave(snapshot: snapshot, cancellation: cancellation)) {
+            XCTAssertTrue($0 is CancellationError)
+        }
+    }
+
     private func referencePNG(_ image: CGImage) throws -> Data {
         // Recreate the accepted consumer-backed PNG writer independently of the
         // shared encoding method, with its exact one-image type and properties.

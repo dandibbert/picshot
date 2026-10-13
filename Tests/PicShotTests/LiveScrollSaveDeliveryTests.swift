@@ -7,14 +7,17 @@ import PicShotCore
 /// directories only. No live capture, general pasteboard or folder picker.
 @MainActor
 final class LiveScrollSaveDeliveryTests: XCTestCase {
-    func testAdmissionWaitsForActualPNGAndParentCloseOnlyDetaches() async throws {
+    func testAdmissionWaitsForActualPNGAndParentCloseOnlyDetaches() async throws { try await checkAdmissionWaitsForActualPNGAndParentCloseOnlyDetaches(.legacyPreview) }
+    func testEncodedPayloadAdmissionWaitsForActualPNGAndParentCloseOnlyDetaches() async throws { try await checkAdmissionWaitsForActualPNGAndParentCloseOnlyDetaches(.encodedPayload) }
+
+    private func checkAdmissionWaitsForActualPNGAndParentCloseOnlyDetaches(_ mode: SavePNGPreparationMode) async throws {
         _ = NSApplication.shared
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
         try SaveWorkflowSettings(baseURL: fixture.root, filenameTemplate: "scroll", collisionBehavior: .keepBoth).save(to: fixture.defaults)
         let existing = fixture.root.appendingPathComponent("scroll.png"), sentinel = Data("existing-file".utf8)
         try sentinel.write(to: existing)
-        let presenter = SaveWorkflowPresenter(defaults: fixture.defaults)
+        let presenter = SaveWorkflowPresenter(defaults: fixture.defaults, pngPreparationMode: mode)
         var drainCalls = 0
         presenter.onPresent = { job in
             let previousDrained = job.onDrained
@@ -62,11 +65,14 @@ final class LiveScrollSaveDeliveryTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: result.savedURL), committedBytes)
     }
 
-    func testCancelOwnsOnlyItsQueuedJobAndPreservesPresenterCleanup() async throws {
+    func testCancelOwnsOnlyItsQueuedJobAndPreservesPresenterCleanup() async throws { try await checkCancelOwnsOnlyItsQueuedJobAndPreservesPresenterCleanup(.legacyPreview) }
+    func testEncodedPayloadCancelOwnsOnlyItsQueuedJobAndPreservesPresenterCleanup() async throws { try await checkCancelOwnsOnlyItsQueuedJobAndPreservesPresenterCleanup(.encodedPayload) }
+
+    private func checkCancelOwnsOnlyItsQueuedJobAndPreservesPresenterCleanup(_ mode: SavePNGPreparationMode) async throws {
         _ = NSApplication.shared
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
-        let presenter = SaveWorkflowPresenter(defaults: fixture.defaults)
+        let presenter = SaveWorkflowPresenter(defaults: fixture.defaults, pngPreparationMode: mode)
         let delivery = LiveScrollSaveDelivery(presenter: presenter)
         defer { delivery.cancel(); presenter.cancelAll(); ImageExportService.queue.isSuspended = false }
         let image = try source()

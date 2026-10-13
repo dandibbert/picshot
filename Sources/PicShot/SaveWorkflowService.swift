@@ -63,6 +63,15 @@ enum SaveWorkflowService {
                         cancellation: ImageExportCancellation = ImageExportCancellation(),
                         beforeCommit: (() throws -> Void)? = nil,
                         testHooks: SaveWorkflowTestHooks? = nil) throws -> SaveWorkflowResult {
+        try publish(artifact.encodedPayload, settings: settings, context: context, collisionBehavior: collisionBehavior,
+                    cancellation: cancellation, beforeCommit: beforeCommit, testHooks: testHooks)
+    }
+
+    static func publish(_ artifact: ImageExportEncodedPayload, settings: SaveWorkflowSettings,
+                        context: SaveWorkflowContext, collisionBehavior: SaveWorkflowCollisionBehavior? = nil,
+                        cancellation: ImageExportCancellation = ImageExportCancellation(),
+                        beforeCommit: (() throws -> Void)? = nil,
+                        testHooks: SaveWorkflowTestHooks? = nil) throws -> SaveWorkflowResult {
         try cancellation.check(); try settings.validate(); try artifact.options.validate()
         guard artifact.width == context.width, artifact.height == context.height,
               artifact.width > 0, artifact.height > 0,
@@ -112,6 +121,15 @@ enum SaveWorkflowService {
                         cancellation: ImageExportCancellation = ImageExportCancellation(),
                         beforeCommit: (() throws -> Void)? = nil,
                         testHooks: SaveWorkflowTestHooks? = nil) throws -> SaveWorkflowResult {
+        try publish(artifact.encodedPayload, to: url, collisionBehavior: collisionBehavior,
+                    cancellation: cancellation, beforeCommit: beforeCommit, testHooks: testHooks)
+    }
+
+    static func publish(_ artifact: ImageExportEncodedPayload, to url: URL,
+                        collisionBehavior: SaveWorkflowCollisionBehavior = .ask,
+                        cancellation: ImageExportCancellation = ImageExportCancellation(),
+                        beforeCommit: (() throws -> Void)? = nil,
+                        testHooks: SaveWorkflowTestHooks? = nil) throws -> SaveWorkflowResult {
         guard url.isFileURL, url.query == nil, url.fragment == nil else { throw ImageExportError.invalidDestination }
         let extensionValue = url.pathExtension.lowercased()
         let validExtension = extensionValue == artifact.options.format.filenameExtension
@@ -123,7 +141,7 @@ enum SaveWorkflowService {
                            cancellation: cancellation, beforeCommit: beforeCommit, testHooks: testHooks)
     }
 
-    private static func publish(_ artifact: ImageExportArtifact, destination: SaveWorkflowDestination,
+    private static func publish(_ artifact: ImageExportEncodedPayload, destination: SaveWorkflowDestination,
                                 collisionBehavior behavior: SaveWorkflowCollisionBehavior,
                                 cancellation: ImageExportCancellation,
                                 beforeCommit: (() throws -> Void)?,

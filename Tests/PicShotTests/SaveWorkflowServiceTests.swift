@@ -318,6 +318,106 @@ final class SaveWorkflowServiceTests: XCTestCase {
             XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("capture (31).png").path))
         }
     }
+    @MainActor func testEncodedPayloadPublishesExactBytesThroughBothRoutesAndCopy() throws {
+        try withDirectory { directory in
+            let artifact = try makeArtifact(), payload = artifact.encodedPayload
+            let settings = SaveWorkflowSettings(baseURL: directory, relativeFolderTemplate: "{width}x{height}", filenameTemplate: "payload")
+            let named = try SaveWorkflowService.publish(payload, settings: settings, context: context)
+            let selected = try SaveWorkflowService.publish(payload, to: directory.appendingPathComponent("selected.png"))
+            XCTAssertEqual(named.savedURL, directory.appendingPathComponent("8x6/payload.png"))
+            for saved in [named, selected] {
+                XCTAssertEqual(try Data(contentsOf: saved.savedURL), artifact.data)
+                XCTAssertEqual(saved.byteCount, artifact.byteCount)
+                let copied = SaveWorkflowService.copySaved(saved) { bytes, type in
+                    XCTAssertEqual(bytes, artifact.data); XCTAssertEqual(type, "public.png"); return true
+                }
+                XCTAssertEqual(copied.clipboardOutcome, .copied)
+            }
+            XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: directory.path)), ["8x6", "selected.png"])
+        }
+    }
+
+    func testEncodedPayloadCancellationCollisionAndWriteFailureKeepOwnedCleanup() throws {
+        try withDirectory { directory in
+            let payload = try makeArtifact().encodedPayload, target = directory.appendingPathComponent("payload.png")
+            let cancelled = ImageExportCancellation(); cancelled.cancel()
+            XCTAssertThrowsError(try SaveWorkflowService.publish(payload, to: target, cancellation: cancelled)) {
+                XCTAssertTrue($0 is CancellationError)
+            }
+            let late = ImageExportCancellation()
+            XCTAssertThrowsError(try SaveWorkflowService.publish(payload, to: target, cancellation: late, beforeCommit: { late.cancel() })) {
+                XCTAssertTrue($0 is CancellationError)
+            }
+            // The writer's readback rejects actual same-inode corruption and cleans only its own stage.
+            XCTAssertThrowsError(try SaveWorkflowService.publish(payload, to: target, beforeCommit: {
+                let stage = try XCTUnwrap(FileManager.default.contentsOfDirectory(atPath: directory.path).first { $0.hasPrefix(".picshot-save-") })
+                let handle = try FileHandle(forWritingTo: directory.appendingPathComponent(stage).appendingPathComponent("payload"))
+                defer { try? handle.close() }
+                try handle.write(contentsOf: Data(repeating: 0, count: payload.byteCount))
+            })) { error in
+                guard case SaveWorkflowError.changedDirectory = error else { return XCTFail("Unexpected \(error)") }
+            }
+            XCTAssertThrowsError(try SaveWorkflowService.publish(payload, to: target, beforeCommit: {
+                throw SaveWorkflowError.writeFailed
+            })) { error in
+                guard case SaveWorkflowError.writeFailed = error else { return XCTFail("Unexpected \(error)") }
+            }
+            XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
+            let sentinel = Data("keep-existing".utf8); try sentinel.write(to: target)
+            XCTAssertThrowsError(try SaveWorkflowService.publish(payload, to: target)) { error in
+                guard case SaveWorkflowError.collision(let url) = error else { return XCTFail("Unexpected \(error)") }
+                XCTAssertEqual(url, target)
+            }
+            let saved = try SaveWorkflowService.publish(payload, to: target, collisionBehavior: .keepBoth)
+            XCTAssertEqual(saved.savedURL.lastPathComponent, "payload (1).png")
+            XCTAssertEqual(try Data(contentsOf: saved.savedURL), payload.data)
+            XCTAssertEqual(try Data(contentsOf: target), sentinel)
+            XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: directory.path)), ["payload.png", "payload (1).png"])
+        }
+    }
+
+    func testEncodedPayloadRejectsInvalidMetadataContextExtensionAndSourceReuse() throws {
+        try withDirectory { directory in
+            let source = directory.appendingPathComponent("source.png")
+            let payload = try makeArtifact(sourceURL: source).encodedPayload
+            XCTAssertThrowsError(try SaveWorkflowService.publish(payload, to: source))
+            XCTAssertThrowsError(try SaveWorkflowService.publish(payload, to: directory.appendingPathComponent("wrong.jpg")))
+            XCTAssertThrowsError(try SaveWorkflowService.publish(payload, settings: SaveWorkflowSettings(baseURL: directory),
+                context: SaveWorkflowContext(width: 9, height: 6, counter: 1)))
+            for (width, height, pages) in [(0, 6, 1), (8, 0, 1), (8, 6, 0), (8, 6, 201), (100_000_001, 1, 1)] {
+                let invalid = ImageExportEncodedPayload(data: payload.data, options: payload.options,
+                    width: width, height: height, pageCount: pages, sourceURL: nil)
+                XCTAssertThrowsError(try SaveWorkflowService.publish(invalid, to: directory.appendingPathComponent("invalid.png"))) { error in
+                    guard case SaveWorkflowError.invalidArtifact = error else { return XCTFail("Unexpected \(error)") }
+                }
+            }
+            XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
+        }
+    }
+
+    @MainActor func testSuppliedArtifactAdaptersPreserveEveryFormatWithoutReencoding() throws {
+        try withDirectory { directory in
+            let preview = try makeArtifact().firstPreview
+            for format in ImageExportFormat.allCases {
+                // This is an adapter contract fixture, not an encoder-validity fixture:
+                // recognizable opaque bytes prove Save never substitutes a PNG encoder.
+                let bytes = Data("already-encoded-\(format.title)-payload".utf8)
+                let options = ImageExportOptions(format: format)
+                let artifact = ImageExportArtifact(data: bytes, options: options, width: 8, height: 6,
+                    pageCount: format == .pdf ? 2 : 1, firstPreview: preview, sourceURL: nil)
+                let result = try SaveWorkflowService.publish(artifact,
+                    to: directory.appendingPathComponent("selected.\(format.filenameExtension)"))
+                XCTAssertEqual(try Data(contentsOf: result.savedURL), bytes)
+                XCTAssertEqual(artifact.encodedPayload.pageCount, artifact.pageCount)
+                let copied = SaveWorkflowService.copySaved(result) { data, type in
+                    XCTAssertEqual(data, bytes); XCTAssertEqual(type, format.contentType.identifier); return true
+                }
+                XCTAssertEqual(copied.clipboardOutcome, .copied)
+            }
+            XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path).count, ImageExportFormat.allCases.count)
+        }
+    }
+
     private func assertCancellationWhilePaused(artifact: ImageExportArtifact, target: URL, collisionAttempt: Int?) throws {
         let reached = DispatchSemaphore(value: 0), resume = DispatchSemaphore(value: 0)
         let workerFinished = DispatchSemaphore(value: 0), cancelReturned = DispatchSemaphore(value: 0)

@@ -2,6 +2,7 @@
 import hashlib
 from pathlib import Path
 import unittest
+from save_png_launcher_source_contract import current_save_png_fragment, without_save_png_launcher_hooks
 
 from product_launcher_source_contract import (TEXT_SCRIPT_LAUNCHER_HOOKS,
     without_text_script_launcher_hooks, without_capture_chain_timeout_hooks,
@@ -26,6 +27,7 @@ class TextScriptLauncherSourceTests(unittest.TestCase):
             without_capture_chain_launcher_hooks, without_live_scroll_launcher_hooks,
             without_pin_ui_diagnostic_launcher_hooks, without_product_launcher_hooks)
         for index, (hook, _) in enumerate(TEXT_SCRIPT_LAUNCHER_HOOKS):
+            hook = current_save_png_fragment(hook)
             self.assertEqual(SOURCE.count(hook), 1)
             changed = hook.replace('textScriptDiagnostic', 'unreviewedDiagnostic').replace('PICSHOT_TEXT_SCRIPT_', 'PICSHOT_OTHER_SCRIPT_')
             self.assertNotEqual(changed, hook)
@@ -44,10 +46,11 @@ class TextScriptLauncherSourceTests(unittest.TestCase):
                 without_text_script_launcher_hooks(self, changed)
 
     def test_current_selector_forwarding_and_owned_receipt_are_exact(self):
-        self.assertEqual(SOURCE.count('let textScriptDiagnostic = ProcessInfo.processInfo.environment["PICSHOT_TEXT_SCRIPT_DEMO_ONLY"] == "1"'), 1)
-        whitelist = SOURCE.split('for key in [', 1)[1].split('] {', 1)[0]
+        source = without_save_png_launcher_hooks(self, SOURCE)
+        self.assertEqual(source.count('let textScriptDiagnostic = ProcessInfo.processInfo.environment["PICSHOT_TEXT_SCRIPT_DEMO_ONLY"] == "1"'), 1)
+        whitelist = source.split('for key in [', 1)[1].split('] {', 1)[0]
         self.assertEqual(whitelist.count('"PICSHOT_TEXT_SCRIPT_DEMO_ONLY"'), 1)
-        self.assertEqual(SOURCE.count('if let value = ProcessInfo.processInfo.environment[key] { configuration.environment[key] = value }'), 1)
+        self.assertEqual(source.count('if let value = ProcessInfo.processInfo.environment[key] { configuration.environment[key] = value }'), 1)
         for fragment in ('configuration.createsNewApplicationInstance = true', 'configuration.arguments = []',
             '"selectedAppPath": appURL.resolvingSymlinksInPath().path',
             '"ownedExitConfirmed": launched?.isTerminated == true', '"processStartMemoryCaptured": false',
@@ -55,12 +58,13 @@ class TextScriptLauncherSourceTests(unittest.TestCase):
             'report["expectedExecutablePath"] = expectedExecutablePath',
             'report["launchedAppPath"] = launchedBundlePath', 'report["launchedExecutablePath"] = launchedExecutablePath',
             'launchedBundlePath == appURL.resolvingSymlinksInPath().path && launchedExecutablePath == expectedExecutablePath'):
-            self.assertIn(fragment, SOURCE)
+            self.assertIn(fragment, source)
         identity = 'if (liveScrollDiagnostic || captureChainDiagnostic || textScriptDiagnostic || recordingInputExportOnly || ProcessInfo.processInfo.environment["PICSHOT_CODEC_STAGING_MODE"] != nil) && !launchedIdentityMatches() {'
-        self.assertEqual(SOURCE.count(identity), 1)
-        self.assertLess(SOURCE.index(identity), SOURCE.index('if launched.isTerminated { finish(0, "exited") }'))
+        self.assertEqual(source.count(identity), 1)
+        self.assertLess(source.index(identity), source.index('if launched.isTerminated { finish(0, "exited") }'))
 
     def test_current240_deadline_preserves_original_modes_and3_plus3_owned_cleanup(self):
+        source = without_save_png_launcher_hooks(self, SOURCE)
         for fragment in ('let effectiveTimeout: TimeInterval = (captureChainDiagnostic || textScriptDiagnostic) ? 240 : timeout',
             'let deadline = Date().addingTimeInterval(effectiveTimeout)', '"timeoutSeconds": effectiveTimeout',
             '"appTimeoutSeconds": (captureChainDiagnostic || textScriptDiagnostic) ? 240 : 600, "appCleanupSeconds": [3, 3]',
@@ -69,7 +73,7 @@ class TextScriptLauncherSourceTests(unittest.TestCase):
             'private let schedule: [TimeInterval] = [90, 360]',
             'if liveScrollDiagnostic || captureChainDiagnostic || textScriptDiagnostic || recordingInputExportOnly || pinUIDiagnostic != nil {',
             'while Date() < deadline && interruptedSignal == nil {'):
-            self.assertIn(fragment, SOURCE)
+            self.assertIn(fragment, source)
         cleanup = ('if let launched, !launched.isTerminated, !(recordingInputExportOnly || liveScrollDiagnostic || captureChainDiagnostic || textScriptDiagnostic) || launchedIdentityMatches(),\n'
                    '   pinUIDiagnostic == nil || pinUIOwnedIdentity()["ownedLiveIdentityMatches"] as? Bool == true {\n'
                    '    _ = launched.terminate()\n'
@@ -82,11 +86,11 @@ class TextScriptLauncherSourceTests(unittest.TestCase):
                    '    while !launched.isTerminated && Date() < forced {\n'
                    '        RunLoop.current.run(until: Date().addingTimeInterval(0.1))\n'
                    '    }\n')
-        self.assertEqual(SOURCE.count(cleanup), 1)
-        self.assertEqual(SOURCE.count('Date().addingTimeInterval(3)'), 2)
-        self.assertIn('finish(1, interruptedSignal == nil ? "timed-out" : "cancelled")', SOURCE)
+        self.assertEqual(source.count(cleanup), 1)
+        self.assertEqual(source.count('Date().addingTimeInterval(3)'), 2)
+        self.assertIn('finish(1, interruptedSignal == nil ? "timed-out" : "cancelled")', source)
         for forbidden in ('killall', 'pkill', 'runningApplications', 'waitUntilExit'):
-            self.assertNotIn(forbidden, SOURCE)
+            self.assertNotIn(forbidden, source)
 
 
 if __name__ == '__main__': unittest.main()

@@ -1,4 +1,5 @@
 """Counted literal reversals preserve historical launcher identity checks."""
+from save_png_launcher_source_contract import without_save_png_launcher_hooks
 
 # Candidate255 added only these nine text-script diagnostic hooks. Reverse them
 # before every older chain/deadline/scroll/pin/staging/product restoration. Never
@@ -31,6 +32,7 @@ TEXT_SCRIPT_LAUNCHER_HOOKS = (
 
 
 def without_text_script_launcher_hooks(test, source):
+    source = without_save_png_launcher_hooks(test, source)
     for hook, replacement in TEXT_SCRIPT_LAUNCHER_HOOKS:
         test.assertEqual(source.count(hook), 1, "Missing, duplicated or changed text-script launcher hook")
         source = source.replace(hook, replacement, 1)

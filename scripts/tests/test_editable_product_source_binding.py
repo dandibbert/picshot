@@ -7,6 +7,7 @@ import tempfile
 from pathlib import Path
 import re
 import unittest
+from save_png_launcher_source_contract import current_save_png_fragment
 from product_launcher_source_contract import (CODEC_STAGING_LAUNCHER_HOOKS,
     EARLY_RECORDING_LAUNCHER_HOOKS, LIVE_SCROLL_LAUNCHER_HOOKS, CAPTURE_CHAIN_LAUNCHER_HOOKS, TEXT_SCRIPT_LAUNCHER_HOOKS,
     without_capture_chain_launcher_hooks,
@@ -66,6 +67,7 @@ class ProductSourceBindingTests(unittest.TestCase):
         source=without_pin_ui_diagnostic_launcher_hooks(self,source)
         self.assertEqual(len(CODEC_STAGING_LAUNCHER_HOOKS),4)
         for index,(hook,_) in enumerate(CODEC_STAGING_LAUNCHER_HOOKS):
+            hook = current_save_png_fragment(hook)
             self.assertEqual(source.count(hook),1)
             for disposition,replacement in [('missing',''),('duplicated',hook+hook),
                     ('changed',hook.replace('PICSHOT_CODEC_STAGING_MODE','PICSHOT_CODEC_STAGING_OTHER',1))]:
@@ -93,6 +95,7 @@ class ProductSourceBindingTests(unittest.TestCase):
                 if previous and previous in hook: hook = hook.replace(previous, current)
             for current, previous in TEXT_SCRIPT_LAUNCHER_HOOKS:
                 if previous and previous in hook: hook = hook.replace(previous, current)
+            hook = current_save_png_fragment(hook)
             self.assertEqual(source.count(hook),1)
             for disposition,replacement in [('missing',''),('duplicated',hook+hook),
                     ('changed',hook.replace('liveScrollDiagnostic','otherDiagnostic').replace('LIVE_SCROLL','OTHER_SCROLL').replace('Owned smoke','Other smoke'))]:
@@ -109,6 +112,7 @@ class ProductSourceBindingTests(unittest.TestCase):
         for index,(hook,_) in enumerate(CAPTURE_CHAIN_LAUNCHER_HOOKS):
             for current, previous in TEXT_SCRIPT_LAUNCHER_HOOKS:
                 if previous and previous in hook: hook = hook.replace(previous, current)
+            hook = current_save_png_fragment(hook)
             self.assertEqual(source.count(hook),1)
             for replacement in ('',hook+hook,hook.replace('captureChainDiagnostic','unownedDiagnostic').replace('CAPTURE_CHAIN','UNOWNED_CHAIN')):
                 self.assertNotEqual(replacement,hook)

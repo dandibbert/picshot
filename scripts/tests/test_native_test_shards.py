@@ -400,9 +400,43 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
         inventory = self.current_source_inventory()
         plan = shards.make_plan(inventory, '', 'a' * 40, process_count=4)
         record = self.execute_pin_inventory_guard(plan)
-        self.assertEqual((record['discoveredCount'], record['discoveredClassCount']), (2382, 267))
+        self.assertEqual((record['discoveredCount'], record['discoveredClassCount']), (2407, 267))
+        self.assertEqual(hashlib.sha256(('\n'.join(inventory) + '\n').encode()).hexdigest(),
+                         '89da6aece2514cafafdeea83cebf09a2a927400df4ee4cc4324d923183cf1b9a')
+        payload = json.loads((Path(__file__).parents[1] / 'save-payload-native-tests.json').read_text())
+        self.assertEqual(set(payload), {'added', 'focused'})
+        payload_added = payload['added']
+        self.assertEqual((len(payload_added), len(payload['focused'])), (25, 93))
+        self.assertEqual(payload_added, sorted(set(payload_added)))
+        self.assertEqual(record['additiveSavePayloadIDs'], payload_added)
+        self.assertEqual(record['additiveSavePayloadMethods'], 25)
+        self.assertEqual(hashlib.sha256(('\n'.join(payload_added) + '\n').encode()).hexdigest(),
+                         '15850dcece2db54991ea8098a603eb842c4e25a014e9c4070a341ff1531fc3f5')
+        self.assertEqual(hashlib.sha256(('\n'.join(payload['focused']) + '\n').encode()).hexdigest(),
+                         'e36eca20f9669438337cc03892caba4526067ff5b3132bc41ed8dd3bb123a326')
+        payload_classes = {name.split('/')[0] for name in payload['focused']}
+        self.assertEqual(len(payload_classes), 5)
+        self.assertEqual(payload['focused'], [name for name in inventory if name.split('/')[0] in payload_classes])
+        payload_inventory, payload_plan = inventory, plan
+        inventory = [name for name in payload_inventory if name not in payload_added]
+        self.assertEqual((len(inventory), len({name.split('/')[0] for name in inventory})), (2382, 267))
         self.assertEqual(hashlib.sha256(('\n'.join(inventory) + '\n').encode()).hexdigest(),
                          'a88b82f2a8e8828ee7e0ce31b52340106f32f37b8e831599d2859281ed876f7c')
+        self.assertEqual(payload_inventory, sorted(inventory + payload_added))
+        plan = shards.make_plan(inventory, '', 'a' * 40, process_count=4)
+        self.assertEqual([len(shard['tests']) for shard in payload_plan['shards']], [640, 520, 608, 639])
+        for old_shard, current_shard in zip(plan['shards'], payload_plan['shards']):
+            self.assertEqual([name for name in current_shard['tests'] if name not in payload_added], old_shard['tests'])
+        selection = re.search(r"--selection-regex '([^']+)'", self.step(
+            'Plan exhaustive and focused native test processes'))[1]
+        for count, sizes in [(2, [1000, 875]), (4, [543, 382, 457, 493])]:
+            current_focused = shards.make_plan(payload_inventory, selection, 'a' * 40, process_count=count)
+            prior_focused = shards.make_plan(inventory, selection, 'a' * 40, process_count=count)
+            self.assertEqual(current_focused['selectedTests'], sorted(prior_focused['selectedTests'] + payload_added))
+            self.assertEqual(len(current_focused['selectedTests']), 1875)
+            self.assertEqual([len(shard['tests']) for shard in current_focused['shards']], sizes)
+            for old_shard, current_shard in zip(prior_focused['shards'], current_focused['shards']):
+                self.assertEqual([name for name in current_shard['tests'] if name not in payload_added], old_shard['tests'])
         spec = importlib.util.spec_from_file_location('qualification', Path(__file__).parents[1] / 'check-experimental-scroll-interactions.py')
         qualification = importlib.util.module_from_spec(spec); spec.loader.exec_module(qualification)
         recovery_added = list(qualification.SCROLL_RECOVERY_ADDITIONS)
@@ -459,14 +493,17 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
             for old_shard, current_shard in zip(prior_focused['shards'], full_focused['shards']):
                 self.assertEqual([name for name in current_shard['tests'] if name not in text_added], old_shard['tests'])
         live = json.loads((Path(__file__).parents[1] / 'live-scroll-additive-tests.json').read_text())
-        self.assertEqual(len(live), 163)
+        self.assertEqual(len(live), 165)
         self.assertEqual(record['additiveLiveScrollIDs'], live)
-        self.assertEqual(record['additiveLiveScrollMethods'], 163)
+        self.assertEqual(record['additiveLiveScrollMethods'], 165)
+        self.assertEqual(len(set(live) & set(payload_added)), 2)
+        live = [name for name in live if name not in payload_added]
+        self.assertEqual(len(live), 163)
         self.assertTrue(set(recovery_added).issubset(live))
         live = [name for name in live if name not in recovery_added]
         self.assertEqual(len(live), 156)
         self.assertEqual(live, sorted(set(live)))
-        self.assertEqual([name for name in record['additiveLiveScrollIDs'] if name not in recovery_added], live)
+        self.assertEqual([name for name in record['additiveLiveScrollIDs'] if name not in recovery_added and name not in payload_added], live)
         self.assertEqual(record['preserved214Methods'], 2047)
         self.assertEqual(hashlib.sha256(('\n'.join(live) + '\n').encode()).hexdigest(),
                          'a9c4eb4840fe1716651b164c9fc4c27c639738360adcb1a1d20030366b682f64')
@@ -596,7 +633,13 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
         self.assertIn(text_method, inventory)
         recovery_method = 'PicShotTests.LiveScrollAssemblerTransactionTests/testMismatchCannotSpendRecoveryAndFailedStationaryRetryIsBoundedBothAxes'
         self.assertIn(recovery_method, inventory)
+        payload_method = 'PicShotTests.ImageExportPNGStagingTests/testSavePayloadMatchesOrdinaryReferenceAlphaPixelsAndMetadata'
+        self.assertIn(payload_method, inventory)
         alternatives = [
+            ('missing payload method', [name for name in inventory if name != payload_method],
+             'Save payload methods lost or added outside explicit inventory'),
+            ('renamed payload method', sorted(name + 'Renamed' if name == payload_method else name for name in inventory),
+             'Save payload methods lost or added outside explicit inventory'),
             ('missing recovery method', [name for name in inventory if name != recovery_method],
              'Complete native inventory is missing a required additive live-scroll method'),
             ('renamed recovery method', sorted(name + 'Renamed' if name == recovery_method else name for name in inventory),
@@ -606,7 +649,7 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
             ('missing live fixture', [name for name in inventory if not name.startswith('PicShotTests.LiveScrollResourceFixtureTests/')],
              'Complete native inventory'),
             ('missing codec classes', [name for name in inventory if name.split('/')[0] not in
-             {'PicShotTests.CodecStagingComparisonTests', 'PicShotTests.ImageExportPNGStagingTests'}], 'Accepted248 native IDs changed'),
+             {'PicShotTests.CodecStagingComparisonTests', 'PicShotTests.ImageExportPNGStagingTests'}], 'Save payload methods lost or added outside explicit inventory'),
             ('missing recording classes', [name for name in inventory if not name.startswith('PicShotTests.RecordingInput')],
              'Accepted248 native IDs changed'),
             ('missing final method', inventory[:-1], 'Text script methods lost or added outside the explicit inventory'),

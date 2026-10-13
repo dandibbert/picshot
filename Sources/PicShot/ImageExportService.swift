@@ -59,6 +59,18 @@ struct ImageExportSnapshot: @unchecked Sendable {
     }
 }
 
+/// Immutable encoded output for consumers that never display a preview.
+/// Adapting an artifact shares its Data value; it does not reencode or copy bytes.
+struct ImageExportEncodedPayload: @unchecked Sendable {
+    let data: Data
+    let options: ImageExportOptions
+    let width: Int
+    let height: Int
+    let pageCount: Int
+    let sourceURL: URL?
+    var byteCount: Int { data.count }
+}
+
 struct ImageExportArtifact: @unchecked Sendable {
     let data: Data
     let options: ImageExportOptions
@@ -68,6 +80,10 @@ struct ImageExportArtifact: @unchecked Sendable {
     let firstPreview: CGImage
     let sourceURL: URL?
     var byteCount: Int { data.count }
+    var encodedPayload: ImageExportEncodedPayload {
+        ImageExportEncodedPayload(data: data, options: options, width: width, height: height,
+                                  pageCount: pageCount, sourceURL: sourceURL)
+    }
 }
 
 enum ImageExportService {
@@ -129,6 +145,19 @@ enum ImageExportService {
         guard let preview = encoded.preview else { throw ImageExportError.invalidOutput }
         return ImageExportArtifact(data: encoded.data, options: options, width: snapshot.image.width, height: snapshot.image.height,
                                    pageCount: encoded.pages, firstPreview: preview, sourceURL: snapshot.sourceURL)
+    }
+
+    /// Fresh-image Save needs the same verified PNG bytes, without a thumbnail.
+    /// Export and supplied-artifact callers retain their required real preview.
+    static func encodePNGForSave(snapshot: ImageExportSnapshot,
+                        cancellation: ImageExportCancellation = ImageExportCancellation(),
+                        limits: ImageExportLimits = .standard) throws -> ImageExportEncodedPayload {
+        let options = ImageExportOptions()
+        let encoded = try encodeNative(snapshot: snapshot, options: options, cancellation: cancellation,
+                                       limits: limits, includePreview: false)
+        return ImageExportEncodedPayload(data: encoded.data, options: options,
+            width: snapshot.image.width, height: snapshot.image.height,
+            pageCount: encoded.pages, sourceURL: snapshot.sourceURL)
     }
 
     /// Private helper input needs the full-fidelity PNG bytes and metadata checks,

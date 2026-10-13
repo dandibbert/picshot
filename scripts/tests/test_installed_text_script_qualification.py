@@ -165,17 +165,18 @@ class InstalledTextScriptQualificationTests(unittest.TestCase):
 
     def test_inventory_rejects_counts_without_exact_baseline_union(self):
         added=json.loads((ROOT/'scripts/text-script-integration-tests.json').read_text())
-        fake=sorted(added+list(C.SCROLL_RECOVERY_ADDITIONS)+['PicShotTests.UnrelatedTests/test'+str(i) for i in range(2303)])
-        with patch.object(C,'read',return_value=json.dumps(added).encode()),self.assertRaisesRegex(ValueError,'Accepted248'):
+        payload=json.loads((ROOT/'scripts/save-payload-native-tests.json').read_text())
+        fake=sorted(added+list(C.SCROLL_RECOVERY_ADDITIONS)+payload['focused']+['PicShotTests.UnrelatedTests/test'+str(i) for i in range(2303-68)])
+        with patch.object(C,'read',side_effect=lambda path: (ROOT/path).read_bytes()),self.assertRaisesRegex(ValueError,'Accepted248'):
             C.text_script_additions(fake)
         recovery=C.SCROLL_RECOVERY_ADDITIONS[0]
         for changed in ([name for name in fake if name != recovery],
                         sorted(name+'Renamed' if name == recovery else name for name in fake)):
-            with patch.object(C,'read',return_value=json.dumps(added).encode()),self.assertRaisesRegex(ValueError,'Explicit264'):
+            with patch.object(C,'read',side_effect=lambda path: (ROOT/path).read_bytes()),self.assertRaisesRegex(ValueError,'Explicit264'):
                 C.text_script_additions(changed)
         for bad in (added[:-1],added+[added[0]],list(reversed(added)),
                     sorted(added[:-1]+['PicShotTests.TextScriptSyntheticTests/testForgedMethod'])):
-            with patch.object(C,'read',return_value=json.dumps(bad).encode()),self.assertRaises(ValueError):
+            with patch.object(C,'read',side_effect=lambda path: json.dumps(bad).encode() if path.name=='text-script-integration-tests.json' else (ROOT/path).read_bytes()),self.assertRaises(ValueError):
                 C.text_script_additions(fake)
 
 

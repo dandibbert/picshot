@@ -7,11 +7,14 @@ import PicShotCore
 /// temporary roots. No capture, general pasteboard or user-selected directory.
 @MainActor
 final class SaveWorkflowDeliveryTests: XCTestCase {
-    func testCommittedPNGDrainsClosesOnlyOwnedWindowAndReleasesAdmission() async throws {
+    func testCommittedPNGDrainsClosesOnlyOwnedWindowAndReleasesAdmission() async throws { try await checkCommittedPNGDrainsClosesOnlyOwnedWindowAndReleasesAdmission(.legacyPreview) }
+    func testEncodedPayloadCommittedPNGDrainsClosesOnlyOwnedWindowAndReleasesAdmission() async throws { try await checkCommittedPNGDrainsClosesOnlyOwnedWindowAndReleasesAdmission(.encodedPayload) }
+
+    private func checkCommittedPNGDrainsClosesOnlyOwnedWindowAndReleasesAdmission(_ mode: SavePNGPreparationMode) async throws {
         _ = NSApplication.shared
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
-        let presenter = SaveWorkflowPresenter(defaults: fixture.defaults)
+        let presenter = SaveWorkflowPresenter(defaults: fixture.defaults, pngPreparationMode: mode)
         let image = try source()
         let unrelated = try XCTUnwrap(presenter.save(image: image))
         defer { presenter.cancelAll() }
@@ -65,14 +68,17 @@ final class SaveWorkflowDeliveryTests: XCTestCase {
         XCTAssertEqual(drainCalls, 3)
     }
 
-    func testDirectoryFailureWaitsForCloseReturnsTypedCauseAndCanRetry() async throws {
+    func testDirectoryFailureWaitsForCloseReturnsTypedCauseAndCanRetry() async throws { try await checkDirectoryFailureWaitsForCloseReturnsTypedCauseAndCanRetry(.legacyPreview) }
+    func testEncodedPayloadDirectoryFailureWaitsForCloseReturnsTypedCauseAndCanRetry() async throws { try await checkDirectoryFailureWaitsForCloseReturnsTypedCauseAndCanRetry(.encodedPayload) }
+
+    private func checkDirectoryFailureWaitsForCloseReturnsTypedCauseAndCanRetry(_ mode: SavePNGPreparationMode) async throws {
         _ = NSApplication.shared
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
         let blocked = fixture.root.appendingPathComponent("not-a-directory"), sentinel = Data("preserve".utf8)
         try sentinel.write(to: blocked)
         try SaveWorkflowSettings(baseURL: blocked, filenameTemplate: "chain").save(to: fixture.defaults)
-        let presenter = SaveWorkflowPresenter(defaults: fixture.defaults)
+        let presenter = SaveWorkflowPresenter(defaults: fixture.defaults, pngPreparationMode: mode)
         let delivery = SaveWorkflowDelivery(presenter: presenter)
         defer { delivery.cancel(); presenter.cancelAll() }
         var closeCalls = 0, drainCalls = 0
@@ -112,11 +118,14 @@ final class SaveWorkflowDeliveryTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: blocked), sentinel)
     }
 
-    func testQueuedCancellationWaitsForDrainAndDoesNotCancelUnrelatedJob() async throws {
+    func testQueuedCancellationWaitsForDrainAndDoesNotCancelUnrelatedJob() async throws { try await checkQueuedCancellationWaitsForDrainAndDoesNotCancelUnrelatedJob(.legacyPreview) }
+    func testEncodedPayloadQueuedCancellationWaitsForDrainAndDoesNotCancelUnrelatedJob() async throws { try await checkQueuedCancellationWaitsForDrainAndDoesNotCancelUnrelatedJob(.encodedPayload) }
+
+    private func checkQueuedCancellationWaitsForDrainAndDoesNotCancelUnrelatedJob(_ mode: SavePNGPreparationMode) async throws {
         _ = NSApplication.shared
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
-        let presenter = SaveWorkflowPresenter(defaults: fixture.defaults)
+        let presenter = SaveWorkflowPresenter(defaults: fixture.defaults, pngPreparationMode: mode)
         let delivery = SaveWorkflowDelivery(presenter: presenter)
         defer { delivery.cancel(); presenter.cancelAll(); ImageExportService.queue.isSuspended = false }
         let image = try source()
@@ -151,11 +160,14 @@ final class SaveWorkflowDeliveryTests: XCTestCase {
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: fixture.root.path).isEmpty)
     }
 
-    func testQueuedTimeoutRetainsFailureThroughCloseAndWaitsForDrain() async throws {
+    func testQueuedTimeoutRetainsFailureThroughCloseAndWaitsForDrain() async throws { try await checkQueuedTimeoutRetainsFailureThroughCloseAndWaitsForDrain(.legacyPreview) }
+    func testEncodedPayloadQueuedTimeoutRetainsFailureThroughCloseAndWaitsForDrain() async throws { try await checkQueuedTimeoutRetainsFailureThroughCloseAndWaitsForDrain(.encodedPayload) }
+
+    private func checkQueuedTimeoutRetainsFailureThroughCloseAndWaitsForDrain(_ mode: SavePNGPreparationMode) async throws {
         _ = NSApplication.shared
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
-        let presenter = SaveWorkflowPresenter(defaults: fixture.defaults)
+        let presenter = SaveWorkflowPresenter(defaults: fixture.defaults, pngPreparationMode: mode)
         let delivery = SaveWorkflowDelivery(presenter: presenter)
         defer { delivery.cancel(); presenter.cancelAll(); ImageExportService.queue.isSuspended = false }
         ImageExportService.queue.isSuspended = true
@@ -182,11 +194,14 @@ final class SaveWorkflowDeliveryTests: XCTestCase {
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: fixture.root.path).isEmpty)
     }
 
-    func testTaskCancellationClosesOwnedWindowButAwaitsDrainage() async throws {
+    func testTaskCancellationClosesOwnedWindowButAwaitsDrainage() async throws { try await checkTaskCancellationClosesOwnedWindowButAwaitsDrainage(.legacyPreview) }
+    func testEncodedPayloadTaskCancellationClosesOwnedWindowButAwaitsDrainage() async throws { try await checkTaskCancellationClosesOwnedWindowButAwaitsDrainage(.encodedPayload) }
+
+    private func checkTaskCancellationClosesOwnedWindowButAwaitsDrainage(_ mode: SavePNGPreparationMode) async throws {
         _ = NSApplication.shared
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
-        let presenter = SaveWorkflowPresenter(defaults: fixture.defaults)
+        let presenter = SaveWorkflowPresenter(defaults: fixture.defaults, pngPreparationMode: mode)
         let delivery = SaveWorkflowDelivery(presenter: presenter)
         defer { delivery.cancel(); presenter.cancelAll(); ImageExportService.queue.isSuspended = false }
         ImageExportService.queue.isSuspended = true
@@ -207,28 +222,45 @@ final class SaveWorkflowDeliveryTests: XCTestCase {
     }
 
     func testPhysicalCommitBeforeCancellationOrTimeoutReturnsReceiptExactlyOnce() async throws {
+        try await checkPhysicalCommitBeforeCancellationOrTimeout(freshMode: nil)
+    }
+
+    func testFreshPNGPhysicalCommitBeforeCancellationOrTimeoutReturnsReceiptExactlyOnce() async throws {
+        for mode in [SavePNGPreparationMode.legacyPreview, .encodedPayload] {
+            try await checkPhysicalCommitBeforeCancellationOrTimeout(freshMode: mode)
+        }
+    }
+
+    private func checkPhysicalCommitBeforeCancellationOrTimeout(freshMode: SavePNGPreparationMode?) async throws {
         _ = NSApplication.shared
         for timeout in [false, true] {
             let fixture = try Fixture()
             defer { fixture.cleanUp() }
             let image = try source()
             let artifact = try ImageExportService.encode(snapshot: ImageExportSnapshot(image: image), options: .init())
-            let presenter = SaveWorkflowPresenter(defaults: fixture.defaults)
+            let presenter = SaveWorkflowPresenter(defaults: fixture.defaults, pngPreparationMode: freshMode ?? .legacyPreview)
             var closeCalls = 0, drainCalls = 0, savedCalls = 0
             presenter.onPresent = { job in
                 let close = job.onClose, drained = job.onDrained
                 job.onClose = { close?(); closeCalls += 1 }
                 job.onDrained = { drained?(); drainCalls += 1 }
             }
-            let delivery = SaveWorkflowDelivery { _, parent, onSaved in
-                presenter.save(artifact: artifact, copy: false, from: parent, onSaved: { _ in
-                    savedCalls += 1; onSaved()
-                })
+            let delivery = SaveWorkflowDelivery { image, parent, onSaved in
+                let callback: (SaveWorkflowResult) -> Void = { _ in savedCalls += 1; onSaved() }
+                if freshMode != nil { return presenter.save(image: image, from: parent, onSaved: callback) }
+                return presenter.save(artifact: artifact, copy: false, from: parent, onSaved: callback)
             }
             defer { delivery.cancel(); presenter.cancelAll(); ImageExportService.queue.isSuspended = false }
             ImageExportService.queue.isSuspended = true
             var finished = false
             let task = Task { defer { finished = true }; return await delivery.save(image: image, parent: nil) }
+            if freshMode != nil {
+                try await until({ presenter.controllers.first?.state == .encoding }, "Fresh PNG did not queue")
+                // Finish the real encoder while the MainActor cannot consume its result,
+                // then suspend publication before yielding back to that continuation.
+                try finishQueuedWorkerBeforeMainActor()
+                ImageExportService.queue.isSuspended = true
+            }
             try await until({ presenter.controllers.first?.state == .saving }, "Publication did not queue")
             let job = try XCTUnwrap(presenter.controllers.first)
             try finishQueuedWorkerBeforeMainActor()
@@ -345,7 +377,10 @@ final class SaveWorkflowDeliveryTests: XCTestCase {
         XCTAssertNil(job.onDrained)
     }
 
-    func testCollisionAndChooseAnotherCancellationAreNotOutputFailures() async throws {
+    func testCollisionAndChooseAnotherCancellationAreNotOutputFailures() async throws { try await checkCollisionAndChooseAnotherCancellationAreNotOutputFailures(.legacyPreview) }
+    func testEncodedPayloadCollisionAndChooseAnotherCancellationAreNotOutputFailures() async throws { try await checkCollisionAndChooseAnotherCancellationAreNotOutputFailures(.encodedPayload) }
+
+    private func checkCollisionAndChooseAnotherCancellationAreNotOutputFailures(_ mode: SavePNGPreparationMode) async throws {
         _ = NSApplication.shared
         for chooseAnother in [false, true] {
             let fixture = try Fixture()
@@ -353,7 +388,7 @@ final class SaveWorkflowDeliveryTests: XCTestCase {
             try SaveWorkflowSettings(baseURL: fixture.root, filenameTemplate: "chain", collisionBehavior: .ask).save(to: fixture.defaults)
             let occupied = fixture.root.appendingPathComponent("chain.png"), sentinel = Data("keep-existing".utf8)
             try sentinel.write(to: occupied)
-            let presenter = SaveWorkflowPresenter(defaults: fixture.defaults)
+            let presenter = SaveWorkflowPresenter(defaults: fixture.defaults, pngPreparationMode: mode)
             var collisionShown = false, savePanelShown = false
             presenter.onPresent = { job in
                 job.onCollisionShown = { alert in
@@ -427,11 +462,14 @@ final class SaveWorkflowDeliveryTests: XCTestCase {
         XCTAssertEqual(drainCalls, 1)
     }
 
-    func testOnSavedSynchronousCloseStillReturnsCommittedAfterDrain() async throws {
+    func testOnSavedSynchronousCloseStillReturnsCommittedAfterDrain() async throws { try await checkOnSavedSynchronousCloseStillReturnsCommittedAfterDrain(.legacyPreview) }
+    func testEncodedPayloadOnSavedSynchronousCloseStillReturnsCommittedAfterDrain() async throws { try await checkOnSavedSynchronousCloseStillReturnsCommittedAfterDrain(.encodedPayload) }
+
+    private func checkOnSavedSynchronousCloseStillReturnsCommittedAfterDrain(_ mode: SavePNGPreparationMode) async throws {
         _ = NSApplication.shared
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
-        let presenter = SaveWorkflowPresenter(defaults: fixture.defaults)
+        let presenter = SaveWorkflowPresenter(defaults: fixture.defaults, pngPreparationMode: mode)
         let parent = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 200, height: 100), styleMask: [.titled], backing: .buffered, defer: false)
         parent.isReleasedWhenClosed = false
         var job: SaveWorkflowController?, savedCalls = 0, closeCalls = 0, drainCalls = 0
@@ -528,6 +566,42 @@ final class SaveWorkflowDeliveryTests: XCTestCase {
         XCTAssertNil(job.onClose)
         XCTAssertNil(job.onDrained)
         XCTAssertEqual(try Data(contentsOf: blocked), sentinel)
+    }
+
+    func testFreshPNGQueuedPublicationCancellationWaitsForDrainAndPublishesNothing() async throws {
+        _ = NSApplication.shared
+        for mode in [SavePNGPreparationMode.legacyPreview, .encodedPayload] {
+            let fixture = try Fixture()
+            defer { fixture.cleanUp() }
+            let presenter = SaveWorkflowPresenter(defaults: fixture.defaults, pngPreparationMode: mode)
+            let delivery = SaveWorkflowDelivery(presenter: presenter)
+            defer { delivery.cancel(); presenter.cancelAll(); ImageExportService.queue.isSuspended = false }
+            var closeCalls = 0, drainCalls = 0
+            presenter.onPresent = { job in
+                let close = job.onClose, drained = job.onDrained
+                job.onClose = { close?(); closeCalls += 1 }
+                job.onDrained = { drained?(); drainCalls += 1 }
+            }
+            let image = try source()
+            ImageExportService.queue.isSuspended = true
+            var finished = false
+            let task = Task { defer { finished = true }; return await delivery.save(image: image, parent: nil) }
+            try await until({ presenter.controllers.first?.state == .encoding }, "Fresh PNG did not queue")
+            try finishQueuedWorkerBeforeMainActor()
+            ImageExportService.queue.isSuspended = true
+            try await until({ presenter.controllers.first?.state == .saving }, "Fresh PNG publication did not queue")
+            let job = try XCTUnwrap(presenter.controllers.first)
+            delivery.cancel(); delivery.cancel()
+            XCTAssertEqual(job.state, .closed); XCTAssertFalse(job.jobDrained)
+            XCTAssertNil(job.terminalOutcome); XCTAssertFalse(finished)
+            XCTAssertGreaterThan(presenter.retainedInputBytes, 0)
+            ImageExportService.queue.isSuspended = false
+            try await until({ finished }, "Cancelled publication did not drain")
+            assertCancelled(await task.value)
+            XCTAssertEqual(closeCalls, 1); XCTAssertEqual(drainCalls, 1)
+            XCTAssertTrue(presenter.controllers.isEmpty); XCTAssertEqual(presenter.retainedInputBytes, 0)
+            XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: fixture.root.path).isEmpty)
+        }
     }
 
     private func finishQueuedWorkerBeforeMainActor() throws {
