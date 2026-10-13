@@ -379,6 +379,62 @@ final class LiveScrollChainSessionTests: XCTestCase {
         }
     }
 
+    func testOwnedChoiceSelectionAndEscapeDoNotRunAndRetiredSheetCannotAffectReopenedSession() async throws {
+        var retiredChoice: LiveScrollChainChoiceController?
+        try await withSession(outputs: [.copy]) { f in
+            let second = try CaptureChainDefinition(name: "Explicit second selection", source: .region, outputs: [.pin])
+            f.bridge.definitions.append(second)
+            try f.dispatch("imageChain")
+            let first = try XCTUnwrap(f.session.chainChoiceAlertForVerification)
+            let picker = try XCTUnwrap(first.accessoryView as? NSPopUpButton)
+            XCTAssertEqual(picker.indexOfSelectedItem, 0)
+            XCTAssertTrue(f.bridge.attempts.isEmpty); XCTAssertTrue(f.bridge.outputs.isEmpty)
+            picker.selectItem(at: 1)
+            XCTAssertTrue(NSApp.sendAction(try XCTUnwrap(picker.action), to: picker.target, from: picker))
+            XCTAssertEqual(picker.indexOfSelectedItem, 1)
+            XCTAssertTrue(f.bridge.attempts.isEmpty, "Changing the explicit selection does not run it")
+            let escape = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: first.window.windowNumber, context: nil,
+                characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
+            XCTAssertTrue(first.window.performKeyEquivalent(with: escape))
+            try await self.until { f.session.chainChoiceAlertForVerification == nil && f.session.snapshotForVerification.canApplyImageChain }
+            XCTAssertTrue(f.bridge.attempts.isEmpty); XCTAssertNil(f.session.chainTransaction)
+            XCTAssertEqual(f.source.pauseCalls, 0)
+
+            try f.dispatch("imageChain")
+            retiredChoice = try XCTUnwrap(f.session.chainChoiceAlertForVerification)
+            f.session.cancel()
+            try await self.until {
+                f.session.isClosedForVerification && retiredChoice?.window.sheetParent == nil
+                    && retiredChoice?.window.isVisible != true
+            }
+            XCTAssertNil(f.session.chainChoiceAlertForVerification)
+            XCTAssertNil(retiredChoice?.window.sheetParent)
+            XCTAssertFalse(retiredChoice?.window.isVisible ?? true)
+            XCTAssertTrue(f.bridge.attempts.isEmpty); XCTAssertEqual(f.closes, 1)
+        }
+        try await withSession(outputs: [.copy]) { f in
+            try f.dispatch("imageChain")
+            let fresh = try XCTUnwrap(f.session.chainChoiceAlertForVerification)
+            let old = try XCTUnwrap(retiredChoice)
+            let oldReturn = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: old.window.windowNumber, context: nil,
+                characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
+            _ = old.window.performKeyEquivalent(with: oldReturn)
+            if let button = old.buttons.first, let action = button.action {
+                _ = NSApp.sendAction(action, to: button.target, from: button)
+            }
+            old.cancel()
+            XCTAssertTrue(f.session.chainChoiceAlertForVerification === fresh)
+            XCTAssertTrue(fresh.window.isVisible)
+            XCTAssertTrue(f.bridge.attempts.isEmpty); XCTAssertTrue(f.bridge.outputs.isEmpty)
+            XCTAssertNil(f.session.chainTransaction); XCTAssertEqual(f.source.pauseCalls, 0)
+            fresh.cancel()
+            try await self.until { f.session.chainChoiceAlertForVerification == nil }
+            XCTAssertTrue(f.session.snapshotForVerification.canApplyImageChain)
+        }
+    }
+
     private func withSession(outputs: [CaptureChainOutput], providerCounter: CaptureTestProviderCounter? = nil,
                              initialImage: (() throws -> CGImage)? = nil,
                              _ body: (Fixture) async throws -> Void) async throws {

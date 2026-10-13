@@ -365,7 +365,7 @@ enum LiveScrollChainDemoFixture {
         return report
     }
 
-    private static func choiceAlert(_ session: LiveScrollSessionController) async throws -> NSAlert {
+    private static func choiceAlert(_ session: LiveScrollSessionController) async throws -> LiveScrollChainChoiceController {
         try await until("Native saved-chain choice did not open", seconds: 5) {
             session.chainChoiceAlertForVerification?.window.isVisible == true
         }

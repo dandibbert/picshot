@@ -406,7 +406,12 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
         self.assertEqual(record['additiveExistingImageChainIDs'], scroll_added)
         self.assertEqual(record['additiveExistingImageChainMethods'], len(scroll_added))
         current_inventory, current_plan = inventory, plan
-        self.assertEqual([len(shard['tests']) for shard in current_plan['shards']], [644, 533, 617, 642])
+        choice_added = set(qualification.SCROLL_CHAIN_CHOICE_ADDITIONS)
+        self.assertEqual(len(choice_added), 4)
+        preserved269 = [name for name in inventory if name not in choice_added]
+        self.assertEqual((len(preserved269), hashlib.sha256(('\n'.join(preserved269)+'\n').encode()).hexdigest()),
+            (2436, '38a94e9f556705bb7b34260cca519f70d8058e59ef4f12b0701cf1a65ad79d07'))
+        self.assertEqual([len(shard['tests']) for shard in current_plan['shards']], [647, 534, 617, 642])
         self.assertEqual((len(inventory), len({name.split('/')[0] for name in inventory}),
             hashlib.sha256(('\n'.join(inventory)+'\n').encode()).hexdigest()), qualification.CURRENT_NATIVE_INVENTORY)
         inventory = [name for name in inventory if name not in scroll_added]
@@ -425,7 +430,7 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
                 ('\n'.join(full['selectedTests'])+'\n').encode()).hexdigest()), qualification.CURRENT_FOCUSED_INVENTORY)
             self.assertEqual(full['timeoutSecondsPerProcess'], 420)
             self.assertEqual([len(shard['tests']) for shard in full['shards']],
-                {2: [1013, 891], 4: [547, 395, 466, 496]}[count])
+                {2: [1016, 892], 4: [550, 396, 466, 496]}[count])
             for before, after in zip(prior['shards'], full['shards']):
                 self.assertEqual([name for name in after['tests'] if name not in scroll_added], before['tests'])
         self.assertEqual(hashlib.sha256(('\n'.join(inventory) + '\n').encode()).hexdigest(),

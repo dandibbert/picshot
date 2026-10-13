@@ -26,6 +26,8 @@ integer, text, digest, uuid = C.integer, C.text, C.digest, C.uuid
 SOURCE = 'Fixture-owned native numbered scrolling document; deterministic viewport crops'
 ACQUISITION = 'LiveScrollVerificationFrameSource; actual AppDelegate, live session, assembler and prepared chain runner'
 OUTPUTS = ['quickSavePNG', 'copy', 'pin']
+CHAIN_NAME = '编号长图 · 保存、复制、贴图'
+OUTPUT_TITLE = '快速保存 PNG → 复制 → 贴图'
 OFFSETS = [0, 96, 192, 288, 384]
 OWNERS = ('app', 'session', 'manager', 'firstRunner', 'continuedRunner', 'frozenImage',
           'provider', 'saveJob', 'pinController', 'presenter', 'delivery', 'pinCoordinator')
@@ -44,12 +46,17 @@ IDS = ['scroll.live.imageChain', 'scroll.live.imageChain.choice', 'scroll.live.i
        'scroll.live.imageChain.abandon', 'scroll.live.imageChain.abandon.cancel',
        'scroll.live.imageChain.continue']
 PHASES = {
-    'choice': {'scroll.live.imageChain.choice', 'scroll.live.imageChain.run', 'scroll.live.imageChain.choice.cancel'},
+    'choice': {'scroll.live.imageChain.choice', 'scroll.live.imageChain.run', 'scroll.live.imageChain.choice.cancel',
+               'scroll.live.imageChain.sheet.title', 'scroll.live.imageChain.sheet.description',
+               'scroll.live.imageChain.choice.name', 'scroll.live.imageChain.choice.outputs'},
     'failure': {'capture-chain-cancel', 'capture-chain-run-status', 'capture-chain-receipt-0',
                 'capture-chain-receipt-1', 'capture-chain-receipt-2'},
     'paused': {'scroll.live.more', 'scroll.live.status'},
-    'replacement': {'scroll.live.imageChain.choice', 'scroll.live.imageChain.run', 'scroll.live.imageChain.choice.cancel'},
-    'abandon': {'scroll.live.imageChain.abandon.confirm', 'scroll.live.imageChain.abandon.cancel'},
+    'replacement': {'scroll.live.imageChain.choice', 'scroll.live.imageChain.run', 'scroll.live.imageChain.choice.cancel',
+                    'scroll.live.imageChain.sheet.title', 'scroll.live.imageChain.sheet.description',
+                    'scroll.live.imageChain.choice.name', 'scroll.live.imageChain.choice.outputs'},
+    'abandon': {'scroll.live.imageChain.abandon.confirm', 'scroll.live.imageChain.abandon.cancel',
+                'scroll.live.imageChain.sheet.title', 'scroll.live.imageChain.sheet.description'},
     'result': {'capture-chain-close', 'capture-chain-run-status', 'capture-chain-receipt-0',
                'capture-chain-receipt-1', 'capture-chain-receipt-2'},
 }
@@ -165,6 +172,30 @@ def comparison(row, expected_hash, label):
         outputPixelSHA256=expected_hash, sourcePixelSHA256=expected_hash, method=C.COMPARISON), label)
 
 
+def sheet_content(artifact, controls, phase, case):
+    """The visible owned sheet must preserve the name/order outside its short popup."""
+    if phase not in ('choice', 'replacement', 'abandon'): return
+    fields(artifact, dict(width=460), phase+'.owned sheet width')
+    title = {'choice': '使用截图链处理当前长图', 'replacement': '选择其他动作链重新处理',
+             'abandon': '放弃未完成操作并继续采集？'}[phase]
+    description = ('来源：本次长截图。仅执行所选链的图片输出，按保存的顺序处理。' if phase == 'choice'
+                   else case['replacementWarning'] if phase == 'replacement' else case['abandonWarning'])
+    expected = {'scroll.live.imageChain.sheet.title': title,
+                'scroll.live.imageChain.sheet.description': description}
+    if phase != 'abandon':
+        expected.update({'scroll.live.imageChain.choice.name': CHAIN_NAME,
+                         'scroll.live.imageChain.choice.outputs': OUTPUT_TITLE})
+        fields(controls['scroll.live.imageChain.choice'],
+            {'class': 'NSPopUpButton', 'toolTip': CHAIN_NAME+' · '+OUTPUT_TITLE,
+             'accessibilityValue': CHAIN_NAME+' · '+OUTPUT_TITLE}, phase+'.choice')
+    for identifier, value in expected.items():
+        fields(controls[identifier], {'class': 'NSTextField', 'text': value, 'toolTip': value,
+            'accessibilityLabel': value, 'accessibilityValue': value, 'textEditable': False,
+            'textSelectable': True, 'textWraps': True}, phase+'.full text '+identifier)
+        if not identifier.endswith('.description'):
+            fields(controls[identifier], dict(textFits=True, intentionalTruncation=False), identifier)
+
+
 def contract(report, source):
     need(type(source) is str and re.fullmatch(r'[0-9a-f]{40}', source), 'exact source commit required')
     fields(report, dict(schemaVersion=1, status='passed', sourceCommit=source,
@@ -246,7 +277,7 @@ def contract(report, source):
             w=integer(row.get('width'), 'UI width',1,4096); h=integer(row.get('height'),'UI height',1,4096)
             need(w*h<=4_000_000,'UI raster exceeds existing bound')
             hashes.append(digest(row.get('canonicalRGBAPixelSHA256'),phase+' pixels'))
-            layout(row,phase)
+            sheet_content(row, layout(row,phase), phase, case)
         need(hashes[0]!=hashes[1],phase+': identical light/dark pixels')
     return case
 
@@ -281,7 +312,7 @@ def validate(report_path, source):
     need(type(definitions) is list and len(definitions)==1,'definition count')
     definition=definitions[0]
     need(type(definition) is dict and set(definition)=={'id','name','source','outputs'},'definition runtime payload')
-    fields(definition,dict(name='编号长图 · 保存、复制、贴图',source={'kind':'region'},outputs=OUTPUTS),'saved definition')
+    fields(definition,dict(name=CHAIN_NAME,source={'kind':'region'},outputs=OUTPUTS),'saved definition')
     need(uuid(definition.get('id'),'definition ID')==catalog['selectedID'],'selected definition differs')
     trace=read('scroll-chain-actions.json',128*1024)
     need(C.COMMON.load(root/'scroll-chain-actions.json')==dict(actionTrace=case['actionTrace'],failureReceipts=case['failureReceipts'],

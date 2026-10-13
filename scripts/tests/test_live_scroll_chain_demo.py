@@ -21,22 +21,28 @@ SOURCE='a'*40
 UUID='A1111111-2222-3333-4444-555555555555'
 RUN2='B1111111-2222-3333-4444-555555555555'
 PNG,PIXELS=T.png(480,704)
+SHEET_LIGHT_PNG,SHEET_LIGHT_PIXELS=T.png(460,300,(240,240,240,255))
+SHEET_DARK_PNG,SHEET_DARK_PIXELS=T.png(460,300,(30,30,30,255))
 
 def artifacts(phase):
     result=[]
-    for mode,pixels in [('light',T.LIGHT_PIXELS),('dark',T.DARK_PIXELS)]:
+    sheet=phase in ('choice','replacement','abandon')
+    width=460 if sheet else 600
+    for mode,pixels in [('light',SHEET_LIGHT_PIXELS if sheet else T.LIGHT_PIXELS),
+                        ('dark',SHEET_DARK_PIXELS if sheet else T.DARK_PIXELS)]:
         controls=[]
         for index,name in enumerate(sorted(C.PHASES[phase])):
-            kind='NSTextField' if name.endswith('status') or 'receipt-' in name else 'NSPopUpButton' if name.endswith('choice') else 'NSButton'
+            kind=('NSTextField' if name.endswith(('status','.name','.outputs','.title','.description')) or 'receipt-' in name
+                  else 'NSPopUpButton' if name.endswith('choice') else 'NSButton')
             row=T.control(name,index,kind)
             row['identifierIsExplicit']=True
             if name=='scroll.live.more':row['class']='LiveScrollMoreButton'
             controls.append(row)
         result.append(dict(filename='scroll-chain-'+phase+'-'+mode+'.png',appearance=mode,rendering=C.C.RENDERING,
-            width=600,height=300,canonicalRGBAPixelSHA256=pixels,layout=dict(passed=True,phase='scroll-chain-'+phase,
+            width=width,height=300,canonicalRGBAPixelSHA256=pixels,layout=dict(passed=True,phase='scroll-chain-'+phase,
                 windowTitle='Owned synthetic alert',windowVisible=True,windowNumber=12,nativeControlCount=len(controls),
-                windowFrame=T.rect(20,20,600,322),visibleScreenFrame=T.rect(0,0,1200,900),
-                contentBounds=T.rect(0,0,600,300),violations=[],fullNativeFramesMeasured=True,
+                windowFrame=T.rect(20,20,width,322),visibleScreenFrame=T.rect(0,0,1200,900),
+                contentBounds=T.rect(0,0,width,300),violations=[],fullNativeFramesMeasured=True,
                 alignmentRectanglesSubstituted=False,fullVisibleFramesChecked=True,controlsDoNotOverlap=True,controls=controls)))
     return result
 
@@ -68,7 +74,21 @@ def report():
             'NSPopUpButton.selectItem; no output command' if action.startswith('select-') else
             'PortableSettingsUIPreviewFixture.click: owned NSButton.mouseDown with queued mouseUp')
         for i,(action,identifier) in enumerate(zip(C.ACTIONS,C.IDS))]
-    for phase in C.PHASES:case[phase+'Artifacts']=artifacts(phase)
+    for phase in C.PHASES:
+        case[phase+'Artifacts']=artifacts(phase)
+        if phase not in ('choice','replacement','abandon'):continue
+        title={'choice':'使用截图链处理当前长图','replacement':'选择其他动作链重新处理','abandon':'放弃未完成操作并继续采集？'}[phase]
+        description=('来源：本次长截图。仅执行所选链的图片输出，按保存的顺序处理。' if phase=='choice'
+                     else case['replacementWarning'] if phase=='replacement' else case['abandonWarning'])
+        texts={'scroll.live.imageChain.sheet.title':title,'scroll.live.imageChain.sheet.description':description,
+               'scroll.live.imageChain.choice.name':C.CHAIN_NAME,'scroll.live.imageChain.choice.outputs':C.OUTPUT_TITLE}
+        for artifact in case[phase+'Artifacts']:
+            for row in artifact['layout']['controls']:
+                if row['id'] in texts:
+                    text=texts[row['id']]
+                    row.update(text=text,toolTip=text,accessibilityLabel=text,accessibilityValue=text,textSelectable=True,textWraps=True)
+                if row['id']=='scroll.live.imageChain.choice':
+                    row.update(toolTip=C.CHAIN_NAME+' · '+C.OUTPUT_TITLE,accessibilityValue=C.CHAIN_NAME+' · '+C.OUTPUT_TITLE)
     return dict(schemaVersion=1,status='passed',sourceCommit=SOURCE,source=C.SOURCE,acquisition=C.ACQUISITION,
         installerAcceptance=False,realScreenCaptureClaimed=False,screenCaptureAPICalled=False,permissionRequested=False,
         globalInputPosted=False,networkUsed=False,userHistoryReadOrWritten=False,standardDefaultsReadOrWritten=False,
@@ -88,7 +108,8 @@ def fixture(root):
     T.dump(root/'scroll-chain-actions.json',{key:case[key] for key in ('actionTrace','failureReceipts','pausedReceipts','receipts')})
     for phase in C.PHASES:
         for artifact in case[phase+'Artifacts']:
-            (root/artifact['filename']).write_bytes(T.LIGHT_PNG if artifact['appearance']=='light' else T.DARK_PNG)
+            light,dark=(SHEET_LIGHT_PNG,SHEET_DARK_PNG) if artifact['width']==460 else (T.LIGHT_PNG,T.DARK_PNG)
+            (root/artifact['filename']).write_bytes(light if artifact['appearance']=='light' else dark)
             T.dump(root/(artifact['filename'][:-4]+'-layout.json'),artifact)
     path=root/'live-scroll-chain.json';T.dump(path,value);return path
 
@@ -144,6 +165,34 @@ class ContractTests(unittest.TestCase):
         for index,mutate in enumerate(mutations):
             value=artifacts('choice')[0];mutate(value)
             with self.subTest(index=index),self.assertRaises(ValueError):C.layout(value,'choice')
+
+    def test_retained269_popup_metrics_and_full_button_overlap_remain_rejected(self):
+        # Actual269 light-layout SHA256:
+        # 02cdc70355ecb0a13e682985dfb62e5c73854da2aa4f661f8978c2fd82aed579
+        # Reuse only those raw full-frame/cell measurements in portable inputs;
+        # these constructed rows are not native acceptance evidence.
+        value=artifacts('choice')[0]
+        controls={row['id']:row for row in value['layout']['controls']}
+        popup=controls['scroll.live.imageChain.choice']
+        popup.update(fullFrame=T.rect(16,60,420,28),fullScreenFrame=T.rect(36,80,420,28),
+                     untruncatedCellSize=[452,25],requiredTextSizeAtActualWidth=[442,25],titleFits=False)
+        with self.assertRaisesRegex(ValueError,'button title clipped'):C.layout(value,'choice')
+        # The visible bezels had a gap; the native full frames overlap four points.
+        frames=[('scroll.live.imageChain.choice.cancel',(106,10,122,40)),
+                ('scroll.live.imageChain.run',(224,10,122,40))]
+        with self.assertRaisesRegex(ValueError,'full controls overlap'):
+            C.C.check_control_overlap(frames,{name:set() for name,_ in frames})
+
+    def test_owned_sheet_full_name_order_and_warning_cannot_be_replaced_by_short_popup(self):
+        for phase,identifier in [('choice','scroll.live.imageChain.choice.name'),
+                                 ('choice','scroll.live.imageChain.choice.outputs'),
+                                 ('replacement','scroll.live.imageChain.sheet.description'),
+                                 ('abandon','scroll.live.imageChain.sheet.description')]:
+            value=report()
+            row=next(row for row in value['saveFailCancelContinue'][phase+'Artifacts'][0]['layout']['controls']
+                     if row['id']==identifier)
+            row.update(text='Incomplete',toolTip='Incomplete',accessibilityLabel='Incomplete',accessibilityValue='Incomplete')
+            with self.subTest(phase=phase,identifier=identifier),self.assertRaises(ValueError):C.contract(value,SOURCE)
 
 
 class FileTests(unittest.TestCase):

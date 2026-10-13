@@ -571,8 +571,8 @@ SCROLL_RECOVERY_ADDITIONS = (
 )
 
 
-CURRENT_NATIVE_INVENTORY = (2436, 271, '38a94e9f556705bb7b34260cca519f70d8058e59ef4f12b0701cf1a65ad79d07')
-CURRENT_FOCUSED_INVENTORY = (1904, '5aed3ad90bddfc24240efb9a0b15a4a4b35dd289eabb7cdb465e8d4ec941803f')
+CURRENT_NATIVE_INVENTORY = (2440, 272, 'd951f8ac10252217989e958a6e216662f9f700dfbfd8ce7546ce9df263d2e0fe')
+CURRENT_FOCUSED_INVENTORY = (1908, '93709150a83a2a3a8c09cc3f79cc9531651f570892ca581b51c7d890886c09ad')
 SCROLL_CHAIN_ADDITIONS = (
     'PicShotTests.CaptureChainPreparedInputTests/testAll15OrdersAndEveryReceiptPrefixDispatchOnlySuffixUsingIdenticalPreparedImage',
     'PicShotTests.CaptureChainPreparedInputTests/testCancellationAtEveryOutputBoundaryContinuesWithFreshRunIDAndNoPrefixReplay',
@@ -587,6 +587,9 @@ SCROLL_CHAIN_ADDITIONS = (
     'PicShotTests.LiveScrollChainAppIntegrationTests/testDirectEditorAdmissionIncludesCancelledCheckpointAtExactByteBoundary',
     'PicShotTests.LiveScrollChainAppIntegrationTests/testFullCloseDuringSaveKeepsAppReservationUntilDrainAndNeverMutatesCatalogOrDefaults',
     'PicShotTests.LiveScrollChainAppIntegrationTests/testStaleRunnerManagerAndOldSessionCloseCannotCancelContinuationOrSuccessorSession',
+    'PicShotTests.LiveScrollChainChoiceControllerTests/testLongNamesAndReceiptWarningsFitFullNativeFramesAt460PointsInBothAppearances',
+    'PicShotTests.LiveScrollChainChoiceControllerTests/testNativeReturnConfirmsExplicitSelectionOnceAndEscapeCancelsWithoutAutomaticRun',
+    'PicShotTests.LiveScrollChainChoiceControllerTests/testRetiredSheetCommandsCannotCompleteOrCancelReentrantlyPresentedSuccessor',
     'PicShotTests.LiveScrollChainSessionTests/testActualExactly32MillionPixelsPassesPostDrainAndRenderedImageChecksOnce',
     'PicShotTests.LiveScrollChainSessionTests/testActualPostDrainPixelCrossingRejectsSaveThenPinBeforeRenderAndAnyOutput',
     'PicShotTests.LiveScrollChainSessionTests/testAll15OrdersRenderOnceAcquireNothingAndDeliverIdenticalFrozenPixels',
@@ -595,6 +598,7 @@ SCROLL_CHAIN_ADDITIONS = (
     'PicShotTests.LiveScrollChainSessionTests/testExplicitAbandonReleasesCheckpointBeforeResumeAndStaleTransactionCannotControlSuccessor',
     'PicShotTests.LiveScrollChainSessionTests/testFullCloseAndRunnerCancelAwaitOneOwnedSaveDrainBeforeReleasingProviderAndClosingOnce',
     'PicShotTests.LiveScrollChainSessionTests/testFullCloseWaitsForHeldPreparationAndLateCompletionCannotRenderOrOutput',
+    'PicShotTests.LiveScrollChainSessionTests/testOwnedChoiceSelectionAndEscapeDoNotRunAndRetiredSheetCannotAffectReopenedSession',
     'PicShotTests.LiveScrollChainSessionTests/testPendingCheckpointRejectsForcedOrdinaryOutputCaptureMoveAndAxisActions',
     'PicShotTests.LiveScrollChainSessionTests/testPreflightRefusalAtEachPreparationBoundaryDispatchesNoOutputs',
     'PicShotTests.LiveScrollChainSessionTests/testReplacementWarningCancelAndInvalidSelectionPreserveCheckpointThenExplicitNewChainReusesRaster',
@@ -603,6 +607,12 @@ SCROLL_CHAIN_ADDITIONS = (
     'PicShotTests.LiveScrollChainTransactionTests/testCancelledAttemptExtendsOnlyMatchingPrefixAndKeepsFrozenIdentitiesAndRaster',
     'PicShotTests.LiveScrollChainTransactionTests/testFullCommittedPrefixIsCompleteDespiteCancellationAndNewTransactionIntentionallyResetsOnlyReceipts',
     'PicShotTests.LiveScrollChainTransactionTests/testStaleNonterminalWrongModeDefinitionAndRewrittenReceiptCallbacksLeaveCheckpointUntouched',
+)
+SCROLL_CHAIN_CHOICE_ADDITIONS = (
+    'PicShotTests.LiveScrollChainChoiceControllerTests/testLongNamesAndReceiptWarningsFitFullNativeFramesAt460PointsInBothAppearances',
+    'PicShotTests.LiveScrollChainChoiceControllerTests/testNativeReturnConfirmsExplicitSelectionOnceAndEscapeCancelsWithoutAutomaticRun',
+    'PicShotTests.LiveScrollChainChoiceControllerTests/testRetiredSheetCommandsCannotCompleteOrCancelReentrantlyPresentedSuccessor',
+    'PicShotTests.LiveScrollChainSessionTests/testOwnedChoiceSelectionAndEscapeDoNotRunAndRetiredSheetCannotAffectReopenedSession',
 )
 
 
@@ -653,6 +663,10 @@ def text_script_additions(inventory):
     need((len(current_inventory), len({name.split('/')[0] for name in current_inventory}),
           hashlib.sha256(('\n'.join(current_inventory)+'\n').encode()).hexdigest()) == CURRENT_NATIVE_INVENTORY,
          'Current native discovery differs from the exact additive existing-image chain union')
+    preserved269 = [name for name in current_inventory if name not in SCROLL_CHAIN_CHOICE_ADDITIONS]
+    need(len(preserved269) == 2436 and hashlib.sha256(('\n'.join(preserved269)+'\n').encode()).hexdigest()
+         == '38a94e9f556705bb7b34260cca519f70d8058e59ef4f12b0701cf1a65ad79d07',
+         'Preserved269 native IDs changed')
     return set(added)
 
 
@@ -1001,7 +1015,7 @@ def final():
         if kind == 'full':
             live = json.loads(read(Path('scripts/live-scroll-additive-tests.json')))
             need(live == [name for name in plan['discoveredTests'] if '.LiveScroll' in name]
-                 and len(live) == 185, 'All preserved and new live methods required')
+                 and len(live) == 189, 'All preserved and new live methods required')
             feedback = feedback_additions(plan['discoveredTests'])
             chains = chain_additions(plan['discoveredTests'])
             stable = [name for name in plan['discoveredTests'] if name not in set(live) | feedback | chains | text_ids | payload_ids | scroll_ids]

@@ -13,7 +13,7 @@ final class LiveScrollSessionController {
     private(set) var chainAttemptID: UUID?
     private var chainTeardownWarning: String?
     private var chainChoiceID: UUID?
-    private(set) var chainChoiceAlertForVerification: NSAlert?
+    private(set) var chainChoiceAlertForVerification: LiveScrollChainChoiceController?
     private(set) var chainRenderCountForVerification = 0
     private var retirement: Task<Void, Never>?
     var retainedChainCapture: ChainCapture? { chainTransaction?.capture }
@@ -447,18 +447,15 @@ final class LiveScrollSessionController {
             let definitions = try dependencies.definitions()
             guard !retired, generation == token, chainChoiceID == choice else { return }
             guard !definitions.isEmpty else { throw PicShotError.message("尚未保存截图链，请在截图链管理中创建后再选择。") }
-            let alert = NSAlert()
-            alert.messageText = replacing ? "选择其他动作链重新处理" : "使用截图链处理当前长图"
             let prior = chainTransaction.map { "\n\n" + $0.committedDescription + "\n开始新动作链会从第一步执行，可能再次保存、复制或贴图。" } ?? ""
-            alert.informativeText = "来源：本次长截图。仅执行所选链的图片输出，按保存的顺序处理。" + prior
-            alert.addButton(withTitle: replacing ? "开始新动作链" : "处理当前长图").identifier = .init("scroll.live.imageChain.run")
-            alert.addButton(withTitle: "取消").identifier = .init("scroll.live.imageChain.choice.cancel")
-            let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 420, height: 28), pullsDown: false)
-            picker.identifier = .init("scroll.live.imageChain.choice")
-            for definition in definitions {
-                picker.addItem(withTitle: definition.name + " · " + definition.outputs.map(\.title).joined(separator: " → "))
-            }
-            alert.accessoryView = picker
+            let alert = LiveScrollChainChoiceController(
+                title: replacing ? "选择其他动作链重新处理" : "使用截图链处理当前长图",
+                informativeText: "来源：本次长截图。仅执行所选链的图片输出，按保存的顺序处理。" + prior,
+                definitions: definitions,
+                confirmTitle: replacing ? "开始新动作链" : "处理当前长图",
+                confirmIdentifier: "scroll.live.imageChain.run",
+                cancelIdentifier: "scroll.live.imageChain.choice.cancel")
+            let picker = alert.accessoryView as? NSPopUpButton
             chainChoiceID = choice; chainChoiceAlertForVerification = alert
             setStatus(snapshot.status, kind: snapshot.statusKind)
             alert.beginSheetModal(for: parent) { [weak self, weak picker] response in
@@ -610,12 +607,11 @@ final class LiveScrollSessionController {
         guard canCommandImageChain, let transaction = chainTransaction, transaction.transactionID == transactionID,
               let parent = controls?.toolbarWindow, !captureLimitReached else { return }
         let token = generation, choice = UUID()
-        let alert = NSAlert()
-        alert.messageText = "放弃未完成操作并继续采集？"
-        alert.informativeText = transaction.committedDescription
-            + "\n已保存的文件和贴图仍保留。放弃后将清除本次续传记录，再次处理长图可能重复输出。"
-        alert.addButton(withTitle: "放弃并继续采集").identifier = .init("scroll.live.imageChain.abandon.confirm")
-        alert.addButton(withTitle: "取消").identifier = .init("scroll.live.imageChain.abandon.cancel")
+        let alert = LiveScrollChainChoiceController(title: "放弃未完成操作并继续采集？",
+            informativeText: transaction.committedDescription
+                + "\n已保存的文件和贴图仍保留。放弃后将清除本次续传记录，再次处理长图可能重复输出。",
+            confirmTitle: "放弃并继续采集", confirmIdentifier: "scroll.live.imageChain.abandon.confirm",
+            cancelIdentifier: "scroll.live.imageChain.abandon.cancel")
         chainChoiceID = choice; chainChoiceAlertForVerification = alert
         setStatus(snapshot.status, kind: snapshot.statusKind)
         alert.beginSheetModal(for: parent) { [weak self] response in
@@ -1094,9 +1090,7 @@ final class LiveScrollSessionController {
         saveDestination?.cancel()
         // Invalidate and detach surfaces before observer callbacks can reenter.
         chainChoiceID = nil
-        if let alert = chainChoiceAlertForVerification, let parent = alert.window.sheetParent {
-            parent.endSheet(alert.window, returnCode: .cancel)
-        }
+        chainChoiceAlertForVerification?.cancel()
         chainChoiceAlertForVerification = nil
         controls?.teardown(); controls = nil
         retirement = Task { [self] in
