@@ -100,7 +100,8 @@ import XCTest
             let discardButton = try button("discard", in: f.controller)
             let runButton = try button("run", in: f.controller)
             let before = f.store.index, bytes = try Data(contentsOf: manifest(f))
-            let draftName = "失败后重试的名称"
+            let savedName = "失败后重试的名称"
+            let draftName = "  " + savedName + "  "
             name.selectText(nil)
             let editor = try XCTUnwrap(name.currentEditor() as? NSTextView)
             editor.insertText(draftName, replacementRange: NSRange(location: 0, length: (editor.string as NSString).length))
@@ -131,7 +132,8 @@ import XCTest
             XCTAssertTrue(window.performKeyEquivalent(with: save))
             XCTAssertEqual(attempts, 2); XCTAssertEqual(accepted, 1)
             let saved = try XCTUnwrap(f.store.definition(id: original.id))
-            XCTAssertEqual(saved.name, draftName); XCTAssertEqual(saved.source, original.source)
+            XCTAssertEqual(saved.name, savedName); XCTAssertEqual(saved.source, original.source)
+            XCTAssertEqual(name.stringValue, savedName)
             XCTAssertEqual(f.store.definitions, [saved]); XCTAssertEqual(f.store.selectedID, original.id)
             XCTAssertEqual(try TextScriptStore(directory: f.directory).index, f.store.index)
             XCTAssertTrue(name.isEnabled); XCTAssertTrue(source.isEditable); XCTAssertTrue(runButton.isEnabled)

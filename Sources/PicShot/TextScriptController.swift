@@ -407,9 +407,15 @@ struct TextScriptDraftHistory {
         guard canEdit, hasUnsavedDraft, let id = draftID else { return }
         guard !composing else { setStatus("请先完成输入法候选文字，再保存。", error: true); return }
         do {
-            let definition = try TextScriptDefinition(id: id, name: liveName, source: sourceView.string)
+            let rawName = liveName
+            let definition = try TextScriptDefinition(id: id, name: rawName, source: sourceView.string)
             isSaving = true; refreshControls()
             defer { isSaving = false; refreshControls() }
+            // Disabling a focused field can discard its transient editor value.
+            // Retain the exact draft in the backing field before a write can
+            // fail; only a successful loadDraft applies the normalized name.
+            nameField.stringValue = rawName; nameField.toolTip = rawName
+            nameField.setAccessibilityValue(rawName)
             if baseline == nil { try store.add(definition, select: true) }
             else { try store.update(definition, select: true) }
             invalidateCommands(); loadDraft(definition); reloadCatalog()
