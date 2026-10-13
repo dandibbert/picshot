@@ -8,7 +8,12 @@ final class LiveScrollChainChoiceController: NSObject, NSWindowDelegate {
     let window: NSPanel
     let buttons: [NSButton]
     let accessoryView: NSView?
+    /// Complete informational summary retained for callers and accessibility
+    /// verification; the consequence and receipt details have separate views.
     let informativeText: String
+    let detailText: String
+    let consequenceWarning: String?
+    let warningLabel: NSTextField?
     let selectedNameLabel: NSTextField?
     let outputOrderLabel: NSTextField?
 
@@ -20,11 +25,25 @@ final class LiveScrollChainChoiceController: NSObject, NSWindowDelegate {
     private var settled = false
 
     init(title: String, informativeText: String, definitions: [CaptureChainDefinition] = [],
-         confirmTitle: String, confirmIdentifier: String, cancelIdentifier: String) {
-        self.definitions = definitions; self.informativeText = informativeText
+         confirmTitle: String, confirmIdentifier: String, cancelIdentifier: String,
+         consequenceWarning: String? = nil) {
+        self.definitions = definitions; self.detailText = informativeText
+        self.consequenceWarning = consequenceWarning
+        self.informativeText = consequenceWarning.map { $0 + "\n\n" + informativeText } ?? informativeText
         let sheetWidth: CGFloat = 460, inset: CGFloat = 24, gap: CGFloat = 12
         let contentWidth = sheetWidth - 2 * inset
         let titleField = Self.label(title, id: "scroll.live.imageChain.sheet.title", font: .systemFont(ofSize: 16, weight: .semibold))
+        // Consequences are always visible above the bounded receipt details.
+        // This label never truncates, even when a receipt contains a long path.
+        let warning = consequenceWarning.map {
+            Self.label($0, id: "scroll.live.imageChain.sheet.warning", font: .systemFont(ofSize: 13, weight: .medium))
+        }
+        warningLabel = warning
+        let warningHeight = warning.map { field in
+            max(Self.textHeight(field.stringValue, font: field.font!, width: contentWidth),
+                ceil(field.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: contentWidth, height: 10_000)).height ?? 0) + 4)
+        } ?? 0
+        let warningSectionHeight = warning == nil ? 0 : warningHeight + gap
         let description = Self.label(informativeText, id: "scroll.live.imageChain.sheet.description")
         // Receipt details remain selectable and available in full via tooltip
         // and accessibility if an unusually long path exceeds this bounded view.
@@ -67,7 +86,7 @@ final class LiveScrollChainChoiceController: NSObject, NSWindowDelegate {
         }
         buttons = [confirm, cancel]
         let choicesHeight: CGFloat = popup == nil ? 0 : (gap + 28 + gap + nameHeight + 8 + 22)
-        let height = inset + 24 + gap + descriptionHeight + choicesHeight + 20 + 32 + inset
+        let height = inset + 24 + gap + warningSectionHeight + descriptionHeight + choicesHeight + 20 + 32 + inset
         let panel = LiveScrollChainChoicePanel(contentRect: NSRect(x: 0, y: 0, width: sheetWidth, height: height),
             styleMask: [.titled], backing: .buffered, defer: false)
         panel.title = "PicShot"
@@ -85,6 +104,7 @@ final class LiveScrollChainChoiceController: NSObject, NSWindowDelegate {
             content.addSubview(view); top -= spacing
         }
         place(titleField, height: 24, spacing: gap)
+        if let warning { place(warning, height: warningHeight, spacing: gap) }
         place(description, height: descriptionHeight, spacing: popup == nil ? 0 : gap)
         if let popup, let nameLabel, let orderLabel {
             place(popup, height: 28, spacing: gap)

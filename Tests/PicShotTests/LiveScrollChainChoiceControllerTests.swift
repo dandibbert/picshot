@@ -65,9 +65,16 @@ final class LiveScrollChainChoiceControllerTests: XCTestCase {
             controls.show(snapshot: snapshot, targetFrame: target, visibleFrame: screen.visibleFrame,
                 movementBounds: screen.frame)
             let parent = try XCTUnwrap(controls.toolbarWindow)
-            let definitions = try self.definitions(longNames: true)
-            let receipt = "PNG 已保存：/private/owned/" + String(repeating: "long-receipt-path/", count: 20)
+            let byteLimitName = String(repeating: "🧪", count: 64)
+            let definitions = try self.definitions(longNames: true) + [CaptureChainDefinition(
+                name: byteLimitName, source: .preset(UUID()), outputs: [.quickSavePNG, .copy, .pin])]
+            XCTAssertEqual(byteLimitName.count, 64); XCTAssertEqual(byteLimitName.unicodeScalars.count, 64)
+            XCTAssertEqual(byteLimitName.utf8.count, 256)
+            XCTAssertTrue(definitions.allSatisfy { $0.name.count == 64 && CaptureChainDefinition.validName($0.name) })
+            // A bounded stress value, not a claimed receipt or filesystem path limit.
+            let receipt = "PNG 已保存：/private/owned/" + String(repeating: "long-receipt-path/", count: 256)
                 + "image.png\n已复制到剪贴板（当时的成功写入）\n贴图已保存：" + UUID().uuidString
+            XCTAssertGreaterThan(receipt.utf8.count, 4_096); XCTAssertLessThan(receipt.utf8.count, 8_192)
             for appearance in [NSAppearance.Name.aqua, .darkAqua] {
                 for mode in ["initial", "replacement", "abandonment"] {
                     // Reapply product placement for each sheet rather than
@@ -77,17 +84,27 @@ final class LiveScrollChainChoiceControllerTests: XCTestCase {
                     parent.appearance = NSAppearance(named: appearance)
                     XCTAssertTrue(parent.styleMask.contains(.nonactivatingPanel))
                     XCTAssertFalse(parent.canBecomeKey)
-                    XCTAssertEqual(parent.frame, try XCTUnwrap(controls.placement).toolbar)
+                    let requestedFrame = try XCTUnwrap(controls.placement).toolbar
+                    XCTAssertEqual(parent.frame.minX, requestedFrame.minX, accuracy: 0.5)
+                    XCTAssertEqual(parent.frame.minY, requestedFrame.minY, accuracy: 0.5)
+                    XCTAssertEqual(parent.frame.width, requestedFrame.width, accuracy: 0.5)
+                    XCTAssertEqual(parent.frame.height, requestedFrame.height, accuracy: 0.5)
                     XCTAssertLessThan(parent.frame.maxY, screen.visibleFrame.midY)
                     let chooser = mode != "abandonment"
                     let info = mode == "initial" ? "来源：本次长截图。仅执行所选链的图片输出，按保存的顺序处理。"
-                        : receipt + "\n开始新动作链会从第一步执行，可能再次保存、复制或贴图。"
+                        : receipt
+                    let expectedWarning: String? = mode == "replacement"
+                        ? "开始新动作链会从第一步执行，可能再次保存、复制或贴图。"
+                        : mode == "abandonment"
+                            ? "已保存的文件和贴图仍保留。放弃后将清除本次续传记录，再次处理长图可能重复输出。"
+                            : nil
                     let choice = LiveScrollChainChoiceController(
                         title: mode == "initial" ? "使用截图链处理当前长图" : mode == "replacement" ? "选择其他动作链重新处理" : "放弃未完成操作并继续采集？",
                         informativeText: info, definitions: chooser ? definitions : [],
                         confirmTitle: mode == "initial" ? "处理当前长图" : mode == "replacement" ? "开始新动作链" : "放弃并继续采集",
                         confirmIdentifier: chooser ? "scroll.live.imageChain.run" : "scroll.live.imageChain.abandon.confirm",
-                        cancelIdentifier: chooser ? "scroll.live.imageChain.choice.cancel" : "scroll.live.imageChain.abandon.cancel")
+                        cancelIdentifier: chooser ? "scroll.live.imageChain.choice.cancel" : "scroll.live.imageChain.abandon.cancel",
+                        consequenceWarning: expectedWarning)
                     choice.window.appearance = NSAppearance(named: appearance)
                     var responses: [NSApplication.ModalResponse] = []
                     choice.beginSheetModal(for: parent) { responses.append($0) }
@@ -128,6 +145,36 @@ final class LiveScrollChainChoiceControllerTests: XCTestCase {
                     let detail: NSTextField = try self.view("scroll.live.imageChain.sheet.description", in: root)
                     XCTAssertEqual(detail.stringValue, info); XCTAssertEqual(detail.toolTip, info)
                     XCTAssertEqual(detail.accessibilityValue() as? String, info)
+                    XCTAssertEqual(choice.detailText, info)
+                    XCTAssertEqual(choice.consequenceWarning, expectedWarning)
+                    if let expectedWarning {
+                        let warning: NSTextField = try self.view("scroll.live.imageChain.sheet.warning", in: root)
+                        XCTAssertTrue(choice.warningLabel === warning)
+                        XCTAssertEqual(warning.stringValue, expectedWarning)
+                        XCTAssertEqual(warning.toolTip, expectedWarning)
+                        XCTAssertEqual(warning.accessibilityLabel(), expectedWarning)
+                        XCTAssertEqual(warning.accessibilityValue() as? String, expectedWarning)
+                        XCTAssertTrue(warning.isSelectable); XCTAssertTrue(warning.cell?.wraps == true)
+                        XCTAssertEqual(warning.maximumNumberOfLines, 0)
+                        XCTAssertEqual(warning.lineBreakMode, .byWordWrapping)
+                        XCTAssertFalse(warning.isHiddenOrHasHiddenAncestor)
+                        XCTAssertTrue(warning.visibleRect.insetBy(dx: -0.5, dy: -0.5).contains(warning.bounds))
+                        let warningFrame = warning.convert(warning.bounds, to: root)
+                        let detailFrame = detail.convert(detail.bounds, to: root)
+                        XCTAssertTrue(root.bounds.insetBy(dx: -0.5, dy: -0.5).contains(warningFrame))
+                        XCTAssertGreaterThanOrEqual(warningFrame.minY, detailFrame.maxY,
+                            "The complete consequence warning remains above the bounded receipt detail")
+                        let textSize = try XCTUnwrap(warning.cell).cellSize(forBounds:
+                            CGRect(x: 0, y: 0, width: warning.bounds.width, height: 10_000))
+                        XCTAssertLessThanOrEqual(textSize.width, warning.bounds.width + 0.5)
+                        XCTAssertLessThanOrEqual(textSize.height, warning.bounds.height + 0.5,
+                            "The consequence warning must fit visibly without a truncation alternative")
+                        XCTAssertTrue(choice.informativeText.contains(expectedWarning))
+                        XCTAssertTrue(choice.informativeText.contains(info))
+                    } else {
+                        XCTAssertNil(choice.warningLabel)
+                        XCTAssertEqual(choice.informativeText, info)
+                    }
                     XCTAssertTrue(responses.isEmpty, "Layout and selection must leave execution explicit")
                     choice.cancel()
                     try self.until { responses.count == 1 && parent.attachedSheet == nil }

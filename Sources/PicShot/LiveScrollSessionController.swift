@@ -447,14 +447,16 @@ final class LiveScrollSessionController {
             let definitions = try dependencies.definitions()
             guard !retired, generation == token, chainChoiceID == choice else { return }
             guard !definitions.isEmpty else { throw PicShotError.message("尚未保存截图链，请在截图链管理中创建后再选择。") }
-            let prior = chainTransaction.map { "\n\n" + $0.committedDescription + "\n开始新动作链会从第一步执行，可能再次保存、复制或贴图。" } ?? ""
+            let prior = chainTransaction.map { "\n\n" + $0.committedDescription } ?? ""
+            let consequenceWarning = replacing ? "开始新动作链会从第一步执行，可能再次保存、复制或贴图。" : nil
             let alert = LiveScrollChainChoiceController(
                 title: replacing ? "选择其他动作链重新处理" : "使用截图链处理当前长图",
                 informativeText: "来源：本次长截图。仅执行所选链的图片输出，按保存的顺序处理。" + prior,
                 definitions: definitions,
                 confirmTitle: replacing ? "开始新动作链" : "处理当前长图",
                 confirmIdentifier: "scroll.live.imageChain.run",
-                cancelIdentifier: "scroll.live.imageChain.choice.cancel")
+                cancelIdentifier: "scroll.live.imageChain.choice.cancel",
+                consequenceWarning: consequenceWarning)
             let picker = alert.accessoryView as? NSPopUpButton
             chainChoiceID = choice; chainChoiceAlertForVerification = alert
             setStatus(snapshot.status, kind: snapshot.statusKind)
@@ -608,10 +610,10 @@ final class LiveScrollSessionController {
               let parent = controls?.toolbarWindow, !captureLimitReached else { return }
         let token = generation, choice = UUID()
         let alert = LiveScrollChainChoiceController(title: "放弃未完成操作并继续采集？",
-            informativeText: transaction.committedDescription
-                + "\n已保存的文件和贴图仍保留。放弃后将清除本次续传记录，再次处理长图可能重复输出。",
+            informativeText: transaction.committedDescription,
             confirmTitle: "放弃并继续采集", confirmIdentifier: "scroll.live.imageChain.abandon.confirm",
-            cancelIdentifier: "scroll.live.imageChain.abandon.cancel")
+            cancelIdentifier: "scroll.live.imageChain.abandon.cancel",
+            consequenceWarning: "已保存的文件和贴图仍保留。放弃后将清除本次续传记录，再次处理长图可能重复输出。")
         chainChoiceID = choice; chainChoiceAlertForVerification = alert
         setStatus(snapshot.status, kind: snapshot.statusKind)
         alert.beginSheetModal(for: parent) { [weak self] response in

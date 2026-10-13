@@ -461,6 +461,42 @@ enum CaptureChainUIPreviewFixture {
                     row["hitTest"] = hitMatches
                     let fits = frame.width + 0.5 >= required.width && frame.height + 0.5 >= required.height
                     row["titleFits"] = fits
+                    var moreIconAlternative = false
+                    if id == "scroll.live.more", let popup = button as? LiveScrollMoreButton,
+                       let cell = popup.cell as? NSPopUpButtonCell {
+                        // Pull-down cellSize includes its menu's titles. This exact
+                        // product control displays only the anchor's unscaled icon.
+                        // Keep the raw title measurement and inspect the public
+                        // image rect; no generic popup or title-fit exemption.
+                        let anchor = popup.menu?.items.first
+                        let imageSize = popup.image?.size ?? .zero
+                        let imageRect = cell.imageRect(forBounds: popup.bounds)
+                        let finite = [imageSize.width, imageSize.height, imageRect.minX, imageRect.minY,
+                                      imageRect.width, imageRect.height].allSatisfy { $0.isFinite }
+                        row["moreIconPullsDown"] = popup.pullsDown
+                        row["moreIconImagePosition"] = popup.imagePosition == .imageOnly ? "imageOnly" : "other"
+                        row["moreIconArrowPosition"] = cell.arrowPosition == .noArrow ? "noArrow" : "other"
+                        row["moreIconImageScaling"] = popup.imageScaling == .scaleNone ? "scaleNone" : "other"
+                        row["moreIconAnchorPresent"] = anchor != nil
+                        row["moreIconAnchorTitle"] = anchor?.title ?? ""
+                        row["moreIconDisplayedItemIsAnchor"] = anchor != nil && popup.selectedItem === anchor
+                        row["moreIconImagePresent"] = popup.image != nil
+                        row["moreIconNativeBounds"] = rect(popup.bounds)
+                        row["moreIconImageSize"] = [imageSize.width, imageSize.height]
+                        row["moreIconImageRect"] = rect(imageRect)
+                        moreIconAlternative = nearestControl == nil && popup.isEnabled && popup.pullsDown
+                            && popup.imagePosition == .imageOnly && cell.arrowPosition == .noArrow
+                            && popup.imageScaling == .scaleNone && popup.title.isEmpty
+                            && anchor != nil && anchor?.title == "" && popup.selectedItem === anchor
+                            && popup.image != nil && finite && imageSize.width > 0 && imageSize.height > 0
+                            && imageRect.width > 0 && imageRect.height > 0
+                            && popup.bounds.width > 0 && popup.bounds.height > 0
+                            && popup.bounds.insetBy(dx: -0.5, dy: -0.5).contains(imageRect)
+                            && imageRect.width + 0.5 >= imageSize.width && imageRect.height + 0.5 >= imageSize.height
+                            && popup.accessibilityLabel() == "更多滚动截图选项"
+                            && popup.toolTip == "移动选区 · 方向 · 导入 · 帮助"
+                        row["moreIconFits"] = moreIconAlternative
+                    }
                     var longSourceAlternative = false
                     if id == "capture-chain-source", let popup = button as? NSPopUpButton {
                         let mode = popup.cell?.lineBreakMode ?? .byClipping
@@ -473,7 +509,7 @@ enum CaptureChainUIPreviewFixture {
                         row["sourcePopupLongTitleAlternative"] = longSourceAlternative
                         if alignment.width < 320 { violations.append(id + " usable alignment width is below 320") }
                     }
-                    if (!fits && !longSourceAlternative) || !hitMatches {
+                    if (!fits && !longSourceAlternative && !moreIconAlternative) || !hitMatches {
                         violations.append(id + " title or native hit target does not fit")
                     }
                 }

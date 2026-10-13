@@ -11,6 +11,7 @@ import importlib.util
 import json
 from pathlib import Path
 import re
+import struct
 
 
 def module(name, filename):
@@ -28,6 +29,8 @@ ACQUISITION = 'LiveScrollVerificationFrameSource; actual AppDelegate, live sessi
 OUTPUTS = ['quickSavePNG', 'copy', 'pin']
 CHAIN_NAME = '编号长图 · 保存、复制、贴图'
 OUTPUT_TITLE = '快速保存 PNG → 复制 → 贴图'
+REPLACEMENT_WARNING = '开始新动作链会从第一步执行，可能再次保存、复制或贴图。'
+ABANDON_WARNING = '已保存的文件和贴图仍保留。放弃后将清除本次续传记录，再次处理长图可能重复输出。'
 OFFSETS = [0, 96, 192, 288, 384]
 OWNERS = ('app', 'session', 'manager', 'firstRunner', 'continuedRunner', 'frozenImage',
           'provider', 'saveJob', 'pinController', 'presenter', 'delivery', 'pinCoordinator')
@@ -54,9 +57,9 @@ PHASES = {
     'paused': {'scroll.live.more', 'scroll.live.status'},
     'replacement': {'scroll.live.imageChain.choice', 'scroll.live.imageChain.run', 'scroll.live.imageChain.choice.cancel',
                     'scroll.live.imageChain.sheet.title', 'scroll.live.imageChain.sheet.description',
-                    'scroll.live.imageChain.choice.name', 'scroll.live.imageChain.choice.outputs'},
+                    'scroll.live.imageChain.choice.name', 'scroll.live.imageChain.choice.outputs', 'scroll.live.imageChain.sheet.warning'},
     'abandon': {'scroll.live.imageChain.abandon.confirm', 'scroll.live.imageChain.abandon.cancel',
-                'scroll.live.imageChain.sheet.title', 'scroll.live.imageChain.sheet.description'},
+                'scroll.live.imageChain.sheet.title', 'scroll.live.imageChain.sheet.description', 'scroll.live.imageChain.sheet.warning'},
     'result': {'capture-chain-close', 'capture-chain-run-status', 'capture-chain-receipt-0',
                'capture-chain-receipt-1', 'capture-chain-receipt-2'},
 }
@@ -66,7 +69,7 @@ MAX_TOTAL = 64 * 1024**2
 
 def ancestry(controls, window_number):
     by_id, paths = {}, {}
-    classes = {'NSButton': 'button', 'NSPopUpButton': 'button', 'LiveScrollMoreButton': 'button',
+    classes = {'NSButton': 'button', 'NSPopUpButton': 'button', 'LiveScrollMoreButton': 'button', 'LiveScrollButton': 'button',
                'CaptureChainRunButton': 'button', 'NSTextField': 'textField', 'NSTableView': 'tableView',
                'NSScroller': 'scroller', 'NSImageView': 'other'}
     for row in controls:
@@ -145,7 +148,8 @@ def layout(artifact, phase):
             fields(control, dict(hitTest=True), name)
             fit = frame[2]+.5 >= size[0] and frame[3]+.5 >= size[1]
             fields(control, dict(titleFits=fit), name)
-            need(fit, 'native button title clipped')
+            icon = more_icon(control, frame) if name == 'scroll.live.more' else False
+            need(fit or icon, 'native button title clipped')
         elif control['text']:
             wraps = C.boolean(control, 'textWraps', name)
             fit = wrapped[1] <= frame[3]+.5 and (wraps or size[0] <= frame[2]+.5)
@@ -162,8 +166,28 @@ def layout(artifact, phase):
     for name in PHASES[phase]:
         control = by_id.get(name)
         fields(control, dict(hidden=False, insideScrollableViewport=True), phase+'.required '+name)
-        if control['controlKind'] == 'button': fields(control, dict(enabled=True, hitTest=True, titleFits=True), name)
+        if control['controlKind'] == 'button':
+            fields(control, dict(enabled=True, hitTest=True), name)
+            if name != 'scroll.live.more': fields(control, dict(titleFits=True), name)
     return by_id
+
+
+def more_icon(control, frame):
+    """Only this owned image-only More control uses its public image rectangle."""
+    fields(control, {'id': 'scroll.live.more', 'class': 'LiveScrollMoreButton', 'controlKind': 'button',
+        'identifierIsExplicit': True, 'parentControlID': None, 'controlAncestorIDs': [],
+        'hidden': False, 'enabled': True, 'insideScrollableViewport': True, 'hitTest': True,
+        'text': '', 'accessibilityLabel': '更多滚动截图选项', 'toolTip': '移动选区 · 方向 · 导入 · 帮助',
+        'moreIconPullsDown': True, 'moreIconImagePosition': 'imageOnly', 'moreIconArrowPosition': 'noArrow',
+        'moreIconImageScaling': 'scaleNone', 'moreIconAnchorPresent': True, 'moreIconAnchorTitle': '',
+        'moreIconDisplayedItemIsAnchor': True, 'moreIconImagePresent': True, 'moreIconFits': True}, 'More icon')
+    bounds = C.rectangle(control.get('moreIconNativeBounds'), 'More native bounds')
+    image_rect = C.rectangle(control.get('moreIconImageRect'), 'More public image rectangle')
+    size = C.pair(control.get('moreIconImageSize'), 'More unscaled image size')
+    need(bounds == (0, 0, frame[2], frame[3]), 'More native bounds differ from full frame')
+    need(size[0] > 0 and size[1] > 0 and C.contains(bounds, image_rect)
+         and image_rect[2]+.5 >= size[0] and image_rect[3]+.5 >= size[1], 'More image clipped or scaled')
+    return True
 
 
 def comparison(row, expected_hash, label):
@@ -179,9 +203,14 @@ def sheet_content(artifact, controls, phase, case):
     title = {'choice': '使用截图链处理当前长图', 'replacement': '选择其他动作链重新处理',
              'abandon': '放弃未完成操作并继续采集？'}[phase]
     description = ('来源：本次长截图。仅执行所选链的图片输出，按保存的顺序处理。' if phase == 'choice'
-                   else case['replacementWarning'] if phase == 'replacement' else case['abandonWarning'])
+                   else case['replacementDetails'] if phase == 'replacement' else case['abandonDetails'])
     expected = {'scroll.live.imageChain.sheet.title': title,
                 'scroll.live.imageChain.sheet.description': description}
+    warning_id = 'scroll.live.imageChain.sheet.warning'
+    if phase == 'choice':
+        need(warning_id not in controls, 'initial choice includes redundant consequence warning')
+    else:
+        expected[warning_id] = REPLACEMENT_WARNING if phase == 'replacement' else ABANDON_WARNING
     if phase != 'abandon':
         expected.update({'scroll.live.imageChain.choice.name': CHAIN_NAME,
                          'scroll.live.imageChain.choice.outputs': OUTPUT_TITLE})
@@ -191,9 +220,42 @@ def sheet_content(artifact, controls, phase, case):
     for identifier, value in expected.items():
         fields(controls[identifier], {'class': 'NSTextField', 'text': value, 'toolTip': value,
             'accessibilityLabel': value, 'accessibilityValue': value, 'textEditable': False,
-            'textSelectable': True, 'textWraps': True}, phase+'.full text '+identifier)
-        if not identifier.endswith('.description'):
-            fields(controls[identifier], dict(textFits=True, intentionalTruncation=False), identifier)
+            'textSelectable': True}, phase+'.full text '+identifier)
+        if identifier.endswith('.description'):
+            fields(controls[identifier], dict(textWraps=False, lineBreakMode=4,
+                maximumNumberOfLines=9, fullTextTooltipAndAccessibility=True), identifier)
+        else:
+            fields(controls[identifier], dict(textWraps=True, textFits=True, intentionalTruncation=False), identifier)
+        if identifier == warning_id:
+            fields(controls[identifier], dict(hidden=False, insideScrollableViewport=True,
+                lineBreakMode=0, maximumNumberOfLines=0), identifier)
+            warning_frame = C.rectangle(controls[identifier]['fullFrame'], 'consequence warning')
+            details_frame = C.rectangle(controls['scroll.live.imageChain.sheet.description']['fullFrame'], 'receipt details')
+            need(warning_frame[1]+.5 >= details_frame[1]+details_frame[3], 'consequence warning is not above receipt details')
+
+
+def native_ui_png(raw, label):
+    """Canonical native UI pixels retain alpha; source and delivered PNGs stay opaque."""
+    need(33 <= len(raw) <= MAX_FILE and raw[:8] == b'\x89PNG\r\n\x1a\n', label+': PNG signature/bound')
+    width, height = struct.unpack_from('>II', raw, 16)
+    need(0 < width <= 4096 and 0 < height <= 4096 and width*height <= 4_000_000,
+         label+': native UI raster exceeds bound')
+    width, height, pixels = C.PNG.png_rgba(raw)
+    canonical = bytearray(pixels)
+    for offset in range(0, len(canonical), 4):
+        alpha = canonical[offset+3]
+        for channel in range(3):
+            canonical[offset+channel] = (canonical[offset+channel]*alpha+127)//255
+    return width, height, bytes(canonical)
+
+
+def check_ui_artifact(raw, artifact):
+    name = artifact['filename']
+    pixels = native_ui_png(raw, name)
+    need(pixels[:2] == (artifact['width'], artifact['height'])
+         and hashlib.sha256(pixels[2]).hexdigest() == artifact['canonicalRGBAPixelSHA256'],
+         'physical native raster/layout differs')
+    return pixels
 
 
 def contract(report, source):
@@ -246,9 +308,14 @@ def contract(report, source):
     count = integer(case.get('savedPNGByteCount'), 'saved bytes', 1, MAX_FILE)
     for key, required in (('pausedStatus', ('1/3', '继续')),
                           ('replacementWarning', (str(path), '再次')),
-                          ('abandonWarning', (str(path), '仍保留'))):
+                          ('abandonWarning', (str(path), '仍保留')),
+                          ('replacementDetails', (str(path),)), ('abandonDetails', (str(path),))):
         message = text(case.get(key), key)
         need(all(token in message for token in required), key+': warning omitted receipt or consequence')
+    fields(case, dict(replacementConsequence=REPLACEMENT_WARNING, abandonConsequence=ABANDON_WARNING), 'visible consequence warning')
+    for phase in ('replacement', 'abandon'):
+        need(case[phase+'Consequence'] in case[phase+'Warning'] and case[phase+'Details'] in case[phase+'Warning'],
+             'combined warning omitted its exact visible consequence or receipt details')
     pin = uuid(case.get('pinID'), 'pin receipt identity')
     save = dict(output='quickSavePNG', savedURL=str(path), byteCount=count)
     receipts = [save, dict(output='copy', checkedPrivatePasteboard=True), dict(output='pin', pinID=pin)]
@@ -319,9 +386,7 @@ def validate(report_path, source):
          pausedReceipts=case['pausedReceipts'],receipts=case['receipts']),'persisted action/receipt evidence differs')
     for phase in PHASES:
         for artifact in case[phase+'Artifacts']:
-            name=artifact['filename']; pixels=C.decoded_png(read(name),name)
-            need(pixels[:2]==(artifact['width'],artifact['height']) and hashlib.sha256(pixels[2]).hexdigest()==artifact['canonicalRGBAPixelSHA256'],
-                 'physical native raster/layout differs')
+            name=artifact['filename']; check_ui_artifact(read(name),artifact)
             name=name[:-4]+'-layout.json'; read(name,1024**2)
             need(C.COMMON.load(root/name)==artifact,'persisted raw native geometry differs')
     return dict(schemaVersion=1,status='passed',sourceCommit=source,installerAcceptance=False,

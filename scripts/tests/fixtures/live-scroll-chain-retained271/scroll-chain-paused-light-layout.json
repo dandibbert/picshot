@@ -1,0 +1,578 @@
+{
+  "appearance" : "light",
+  "canonicalRGBAPixelSHA256" : "ec5c77ff13d579a3ac5b414c5fc5c22860e508e5e81a6c665eb8b57c38fcdc24",
+  "filename" : "scroll-chain-paused-light.png",
+  "height" : 82,
+  "layout" : {
+    "alignmentRectanglesSubstituted" : false,
+    "contentBounds" : {
+      "height" : 82,
+      "width" : 310,
+      "x" : 0,
+      "y" : 0
+    },
+    "controls" : [
+      {
+        "accessibilityLabel" : "完成并编辑",
+        "accessibilityValue" : "",
+        "class" : "LiveScrollButton",
+        "controlAncestorIDs" : [
+
+        ],
+        "controlKind" : "button",
+        "descendantOfOwnedContent" : true,
+        "enabled" : false,
+        "fullFrame" : {
+          "height" : 34,
+          "width" : 104,
+          "x" : 8,
+          "y" : 8
+        },
+        "fullFrameContained" : true,
+        "fullScreenFrame" : {
+          "height" : 34,
+          "width" : 104,
+          "x" : 450,
+          "y" : 159
+        },
+        "hidden" : false,
+        "hitTest" : true,
+        "id" : "scroll.live.finish",
+        "identifierIsExplicit" : true,
+        "insideScrollableViewport" : true,
+        "ownerWindowNumber" : 60,
+        "parentControlID" : null,
+        "requiredTextSizeAtActualWidth" : [
+          86,
+          20
+        ],
+        "text" : "完成并编辑",
+        "titleFits" : true,
+        "toolTip" : "完成并编辑",
+        "untruncatedCellSize" : [
+          86,
+          20
+        ],
+        "viewPath" : [
+          0
+        ],
+        "visibleRect" : {
+          "height" : 82,
+          "width" : 310,
+          "x" : -8,
+          "y" : -40
+        }
+      },
+      {
+        "accessibilityLabel" : "",
+        "accessibilityValue" : "完成并编辑",
+        "class" : "NSButtonTextField",
+        "controlAncestorIDs" : [
+          "scroll.live.finish"
+        ],
+        "controlKind" : "textField",
+        "descendantOfOwnedContent" : true,
+        "enabled" : false,
+        "fontPointSize" : 13,
+        "fullFrame" : {
+          "height" : 15,
+          "width" : 90,
+          "x" : 26,
+          "y" : 15
+        },
+        "fullFrameContained" : true,
+        "fullScreenFrame" : {
+          "height" : 15,
+          "width" : 90,
+          "x" : 468,
+          "y" : 166
+        },
+        "fullTextTooltipAndAccessibility" : false,
+        "hidden" : false,
+        "id" : "native-control-3",
+        "identifierIsExplicit" : false,
+        "inheritedSourceTitleAlternative" : false,
+        "insideScrollableViewport" : true,
+        "intentionalTruncation" : false,
+        "lineBreakMode" : 0,
+        "maximumNumberOfLines" : 0,
+        "ownerWindowNumber" : 60,
+        "parentControlID" : "scroll.live.finish",
+        "requiredTextSizeAtActualWidth" : [
+          67.591439688715951,
+          15
+        ],
+        "text" : "完成并编辑",
+        "textEditable" : false,
+        "textFits" : true,
+        "textScrollable" : false,
+        "textSelectable" : false,
+        "textWraps" : true,
+        "toolTip" : "",
+        "untruncatedCellSize" : [
+          67.591439688715951,
+          15
+        ],
+        "viewPath" : [
+          0,
+          1
+        ],
+        "visibleRect" : {
+          "height" : 82,
+          "width" : 310,
+          "x" : -26,
+          "y" : -52
+        }
+      },
+      {
+        "accessibilityLabel" : "复制长截图",
+        "accessibilityValue" : "",
+        "class" : "LiveScrollButton",
+        "controlAncestorIDs" : [
+
+        ],
+        "controlKind" : "button",
+        "descendantOfOwnedContent" : true,
+        "enabled" : false,
+        "fullFrame" : {
+          "height" : 34,
+          "width" : 34,
+          "x" : 116,
+          "y" : 8
+        },
+        "fullFrameContained" : true,
+        "fullScreenFrame" : {
+          "height" : 34,
+          "width" : 34,
+          "x" : 558,
+          "y" : 159
+        },
+        "hidden" : false,
+        "hitTest" : true,
+        "id" : "scroll.live.copy",
+        "identifierIsExplicit" : true,
+        "insideScrollableViewport" : true,
+        "ownerWindowNumber" : 60,
+        "parentControlID" : null,
+        "requiredTextSizeAtActualWidth" : [
+          24,
+          23
+        ],
+        "text" : "Button",
+        "titleFits" : true,
+        "toolTip" : "复制长截图",
+        "untruncatedCellSize" : [
+          24,
+          23
+        ],
+        "viewPath" : [
+          1
+        ],
+        "visibleRect" : {
+          "height" : 82,
+          "width" : 310,
+          "x" : -116,
+          "y" : -40
+        }
+      },
+      {
+        "accessibilityLabel" : "继续捕获",
+        "accessibilityValue" : "",
+        "class" : "LiveScrollButton",
+        "controlAncestorIDs" : [
+
+        ],
+        "controlKind" : "button",
+        "descendantOfOwnedContent" : true,
+        "enabled" : false,
+        "fullFrame" : {
+          "height" : 34,
+          "width" : 34,
+          "x" : 154,
+          "y" : 8
+        },
+        "fullFrameContained" : true,
+        "fullScreenFrame" : {
+          "height" : 34,
+          "width" : 34,
+          "x" : 596,
+          "y" : 159
+        },
+        "hidden" : false,
+        "hitTest" : true,
+        "id" : "scroll.live.pauseResume",
+        "identifierIsExplicit" : true,
+        "insideScrollableViewport" : true,
+        "ownerWindowNumber" : 60,
+        "parentControlID" : null,
+        "requiredTextSizeAtActualWidth" : [
+          16,
+          20
+        ],
+        "text" : "Button",
+        "titleFits" : true,
+        "toolTip" : "继续捕获",
+        "untruncatedCellSize" : [
+          16,
+          20
+        ],
+        "viewPath" : [
+          2
+        ],
+        "visibleRect" : {
+          "height" : 82,
+          "width" : 310,
+          "x" : -154,
+          "y" : -40
+        }
+      },
+      {
+        "accessibilityLabel" : "自动滚动",
+        "accessibilityValue" : "",
+        "class" : "LiveScrollButton",
+        "controlAncestorIDs" : [
+
+        ],
+        "controlKind" : "button",
+        "descendantOfOwnedContent" : true,
+        "enabled" : false,
+        "fullFrame" : {
+          "height" : 34,
+          "width" : 34,
+          "x" : 192,
+          "y" : 8
+        },
+        "fullFrameContained" : true,
+        "fullScreenFrame" : {
+          "height" : 34,
+          "width" : 34,
+          "x" : 634,
+          "y" : 159
+        },
+        "hidden" : false,
+        "hitTest" : true,
+        "id" : "scroll.live.autoScroll",
+        "identifierIsExplicit" : true,
+        "insideScrollableViewport" : true,
+        "ownerWindowNumber" : 60,
+        "parentControlID" : null,
+        "requiredTextSizeAtActualWidth" : [
+          18,
+          23
+        ],
+        "text" : "Button",
+        "titleFits" : true,
+        "toolTip" : "自动滚动需要辅助功能权限",
+        "untruncatedCellSize" : [
+          18,
+          23
+        ],
+        "viewPath" : [
+          3
+        ],
+        "visibleRect" : {
+          "height" : 82,
+          "width" : 310,
+          "x" : -192,
+          "y" : -40
+        }
+      },
+      {
+        "accessibilityLabel" : "更多滚动截图选项",
+        "accessibilityValue" : "",
+        "class" : "LiveScrollMoreButton",
+        "controlAncestorIDs" : [
+
+        ],
+        "controlKind" : "button",
+        "descendantOfOwnedContent" : true,
+        "enabled" : true,
+        "fullFrame" : {
+          "height" : 34,
+          "width" : 34,
+          "x" : 230,
+          "y" : 8
+        },
+        "fullFrameContained" : true,
+        "fullScreenFrame" : {
+          "height" : 34,
+          "width" : 34,
+          "x" : 672,
+          "y" : 159
+        },
+        "hidden" : false,
+        "hitTest" : true,
+        "id" : "scroll.live.more",
+        "identifierIsExplicit" : true,
+        "insideScrollableViewport" : true,
+        "ownerWindowNumber" : 60,
+        "parentControlID" : null,
+        "requiredTextSizeAtActualWidth" : [
+          34,
+          25
+        ],
+        "text" : "",
+        "titleFits" : false,
+        "toolTip" : "移动选区 · 方向 · 导入 · 帮助",
+        "untruncatedCellSize" : [
+          74,
+          25
+        ],
+        "viewPath" : [
+          4
+        ],
+        "visibleRect" : {
+          "height" : 82,
+          "width" : 310,
+          "x" : -230,
+          "y" : -40
+        }
+      },
+      {
+        "accessibilityLabel" : "取消滚动截图",
+        "accessibilityValue" : "",
+        "class" : "LiveScrollButton",
+        "controlAncestorIDs" : [
+
+        ],
+        "controlKind" : "button",
+        "descendantOfOwnedContent" : true,
+        "enabled" : true,
+        "fullFrame" : {
+          "height" : 34,
+          "width" : 34,
+          "x" : 268,
+          "y" : 8
+        },
+        "fullFrameContained" : true,
+        "fullScreenFrame" : {
+          "height" : 34,
+          "width" : 34,
+          "x" : 710,
+          "y" : 159
+        },
+        "hidden" : false,
+        "hitTest" : true,
+        "id" : "scroll.live.cancel",
+        "identifierIsExplicit" : true,
+        "insideScrollableViewport" : true,
+        "ownerWindowNumber" : 60,
+        "parentControlID" : null,
+        "requiredTextSizeAtActualWidth" : [
+          19,
+          19
+        ],
+        "text" : "Button",
+        "titleFits" : true,
+        "toolTip" : "取消滚动截图",
+        "untruncatedCellSize" : [
+          19,
+          19
+        ],
+        "viewPath" : [
+          5
+        ],
+        "visibleRect" : {
+          "height" : 82,
+          "width" : 310,
+          "x" : -268,
+          "y" : -40
+        }
+      },
+      {
+        "accessibilityLabel" : "已拼接尺寸 480 × 704 px，5 帧",
+        "accessibilityValue" : "480 × 704 px",
+        "class" : "NSTextField",
+        "controlAncestorIDs" : [
+
+        ],
+        "controlKind" : "textField",
+        "descendantOfOwnedContent" : true,
+        "enabled" : true,
+        "fontPointSize" : 12,
+        "fullFrame" : {
+          "height" : 16,
+          "width" : 290,
+          "x" : 10,
+          "y" : 60
+        },
+        "fullFrameContained" : true,
+        "fullScreenFrame" : {
+          "height" : 16,
+          "width" : 290,
+          "x" : 452,
+          "y" : 211
+        },
+        "fullTextTooltipAndAccessibility" : false,
+        "hidden" : false,
+        "id" : "scroll.live.dimensions",
+        "identifierIsExplicit" : true,
+        "inheritedSourceTitleAlternative" : false,
+        "insideScrollableViewport" : true,
+        "intentionalTruncation" : false,
+        "lineBreakMode" : 4,
+        "maximumNumberOfLines" : 1,
+        "ownerWindowNumber" : 60,
+        "parentControlID" : null,
+        "requiredTextSizeAtActualWidth" : [
+          81.71515941619873,
+          15
+        ],
+        "text" : "480 × 704 px",
+        "textEditable" : false,
+        "textFits" : true,
+        "textScrollable" : false,
+        "textSelectable" : false,
+        "textWraps" : false,
+        "toolTip" : "已拼接尺寸 480 × 704 px，5 帧",
+        "untruncatedCellSize" : [
+          81.71515941619873,
+          15
+        ],
+        "viewPath" : [
+          6
+        ],
+        "visibleRect" : {
+          "height" : 82,
+          "width" : 310,
+          "x" : -10,
+          "y" : -6
+        }
+      },
+      {
+        "accessibilityLabel" : "已停止后续操作，长图保持暂停。已完成 1\/3；继续不会重复已完成操作。",
+        "accessibilityValue" : "已停止后续操作，长图保持暂停。已完成 1\/3；继续不会重复已完成操作。",
+        "class" : "NSTextField",
+        "controlAncestorIDs" : [
+
+        ],
+        "controlKind" : "textField",
+        "descendantOfOwnedContent" : true,
+        "enabled" : true,
+        "fontPointSize" : 11,
+        "fullFrame" : {
+          "height" : 16,
+          "width" : 275,
+          "x" : 25,
+          "y" : 42
+        },
+        "fullFrameContained" : true,
+        "fullScreenFrame" : {
+          "height" : 16,
+          "width" : 275,
+          "x" : 467,
+          "y" : 193
+        },
+        "fullTextTooltipAndAccessibility" : true,
+        "hidden" : false,
+        "id" : "scroll.live.status",
+        "identifierIsExplicit" : true,
+        "inheritedSourceTitleAlternative" : false,
+        "insideScrollableViewport" : true,
+        "intentionalTruncation" : true,
+        "lineBreakMode" : 4,
+        "maximumNumberOfLines" : 1,
+        "ownerWindowNumber" : 60,
+        "parentControlID" : null,
+        "requiredTextSizeAtActualWidth" : [
+          274.22549474100197,
+          14
+        ],
+        "text" : "已停止后续操作，长图保持暂停。已完成 1\/3；继续不会重复已完成操作。",
+        "textEditable" : false,
+        "textFits" : false,
+        "textScrollable" : false,
+        "textSelectable" : false,
+        "textWraps" : false,
+        "toolTip" : "已停止后续操作，长图保持暂停。已完成 1\/3；继续不会重复已完成操作。",
+        "untruncatedCellSize" : [
+          361.71187606395915,
+          14
+        ],
+        "viewPath" : [
+          7
+        ],
+        "visibleRect" : {
+          "height" : 82,
+          "width" : 310,
+          "x" : -25,
+          "y" : -24
+        }
+      },
+      {
+        "accessibilityLabel" : "已停止后续操作，长图保持暂停。已完成 1\/3；继续不会重复已完成操作。",
+        "accessibilityValue" : "",
+        "class" : "NSImageView",
+        "controlAncestorIDs" : [
+
+        ],
+        "controlKind" : "other",
+        "descendantOfOwnedContent" : true,
+        "enabled" : true,
+        "fullFrame" : {
+          "height" : 10,
+          "width" : 10,
+          "x" : 10,
+          "y" : 45
+        },
+        "fullScreenFrame" : {
+          "height" : 10,
+          "width" : 10,
+          "x" : 452,
+          "y" : 196
+        },
+        "hidden" : false,
+        "id" : "native-control-16",
+        "identifierIsExplicit" : false,
+        "insideScrollableViewport" : true,
+        "ownerWindowNumber" : 60,
+        "parentControlID" : null,
+        "requiredTextSizeAtActualWidth" : [
+          23,
+          23
+        ],
+        "text" : "",
+        "toolTip" : "",
+        "untruncatedCellSize" : [
+          23,
+          23
+        ],
+        "viewPath" : [
+          8
+        ],
+        "visibleRect" : {
+          "height" : 82,
+          "width" : 310,
+          "x" : -10,
+          "y" : -45
+        }
+      }
+    ],
+    "controlsDoNotOverlap" : true,
+    "fullNativeFramesMeasured" : true,
+    "fullVisibleFramesChecked" : false,
+    "nativeControlCount" : 10,
+    "passed" : false,
+    "phase" : "scroll-chain-paused",
+    "violations" : [
+      "scroll.live.more title or native hit target does not fit"
+    ],
+    "visibleScreenFrame" : {
+      "height" : 684,
+      "width" : 1024,
+      "x" : 0,
+      "y" : 59
+    },
+    "windowFrame" : {
+      "height" : 82,
+      "width" : 310,
+      "x" : 442,
+      "y" : 151
+    },
+    "windowNumber" : 60,
+    "windowTitle" : "PicShot · 滚动截图",
+    "windowVisible" : true
+  },
+  "rendering" : "Actual native owned content over resolved effective-appearance window background",
+  "width" : 310
+}

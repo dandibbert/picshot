@@ -1,0 +1,71 @@
+{
+  "provenance": "Fixture-owned native numbered scrolling witness, retained failed271; test inputs only, never current qualification",
+  "sourceCommit": "d73fb6e8dcec810ce92247472628186ef64715d0",
+  "files": {
+    "scroll-chain-choice-light-layout.json": "5edbec8ec0313a76c9350aed93ad2dc94984dcd3874f556492361084909f9a02",
+    "scroll-chain-paused-light.png": "fc3829d163fc7e63dd14af3a7b5c354ed95554e5220ee7edb900286a600e26d9",
+    "scroll-chain-paused-dark.png": "206c23ab4533621555d146f33d383d551af447dd7619900c7359c8970d2bb227",
+    "scroll-chain-paused-light-layout.json": "d6c7db8f6f7f27eee12634244ad5fc1df2b7eabf6b559346670af2616ea1ffa3"
+  },
+  "light": {
+    "filename": "scroll-chain-paused-light.png",
+    "width": 310,
+    "height": 82,
+    "canonicalRGBAPixelSHA256": "ec5c77ff13d579a3ac5b414c5fc5c22860e508e5e81a6c665eb8b57c38fcdc24"
+  },
+  "dark": {
+    "filename": "scroll-chain-paused-dark.png",
+    "width": 310,
+    "height": 82,
+    "canonicalRGBAPixelSHA256": "1f852c3022b891c8d4058b0f90a7fd004d6c9184464405142ac3ae7cfef4a54e"
+  },
+  "moreControl": {
+    "accessibilityLabel": "更多滚动截图选项",
+    "accessibilityValue": "",
+    "class": "LiveScrollMoreButton",
+    "controlAncestorIDs": [],
+    "controlKind": "button",
+    "descendantOfOwnedContent": true,
+    "enabled": true,
+    "fullFrame": {
+      "height": 34,
+      "width": 34,
+      "x": 230,
+      "y": 8
+    },
+    "fullFrameContained": true,
+    "fullScreenFrame": {
+      "height": 34,
+      "width": 34,
+      "x": 672,
+      "y": 159
+    },
+    "hidden": false,
+    "hitTest": true,
+    "id": "scroll.live.more",
+    "identifierIsExplicit": true,
+    "insideScrollableViewport": true,
+    "ownerWindowNumber": 60,
+    "parentControlID": null,
+    "requiredTextSizeAtActualWidth": [
+      34,
+      25
+    ],
+    "text": "",
+    "titleFits": false,
+    "toolTip": "移动选区 · 方向 · 导入 · 帮助",
+    "untruncatedCellSize": [
+      74,
+      25
+    ],
+    "viewPath": [
+      4
+    ],
+    "visibleRect": {
+      "height": 82,
+      "width": 310,
+      "x": -230,
+      "y": -40
+    }
+  }
+}

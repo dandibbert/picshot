@@ -186,6 +186,8 @@ enum LiveScrollChainDemoFixture {
             try require(trace.noOutputs && owner.activeCaptureChain == nil && live.chainTransaction == nil,
                         "Selecting a chain executed an output")
             report["choiceArtifacts"] = try evidence(choice.window, phase: "choice", directory: directory, report: report, trace: trace)
+            try require(choice.consequenceWarning == nil && choice.warningLabel == nil,
+                        "Initial choice unexpectedly includes a consequence warning")
             try buttonAction(choice.buttons[1], action: "cancel-choice", trace: trace)
             try await until("Choice Cancel did not return to draft", seconds: 5) { live.chainChoiceAlertForVerification == nil }
             report["noOutputOnSelectionOrChoiceCancel"] = trace.noOutputs && live.chainTransaction == nil
@@ -252,17 +254,27 @@ enum LiveScrollChainDemoFixture {
             try menuAction("scroll.live.imageChain.replace", action: "more-open-replacement", controls: controls, trace: trace)
             let replacement = try await choiceAlert(live)
             report["replacementWarning"] = replacement.informativeText
+            report["replacementDetails"] = replacement.detailText
+            report["replacementConsequence"] = replacement.consequenceWarning ?? ""
+            report["replacementArtifacts"] = try evidence(replacement.window, phase: "replacement", directory: directory, report: report, trace: trace)
             try require(replacement.informativeText.contains(savedURL.path) && replacement.informativeText.contains("再次"),
                         "Replacement omitted committed receipt or repeat-output warning")
-            report["replacementArtifacts"] = try evidence(replacement.window, phase: "replacement", directory: directory, report: report, trace: trace)
+            try require(replacement.consequenceWarning?.isEmpty == false && replacement.warningLabel != nil
+                && replacement.warningLabel?.stringValue == replacement.consequenceWarning,
+                        "Replacement consequence warning is not in its visible label")
             try buttonAction(replacement.buttons[1], action: "cancel-replacement", trace: trace)
             try await until("Replacement Cancel did not settle", seconds: 5) { live.chainChoiceAlertForVerification == nil }
             try menuAction("scroll.live.imageChain.abandon", action: "more-open-abandon", controls: controls, trace: trace)
             let abandon = try await choiceAlert(live)
             report["abandonWarning"] = abandon.informativeText
+            report["abandonDetails"] = abandon.detailText
+            report["abandonConsequence"] = abandon.consequenceWarning ?? ""
+            report["abandonArtifacts"] = try evidence(abandon.window, phase: "abandon", directory: directory, report: report, trace: trace)
             try require(abandon.informativeText.contains(savedURL.path) && abandon.informativeText.contains("仍保留"),
                         "Abandon omitted committed-output preservation warning")
-            report["abandonArtifacts"] = try evidence(abandon.window, phase: "abandon", directory: directory, report: report, trace: trace)
+            try require(abandon.consequenceWarning?.isEmpty == false && abandon.warningLabel != nil
+                && abandon.warningLabel?.stringValue == abandon.consequenceWarning,
+                        "Abandon consequence warning is not in its visible label")
             try buttonAction(abandon.buttons[1], action: "cancel-abandon", trace: trace)
             try await until("Abandon Cancel did not settle", seconds: 5) { live.chainChoiceAlertForVerification == nil }
             report["noOutputOnReplacementOrAbandonCancel"] = trace.saves == 1 && trace.copies == 1 && trace.pins == 0
