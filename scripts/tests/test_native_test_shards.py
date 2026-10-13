@@ -390,7 +390,7 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
                              for target in node.targets))
         stop = next(index for index, node in enumerate(body) if isinstance(node, ast.For))
         guard = ast.Module(body=identities + body[start:stop], type_ignores=[])
-        context = dict(native=shards, hashlib=hashlib, json=json, plan=plan, Path=Path,
+        context = dict(native=shards, hashlib=hashlib, importlib=importlib, json=json, plan=plan, Path=Path,
                        plan_path=Path('unused-plan.json'), record={},
                        digest=lambda path: 'portable-test-placeholder')
         exec(compile(guard, '<production pin inventory guard>', 'exec'), context)
@@ -400,7 +400,39 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
         inventory = self.current_source_inventory()
         plan = shards.make_plan(inventory, '', 'a' * 40, process_count=4)
         record = self.execute_pin_inventory_guard(plan)
-        self.assertEqual((record['discoveredCount'], record['discoveredClassCount']), (2303, 258))
+        self.assertEqual((record['discoveredCount'], record['discoveredClassCount']), (2375, 267))
+        self.assertEqual(hashlib.sha256(('\n'.join(inventory) + '\n').encode()).hexdigest(),
+                         '0f19081756c225e5b0fede62805ee01693d1409bf6552979ac74db409e3e4aab')
+        text_path = Path(__file__).parents[1] / 'text-script-integration-tests.json'
+        self.assertEqual(hashlib.sha256(text_path.read_bytes()).hexdigest(),
+                         'ff6801d5165ef1e962127123a2c99164782e8b4490bf380c7cbdb52374ffe365')
+        text_added = json.loads(text_path.read_text())
+        self.assertEqual(text_added, sorted(set(text_added)))
+        self.assertEqual(len(text_added), 72)
+        self.assertEqual(hashlib.sha256(('\n'.join(text_added) + '\n').encode()).hexdigest(),
+                         'fabb6746e6dff19fa4aae030f48b722260a4f648f7223d685ee449120d1b6ebf')
+        self.assertEqual(record['additiveTextScriptMethods'], 72)
+        self.assertEqual(record['additiveTextScriptIDs'], text_added)
+        self.assertEqual([name for name in inventory if '.TextScript' in name], text_added)
+        script_inventory, script_plan = inventory, plan
+        inventory = [name for name in script_inventory if name not in set(text_added)]
+        self.assertEqual((len(inventory), len({name.split('/')[0] for name in inventory})), (2303, 258))
+        self.assertEqual(hashlib.sha256(('\n'.join(inventory) + '\n').encode()).hexdigest(),
+                         '7366868482823631d5939adc3b411ff4d538c2c59090c2e35ebdea396b9e41ca')
+        self.assertEqual(script_inventory, sorted(inventory + text_added))
+        plan = shards.make_plan(inventory, '', 'a' * 40, process_count=4)
+        self.assertEqual([len(shard['tests']) for shard in script_plan['shards']], [640, 514, 608, 613])
+        for old_shard, current_shard in zip(plan['shards'], script_plan['shards']):
+            self.assertEqual([name for name in current_shard['tests'] if name not in text_added], old_shard['tests'])
+        selection = re.search(r"--selection-regex '([^']+)'", self.step(
+            'Plan exhaustive and focused native test processes'))[1]
+        for count in (2, 4):
+            full_focused = shards.make_plan(script_inventory, selection, 'a' * 40, process_count=count)
+            prior_focused = shards.make_plan(inventory, selection, 'a' * 40, process_count=count)
+            self.assertEqual(full_focused['selectedTests'], sorted(prior_focused['selectedTests'] + text_added))
+            self.assertEqual(len(full_focused['selectedTests']), 1843)
+            for old_shard, current_shard in zip(prior_focused['shards'], full_focused['shards']):
+                self.assertEqual([name for name in current_shard['tests'] if name not in text_added], old_shard['tests'])
         live = json.loads((Path(__file__).parents[1] / 'live-scroll-additive-tests.json').read_text())
         self.assertEqual(len(live), 156)
         self.assertEqual(live, sorted(set(live)))
@@ -529,18 +561,32 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
 
     def test_pin_preflight_rejects_stale_missing_extra_and_renamed_inventory(self):
         inventory = self.current_source_inventory()
+        text_method = 'PicShotTests.TextScriptControllerTests/testNewDraftIsNotAutoSavedByCloseQuitSelectionOrReopen'
+        baseline_method = next(name for name in inventory if '.TextScript' not in name)
+        self.assertIn(text_method, inventory)
         alternatives = [
-            [name for name in inventory if '.LiveScroll' not in name],
-            [name for name in inventory if not name.startswith('PicShotTests.LiveScrollResourceFixtureTests/')],
-            [name for name in inventory if name.split('/')[0] not in
-             {'PicShotTests.CodecStagingComparisonTests', 'PicShotTests.ImageExportPNGStagingTests'}],
-            [name for name in inventory if not name.startswith('PicShotTests.RecordingInput')],
-            inventory[:-1],
-            sorted(inventory + ['PicShotTests.RecordingInputEffectsTests/testUnexpected']),
-            sorted(inventory[:-1] + [inventory[-1] + 'Renamed']),
+            ('missing live classes', [name for name in inventory if '.LiveScroll' not in name], 'Complete native inventory'),
+            ('missing live fixture', [name for name in inventory if not name.startswith('PicShotTests.LiveScrollResourceFixtureTests/')],
+             'Complete native inventory'),
+            ('missing codec classes', [name for name in inventory if name.split('/')[0] not in
+             {'PicShotTests.CodecStagingComparisonTests', 'PicShotTests.ImageExportPNGStagingTests'}], 'Accepted248 native IDs changed'),
+            ('missing recording classes', [name for name in inventory if not name.startswith('PicShotTests.RecordingInput')],
+             'Accepted248 native IDs changed'),
+            ('missing final method', inventory[:-1], 'Text script methods lost or added outside the explicit inventory'),
+            ('extra baseline method', sorted(inventory + ['PicShotTests.RecordingInputEffectsTests/testUnexpected']),
+             'Accepted248 native IDs changed'),
+            ('renamed final method', sorted(inventory[:-1] + [inventory[-1] + 'Renamed']),
+             'Text script methods lost or added outside the explicit inventory'),
+            ('missing baseline method', [name for name in inventory if name != baseline_method], 'Accepted248 native IDs changed'),
+            ('renamed baseline method', sorted(name + 'Renamed' if name == baseline_method else name for name in inventory),
+             'Accepted248 native IDs changed'),
+            ('missing script method', [name for name in inventory if name != text_method],
+             'Text script methods lost or added outside the explicit inventory'),
+            ('renamed script method', sorted(name + 'Renamed' if name == text_method else name for name in inventory),
+             'Text script methods lost or added outside the explicit inventory'),
         ]
-        for changed in alternatives:
-            with self.subTest(count=len(changed)), self.assertRaisesRegex(ValueError, 'Complete native inventory'):
+        for label, changed, rejection in alternatives:
+            with self.subTest(mutation=label), self.assertRaisesRegex(ValueError, re.escape(rejection)):
                 self.execute_pin_inventory_guard(shards.make_plan(changed, '', 'a' * 40, process_count=4))
 
     def test_pin_preflight_rejects_selection_process_deadline_and_grouping_changes(self):
