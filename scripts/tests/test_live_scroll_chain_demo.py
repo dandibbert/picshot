@@ -26,6 +26,7 @@ PNG,PIXELS=T.png(480,704)
 SHEET_LIGHT_PNG,SHEET_LIGHT_PIXELS=T.png(460,300,(240,240,240,255))
 SHEET_DARK_PNG,SHEET_DARK_PIXELS=T.png(460,300,(30,30,30,255))
 RETAINED=Path(__file__).with_name('fixtures')/'live-scroll-chain-retained271'
+RETAINED272=Path(__file__).with_name('fixtures')/'live-scroll-chain-retained272'
 
 def artifacts(phase):
     result=[]
@@ -44,9 +45,10 @@ def artifacts(phase):
                     requiredTextSizeAtActualWidth=[34,25],titleFits=False,
                     fullFrame=T.rect(12,10,34,34),fullScreenFrame=T.rect(32,30,34,34),
                     accessibilityLabel='更多滚动截图选项',toolTip='移动选区 · 方向 · 导入 · 帮助',
-                    moreIconPullsDown=True,moreIconImagePosition='imageOnly',moreIconArrowPosition='noArrow',
+                    moreIconPullsDown=True,moreIconUsesItemFromMenu=True,moreIconImagePosition='imageOnly',moreIconArrowPosition='noArrow',
                     moreIconImageScaling='scaleNone',moreIconAnchorPresent=True,moreIconAnchorTitle='',
-                    moreIconDisplayedItemIsAnchor=True,moreIconImagePresent=True,moreIconFits=True,
+                    moreIconSelectedItemIsFirstItem=False,moreIconImagePresent=True,moreIconFits=True,
+                    moreIconAnchorImagePresent=True,moreIconAnchorImageSize=[18,4],
                     moreIconNativeBounds=T.rect(0,0,34,34),moreIconImageSize=[18,4],
                     moreIconImageRect=T.rect(8,15,18,4))
             controls.append(row)
@@ -222,10 +224,13 @@ class ContractTests(unittest.TestCase):
             ('id','scroll.live.other'),('identifierIsExplicit',False),('parentControlID','foreign'),
             ('controlAncestorIDs',['foreign']),('enabled',False),('hidden',True),('hitTest',False),
             ('insideScrollableViewport',False),('text','Hidden title'),('accessibilityLabel',''),('toolTip',''),
-            ('moreIconPullsDown',False),('moreIconImagePosition','imageLeading'),('moreIconArrowPosition','arrowAtBottom'),
+            ('moreIconPullsDown',False),('moreIconUsesItemFromMenu',False),
+            ('moreIconImagePosition','imageLeading'),('moreIconArrowPosition','arrowAtBottom'),
             ('moreIconImageScaling','scaleProportionallyDown'),('moreIconAnchorPresent',False),('moreIconAnchorTitle','Other'),
-            ('moreIconDisplayedItemIsAnchor',False),('moreIconImagePresent',False),('moreIconFits',False),
-            ('moreIconImageSize',[0,4]),('moreIconImageSize',[18,float('nan')]),('moreIconImageSize',[35,4]),
+            ('moreIconSelectedItemIsFirstItem',0),('moreIconImagePresent',0),('moreIconFits',False),
+            ('moreIconAnchorImagePresent',False),('moreIconAnchorImageSize',[0,4]),
+            ('moreIconAnchorImageSize',[18,float('nan')]),('moreIconAnchorImageSize',[35,4]),
+            ('moreIconImageSize','invalid'),('moreIconImageSize',[18,float('nan')]),
             ('moreIconImageRect',T.rect(8,15,0,4)),('moreIconImageRect',T.rect(30,15,18,4)),
             ('moreIconImageRect',T.rect(8,15,17,4)),('moreIconImageRect',T.rect(float('inf'),15,18,4)),
             ('moreIconNativeBounds',T.rect(0,0,35,34)),('fullFrame',T.rect(599,10,34,34))]
@@ -235,6 +240,28 @@ class ContractTests(unittest.TestCase):
         for key in [key for key in valid if key.startswith('moreIcon')]:
             changed=copy.deepcopy(artifact);del changed['layout']['controls'][0][key]
             with self.subTest(missing=key),self.assertRaises(ValueError):C.layout(changed,'paused')
+
+    def test_pull_down_selection_and_button_image_getter_are_diagnostics_only(self):
+        for selected,getter_present,getter_size in [(False,False,[0,0]),(False,True,[999,999]),(True,True,[18,4])]:
+            artifact=artifacts('paused')[0]
+            artifact['layout']['controls'][0].update(moreIconSelectedItemIsFirstItem=selected,
+                moreIconImagePresent=getter_present,moreIconImageSize=getter_size)
+            C.layout(artifact,'paused')
+        provenance=C.C.COMMON.load(RETAINED272/'provenance.json')
+        raw=(RETAINED272/'scroll-chain-paused-light-layout.json').read_bytes()
+        self.assertEqual(T.sha(raw),provenance['layoutSHA256'])
+        historical=C.C.COMMON.load(RETAINED272/'scroll-chain-paused-light-layout.json')
+        control=next(row for row in historical['layout']['controls'] if row['id']=='scroll.live.more')
+        self.assertFalse(control['moreIconDisplayedItemIsAnchor'])
+        self.assertEqual(control['moreIconImageSize'],[21,8])
+        self.assertEqual(control['moreIconImageRect'],T.rect(9,11,21,13))
+        self.assertEqual(control['untruncatedCellSize'],[74,25]);self.assertFalse(control['titleFits'])
+        # These are exact retained272 observations. No first-item binding or
+        # usesItemFromMenu measurement is synthesized to make this old run pass.
+        with self.assertRaises(ValueError):C.more_icon(control,(230,8,34,34))
+        with self.assertRaises(ValueError):C.layout(historical,'paused')
+        # Independently verified271/272 canonical pixels were identical.
+        C.check_ui_artifact((RETAINED/historical['filename']).read_bytes(),historical)
 
     def test_consequence_warning_must_be_visible_complete_and_above_bounded_details(self):
         identifier='scroll.live.imageChain.sheet.warning'

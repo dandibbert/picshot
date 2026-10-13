@@ -178,12 +178,21 @@ def more_icon(control, frame):
         'identifierIsExplicit': True, 'parentControlID': None, 'controlAncestorIDs': [],
         'hidden': False, 'enabled': True, 'insideScrollableViewport': True, 'hitTest': True,
         'text': '', 'accessibilityLabel': '更多滚动截图选项', 'toolTip': '移动选区 · 方向 · 导入 · 帮助',
-        'moreIconPullsDown': True, 'moreIconImagePosition': 'imageOnly', 'moreIconArrowPosition': 'noArrow',
+        'moreIconPullsDown': True, 'moreIconUsesItemFromMenu': True,
+        'moreIconImagePosition': 'imageOnly', 'moreIconArrowPosition': 'noArrow',
         'moreIconImageScaling': 'scaleNone', 'moreIconAnchorPresent': True, 'moreIconAnchorTitle': '',
-        'moreIconDisplayedItemIsAnchor': True, 'moreIconImagePresent': True, 'moreIconFits': True}, 'More icon')
+        'moreIconAnchorImagePresent': True, 'moreIconFits': True}, 'More icon')
+    # For a pull-down, AppKit displays the first menu item. The selected item
+    # reports the last user action; the inherited image getter is not its source.
+    # Keep both observations typed, without using their values as fit predicates.
+    C.boolean(control, 'moreIconSelectedItemIsFirstItem', 'More selection diagnostic')
+    C.boolean(control, 'moreIconImagePresent', 'More button-image diagnostic')
+    getter_size = control.get('moreIconImageSize')
+    need(type(getter_size) is list and len(getter_size) == 2, 'More button-image diagnostic size missing')
+    for value in getter_size: number(value, 'More button-image diagnostic size', -float('inf'))
     bounds = C.rectangle(control.get('moreIconNativeBounds'), 'More native bounds')
     image_rect = C.rectangle(control.get('moreIconImageRect'), 'More public image rectangle')
-    size = C.pair(control.get('moreIconImageSize'), 'More unscaled image size')
+    size = C.pair(control.get('moreIconAnchorImageSize'), 'More first-item unscaled image size')
     need(bounds == (0, 0, frame[2], frame[3]), 'More native bounds differ from full frame')
     need(size[0] > 0 and size[1] > 0 and C.contains(bounds, image_rect)
          and image_rect[2]+.5 >= size[0] and image_rect[3]+.5 >= size[1], 'More image clipped or scaled')

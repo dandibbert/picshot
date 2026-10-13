@@ -1,0 +1,11 @@
+{
+  "provenance": "Fixture-owned native scrolling witness, exact failed272 raw layout; test input only, never current qualification",
+  "sourceCommit": "274c1a329226e268ac638dc6687c306bfab79274",
+  "layoutSHA256": "cdbd1e8e6fd3a74d328dcc2359f1b1d597728c0ff682c8cdf9ebc0ede33adc1a",
+  "documentedSemantics": [
+    "https://developer.apple.com/documentation/appkit/nspopupbutton",
+    "https://developer.apple.com/documentation/appkit/nspopupbuttoncell/selecteditem"
+  ],
+  "limitation": "This failed run did not record usesItemFromMenu or the first menu item image. No new measurements were fabricated.",
+  "pixelProvenance": "Full canonical premultiplied RGBA was independently identical to retained271 paused light and dark images"
+}
