@@ -38,6 +38,12 @@ INTEGRATION_SOURCES = (
     'Sources/PicShot/TextScriptController.swift',
     'Sources/PicShot/TextScriptStore.swift',
     'Sources/PicShot/TextScriptUIPreviewFixture.swift',
+    'Sources/PicShot/LiveScrollTextScriptDemoFixture.swift',
+    'Sources/PicShot/LiveScrollTextDependencies.swift',
+    'Sources/PicShot/LiveScrollSessionController.swift',
+    'Sources/PicShot/LiveScrollCaptureController.swift',
+    'Sources/PicShot/LiveScrollChainChoiceController.swift',
+    'scripts/check-live-scroll-text-script-demo.py',
     'Sources/PicShotCore/TextScriptDefinition.swift',
     'scripts/check-text-script-demo.py')
 

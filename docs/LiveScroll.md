@@ -4,7 +4,7 @@ This is the replacement product path under development after the 0.21.0/build214
 
 ## Intended interaction
 
-Choose a region directly from the menu, or use Long Capture beside an existing screenshot selection. Scroll the underlying application normally. A nonactivating nearby toolbar and live thumbnail remain visible. Ordinary reverse scrolling changes the current viewport and reconnects the matcher without deleting captured coverage. Finish/Edit and Copy flush the last verified viewport and end capture. Pause preserves data. Uncertain alignment keeps the last good result and asks for a small reverse scroll without opening a large window or taking application focus.
+Choose a region directly from the menu, or use Long Capture beside an existing screenshot selection. Scroll the underlying application normally. A nonactivating nearby toolbar and live thumbnail remain visible. Ordinary reverse scrolling changes the current viewport and reconnects the matcher without deleting captured coverage. Finish/Edit and Copy flush the last verified viewport and end capture. Pause preserves data. Uncertain alignment keeps the last good result and gives advice for the actual failure: a small return for lost overlap, slow movement for ambiguous fixed boundaries, or finishing the preserved result and reselecting the body when fixed content is unsupported. These are recovery suggestions, not promises of a successful seam. The compact warning does not open a large window or take application focus.
 
 Use the persistent “移动” handle to drag the selection directly while the nearby toolbar and last good preview remain visible. During active capture, movement pauses and drains acquisition, constrains dragging to the scrolling axis and preserves target-window identity and pixel extent. Mouse release applies the final position once draining completes; resumed observations must establish verified overlap before the preview marker turns green. Escape or focus loss restores the old region. A paused move may use either axis but must remain in the same target window and display, and it stays paused afterward. The More menu’s full-screen mover remains a fallback. Movement is not uninterrupted acquisition. An orange dashed preview marker describes the last known position while current alignment is unverified.
 
@@ -117,3 +117,8 @@ The next bounded batch reuses that correction with named capture chains: one Reg
 ## Recovery-guidance candidate
 
 The next bounded [typed recovery advice](ScrollRecoveryGuidance.md) distinguishes lost overlap from uncertain or unsupported fixed content while retaining accepted pixels and user-controlled Auto. Native qualification is pending; build278 remains the latest qualified experimental package.
+
+
+## Current long image → saved text script candidate
+
+The next bounded route opens an explicit saved-script choice in More, then drains the existing capture and passes its one complete frozen image to local OCR → the existing isolated JavaScript helper → checked text Copy. It does not select or capture another region. The script definition, identity, image and OCR settings stay fixed for that run; selecting/managing a definition alone never starts processing. See [the transaction and verification scope](LiveScrollTextScripts.md). Native compilation and installed evidence for this new route remain pending.

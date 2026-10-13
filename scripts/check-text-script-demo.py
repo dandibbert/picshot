@@ -388,10 +388,26 @@ def validate(report_path, source, package_proof, source_root):
                 need(C.COMMON.load(root/(filename[:-4]+'-layout.json')) == artifact, 'persisted raw layout differs')
                 images.append(pixels)
             need(images[0] != images[1], 'physical native appearances identical')
+    # The additive child is produced by this same installed process. Its reader
+    # calls report_fields/identity, never validate, so both contracts stay intact.
+    current = module('installed_current_long_image_reader', 'check-live-scroll-text-script-demo.py')
+    child = current.validate(path, source, proof_path, source_root)
+    fields(child.get('sourceIdentity'), installed, 'current-long-image installed identity')
+    expected_child = {'current-long-image/' + name for name in current.EVIDENCE_FILES}
+    need(set(child['evidenceSHA256']) == expected_child | {path.name, raw_path.name, launch_path.name, 'package-proof'},
+         'current-long-image evidence inventory differs')
+    for name, expected in child['evidenceSHA256'].items():
+        if name not in files:
+            need(name in expected_child, 'unsafe current-long-image evidence name')
+            files[name] = C.COMMON.read(root/name)
+            need(len(files) <= 48 and sum(map(len, files.values())) <= 96*1024**2, 'evidence aggregate bound')
+        need(hashlib.sha256(files[name]).hexdigest() == expected, 'current-long-image evidence changed during validation')
+    need(len(files) <= 48 and sum(map(len, files.values())) <= 96*1024**2, 'evidence aggregate bound')
     return dict(schemaVersion=1, status='passed', sourceIdentity=installed, installerAcceptance=False,
         realScreenCaptureAcceptance=False, original227MemoryAcceptance=False, hardMemoryCapClaimed=False,
         scope=SCOPE, exactGeneratedTextOutputVerified=True, onceOnlyCaptureOCRTransformVerified=True,
         checkedCopyRetryAndCloseVerified=True, sourceAndFinalPackageBound=True,
+        currentLongImageTextScriptVerified=True, currentLongImage=child,
         evidenceSHA256={name: hashlib.sha256(data).hexdigest() for name, data in sorted(files.items())})
 
 

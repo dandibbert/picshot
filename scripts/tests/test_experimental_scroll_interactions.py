@@ -818,7 +818,7 @@ class WorkflowSelectionTests(unittest.TestCase):
             self.assertIn("PlistBuddy -c 'Print :" + field + "' \"$PWD/dist/PicShot.app/Contents/Info.plist\"", native)
         self.assertIn('python3 scripts/check-live-scroll-chain-demo.py --report dist/live-scroll-demo/saved-image-chain/live-scroll-chain.json --source "$GITHUB_SHA"', native)
 
-    def test_current_2375_inventory_and_original_2047_ids(self):
+    def test_current_2487_inventory_and_original_2047_ids(self):
         # Same portable source sentinel as native-test-shards; actual discovery
         # and all current native IDs still execute in the unchanged workflow.
         inventory=[]
@@ -832,6 +832,43 @@ class WorkflowSelectionTests(unittest.TestCase):
             module=path.relative_to(REPO/'Tests').parts[0]
             inventory.extend(module+'.'+classes[0]+'/'+method for method in methods)
         inventory=sorted(inventory)
+        current_inventory=inventory
+        bridge_added=C.scroll_text_script_additions(inventory)
+        bridge_manifest=json.loads((REPO/'scripts/scroll-text-script-additive-tests.json').read_text())
+        self.assertEqual(bridge_manifest,sorted(bridge_added))
+        self.assertEqual(len(bridge_added),41)
+        self.assertEqual({name.split('/')[0]:sum(other.split('/')[0]==name.split('/')[0] for other in bridge_added)
+            for name in bridge_added},{
+                'PicShotTests.TextScriptPreparedInputTests':12,
+                'PicShotTests.LiveScrollTextScriptSessionTests':15,
+                'PicShotTests.LiveScrollTextChoiceTests':4,
+                'PicShotTests.LiveScrollTextAppIntegrationTests':10})
+        self.assertEqual((len(inventory),len({name.split('/')[0] for name in inventory}),
+            hashlib.sha256(('\n'.join(inventory)+'\n').encode()).hexdigest()),C.CURRENT_NATIVE_INVENTORY)
+        preserved279=[name for name in inventory if name not in bridge_added]
+        self.assertEqual((len(preserved279),len({name.split('/')[0] for name in preserved279}),
+            hashlib.sha256(('\n'.join(preserved279)+'\n').encode()).hexdigest()),C.PRESERVED279_NATIVE_INVENTORY)
+        self.assertEqual(inventory,sorted(preserved279+bridge_manifest))
+        for method in bridge_manifest:
+            mutations={
+                'missing':[name for name in inventory if name!=method],
+                'renamed':sorted(name+'Renamed' if name==method else name for name in inventory),
+                'wrong module':sorted(name.replace('PicShotTests.', 'PicShotCoreTests.', 1) if name==method else name for name in inventory),
+                'extra':sorted(inventory+[method+'Unexpected']),
+                'duplicate':sorted(inventory+[method]),
+            }
+            for label,changed in mutations.items():
+                for guard in (C.scroll_text_script_additions,C.text_script_additions):
+                    with self.subTest(bridge=method,mutation=label,guard=guard.__name__),self.assertRaises(ValueError):
+                        guard(changed)
+        for changed in (preserved279,list(reversed(inventory))):
+            with self.subTest(stale279_or_unsorted=True),self.assertRaises(ValueError):
+                C.scroll_text_script_additions(changed)
+        for bad in ({},bridge_manifest[:-1],bridge_manifest+[bridge_manifest[-1]],list(reversed(bridge_manifest)),
+                    [name+'Renamed' if name==bridge_manifest[0] else name for name in bridge_manifest]):
+            with patch.object(C,'read',return_value=json.dumps(bad).encode()),self.assertRaises(ValueError):
+                C.scroll_text_script_manifest()
+        inventory=preserved279
         guidance_added=C.scroll_guidance_additions(inventory)
         self.assertEqual(len(guidance_added),6)
         self.assertEqual(list(C.SCROLL_GUIDANCE_ADDITIONS),sorted(guidance_added))
@@ -851,15 +888,14 @@ class WorkflowSelectionTests(unittest.TestCase):
                 with self.subTest(guidance=method,mutation=label),self.assertRaises(ValueError):
                     C.scroll_guidance_additions(changed)
                 with self.subTest(guidance=method,combined_guard=label),self.assertRaises(ValueError):
-                    C.text_script_additions(changed)
+                    C.text_script_additions(sorted(changed+bridge_manifest))
         for changed in (preserved278,list(reversed(inventory))):
             with self.subTest(stale_or_unsorted=True),self.assertRaises(ValueError):
                 C.scroll_guidance_additions(changed)
         scroll_added=C.scroll_chain_additions(inventory)
         self.assertFalse(guidance_added & scroll_added)
-        current_inventory=inventory
         self.assertEqual((len(inventory),len({name.split('/')[0] for name in inventory}),
-            hashlib.sha256(('\n'.join(inventory)+'\n').encode()).hexdigest()),C.CURRENT_NATIVE_INVENTORY)
+            hashlib.sha256(('\n'.join(inventory)+'\n').encode()).hexdigest()),C.PRESERVED279_NATIVE_INVENTORY)
         inventory=[name for name in preserved278 if name not in scroll_added]
         self.assertEqual(len(inventory),2407)
         self.assertEqual(len(set(inventory)),2407)
@@ -890,9 +926,10 @@ class WorkflowSelectionTests(unittest.TestCase):
                          '0f19081756c225e5b0fede62805ee01693d1409bf6552979ac74db409e3e4aab')
         live=json.loads((REPO/'scripts/live-scroll-additive-tests.json').read_text())
         self.assertEqual(live,[name for name in current_inventory if '.LiveScroll' in name])
-        self.assertEqual(len(live),195)
+        self.assertEqual(len(live),224)
+        self.assertEqual(len(set(live)&bridge_added),29)
         self.assertTrue(guidance_added.issubset(live))
-        live=[name for name in live if name not in scroll_added and name not in guidance_added]
+        live=[name for name in live if name not in scroll_added and name not in guidance_added and name not in bridge_added]
         self.assertEqual(len(live),165);self.assertTrue(set(live).issubset(inventory))
         self.assertTrue(recovery.issubset(live))
         prior_live=[name for name in live if name not in recovery and name not in payload_added]

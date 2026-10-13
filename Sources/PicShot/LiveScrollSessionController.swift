@@ -9,6 +9,15 @@ final class LiveScrollSessionController {
     var onClose: (() -> Void)?
     let sessionID = UUID()
     private let chainDependencies: LiveScrollChainDependencies?
+    private let textDependencies: LiveScrollTextDependencies?
+    private(set) var textAttemptID: UUID?
+    /// Exists only during synchronous runner adoption, never while awaiting OCR
+    /// or a terminal result. AppMain uses this exact object for admission checks.
+    private(set) var stagedTextCapture: ChainCapture?
+    private var pendingTextDefinition: TextScriptDefinition?
+    private var textChoiceID: UUID?
+    private(set) var textChoiceAlertForVerification: LiveScrollChainChoiceController?
+    private(set) var textRenderCountForVerification = 0
     private(set) var chainTransaction: LiveScrollChainTransaction?
     private(set) var chainAttemptID: UUID?
     private var chainTeardownWarning: String?
@@ -86,8 +95,10 @@ final class LiveScrollSessionController {
          monotonicNow: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
          automaticScrollPermission: @escaping () -> Bool = { AXIsProcessTrusted() },
          automaticScrollInput: ((CGEvent) throws -> Void)? = nil,
-         chainDependencies: LiveScrollChainDependencies? = nil) {
+         chainDependencies: LiveScrollChainDependencies? = nil,
+         textDependencies: LiveScrollTextDependencies? = nil) {
         self.chainDependencies = chainDependencies
+        self.textDependencies = textDependencies
         self.resourceStorageParent = resourceStorageParent
         self.monotonicNow = monotonicNow
         self.automaticScrollPermission = automaticScrollPermission
@@ -208,6 +219,7 @@ final class LiveScrollSessionController {
         actions.copy = { [weak self] in self?.finish(.copy) }
         actions.quickSave = { [weak self] in self?.finish(.save) }
         actions.pin = { [weak self] in self?.finish(.pin) }
+        actions.applyTextScript = { [weak self] in self?.chooseTextScript() }
         actions.applyImageChain = { [weak self] in self?.chooseImageChain(replacingTransactionID: nil) }
         actions.replaceImageChain = { [weak self] id in self?.chooseImageChain(replacingTransactionID: id) }
         actions.continueImageChain = { [weak self] id in self?.continueImageChain(transactionID: id) }
@@ -321,7 +333,7 @@ final class LiveScrollSessionController {
     private func setStatus(_ text: String, kind: LiveScrollCaptureSnapshot.StatusKind) {
         guard !retired else { return }
         snapshot.status = deliveryWarning ?? text; snapshot.statusKind = deliveryWarning == nil ? kind : .warning
-        snapshot.paused = paused; snapshot.busy = finishing || transition != nil || regionDrag != nil || chainChoiceID != nil
+        snapshot.paused = paused; snapshot.busy = finishing || transition != nil || regionDrag != nil || chainChoiceID != nil || textChoiceID != nil || textAttemptID != nil
         snapshot.canPause = !deliveryCompleted && !finishing && !captureLimitReached && transition == nil && regionDrag == nil && source != nil
         snapshot.canMoveRegion = !deliveryCompleted && !finishing && !captureLimitReached && transition == nil && regionDrag == nil && source != nil
         snapshot.canImport = !deliveryCompleted && lastState.width == 0 && !finishing
@@ -344,7 +356,8 @@ final class LiveScrollSessionController {
         if captureLimitReached { snapshot.canChangeAxis = false }
         if deliveryCompleted { snapshot.canFinish = false; snapshot.canCopy = false; snapshot.canChangeAxis = false }
         let chainReady = !retired && !deliveryCompleted && !finishing && transition == nil
-            && regionDrag == nil && chainChoiceID == nil && lastState.width > 0 && chainDependencies != nil
+            && regionDrag == nil && chainChoiceID == nil && textChoiceID == nil && textAttemptID == nil
+            && lastState.width > 0 && chainDependencies != nil
         snapshot.canApplyImageChain = chainReady && chainTransaction == nil
         snapshot.canContinueImageChain = chainReady && chainTransaction != nil
         snapshot.canReplaceImageChain = snapshot.canContinueImageChain
@@ -353,7 +366,11 @@ final class LiveScrollSessionController {
         snapshot.chainContinueTitle = chainTransaction.map {
             "继续「\($0.definition.name)」（\($0.receipts.count)/\($0.definition.outputs.count) 已完成）"
         } ?? ""
-        if chainTransaction != nil || chainChoiceID != nil {
+        let textSizeAllowed = PinImageRenderer.allowsRasterSize(width: lastState.width, height: lastState.height)
+        snapshot.canApplyTextScript = canCommandTextScript && textSizeAllowed
+        snapshot.textScriptUnavailableReason = lastState.width > 0 && !textSizeAllowed
+            ? "本地识别最多支持 3200 万像素；可完成并编辑或保存原尺寸长图" : ""
+        if chainTransaction != nil || chainChoiceID != nil || textChoiceID != nil || textAttemptID != nil {
             snapshot.canFinish = false; snapshot.canCopy = false; snapshot.canQuickSave = false; snapshot.canPin = false
             snapshot.canPause = false; snapshot.canMoveRegion = false; snapshot.canAutoScroll = false
             snapshot.canChangeAxis = false; snapshot.canImport = false
@@ -362,7 +379,7 @@ final class LiveScrollSessionController {
     }
 
     private func togglePause() {
-        guard chainTransaction == nil, chainChoiceID == nil, transition == nil, regionDrag == nil, !finishing, !retired, !deliveryCompleted, let source else { return }
+        guard chainTransaction == nil, chainChoiceID == nil, textChoiceID == nil, textAttemptID == nil, transition == nil, regionDrag == nil, !finishing, !retired, !deliveryCompleted, let source else { return }
         if paused && updateCaptureLimit() {
             setStatus("已达到本次捕获上限，可完成保存已有长图", kind: .paused); return
         }
@@ -422,9 +439,168 @@ final class LiveScrollSessionController {
         }
     }
 
+    private var canCommandTextScript: Bool {
+        !retired && !deliveryCompleted && !finishing && transition == nil && regionDrag == nil
+            && chainTransaction == nil && chainChoiceID == nil && textChoiceID == nil && textAttemptID == nil
+            && lastState.width > 0 && textDependencies != nil
+    }
+
+    private func chooseTextScript() {
+        guard canCommandTextScript, let dependencies = textDependencies,
+              let parent = controls?.toolbarWindow else { return }
+        let token = generation, choice = UUID()
+        textChoiceID = choice
+        do {
+            let definitions = try dependencies.definitions()
+            guard !retired, generation == token, textChoiceID == choice else { return }
+            guard !definitions.isEmpty else {
+                throw PicShotError.message("尚未保存文字脚本，请在文字脚本管理中创建后再选择。")
+            }
+            let alert = LiveScrollChainChoiceController(textScripts: definitions)
+            let picker = alert.accessoryView as? NSPopUpButton
+            textChoiceAlertForVerification = alert
+            setStatus(snapshot.status, kind: snapshot.statusKind)
+            alert.beginSheetModal(for: parent) { [weak self, weak picker] response in
+                guard let self, !self.retired, self.generation == token, self.textChoiceID == choice else { return }
+                let index = picker?.indexOfSelectedItem
+                self.textChoiceID = nil; self.textChoiceAlertForVerification = nil
+                self.setStatus(self.snapshot.status, kind: self.snapshot.statusKind)
+                guard response == .alertFirstButtonReturn, let index, definitions.indices.contains(index) else { return }
+                _ = self.startTextScript(definition: definitions[index])
+            }
+        } catch {
+            if !retired, generation == token, textChoiceID == choice {
+                textChoiceID = nil; setStatus(error.localizedDescription, kind: .error)
+            }
+        }
+    }
+
+    /// A saved definition must still match the catalog when the user explicitly
+    /// presses Run. Opening or changing the picker never launches a script.
+    @discardableResult func startTextScript(definition: TextScriptDefinition) -> Bool {
+        guard canCommandTextScript, let dependencies = textDependencies, source != nil, assembler != nil else { return false }
+        let token = generation
+        finishing = true // Reserve before reentrant catalog callbacks.
+        do {
+            guard try dependencies.definitions().contains(definition) else { throw TextScriptCatalogError.missingDefinition }
+        } catch {
+            if !retired, generation == token { finishing = false; setStatus(error.localizedDescription, kind: .error) }
+            return false
+        }
+        guard !retired, generation == token else { return false }
+        guard PinImageRenderer.allowsRasterSize(width: lastState.width, height: lastState.height) else {
+            finishing = false; setStatus(Self.textSizeMessage, kind: .warning)
+            return false
+        }
+        paused = true; clearAutomaticState(); pauseCaptureClock()
+        snapshot.previewPositionVerified = false
+        let runID = UUID()
+        textAttemptID = runID
+        // Store preparation metadata only until the helper returns. The outer
+        // task captures value IDs and a value-only completion cell, not pixels
+        // or executable source that would remain alive during the terminal wait.
+        pendingTextDefinition = definition
+        let terminal = TextTerminal(runID: runID, definitionID: definition.id, definitionName: definition.name)
+        setStatus("正在准备本次长截图的文字识别…", kind: .finishing)
+        transition = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.textAttemptID == runID {
+                    self.textAttemptID = nil; self.pendingTextDefinition = nil; self.stagedTextCapture = nil
+                }
+                if !self.retired, self.generation == token {
+                    self.transition = nil; self.finishing = false
+                    self.setStatus(self.snapshot.status, kind: self.snapshot.statusKind)
+                }
+            }
+            do {
+                try await self.prepareTextScript(runID: runID, token: token, terminal: terminal)
+                let result = await terminal.wait()
+                guard !self.retired, self.generation == token, self.textAttemptID == runID else { return }
+                if result.textReceipt != nil {
+                    // A checked Copy followed by Cancel is a committed result.
+                    self.deliveryCompleted = true
+                    self.requestRetirement()
+                } else {
+                    self.setStatus("已停止文字处理，当前长图保持暂停；再次处理需重新选择文字脚本", kind: .paused)
+                }
+            } catch is CancellationError {
+                if !self.retired, self.generation == token { self.setStatus("已停止文字处理，当前长图保持暂停", kind: .paused) }
+            } catch {
+                if !self.retired, self.generation == token {
+                    self.setStatus(error.localizedDescription + "；当前长图保持暂停", kind: .error)
+                }
+            }
+        }
+        return true
+    }
+
+    func acceptsTextRun(runID: UUID) -> Bool {
+        !retired && finishing && textAttemptID == runID
+    }
+
+    private static let textSizeMessage = "本地识别最多支持 3200 万像素；当前长图仍保留，可完成并编辑或保存原尺寸长图"
+
+    /// This async scope must end before the outer terminal wait. In particular,
+    /// no image local, prepared capture, or script definition can be retained by
+    /// the scroll owner's suspended terminal task after runner adoption.
+    private func prepareTextScript(runID: UUID, token: UInt64, terminal: TextTerminal) async throws {
+        guard !retired, generation == token, textAttemptID == runID,
+              let source, let assembler, let dependencies = textDependencies else { throw CancellationError() }
+        defer { pendingTextDefinition = nil; stagedTextCapture = nil }
+        // Unlike image delivery, OCR cannot begin after an unconfirmed drain.
+        try await source.pauseAndDrain()
+        await sampling?.value; sampling = nil
+        try Task.checkCancellation()
+        guard !retired, generation == token, textAttemptID == runID else { throw CancellationError() }
+        guard let definition = pendingTextDefinition else { throw CancellationError() }
+        guard PinImageRenderer.allowsRasterSize(width: lastState.width, height: lastState.height) else {
+            throw PicShotError.message(Self.textSizeMessage)
+        }
+        let image = try await assembler.finish()
+        textRenderCountForVerification += 1
+        try Task.checkCancellation()
+        guard !retired, generation == token, textAttemptID == runID else { throw CancellationError() }
+        let prepared = try ChainCapture(image: image)
+        stagedTextCapture = prepared
+        setStatus("正在识别文字并执行所选脚本…", kind: .finishing)
+        // Settlement deliberately has no self/generation guard. Close cancels
+        // the owned runner, then awaits this task even after retiring its UI.
+        try dependencies.start(sessionID, runID, definition, prepared) { result in terminal.accept(result) }
+        stagedTextCapture = nil
+    }
+
+    /// Handles terminal-before-await, duplicate callbacks and old-run callbacks
+    /// without making the session or its generation own continuation settlement.
+    @MainActor private final class TextTerminal {
+        let runID: UUID
+        private let definitionID: UUID
+        private let definitionName: String
+        private var result: CaptureChainSnapshot?
+        private var waiter: CheckedContinuation<CaptureChainSnapshot, Never>?
+        init(runID: UUID, definitionID: UUID, definitionName: String) {
+            self.runID = runID; self.definitionID = definitionID; self.definitionName = definitionName
+        }
+        func accept(_ snapshot: CaptureChainSnapshot) {
+            guard result == nil, snapshot.runID == runID, snapshot.isTextScript,
+                  snapshot.isExistingScrollImage, snapshot.status.isTerminal,
+                  snapshot.definition.id == definitionID, snapshot.definition.name == definitionName,
+                  snapshot.definition.source == .region, snapshot.definition.outputs == [.copy],
+                  snapshot.receipts.isEmpty else { return }
+            result = snapshot
+            let pending = waiter; waiter = nil
+            pending?.resume(returning: snapshot)
+        }
+        func wait() async -> CaptureChainSnapshot {
+            if let result { return result }
+            return await withCheckedContinuation { waiter = $0 }
+        }
+    }
+
     private var canCommandImageChain: Bool {
         !retired && !deliveryCompleted && !finishing && transition == nil && regionDrag == nil
-            && chainChoiceID == nil && lastState.width > 0 && chainDependencies != nil
+            && chainChoiceID == nil && textChoiceID == nil && textAttemptID == nil
+            && lastState.width > 0 && chainDependencies != nil
     }
 
     private func preflightImageChain(_ definition: CaptureChainDefinition, committedCount: Int,
@@ -652,7 +828,7 @@ final class LiveScrollSessionController {
     }
 
     private func finish(_ destination: OutputDestination) {
-        guard chainTransaction == nil, chainChoiceID == nil, !finishing, !retired, !deliveryCompleted, transition == nil, regionDrag == nil,
+        guard chainTransaction == nil, chainChoiceID == nil, textChoiceID == nil, textAttemptID == nil, !finishing, !retired, !deliveryCompleted, transition == nil, regionDrag == nil,
               lastState.width > 0, let source, let assembler else { return }
         if destination == .save && saveDestination == nil { return }
         if destination == .pin {
@@ -748,7 +924,7 @@ final class LiveScrollSessionController {
     }
 
     private func toggleAutomatic() {
-        guard chainTransaction == nil, chainChoiceID == nil, !deliveryCompleted, !finishing, !paused, !captureLimitReached,
+        guard chainTransaction == nil, chainChoiceID == nil, textChoiceID == nil, textAttemptID == nil, !deliveryCompleted, !finishing, !paused, !captureLimitReached,
               transition == nil, regionDrag == nil, !retired, let source else { return }
         if automatic {
             stopAutomatic("已停止自动滚动，可继续手动滚动")
@@ -877,7 +1053,7 @@ final class LiveScrollSessionController {
     /// Dragging moves only the visible proposal. Acquisition is drained once;
     /// an early mouse-up waits for that boundary before applying a new region.
     private func beginRegionDrag(id: UUID) -> Bool {
-        guard chainTransaction == nil, chainChoiceID == nil, transition == nil, regionDrag == nil, !finishing, !retired,
+        guard chainTransaction == nil, chainChoiceID == nil, textChoiceID == nil, textAttemptID == nil, transition == nil, regionDrag == nil, !finishing, !retired,
               !deliveryCompleted, !captureLimitReached, let source, screen != nil else { return false }
         let drag = RegionDrag(id: id, generation: generation, wasPaused: paused,
                               originalRegion: source.region)
@@ -984,7 +1160,7 @@ final class LiveScrollSessionController {
     }
 
     private func moveRegion() {
-        guard chainTransaction == nil, chainChoiceID == nil, transition == nil, regionDrag == nil, !finishing, !retired, !deliveryCompleted,
+        guard chainTransaction == nil, chainChoiceID == nil, textChoiceID == nil, textAttemptID == nil, transition == nil, regionDrag == nil, !finishing, !retired, !deliveryCompleted,
               !captureLimitReached, let source, let screen else { return }
         let wasPaused = paused
         let token = generation
@@ -1039,7 +1215,7 @@ final class LiveScrollSessionController {
     }
 
     private func changeAxis(_ next: ScrollAxis) {
-        guard chainTransaction == nil, chainChoiceID == nil, !retired, !deliveryCompleted, !captureLimitReached, regionDrag == nil, next != axis,
+        guard chainTransaction == nil, chainChoiceID == nil, textChoiceID == nil, textAttemptID == nil, !retired, !deliveryCompleted, !captureLimitReached, regionDrag == nil, next != axis,
               lastState.acceptedObservations <= 1, transition == nil, !finishing,
               let source, let original = assembler else { return }
         let token = generation
@@ -1079,7 +1255,7 @@ final class LiveScrollSessionController {
         }
     }
     private func openImporter() {
-        guard chainTransaction == nil, chainChoiceID == nil, !retired, !finishing, transition == nil, !deliveryCompleted, lastState.width == 0 else { return }
+        guard chainTransaction == nil, chainChoiceID == nil, textChoiceID == nil, textAttemptID == nil, !retired, !finishing, transition == nil, !deliveryCompleted, lastState.width == 0 else { return }
         Task { [weak self] in guard let self else { return }; await self.retire(); self.onImport() }
     }
     func cancel() { requestRetirement() }
@@ -1091,11 +1267,15 @@ final class LiveScrollSessionController {
         let operation = transition
         operation?.cancel(); sampling?.cancel(); mover?.cancel()
         if let runID = chainAttemptID { chainDependencies?.cancel(runID) }
+        if let runID = textAttemptID { textDependencies?.cancel(runID) }
         saveDestination?.cancel()
         // Invalidate and detach surfaces before observer callbacks can reenter.
         chainChoiceID = nil
         chainChoiceAlertForVerification?.cancel()
         chainChoiceAlertForVerification = nil
+        textChoiceID = nil
+        textChoiceAlertForVerification?.cancel()
+        textChoiceAlertForVerification = nil
         controls?.teardown(); controls = nil
         retirement = Task { [self] in
             try? await source?.stop()
@@ -1105,6 +1285,7 @@ final class LiveScrollSessionController {
             await operation?.value
             await assembler?.close(); assembler = nil; source = nil
             chainAttemptID = nil; chainTransaction = nil; chainTeardownWarning = nil
+            textAttemptID = nil; pendingTextDefinition = nil; stagedTextCapture = nil
             transition = nil; retirement = nil
             let close = onClose; onClose = nil
             close?()

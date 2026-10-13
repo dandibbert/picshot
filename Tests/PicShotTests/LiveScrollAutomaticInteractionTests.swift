@@ -436,7 +436,7 @@ final class LiveScrollAutomaticInteractionTests: XCTestCase {
                 let viewport = try fixture.thumbnail().viewportFraction
                 if useAuto { try fixture.startAuto(); fixture.clock.now += 0.5 }
                 try await fixture.deliver(LiveScrollRecoveryArticleFixture.image(origin: 328))
-                try fixture.assertRecoveryWarning("固定区域边界暂不明确，请缓慢滚动重试", after: accepted,
+                try fixture.assertRecoveryWarning("固定边界不明确，请慢滚重试", after: accepted,
                     preview: preview, viewport: viewport, automaticWasStarted: useAuto)
                 try await fixture.deliver(LiveScrollRecoveryArticleFixture.image(origin: 336))
                 XCTAssertEqual(fixture.session.stateForVerification.viewportOffset, 16)
@@ -469,7 +469,7 @@ final class LiveScrollAutomaticInteractionTests: XCTestCase {
                 let viewport = try fixture.thumbnail().viewportFraction
                 if useAuto { try fixture.startAuto(); fixture.clock.now += 0.5 }
                 try await fixture.deliver(Self.image(origin: 1, fixedLeading: 40))
-                try fixture.assertRecoveryWarning("固定区域不支持；可先完成，再重选正文", after: accepted,
+                try fixture.assertRecoveryWarning("固定区域不支持；先完成，再重选正文", after: accepted,
                     preview: preview, viewport: viewport, automaticWasStarted: useAuto)
                 // The next manual retry has a different cause; a stored Auto
                 // stop notice must not hide its current recovery advice.
@@ -809,7 +809,50 @@ final class LiveScrollAutomaticInteractionTests: XCTestCase {
             toolbar.autoButton.performClick(nil)
             XCTAssertFalse(session.snapshotForVerification.autoScrolling)
             XCTAssertEqual(input.events.count, automaticWasStarted ? 1 : 0)
+            // Save both appearances before stricter visible-text assertions can
+            // reject a warning, so clipped advice still has native diagnostics.
             try retainRecoveryWarningEvidence(message, automaticWasStarted: automaticWasStarted)
+            try assertRecoveryWarningVisibleText(expected)
+        }
+        private func assertRecoveryWarningVisibleText(_ expected: String) throws {
+            let window = try XCTUnwrap(session.controlsForVerification?.toolbarWindow)
+            let toolbar = try self.toolbar(), label = toolbar.statusLabel
+            let previousAppearance = window.appearance
+            defer {
+                window.appearance = previousAppearance
+                toolbar.needsDisplay = true; label.needsDisplay = true
+                window.displayIfNeeded()
+            }
+            // This check always runs, including ordinary swift test without an
+            // evidence directory. Tooltip/AX availability cannot satisfy it.
+            for (mode, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+                window.appearance = NSAppearance(named: appearance)
+                toolbar.needsDisplay = true; label.needsDisplay = true
+                let layout = try CaptureChainUIPreviewFixture.assertLayout(window: window,
+                    phase: "scroll-guidance-visible-text-" + mode)
+                XCTAssertEqual(toolbar.bounds.size, CGSize(width: 310, height: 82),
+                               "Recovery advice must fit the supported minimum toolbar in \(mode)")
+                XCTAssertEqual(label.bounds.size, CGSize(width: 275, height: 16))
+                XCTAssertEqual(label.font?.pointSize, 11)
+                XCTAssertEqual(label.stringValue, expected)
+                XCTAssertEqual(label.textColor, .systemOrange)
+                let cell = try XCTUnwrap(label.cell)
+                let untruncated = cell.cellSize
+                let atActualWidth = cell.cellSize(forBounds: CGRect(x: 0, y: 0,
+                    width: label.bounds.width, height: 10_000))
+                XCTAssertGreaterThan(untruncated.width, 0)
+                XCTAssertGreaterThan(untruncated.height, 0)
+                XCTAssertLessThanOrEqual(untruncated.width, label.bounds.width,
+                    "The complete recovery action must be visible in \(mode): \(expected)")
+                XCTAssertLessThanOrEqual(untruncated.height, label.bounds.height)
+                XCTAssertLessThanOrEqual(atActualWidth.height, label.bounds.height)
+                let controls = try XCTUnwrap(layout["controls"] as? [[String: Any]])
+                let status = try XCTUnwrap(controls.first { $0["id"] as? String == "scroll.live.status" })
+                XCTAssertEqual(status["fullFrameContained"] as? Bool, true)
+                XCTAssertEqual(status["textFits"] as? Bool, true,
+                    "Tooltip and accessibility text do not excuse clipped recovery advice in \(mode)")
+                XCTAssertEqual(status["intentionalTruncation"] as? Bool, false)
+            }
         }
         private func retainRecoveryWarningEvidence(_ message: String, automaticWasStarted: Bool) throws {
             guard let path = ProcessInfo.processInfo.environment["PICSHOT_SCROLL_GUIDANCE_EVIDENCE"],
@@ -817,8 +860,8 @@ final class LiveScrollAutomaticInteractionTests: XCTestCase {
             let reason: String
             switch message {
             case "暂未接上，可稍往回滚重试": reason = "lost-overlap"
-            case "固定区域边界暂不明确，请缓慢滚动重试": reason = "uncertain-boundary"
-            case "固定区域不支持；可先完成，再重选正文": reason = "unsupported-fixed-content"
+            case "固定边界不明确，请慢滚重试": reason = "uncertain-boundary"
+            case "固定区域不支持；先完成，再重选正文": reason = "unsupported-fixed-content"
             default: XCTFail("Unexpected recovery warning evidence case"); return
             }
             // Six fixed phases, two appearances each. Repeated manual retries

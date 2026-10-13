@@ -184,3 +184,8 @@ The original227 repeated-scroll cell is **not rerun or reclassified**: after two
 The delivery ZIP is losslessly recompressed for the attachment limit. Independent comparison verifies all 71 entry bytes/raw metadata, 47 data descriptors, six Mach-O signatures and the resource seal; CRC passes. The recompressed container was **not natively relaunched**: delivery relies on the actually tested original container and entry-by-entry equivalence, not a new installer run.
 
 Experimental ZIP and guide attachment handoff was accepted on **13 October 2026 at 03:47:27 UTC**. This records the format-specific handoff, not proof of user download or launch. Stable214 remains unchanged.
+
+
+## Prepared current-long-image integration candidate
+
+The separately scoped [current-long-image bridge](LiveScrollTextScripts.md) reuses the existing saved catalog, runner, local recognition and signed helper. It adds no language APIs, permissions, import route or runtime limits. A new explicitly confirmed invocation can consume an existing capture after safe drainage; it does not call region selection or recapture. Native execution and the actual installed witness remain pending, while build263 and later delivered packages retain their own earlier qualification scope.

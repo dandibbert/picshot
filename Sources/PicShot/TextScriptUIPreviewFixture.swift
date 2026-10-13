@@ -64,6 +64,23 @@ import PicShotTextScriptProcess
                 report["ownershipReleased"] = first.allReleased && second.allReleased
                 report["status"] = success["status"] as? String == "passed" && closed["status"] as? String == "passed" ? "passed" : "failed"
             } else { report["status"] = "failed" }
+            // Extend this existing installed script route only after both prior
+            // owners have drained. Launcher identity and its deadline stay the same.
+            if cleanupSafe, report["status"] as? String == "passed" {
+                let childDirectory = directory.appendingPathComponent("current-long-image", isDirectory: true)
+                do {
+                    let child = try await LiveScrollTextScriptDemoFixture.verify(evidenceDirectory: childDirectory)
+                    report["currentLongImage"] = child
+                    cleanupSafe = child["cleanupSafe"] as? Bool == true
+                    if child["status"] as? String != "passed" { report["status"] = "failed" }
+                } catch {
+                    let childURL = childDirectory.appendingPathComponent("live-scroll-text-script.json")
+                    report["currentLongImage"] = (try? Data(contentsOf: childURL)).flatMap {
+                        (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any]
+                    } ?? ["status": "failed", "failureCode": "current-long-image-evidence-missing"]
+                    report["status"] = "failed"; cleanupSafe = false
+                }
+            }
         } catch {
             report["status"] = "failed"; report["failureCode"] = fixedCode(error)
             cleanupSafe = false

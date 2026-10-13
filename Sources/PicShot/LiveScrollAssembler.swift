@@ -82,9 +82,9 @@ actor LiveScrollAssembler {
             case ScrollStitchError.noOverlap:
                 state.message = "暂未接上，可稍往回滚重试"
             case LiveScrollMatchError.uncertainContentBounds:
-                state.message = "固定区域边界暂不明确，请缓慢滚动重试"
+                state.message = "固定边界不明确，请慢滚重试"
             case LiveScrollMatchError.unsupportedFixedContent:
-                state.message = "固定区域不支持；可先完成，再重选正文"
+                state.message = "固定区域不支持；先完成，再重选正文"
             default:
                 state.message = error.localizedDescription
             }

@@ -70,11 +70,17 @@ import ImageIO
     var hasActiveCaptureChain: Bool { activeCaptureChain?.blocksCapture == true }
     var retainedChainBytes: Int { activeCaptureChain?.retainedBytes ?? 0 }
     private var retainedChainAndScrollBytes: Int {
-        let checkpoint = activeLiveScroll?.retainedChainCapture
-        // One object is shared by the checkpoint and its current runner. Once
-        // that runner retires the checkpoint alone continues reserving its bytes.
-        let shared = checkpoint.map { input in activeCaptureChain?.capture?.image === input.image } ?? false
-        return EditorAdmissionPolicy.sum([retainedChainBytes, shared ? 0 : (checkpoint?.retainedBytes ?? 0)])
+        // Image-chain checkpoints may survive an attempt. Text input is staged
+        // only during synchronous adoption, then its runner alone owns it.
+        // Both routes share the identical CGImage rather than another raster.
+        var images: [CGImage] = []
+        if let image = activeCaptureChain?.capture?.image { images.append(image) }
+        var bytes = [retainedChainBytes]
+        for input in [activeLiveScroll?.retainedChainCapture, activeLiveScroll?.stagedTextCapture].compactMap({ $0 }) {
+            guard !images.contains(where: { $0 === input.image }) else { continue }
+            images.append(input.image); bytes.append(input.retainedBytes)
+        }
+        return EditorAdmissionPolicy.sum(bytes)
     }
     private var retainedCaptureDraftBytes: Int {
         EditorAdmissionPolicy.sum([pendingCaptureRecovery.retainedBytes, retainedChainAndScrollBytes])
@@ -586,7 +592,7 @@ import ImageIO
         }
     }
 
-    private func productionTextScriptDependencies() throws -> CaptureChainRunner.TextDependencies {
+    private func productionTextScriptDependencies(preparedInputOnly: Bool = false) throws -> CaptureChainRunner.TextDependencies {
         guard smoke == nil, isolatedSaveWorkflow == nil else {
             throw PicShotError.message("隔离运行不允许读取屏幕、用户脚本或系统剪贴板。")
         }
@@ -594,6 +600,7 @@ import ImageIO
         let recognitionOptions = RecognitionOptions()
         let runtime = CaptureChainTextRuntime()
         return .init(capture: { [capture] in
+            guard !preparedInputOnly else { throw CaptureError.cancelled }
             try await Task.sleep(nanoseconds: 180_000_000)
             let result = try await capture.captureForEditing(mode: .region, options: captureOptions)
             try Task.checkCancellation()
@@ -1089,6 +1096,18 @@ import ImageIO
             }
             guard pins.livePinCount < PinSessionCoordinator.maximumLivePins else { throw PinSessionError.capacityExceeded }
         })
+        let textDependencies = LiveScrollTextDependencies(definitions: { [weak self] in
+            guard let self else { throw CaptureError.cancelled }
+            return try self.textScriptCatalog().definitions
+        }, start: { [weak self] sessionID, runID, definition, preparedCapture, terminal in
+            guard let self else { throw CaptureError.cancelled }
+            try self.startExistingScrollTextScript(sessionID: sessionID, runID: runID,
+                definition: definition, preparedCapture: preparedCapture, terminal: terminal)
+        }, cancel: { [weak self] runID in
+            guard let self, let runner = self.activeCaptureChain, runner.id == runID,
+                  self.activeCaptureChainScrollOwnerID == self.activeLiveScroll?.sessionID else { return }
+            runner.cancel()
+        })
         let controller = LiveScrollSessionController(onComplete: { [weak self] image in
             guard let self else { throw CaptureError.cancelled }
             try self.completeCapture(CapturedImage(image: image, presentation: nil), title: "长截图")
@@ -1097,13 +1116,36 @@ import ImageIO
             try self.pinLongCapture(image)
         }, saveDestination: LiveScrollSaveDelivery(presenter: saveWorkflows),
            resourceStorageParent: resourceStorageParent, automaticScrollPermission: automaticScrollPermission,
-           chainDependencies: chainDependencies)
+           chainDependencies: chainDependencies, textDependencies: textDependencies)
         controller.onClose = { [weak self, weak controller] in
             guard let self, self.activeLiveScroll === controller else { return }
             self.activeLiveScroll = nil
         }
         activeLiveScroll = controller
         return controller
+    }
+
+    /// The prepared raster is adopted synchronously. No image-bearing argument
+    /// or script source remains in an async coordinator frame awaiting Copy.
+    private func startExistingScrollTextScript(sessionID: UUID, runID: UUID,
+                                               definition: TextScriptDefinition, preparedCapture: ChainCapture,
+                                               terminal: @escaping (CaptureChainSnapshot) -> Void) throws {
+        guard !isTerminating, !busy, activeCaptureChain == nil,
+              let session = activeLiveScroll, session.sessionID == sessionID,
+              session.acceptsTextRun(runID: runID) else { throw CaptureError.busy }
+        let dependencies = try isolatedTextScriptDependencies?(definition)
+            ?? productionTextScriptDependencies(preparedInputOnly: true)
+        let runner = try CaptureChainRunner(textScript: definition, preparedCapture: preparedCapture,
+            dependencies: dependencies, id: runID)
+        let manager = try ensureCaptureChainManager()
+        // A dependency factory or native presentation callback may reenter.
+        guard !isTerminating, !busy, activeCaptureChain == nil,
+              activeLiveScroll === session, session.acceptsTextRun(runID: runID) else { throw CaptureError.busy }
+        manager.present()
+        guard activeLiveScroll === session, session.acceptsTextRun(runID: runID),
+              beginCaptureChain(runner, scrollOwnerID: sessionID, terminal: terminal) else {
+            throw CaptureError.busy
+        }
     }
 
     private func runExistingScrollImageChain(_ transaction: LiveScrollChainTransaction,

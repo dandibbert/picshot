@@ -17,26 +17,54 @@ final class LiveScrollChainChoiceController: NSObject, NSWindowDelegate {
     let selectedNameLabel: NSTextField?
     let outputOrderLabel: NSTextField?
 
-    private let definitions: [CaptureChainDefinition]
+    /// Presentation values only: this sheet owns neither output definitions nor
+    /// executable script source, and selection never starts either route.
+    private struct Row {
+        let name: String
+        let stepSummary: String
+    }
+    private let rows: [Row]
     private let picker: NSPopUpButton?
     private var completion: ((NSApplication.ModalResponse) -> Void)?
     private var presented = false
     private var ending = false
     private var settled = false
 
-    init(title: String, informativeText: String, definitions: [CaptureChainDefinition] = [],
+    convenience init(title: String, informativeText: String, definitions: [CaptureChainDefinition] = [],
          confirmTitle: String, confirmIdentifier: String, cancelIdentifier: String,
          consequenceWarning: String? = nil) {
-        self.definitions = definitions; self.detailText = informativeText
+        self.init(title: title, informativeText: informativeText,
+            rows: definitions.map { Row(name: $0.name, stepSummary: $0.outputs.map(\.title).joined(separator: " → ")) },
+            identifierPrefix: "scroll.live.imageChain", selectionLabel: "选择已保存的截图链",
+            confirmTitle: confirmTitle, confirmIdentifier: confirmIdentifier, cancelIdentifier: cancelIdentifier,
+            consequenceWarning: consequenceWarning)
+    }
+
+    convenience init(title: String = "使用文字脚本处理当前长图",
+         informativeText: String = "来源：本次长截图。识别后执行所选文字脚本，并复制处理后的文字。",
+         textScripts: [TextScriptDefinition], confirmTitle: String = "处理当前长图",
+         confirmIdentifier: String = "scroll.live.textScript.run",
+         cancelIdentifier: String = "scroll.live.textScript.choice.cancel", consequenceWarning: String? = nil) {
+        self.init(title: title, informativeText: informativeText,
+            rows: textScripts.map { Row(name: $0.name, stepSummary: "本机文字识别 → 文字脚本 → 复制文字") },
+            identifierPrefix: "scroll.live.textScript", selectionLabel: "选择已保存的文字脚本",
+            confirmTitle: confirmTitle, confirmIdentifier: confirmIdentifier, cancelIdentifier: cancelIdentifier,
+            consequenceWarning: consequenceWarning)
+    }
+
+    private init(title: String, informativeText: String, rows: [Row], identifierPrefix: String,
+         selectionLabel: String, confirmTitle: String, confirmIdentifier: String, cancelIdentifier: String,
+         consequenceWarning: String?) {
+        self.rows = rows; self.detailText = informativeText
         self.consequenceWarning = consequenceWarning
         self.informativeText = consequenceWarning.map { $0 + "\n\n" + informativeText } ?? informativeText
         let sheetWidth: CGFloat = 460, inset: CGFloat = 24, gap: CGFloat = 12
         let contentWidth = sheetWidth - 2 * inset
-        let titleField = Self.label(title, id: "scroll.live.imageChain.sheet.title", font: .systemFont(ofSize: 16, weight: .semibold))
+        let titleField = Self.label(title, id: identifierPrefix + ".sheet.title", font: .systemFont(ofSize: 16, weight: .semibold))
         // Consequences are always visible above the bounded receipt details.
         // This label never truncates, even when a receipt contains a long path.
         let warning = consequenceWarning.map {
-            Self.label($0, id: "scroll.live.imageChain.sheet.warning", font: .systemFont(ofSize: 13, weight: .medium))
+            Self.label($0, id: identifierPrefix + ".sheet.warning", font: .systemFont(ofSize: 13, weight: .medium))
         }
         warningLabel = warning
         let warningHeight = warning.map { field in
@@ -44,7 +72,7 @@ final class LiveScrollChainChoiceController: NSObject, NSWindowDelegate {
                 ceil(field.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: contentWidth, height: 10_000)).height ?? 0) + 4)
         } ?? 0
         let warningSectionHeight = warning == nil ? 0 : warningHeight + gap
-        let description = Self.label(informativeText, id: "scroll.live.imageChain.sheet.description")
+        let description = Self.label(informativeText, id: identifierPrefix + ".sheet.description")
         // Receipt details remain selectable and available in full via tooltip
         // and accessibility if an unusually long path exceeds this bounded view.
         let descriptionHeight = min(160, max(34, Self.textHeight(informativeText, font: description.font!, width: contentWidth)))
@@ -55,22 +83,22 @@ final class LiveScrollChainChoiceController: NSObject, NSWindowDelegate {
         let nameLabel: NSTextField?
         let orderLabel: NSTextField?
         let nameHeight: CGFloat
-        if definitions.isEmpty {
+        if rows.isEmpty {
             popup = nil; nameLabel = nil; orderLabel = nil; nameHeight = 0
         } else {
             let choice = NSPopUpButton(frame: .zero, pullsDown: false)
-            choice.identifier = .init("scroll.live.imageChain.choice")
+            choice.identifier = .init(identifierPrefix + ".choice")
             choice.font = .systemFont(ofSize: 13)
-            choice.setAccessibilityLabel("选择已保存的截图链")
-            for (index, definition) in definitions.enumerated() {
-                choice.addItem(withTitle: "\(index + 1). " + definition.name)
-                choice.lastItem?.toolTip = definition.name + " · " + definition.outputs.map(\.title).joined(separator: " → ")
+            choice.setAccessibilityLabel(selectionLabel)
+            for (index, row) in rows.enumerated() {
+                choice.addItem(withTitle: "\(index + 1). " + row.name)
+                choice.lastItem?.toolTip = row.name + " · " + row.stepSummary
             }
             choice.selectItem(at: 0)
             popup = choice
-            nameLabel = Self.label(definitions[0].name, id: "scroll.live.imageChain.choice.name", font: .systemFont(ofSize: 13, weight: .medium))
-            orderLabel = Self.label(definitions[0].outputs.map(\.title).joined(separator: " → "), id: "scroll.live.imageChain.choice.outputs")
-            nameHeight = max(20, definitions.map { Self.textHeight($0.name, font: nameLabel!.font!, width: contentWidth) }.max() ?? 20)
+            nameLabel = Self.label(rows[0].name, id: identifierPrefix + ".choice.name", font: .systemFont(ofSize: 13, weight: .medium))
+            orderLabel = Self.label(rows[0].stepSummary, id: identifierPrefix + ".choice.outputs")
+            nameHeight = max(20, rows.map { Self.textHeight($0.name, font: nameLabel!.font!, width: contentWidth) }.max() ?? 20)
         }
         picker = popup; accessoryView = popup
         selectedNameLabel = nameLabel; outputOrderLabel = orderLabel
@@ -90,7 +118,7 @@ final class LiveScrollChainChoiceController: NSObject, NSWindowDelegate {
         let panel = LiveScrollChainChoicePanel(contentRect: NSRect(x: 0, y: 0, width: sheetWidth, height: height),
             styleMask: [.titled], backing: .buffered, defer: false)
         panel.title = "PicShot"
-        panel.identifier = .init("scroll.live.imageChain.sheet")
+        panel.identifier = .init(identifierPrefix + ".sheet")
         panel.isReleasedWhenClosed = false; panel.hidesOnDeactivate = false
         panel.sharingType = .none
         panel.contentMinSize = NSSize(width: sheetWidth, height: height)
@@ -125,8 +153,8 @@ final class LiveScrollChainChoiceController: NSObject, NSWindowDelegate {
         panel.confirm = { [weak self] in self?.requestFinish(.alertFirstButtonReturn) }
         panel.cancel = { [weak self] in self?.requestFinish(.alertSecondButtonReturn) }
         popup?.nextKeyView = confirm; confirm.nextKeyView = cancel; cancel.nextKeyView = (popup as NSView?) ?? confirm
-        if let popup { Self.fitPopupTitles(popup, definitions: definitions) }
-        updateSelectedDefinition()
+        if let popup { Self.fitPopupTitles(popup, rows: rows) }
+        updateSelectedRow()
     }
 
     func beginSheetModal(for parent: NSWindow, completionHandler: @escaping (NSApplication.ModalResponse) -> Void) {
@@ -147,17 +175,16 @@ final class LiveScrollChainChoiceController: NSObject, NSWindowDelegate {
     @objc private func cancelPressed() { requestFinish(.alertSecondButtonReturn) }
     @objc private func selectionChanged() {
         guard !ending, !settled else { return }
-        updateSelectedDefinition()
+        updateSelectedRow()
     }
 
-    private func updateSelectedDefinition() {
-        guard let picker, definitions.indices.contains(picker.indexOfSelectedItem) else { return }
-        let selected = definitions[picker.indexOfSelectedItem]
-        let outputs = selected.outputs.map(\.title).joined(separator: " → ")
+    private func updateSelectedRow() {
+        guard let picker, rows.indices.contains(picker.indexOfSelectedItem) else { return }
+        let selected = rows[picker.indexOfSelectedItem]
         Self.update(selectedNameLabel, text: selected.name)
-        Self.update(outputOrderLabel, text: outputs)
-        picker.toolTip = selected.name + " · " + outputs
-        picker.setAccessibilityValue(selected.name + " · " + outputs)
+        Self.update(outputOrderLabel, text: selected.stepSummary)
+        picker.toolTip = selected.name + " · " + selected.stepSummary
+        picker.setAccessibilityValue(selected.name + " · " + selected.stepSummary)
     }
 
     private func requestFinish(_ response: NSApplication.ModalResponse) {
@@ -208,12 +235,12 @@ final class LiveScrollChainChoiceController: NSObject, NSWindowDelegate {
         return ceil(size.height) + 4
     }
 
-    private static func fitPopupTitles(_ popup: NSPopUpButton, definitions: [CaptureChainDefinition]) {
+    private static func fitPopupTitles(_ popup: NSPopUpButton, rows: [Row]) {
         // Measure the real menu-wide native cell after installing its frame.
         // Padding differs across AppKit cells; no fixed overhead is assumed.
         guard let font = popup.font else { return }
         let selectedIndex = popup.indexOfSelectedItem
-        var prefixes = definitions.map(\.name)
+        var prefixes = rows.map(\.name)
         let maximumReductions = prefixes.reduce(0) { $0 + $1.count }
         func titleWidth(at index: Int) -> CGFloat {
             let title = popup.item(at: index)?.title ?? ""

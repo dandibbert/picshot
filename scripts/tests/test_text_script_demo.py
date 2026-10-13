@@ -125,7 +125,7 @@ def report():
         sourceReference=dict(width=900,height=300,canonicalRGBAPixelSHA256=SOURCE_HASH),copyRetry=case(True),closeAfterFailure=case(False))
 
 
-def fixture(root):
+def fixture(root, include_current_long_image=True):
     # Our already-created TemporaryDirectory may use macOS /var aliases.
     # Construct every synthetic identity from its physical owned root.
     root = Path(root).resolve(strict=True)
@@ -152,6 +152,7 @@ def fixture(root):
     dump(evidence/'installed.json.launcher.json',dict(schemaVersion=1,status='exited',launcherExitCode=0,
         callbackReceived=True,createsNewApplicationInstance=True,ownedExitConfirmed=True,launchedIdentityMatches=True,
         textScriptDiagnosticOnly=True,captureChainDiagnosticOnly=False,liveScrollDiagnosticOnly=False,earlyWitnessOnly=False,
+        scope='LaunchServices-owned application lifecycle only; no child memory read and no application exit-code inference',
         processStartMemoryCaptured=False,timeoutSeconds=240,selectedAppPath=str(app),launchedAppPath=str(app),
         expectedExecutablePath=str(executable),launchedExecutablePath=str(executable),processIdentifier=100,elapsedSeconds=11.))
     (evidence/'text-script-source.png').write_bytes(SOURCE_PNG);(evidence/'text-script-copied.txt').write_text(C.EXPECTED)
@@ -179,6 +180,20 @@ def fixture(root):
             signedInfoPlist=C.HELPER_PLIST.copy(),
             linkedLibraries=['/System/Library/Frameworks/JavaScriptCore.framework/Versions/A/JavaScriptCore'],strictSignatureVerified=True),sources=sources)
     proof_path=root/'text-script-package-proof.json';dump(proof_path,proof)
+    if include_current_long_image:
+        # Lazy composition avoids fixture module import cycles. This is still
+        # portable mutation input, never installed macOS acceptance evidence.
+        child_inputs=load('composed_current_long_image_inputs',SCRIPTS/'tests/test_live_scroll_text_script_demo.py')
+        child_dir=evidence/'current-long-image';child_dir.mkdir()
+        child=child_inputs.fixture(child_dir)
+        for path in (evidence/'installed.json',evidence/'text-script-demo.json'):
+            value=json.loads(path.read_text());value['currentLongImage']=json.loads(child.read_text());dump(path,value)
+        present={row['path'] for row in proof['sources']}
+        for filename in sorted(child_inputs.C.REQUIRED_SOURCES-present):
+            path=source_root/filename;path.parent.mkdir(parents=True,exist_ok=True)
+            path.write_bytes(b'portable current long image source inventory input')
+            proof['sources'].append(dict(path=filename,bytes=path.stat().st_size,sha256=sha(path.read_bytes())))
+        dump(proof_path,proof)
     return evidence/'installed.json',proof_path,source_root
 
 
@@ -321,6 +336,23 @@ class FileBindingMutations(unittest.TestCase):
             result=C.validate(report_path,SOURCE,proof,source_root)
             self.assertEqual(result['status'],'passed');self.assertFalse(result['installerAcceptance'])
             self.assertFalse(result['original227MemoryAcceptance']);self.assertFalse(result['hardMemoryCapClaimed'])
+            self.assertTrue(result['currentLongImageTextScriptVerified'])
+            self.assertEqual(result['currentLongImage']['sourceIdentity'],result['sourceIdentity'])
+            self.assertTrue(result['currentLongImage']['installedIdentityBound'])
+            self.assertEqual(len(result['evidenceSHA256']),47)
+            self.assertEqual(len(result['currentLongImage']['evidenceSHA256']),25)
+
+    def test_current_long_image_is_required_and_matches_physical_child(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            report_path,proof,source_root=fixture(Path(temporary),include_current_long_image=False)
+            with self.assertRaisesRegex(ValueError,'enclosing text-script report'):
+                C.validate(report_path,SOURCE,proof,source_root)
+        with tempfile.TemporaryDirectory() as temporary:
+            report_path,proof,source_root=fixture(Path(temporary))
+            child=report_path.parent/'current-long-image/live-scroll-text-script.json'
+            value=json.loads(child.read_text());value['elapsedSeconds']=11.;dump(child,value)
+            with self.assertRaisesRegex(ValueError,'raw child'):
+                C.validate(report_path,SOURCE,proof,source_root)
 
     def test_owned_temporary_alias_resolves_but_checker_rejects_aliased_app_identity(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -339,8 +371,10 @@ class FileBindingMutations(unittest.TestCase):
                 C.validate(report_path,SOURCE,proof,source_root)
 
     def test_every_physical_evidence_file_is_required(self):
+        # Preserve the legacy root-file mutations. The child suite checks every
+        # child file; the composed tests above cover mandatory integration.
         with tempfile.TemporaryDirectory() as temporary:
-            report_path,proof,source_root=fixture(Path(temporary));files=list(report_path.parent.iterdir())
+            report_path,proof,source_root=fixture(Path(temporary));files=[path for path in report_path.parent.iterdir() if path.is_file()]
             for path in files:
                 original=path.read_bytes();path.unlink()
                 with self.subTest(file=path.name),self.assertRaises(ValueError):C.validate(report_path,SOURCE,proof,source_root)

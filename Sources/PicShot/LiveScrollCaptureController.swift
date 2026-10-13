@@ -17,6 +17,8 @@ struct LiveScrollCaptureSnapshot: Equatable {
     var canQuickSave = false
     var canPin = false
     var canApplyImageChain = false
+    var canApplyTextScript = false
+    var textScriptUnavailableReason = ""
     var chainTransactionID: UUID?
     var chainContinueTitle = ""
     var canContinueImageChain = false
@@ -45,6 +47,7 @@ struct LiveScrollCaptureActions {
     var quickSave: () -> Void = {}
     var pin: () -> Void = {}
     var applyImageChain: () -> Void = {}
+    var applyTextScript: () -> Void = {}
     var continueImageChain: (UUID) -> Void = { _ in }
     var replaceImageChain: (UUID) -> Void = { _ in }
     var abandonImageChain: (UUID) -> Void = { _ in }
@@ -371,6 +374,8 @@ final class LiveScrollCaptureController: NSObject, NSWindowDelegate, NSMenuDeleg
         let continuation = add(snapshot.chainContinueTitle, #selector(continueImageChainPressed(_:)), id: "imageChain.continue", enabled: snapshot.canContinueImageChain && !snapshot.busy)
         continuation.representedObject = snapshot.chainTransactionID?.uuidString
         continuation.isHidden = snapshot.chainContinueTitle.isEmpty
+        let textScript = add("使用文字脚本处理当前长图…", #selector(applyTextScriptPressed), id: "textScript", enabled: snapshot.canApplyTextScript && !snapshot.busy)
+        textScript.toolTip = snapshot.textScriptUnavailableReason.isEmpty ? "本机文字识别 → 已保存的文字脚本 → 复制文字；最多 3200 万像素" : snapshot.textScriptUnavailableReason
         let replacement = add("选择其他动作链重新处理…", #selector(replaceImageChainPressed(_:)), id: "imageChain.replace", enabled: snapshot.canReplaceImageChain && !snapshot.busy)
         replacement.representedObject = snapshot.chainTransactionID?.uuidString
         replacement.isHidden = snapshot.chainContinueTitle.isEmpty
@@ -437,6 +442,9 @@ final class LiveScrollCaptureController: NSObject, NSWindowDelegate, NSMenuDeleg
                 item.title = snapshot.pinUnavailableReason.isEmpty ? "贴到屏幕" : "贴到屏幕（超过 3200 万像素）"
                 item.toolTip = snapshot.pinUnavailableReason.isEmpty ? "保存为可恢复贴图；原尺寸最多 3200 万像素" : snapshot.pinUnavailableReason
             case "scroll.live.imageChain": item.isEnabled = snapshot.canApplyImageChain && !snapshot.busy
+            case "scroll.live.textScript":
+                item.isEnabled = snapshot.canApplyTextScript && !snapshot.busy
+                item.toolTip = snapshot.textScriptUnavailableReason.isEmpty ? "本机文字识别 → 已保存的文字脚本 → 复制文字；最多 3200 万像素" : snapshot.textScriptUnavailableReason
             case "scroll.live.imageChain.continue":
                 item.title = snapshot.chainContinueTitle; item.isHidden = snapshot.chainContinueTitle.isEmpty
                 item.isEnabled = snapshot.canContinueImageChain && !snapshot.busy
@@ -464,6 +472,7 @@ final class LiveScrollCaptureController: NSObject, NSWindowDelegate, NSMenuDeleg
     @objc private func quickSavePressed() { if !isRetired && snapshot.canQuickSave && !snapshot.busy { actions?.quickSave() } }
     @objc private func pinPressed() { if !isRetired && snapshot.canPin && !snapshot.busy { actions?.pin() } }
     @objc private func applyImageChainPressed() { if !isRetired && snapshot.canApplyImageChain && !snapshot.busy { actions?.applyImageChain() } }
+    @objc private func applyTextScriptPressed() { if !isRetired && snapshot.canApplyTextScript && !snapshot.busy { actions?.applyTextScript() } }
     private func transactionID(for item: NSMenuItem) -> UUID? {
         guard let raw = item.representedObject as? String, let id = UUID(uuidString: raw),
               id == snapshot.chainTransactionID else { return nil }

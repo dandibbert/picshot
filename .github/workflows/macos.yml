@@ -155,6 +155,12 @@ jobs:
         python3 -O -m unittest discover -s scripts/tests -p 'test_text_script_package.py'
         python3 -m unittest discover -s scripts/tests -p 'test_text_script_demo.py'
         python3 -O -m unittest discover -s scripts/tests -p 'test_text_script_demo.py'
+    - name: Check current long image text script evidence contracts
+      if: ${{ contains(github.event.head_commit.message || '', '[text-script-integration]') }}
+      timeout-minutes: 2
+      run: |
+        python3 -m unittest discover -s scripts/tests -p 'test_live_scroll_text_script_demo.py'
+        python3 -O -m unittest discover -s scripts/tests -p 'test_live_scroll_text_script_demo.py'
     - name: Check exact LiveScroll owned-XCTest diagnostic contracts
       if: ${{ contains(github.event.head_commit.message || '', '[live-scroll-xctest-diagnostic]') }}
       timeout-minutes: 2
@@ -348,8 +354,12 @@ jobs:
         from pathlib import Path
         spec=importlib.util.spec_from_file_location('native','scripts/native-test-shards.py')
         native=importlib.util.module_from_spec(spec);spec.loader.exec_module(native)
-        expected=json.loads(Path('scripts/text-script-integration-tests.json').read_text())
-        native.need(type(expected) is list and expected==sorted(set(expected)) and len(expected)>14, 'Text script inventory differs')
+        original=json.loads(Path('scripts/text-script-integration-tests.json').read_text())
+        bridge=json.loads(Path('scripts/scroll-text-script-additive-tests.json').read_text())
+        native.need(type(original) is list and original==sorted(set(original)) and len(original)==72, 'Original text script inventory differs')
+        native.need(type(bridge) is list and bridge==sorted(set(bridge)) and len(bridge)==41, 'Current-long-image text additions differ')
+        expected=sorted(original+[name for name in bridge if native.re.search('TextScript', name)])
+        native.need(expected==sorted(set(expected)) and len(expected)==99, 'Exact99 text script inventory differs')
         passed,skipped=native.case_results(Path('dist/text-script-tests.log').read_text(),expected)
         native.need(not skipped, 'Text script methods cannot be skipped')
         Path('dist/text-script-test-inventory.json').write_text(json.dumps({'passed':passed,'skipped':skipped,'count':len(expected)},indent=2)+'\n')
@@ -838,6 +848,12 @@ jobs:
             PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p "$pattern" -v
             PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p "$pattern" -v
           done
+      - name: Check current long image text script evidence contracts
+        id: scroll_text_script_contracts
+        timeout-minutes: 2
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_live_scroll_text_script_demo.py -v
+          PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p test_live_scroll_text_script_demo.py -v
       - name: Check explicit live scrolling testing classification
         id: scroll_testing_contract
         if: ${{ !contains(github.event.head_commit.message || '', '[experimental-scroll-interactions]') }}
@@ -1264,7 +1280,8 @@ jobs:
               text_spec = importlib.util.spec_from_file_location('text_qualification', 'scripts/check-experimental-scroll-interactions.py')
               text_qualification = importlib.util.module_from_spec(text_spec); text_spec.loader.exec_module(text_qualification)
               text_added = text_qualification.text_script_additions(inventory)
-              additions = set(added) | set(feedback_added) | set(chain_added) | text_added | save_added | scroll_added
+              scroll_text_added = text_qualification.scroll_text_script_additions(inventory)
+              additions = set(added) | set(feedback_added) | set(chain_added) | text_added | save_added | scroll_added | scroll_text_added
               original = [case for case in inventory if case not in additions]
               original_shards = [[case for case in shard['tests'] if case not in additions] for shard in plan['shards']]
               native.need(len(original) == 2047 and len({case.split('/')[0] for case in original}) == 232
@@ -1281,6 +1298,7 @@ jobs:
                   additiveSaveFeedbackMethods=len(feedback_added), additiveSaveFeedbackIDs=feedback_added,
                   additiveCaptureChainMethods=len(chain_added), additiveCaptureChainIDs=chain_added,
                   additiveTextScriptMethods=len(text_added), additiveTextScriptIDs=sorted(text_added),
+                  additiveScrollTextScriptMethods=len(scroll_text_added), additiveScrollTextScriptIDs=sorted(scroll_text_added),
                   additiveSavePayloadMethods=len(save_added), additiveSavePayloadIDs=sorted(save_added),
                   additiveExistingImageChainMethods=len(scroll_added), additiveExistingImageChainIDs=sorted(scroll_added),
                   discoverySHA256=digest(Path('dist/native-test-discovery.log')),

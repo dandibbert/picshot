@@ -28,6 +28,8 @@ Original227 repeated-scroll memory still fails its unchanged warm/late limits an
 
 Download the [original ARM build278 ZIP artifact](https://github.com/dandibbert/picshot/actions/runs/38417935484/artifacts/11830841553) while retained, currently through **27 October 2026 at 16:30:12 UTC**. Unzip the downloaded artifact, then unzip its `PicShot-0.22.0-macos-arm64.zip` to obtain the app. The original inner ZIP is 22,030,658 B, SHA-256 `f825a092b31176b49a81f92e76af6eb0f3c185e554fe022d27b0d0849650fd32`. It exceeds the conversation attachment cap, so the prior263 native ZIP stays unchanged. The artifact link was sent at 16:45:10 UTC on13 October 2026; the current guide is saved as version10. This records link/guide preparation, not proof of user download or launch. See [exact qualification and memory figures](docs/VERIFICATION.md#build278-experimental-current-long-capture-chain-qualification).
 
+The next source candidate adds [explicit saved text-script processing of the current long image](docs/LiveScrollTextScripts.md), while correcting two clipped automatic-recovery messages found in build279. Its new native/installed qualification is pending; build278 remains the delivered experimental package.
+
 ## Build
 
 ```sh

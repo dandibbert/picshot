@@ -468,6 +468,16 @@ import PicShotCore
         guard let snapshot = displayedSnapshot else {
             runStatus.stringValue = "尚未运行"; addReceiptLabel("每次只截取一次；重试只继续尚未完成的操作。", index: 0); return
         }
+        func textFailureMessage(_ failure: ChainTextFailure) -> String {
+            guard snapshot.isTextScript && snapshot.isExistingScrollImage else { return failure.message }
+            switch failure {
+            case .captureFailed: return "当前长图未准备完成，请重新运行。"
+            case .emptyRecognition: return "当前长图中未识别到文字，请取消后重新采集。"
+            case .truncatedRecognition: return "当前长图的识别结果被截断，请取消后采集更短的长图。"
+            case .oversizedRecognition: return "当前长图的识别文字超过限制，请取消后采集更短的长图。"
+            default: return failure.message
+            }
+        }
         let heading: String
         switch snapshot.status {
         case .idle: heading = "准备运行"
@@ -476,8 +486,8 @@ import PicShotCore
         case .preparingText(.recognize): heading = "正在识别文字…"
         case .preparingText(.transform): heading = "正在运行文字脚本…"
         case .preparingText(.copy): heading = "正在复制文字…"
-        case .textFailed(_, let failure): heading = "操作未完成：" + failure.message
-        case .waitingForTextCleanup(let failure): heading = failure.message + " 正在等待脚本进程清理…"
+        case .textFailed(_, let failure): heading = "操作未完成：" + textFailureMessage(failure)
+        case .waitingForTextCleanup(let failure): heading = textFailureMessage(failure) + " 正在等待脚本进程清理…"
         case .failed(_, let message): heading = "操作未完成：" + message
         case .captureFailed(let message): heading = "截图未完成：" + message + " 请重新运行。"
         case .cancelling: heading = "正在取消，等待当前操作结束…"
@@ -495,11 +505,17 @@ import PicShotCore
                 let detail: String
                 switch snapshot.status {
                 case .cancelled, .captureFailed: detail = "未复制文字"
-                case .textFailed(.copy, _): detail = "复制失败；重试只复制已准备好的文字，不会重新截图、识别或执行脚本。"
+                case .textFailed(.copy, _): detail = snapshot.isExistingScrollImage
+                    ? "复制失败；重试只复制已准备好的文字，不会重新识别当前长图或执行脚本。"
+                    : "复制失败；重试只复制已准备好的文字，不会重新截图、识别或执行脚本。"
                 case .textFailed(.transform, _): detail = "脚本失败；重试使用本次识别文字和已冻结的脚本。修改脚本前请先取消运行。"
-                case .textFailed(.recognize, _): detail = "识别失败；重试使用本次区域截图。"
-                case .waitingForTextCleanup: detail = "等待已启动脚本退出并清理管道，期间不能重试或开始新截图。"
-                default: detail = "区域截图 → 本机文字识别 → 文字脚本 → 复制"
+                case .textFailed(.recognize, _): detail = snapshot.isExistingScrollImage
+                    ? "识别失败；重试使用当前长图。" : "识别失败；重试使用本次区域截图。"
+                case .waitingForTextCleanup: detail = snapshot.isExistingScrollImage
+                    ? "等待已启动脚本退出并清理管道，期间不能重试或重新处理当前长图。"
+                    : "等待已启动脚本退出并清理管道，期间不能重试或开始新截图。"
+                default: detail = snapshot.isExistingScrollImage
+                    ? "当前长图 → 本机文字识别 → 文字脚本 → 复制文字" : "区域截图 → 本机文字识别 → 文字脚本 → 复制"
                 }
                 addReceiptLabel(detail, index: 0)
             }

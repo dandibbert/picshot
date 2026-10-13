@@ -41,7 +41,7 @@ FLAGS = dict(distribution='user-opted-experimental', userOptedExperimentalDistri
              publicRelease=False, mainMerged=False, realScreenCaptureAcceptance=False)
 # Every ordinary executable gate is required; only the original resource/classifier
 # branch and its testing-only distribution/budget are replaced in opt-in mode.
-REQUIRED_GATES = ('current_gate_01', 'current_gate_02', 'current_gate_03', 'current_gate_04', 'current_gate_05', 'current_gate_06', 'current_gate_07', 'current_gate_08', 'current_gate_09', 'current_gate_10', 'current_gate_11', 'current_gate_12', 'current_gate_13', 'current_gate_14', 'current_gate_15', 'current_gate_16', 'current_gate_17', 'current_gate_18', 'current_gate_19', 'current_gate_20', 'current_gate_21', 'current_gate_22', 'current_gate_23', 'current_gate_24', 'current_gate_25', 'experimental_scroll_contract', 'experimental_scroll_prepare', 'experimental_scroll_demo', 'experimental_scroll_receipt', 'text_script_contracts')
+REQUIRED_GATES = ('current_gate_01', 'current_gate_02', 'current_gate_03', 'current_gate_04', 'current_gate_05', 'current_gate_06', 'current_gate_07', 'current_gate_08', 'current_gate_09', 'current_gate_10', 'current_gate_11', 'current_gate_12', 'current_gate_13', 'current_gate_14', 'current_gate_15', 'current_gate_16', 'current_gate_17', 'current_gate_18', 'current_gate_19', 'current_gate_20', 'current_gate_21', 'current_gate_22', 'current_gate_23', 'current_gate_24', 'current_gate_25', 'experimental_scroll_contract', 'experimental_scroll_prepare', 'experimental_scroll_demo', 'experimental_scroll_receipt', 'text_script_contracts', 'scroll_text_script_contracts')
 
 
 def need(value, message):
@@ -595,8 +595,10 @@ SCROLL_RECOVERY_ADDITIONS = (
 
 PRESERVED278_NATIVE_INVENTORY = (2440, 272, 'd951f8ac10252217989e958a6e216662f9f700dfbfd8ce7546ce9df263d2e0fe')
 PRESERVED278_FOCUSED_INVENTORY = (1908, '93709150a83a2a3a8c09cc3f79cc9531651f570892ca581b51c7d890886c09ad')
-CURRENT_NATIVE_INVENTORY = (2446, 272, 'cb4c7562b61acbe85a76baab2cfad28c601de3b197eb97340c74f134075da8f0')
-CURRENT_FOCUSED_INVENTORY = (1914, 'a2b347f3dcdc7e010730706a8db5ba5886392dd41bb69daa7dd1f79c2eb05e6a')
+PRESERVED279_NATIVE_INVENTORY = (2446, 272, 'cb4c7562b61acbe85a76baab2cfad28c601de3b197eb97340c74f134075da8f0')
+PRESERVED279_FOCUSED_INVENTORY = (1914, 'a2b347f3dcdc7e010730706a8db5ba5886392dd41bb69daa7dd1f79c2eb05e6a')
+CURRENT_NATIVE_INVENTORY = (2487, 276, '9771421dd31e1bdd9617232d43d18dccfcc96caa81e3cebd714295d65d44eb06')
+CURRENT_FOCUSED_INVENTORY = (1955, '2ed09aa59fcb8240d7036a5117a761eb294f228825fcdf3e5061109b98e3eb66')
 SCROLL_GUIDANCE_ADDITIONS = (
     'PicShotTests.LiveScrollAssemblerTransactionTests/testLostOverlapAdvicePreservesLastGoodPixelsAndAnchorBothAxes',
     'PicShotTests.LiveScrollAssemblerTransactionTests/testUncertainPlainTextBoundaryAdvicePreservesSeedAndRecoversForwardBothAxes',
@@ -648,6 +650,38 @@ SCROLL_CHAIN_CHOICE_ADDITIONS = (
 )
 
 
+def scroll_text_script_manifest():
+    added = json.loads(read(Path('scripts/scroll-text-script-additive-tests.json')))
+    need(type(added) is list and len(added) == 41
+         and all(type(name) is str and re.fullmatch(
+             r'PicShotTests\.(?:TextScriptPreparedInputTests|LiveScrollText(?:ScriptSession|Choice|AppIntegration)Tests)/test\w+', name)
+             for name in added)
+         and added == sorted(set(added))
+         and hashlib.sha256(('\n'.join(added)+'\n').encode()).hexdigest()
+         == '5fc78217c07b1194517d98a9284215afe8b29eac035eb1ef473e9f2138b278c6',
+         'Explicit41 scrolling text script IDs differ')
+    return set(added)
+
+
+def scroll_text_script_additions(inventory):
+    """Remove only the explicit41 additions before binding delivered279 exactly."""
+    need(type(inventory) is list and all(type(name) is str for name in inventory)
+         and inventory == sorted(set(inventory)), 'Native discovery must contain unique sorted IDs')
+    added = scroll_text_script_manifest()
+    need(added.issubset(inventory), 'Explicit280 scrolling text script methods missing or renamed')
+    classes = {name.split('/')[0] for name in added}
+    need(sorted(added) == [name for name in inventory if name.split('/')[0] in classes],
+         'Scrolling text script class has an unrecorded method')
+    preserved = [name for name in inventory if name not in added]
+    need((len(preserved), len({name.split('/')[0] for name in preserved}),
+          hashlib.sha256(('\n'.join(preserved)+'\n').encode()).hexdigest()) == PRESERVED279_NATIVE_INVENTORY,
+         'Preserved279 native IDs changed')
+    need((len(inventory), len({name.split('/')[0] for name in inventory}),
+          hashlib.sha256(('\n'.join(inventory)+'\n').encode()).hexdigest()) == CURRENT_NATIVE_INVENTORY,
+         'Current native discovery differs from the exact additive scrolling text union')
+    return added
+
+
 def scroll_guidance_additions(inventory):
     """The six guidance methods preserve the exact delivered278 native union."""
     need(type(inventory) is list and all(type(name) is str for name in inventory)
@@ -664,12 +698,18 @@ def scroll_guidance_additions(inventory):
 def check_focused_inventory(inventory):
     need(type(inventory) is list and all(type(name) is str for name in inventory)
          and inventory == sorted(set(inventory)), 'Focused discovery must contain unique sorted IDs')
+    current_inventory = inventory
+    text_bridge = scroll_text_script_manifest()
+    need(text_bridge.issubset(inventory), 'All41 scrolling text script methods must be selected in both plans')
+    inventory = [name for name in inventory if name not in text_bridge]
+    need((len(inventory), hashlib.sha256(('\n'.join(inventory)+'\n').encode()).hexdigest())
+         == PRESERVED279_FOCUSED_INVENTORY, 'Preserved279 focused native IDs changed')
     guidance = set(SCROLL_GUIDANCE_ADDITIONS)
     need(guidance.issubset(inventory), 'All6 guidance methods must be selected in both plans')
     preserved = [name for name in inventory if name not in guidance]
     need((len(preserved), hashlib.sha256(('\n'.join(preserved)+'\n').encode()).hexdigest())
          == PRESERVED278_FOCUSED_INVENTORY, 'Preserved278 focused native IDs changed')
-    need((len(inventory), hashlib.sha256(('\n'.join(inventory)+'\n').encode()).hexdigest())
+    need((len(current_inventory), hashlib.sha256(('\n'.join(current_inventory)+'\n').encode()).hexdigest())
          == CURRENT_FOCUSED_INVENTORY, 'Current focused native inventory changed')
 
 
@@ -686,6 +726,8 @@ def scroll_chain_additions(inventory):
 def text_script_additions(inventory):
     """Bind exact266 additions while preserving all265/263 and accepted248 IDs."""
     current_inventory = inventory
+    text_bridge_ids = scroll_text_script_additions(inventory)
+    inventory = [name for name in inventory if name not in text_bridge_ids]
     guidance_ids = scroll_guidance_additions(inventory)
     preserved278 = [name for name in inventory if name not in guidance_ids]
     inventory = preserved278
@@ -722,7 +764,7 @@ def text_script_additions(inventory):
          == '5c7d51efe5e1fc16a1d3dd5c5d5fc4ae35948893fc7e5feb92aaf7c83c9f5539', 'Current native discovery differs from the exact2407 ID union')
     need((len(current_inventory), len({name.split('/')[0] for name in current_inventory}),
           hashlib.sha256(('\n'.join(current_inventory)+'\n').encode()).hexdigest()) == CURRENT_NATIVE_INVENTORY,
-         'Current native discovery differs from the exact additive guidance union')
+         'Current native discovery differs from the exact additive scrolling text union')
     preserved269 = [name for name in preserved278 if name not in SCROLL_CHAIN_CHOICE_ADDITIONS]
     need(len(preserved269) == 2436 and hashlib.sha256(('\n'.join(preserved269)+'\n').encode()).hexdigest()
          == '38a94e9f556705bb7b34260cca519f70d8058e59ef4f12b0701cf1a65ad79d07',
@@ -730,13 +772,28 @@ def text_script_additions(inventory):
     return set(added)
 
 
+TEXT_SCRIPT_CHILD_EVIDENCE_FILES = {'live-scroll-text-script.json', 'scroll-text-script-owned-numbered.png',
+    'scroll-text-script-accepted.png', 'scroll-text-script-source.js', 'scroll-text-script-ocr.txt',
+    'scroll-text-script-copied.txt', 'scroll-text-script-catalog.json', 'scroll-text-script-case.json',
+    'scroll-text-script-actions.json'} | {
+    'scroll-text-script-' + phase + '-' + mode + suffix
+    for phase in ('choice', 'failure', 'result') for mode in ('light', 'dark')
+    for suffix in ('.png', '-layout.json')}
+TEXT_SCRIPT_CHILD_RECEIPT_FLAGS = dict(schemaVersion=1, status='passed',
+    scope='Installed current-long-image/saved-script/Apple-Vision/signed-helper/checked-private-Copy witness over generated acquisition',
+    installerAcceptance=False, realScreenCaptureAcceptance=False, original227MemoryAcceptance=False,
+    hardMemoryCapClaimed=False, fullMemoryQualification=False, sourceAndFinalPackageBound=True,
+    installedIdentityBound=True, exactGeneratedTextOutputVerified=True, sameFinalFrontierPixelsVerified=True,
+    onceOnlyOCRAndHelperVerified=True, checkedCopyRetryVerified=True, zeroAcquisitionVerified=True,
+    nativeControlGeometryVerified=True)
 TEXT_SCRIPT_EVIDENCE_FILES = {'text-script-installed.json', 'text-script-installed.json.launcher.json',
     'text-script-demo.json', 'package-proof', 'text-script-source.png', 'text-script-copied.txt',
     'text-script-retry-catalog.json', 'text-script-close-catalog.json',
     'text-script-retry-case.json', 'text-script-close-case.json'} | {
     phase + '-' + mode + suffix for phase in ('text-script-editor', 'text-script-retry-failure',
                                              'text-script-result', 'text-script-close-failure')
-    for mode in ('light', 'dark') for suffix in ('.png', '-layout.json')}
+    for mode in ('light', 'dark') for suffix in ('.png', '-layout.json')} | {
+    'current-long-image/' + name for name in TEXT_SCRIPT_CHILD_EVIDENCE_FILES}
 
 
 def installed_text_scripts(source, formats):
@@ -777,6 +834,7 @@ def installed_text_scripts(source, formats):
             realScreenCaptureAcceptance=False, original227MemoryAcceptance=False, hardMemoryCapClaimed=False,
             exactGeneratedTextOutputVerified=True, onceOnlyCaptureOCRTransformVerified=True,
             checkedCopyRetryAndCloseVerified=True, sourceAndFinalPackageBound=True,
+            currentLongImageTextScriptVerified=True,
             scope='Installed saved editor and region/OCR/script/Copy owner; generated acquisition, actual Apple Vision and signed production helper, checked private clipboard'),
             extension + ' installed text receipt')
         identity = dict(appPath=app, helperSHA256=helper['sha256'], helperCDHash=helper['cdHash'],
@@ -785,6 +843,26 @@ def installed_text_scripts(source, formats):
         need(read(root/'package-proof.json') == read(proof_path), 'Installed helper proof differs from original signed package')
         hashes = receipt.get('evidenceSHA256')
         need(type(hashes) is dict and set(hashes) == TEXT_SCRIPT_EVIDENCE_FILES, 'Complete fixed text evidence set required')
+        child = receipt.get('currentLongImage')
+        fields(child, dict(sourceCommit=source['sourceCommit'], **TEXT_SCRIPT_CHILD_RECEIPT_FLAGS),
+               extension + ' current-long-image receipt')
+        need(set(child) == set(TEXT_SCRIPT_CHILD_RECEIPT_FLAGS) | {'sourceCommit', 'sourceIdentity', 'evidenceSHA256'},
+             'Current-long-image receipt schema differs')
+        fields(child.get('sourceIdentity'), identity, extension + ' current-long-image source identity')
+        need(set(child['sourceIdentity']) == set(identity), 'Current-long-image source identity schema differs')
+        expected_child = {'current-long-image/' + name for name in TEXT_SCRIPT_CHILD_EVIDENCE_FILES} | {
+            'text-script-installed.json', 'text-script-installed.json.launcher.json', 'text-script-demo.json', 'package-proof'}
+        child_hashes = child.get('evidenceSHA256')
+        need(type(child_hashes) is dict and set(child_hashes) == expected_child,
+             'Complete fixed current-long-image evidence set required')
+        need(all(type(value) is str and value == hashes[name] for name, value in child_hashes.items()),
+             'Current-long-image receipt evidence differs from installed text receipt')
+        child_root = root/'current-long-image'
+        need(child_root.is_dir() and not child_root.is_symlink(), 'Missing/symlinked current-long-image directory')
+        children = list(child_root.iterdir())
+        need({path.name for path in children} == TEXT_SCRIPT_CHILD_EVIDENCE_FILES
+             and all(path.is_file() and not path.is_symlink() and path.stat().st_nlink == 1 for path in children),
+             'Unexpected/unsafe current-long-image evidence')
         total = 0
         for name, expected in hashes.items():
             need(type(expected) is str and re.fullmatch('[0-9a-f]{64}', expected), 'Invalid retained text digest')
@@ -792,6 +870,14 @@ def installed_text_scripts(source, formats):
             total += len(data)
             need(total <= 96*1024**2, 'Retained text evidence exceeds96MiB')
             need(hashlib.sha256(data).hexdigest() == expected, 'Installed text evidence changed: '+name)
+        retained_child = load(child_root/'live-scroll-text-script.json')
+        fields(retained_child, dict(sourceCommit=source['sourceCommit']), 'retained current-long-image source')
+        for outer_name in ('text-script-installed.json', 'text-script-demo.json'):
+            outer = load(root/outer_name)
+            fields(outer, dict(sourceCommit=source['sourceCommit']), 'retained text-script source')
+            need(json.dumps(outer.get('currentLongImage'), sort_keys=True, separators=(',', ':')) ==
+                 json.dumps(retained_child, sort_keys=True, separators=(',', ':')),
+                 'Retained raw child and enclosing currentLongImage differ')
         command_hashes = {}
         for stem, timeout, command in (
             ('proof', 180, ['python3', 'scripts/verify-text-script-package.py', '--app', app,
@@ -826,19 +912,32 @@ def archive_text_scripts():
         if not root.exists():
             continue
         need(root.is_dir() and not root.is_symlink(), 'Unsafe installed text evidence directory')
-        files = sorted(root.iterdir())
-        need(files and len(files) <= 48, 'Installed text evidence file-count bound')
+        files = []
+        for path in sorted(root.iterdir()):
+            need(not path.is_symlink(), 'Symlinked installed text evidence')
+            if path.is_dir():
+                need(path.name == 'current-long-image', 'Unexpected nested installed text evidence')
+                children = sorted(path.iterdir())
+                need(all(child.name in TEXT_SCRIPT_CHILD_EVIDENCE_FILES for child in children),
+                     'Unexpected current-long-image archive evidence')
+                files.extend(children)
+            else:
+                files.append(path)
+        need(files and len(files) <= 64, 'Installed text evidence file-count bound')
         total = 0
         for path in files:
-            need(path.is_file() and not path.is_symlink() and path.suffix in ('.json', '.png', '.log', '.txt')
-                 and path.stat().st_size <= 16*1024**2, 'Unsafe/oversized installed text evidence file')
+            need(path.is_file() and not path.is_symlink()
+                 and (path.suffix in ('.json', '.png', '.log', '.txt')
+                      or path.parent == root/'current-long-image' and path.name == 'scroll-text-script-source.js')
+                 and path.stat().st_nlink == 1 and path.stat().st_size <= 16*1024**2, 'Unsafe/oversized installed text evidence file')
             total += path.stat().st_size
         need(total <= 96*1024**2, 'Installed text evidence exceeds96MiB')
         for identity in (Path('dist/text-script-package-proof.json'), Path('dist/evidence/installed-format-identity.json'),
                          ROOT/'source-identity.json', ROOT/'experimental-distribution.json'):
             if identity.exists():
-                read(identity, 1024**2)
+                total += len(read(identity, 1024**2))
                 files.append(identity)
+        need(len(files) <= 64 and total <= 96*1024**2, 'Installed text archive aggregate bound')
         output.mkdir(parents=True, exist_ok=True)
         target, partial = output/(extension+'.zip'), output/(extension+'.partial.zip')
         need(not target.exists() and not target.is_symlink() and not partial.exists() and not partial.is_symlink(),
@@ -1065,7 +1164,10 @@ def final():
             ('focused', 'focused-tests-plan.json', 'focused-test-shards', 'critical-tests-report.json')):
         plan = native.checked_plan(Path('dist')/planfile, source['sourceCommit'])
         text_ids = text_script_additions(plan['discoveredTests'])
-        guidance_ids = scroll_guidance_additions(plan['discoveredTests'])
+        text_bridge_ids = scroll_text_script_additions(plan['discoveredTests'])
+        need(text_bridge_ids <= set(plan['selectedTests']), 'All41 scrolling text script methods must be selected in both plans')
+        preserved279 = [name for name in plan['discoveredTests'] if name not in text_bridge_ids]
+        guidance_ids = scroll_guidance_additions(preserved279)
         need(guidance_ids <= set(plan['selectedTests']), 'All6 guidance methods must be selected in both plans')
         scroll_ids = scroll_chain_additions(plan['discoveredTests'])
         need(scroll_ids <= set(plan['selectedTests']), 'All existing-image chain methods must be selected in both plans')
@@ -1077,10 +1179,10 @@ def final():
         if kind == 'full':
             live = json.loads(read(Path('scripts/live-scroll-additive-tests.json')))
             need(live == [name for name in plan['discoveredTests'] if '.LiveScroll' in name]
-                 and len(live) == 195, 'All preserved and new live methods required')
+                 and len(live) == 224, 'All preserved and new live methods required')
             feedback = feedback_additions(plan['discoveredTests'])
             chains = chain_additions(plan['discoveredTests'])
-            stable = [name for name in plan['discoveredTests'] if name not in set(live) | feedback | chains | text_ids | payload_ids | scroll_ids]
+            stable = [name for name in plan['discoveredTests'] if name not in set(live) | feedback | chains | text_ids | payload_ids | scroll_ids | text_bridge_ids]
             need(len(stable) == 2047 and hashlib.sha256(('\n'.join(stable)+'\n').encode()).hexdigest()
                  == '926ac5674df90163b949fe461f0d4589ef72c8fc3215fa00b927564aae57cb44', 'Stable214 inventory changed')
             need(plan['selectedTests'] == plan['discoveredTests'], 'Full suite narrowed')
@@ -1088,6 +1190,7 @@ def final():
             check_focused_inventory(plan['selectedTests'])
         aggregate = native.aggregate(plan, Path('dist')/directory)
         need(aggregate == load(Path('dist')/reportfile), 'Native aggregate differs: ' + kind)
+        need(not (text_bridge_ids & set(aggregate['skippedTests'])), 'Scrolling text script methods must pass without skips: ' + kind)
         need(not (text_ids & set(aggregate['skippedTests'])), 'Script methods must pass without skips: ' + kind)
         need(not (recovery_ids & set(aggregate['skippedTests'])), 'Recovery methods must pass without skips: ' + kind)
         need(not (guidance_ids & set(aggregate['skippedTests'])), 'Guidance methods must pass without skips: ' + kind)
@@ -1104,6 +1207,7 @@ def final():
                   currentSourceInstalledTextScriptFormats=text_receipts,
                   currentSourceInstalledExistingImageChainFormats=scroll_chain_receipts,
                   currentSourceTextScriptMethods=sorted(text_ids),
+                  currentSourceScrollTextScriptMethods=sorted(text_bridge_ids),
                   currentSourceScrollGuidanceMethods=sorted(guidance_ids),
                   currentSourceExistingImageChainMethods=sorted(scroll_ids),
                   requiresUserRealCaptureValidation=True, deliveryRepacked=False)

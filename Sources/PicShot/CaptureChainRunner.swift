@@ -200,11 +200,21 @@ final class CaptureChainRunner {
         frozenSource = textScript.source
     }
 
+    /// Recognize an existing immutable raster through the same text pipeline;
+    /// this route never resolves a source or acquires another screenshot.
+    convenience init(textScript: TextScriptDefinition, preparedCapture: ChainCapture,
+                     dependencies: TextDependencies, id: UUID = UUID()) throws {
+        try self.init(textScript: textScript, dependencies: dependencies, id: id)
+        capture = preparedCapture; capturedAt = preparedCapture.capturedAt
+        isExistingScrollImage = true
+    }
+
     @discardableResult func start() -> Bool {
         guard status == .idle, task == nil, dependencies != nil || textDependencies != nil else { return false }
         if isExistingScrollImage {
             guard capture != nil else { return false }
-            if receipts.count == definition.outputs.count { retire(.completed) }
+            if isTextScript { beginAttempt(status: .preparingText(.recognize)) }
+            else if receipts.count == definition.outputs.count { retire(.completed) }
             else { beginAttempt(status: .running(index: receipts.count)) }
         } else { beginAttempt(status: .capturing) }
         return true
