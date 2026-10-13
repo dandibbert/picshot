@@ -126,6 +126,9 @@ def report():
 
 
 def fixture(root):
+    # Our already-created TemporaryDirectory may use macOS /var aliases.
+    # Construct every synthetic identity from its physical owned root.
+    root = Path(root).resolve(strict=True)
     app=root/'PicShot.app'; executable=app/'Contents/MacOS/PicShot'; helper=app/'Contents/Helpers/PicShotTextScriptHelper'
     executable.parent.mkdir(parents=True); helper.parent.mkdir(parents=True)
     executable.write_bytes(b'portable-app-placeholder-not-native-proof');helper.write_bytes(b'portable-helper-placeholder-not-native-proof')
@@ -288,6 +291,22 @@ class FileBindingMutations(unittest.TestCase):
             result=C.validate(report_path,SOURCE,proof,source_root)
             self.assertEqual(result['status'],'passed');self.assertFalse(result['installerAcceptance'])
             self.assertFalse(result['original227MemoryAcceptance']);self.assertFalse(result['hardMemoryCapClaimed'])
+
+    def test_owned_temporary_alias_resolves_but_checker_rejects_aliased_app_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary).resolve(strict=True)
+            physical=root/'physical';physical.mkdir()
+            alias=root/'temporary-alias';alias.symlink_to(physical,target_is_directory=True)
+            report_path,proof,source_root=fixture(alias)
+            for path in (report_path,proof,source_root):
+                self.assertEqual(path,path.resolve(strict=True))
+                self.assertTrue(path.is_relative_to(physical))
+            self.assertEqual(C.validate(report_path,SOURCE,proof,source_root)['status'],'passed')
+            smoke=json.loads(report_path.read_text())
+            smoke['bundlePath']=str(alias/'PicShot.app')
+            dump(report_path,smoke)
+            with self.assertRaisesRegex(ValueError,'wrong or symlinked app'):
+                C.validate(report_path,SOURCE,proof,source_root)
 
     def test_every_physical_evidence_file_is_required(self):
         with tempfile.TemporaryDirectory() as temporary:
