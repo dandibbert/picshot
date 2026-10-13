@@ -166,9 +166,27 @@ class InstalledTextScriptQualificationTests(unittest.TestCase):
     def test_inventory_rejects_counts_without_exact_baseline_union(self):
         added=json.loads((ROOT/'scripts/text-script-integration-tests.json').read_text())
         payload=json.loads((ROOT/'scripts/save-payload-native-tests.json').read_text())
-        fake=sorted(added+list(C.SCROLL_RECOVERY_ADDITIONS)+payload['focused']+['PicShotTests.UnrelatedTests/test'+str(i) for i in range(2303-68)])
+        scroll=list(C.SCROLL_CHAIN_ADDITIONS)
+        preserved_payload=set(payload['focused'])-set(payload['added'])
+        fake=sorted(added+list(C.SCROLL_RECOVERY_ADDITIONS)+scroll+payload['focused']+
+                    ['PicShotTests.UnrelatedTests/test'+str(i) for i in range(2303-len(preserved_payload))])
+        self.assertEqual(len(fake),C.CURRENT_NATIVE_INVENTORY[0])
+        self.assertEqual(fake,sorted(set(fake)))
+        self.assertEqual(len(set(fake)-set(added)-set(C.SCROLL_RECOVERY_ADDITIONS)-set(scroll)-set(payload['added'])),2303)
         with patch.object(C,'read',side_effect=lambda path: (ROOT/path).read_bytes()),self.assertRaisesRegex(ValueError,'Accepted248'):
             C.text_script_additions(fake)
+        for method in scroll:
+            renamed_class='PicShotTests.UnrecordedScrollChainTests/'+method.split('/')[1]
+            for label,changed in (
+                    ('missing',[name for name in fake if name != method]),
+                    ('renamed',sorted(name+'Renamed' if name == method else name for name in fake)),
+                    ('new class',sorted(renamed_class if name == method else name for name in fake))):
+                with self.subTest(method=method,mutation=label),self.assertRaisesRegex(ValueError,'Existing-image chain additions are missing or renamed'):
+                    C.text_script_additions(changed)
+        for cls in sorted({name.split('/')[0] for name in scroll}):
+            changed=sorted(fake+[cls+'/testUnrecordedMethod'])
+            with self.subTest(unrecorded_class=cls),self.assertRaisesRegex(ValueError,'Existing-image chain class has an unrecorded method'):
+                C.text_script_additions(changed)
         recovery=C.SCROLL_RECOVERY_ADDITIONS[0]
         for changed in ([name for name in fake if name != recovery],
                         sorted(name+'Renamed' if name == recovery else name for name in fake)):
@@ -178,6 +196,23 @@ class InstalledTextScriptQualificationTests(unittest.TestCase):
                     sorted(added[:-1]+['PicShotTests.TextScriptSyntheticTests/testForgedMethod'])):
             with patch.object(C,'read',side_effect=lambda path: json.dumps(bad).encode() if path.name=='text-script-integration-tests.json' else (ROOT/path).read_bytes()),self.assertRaises(ValueError):
                 C.text_script_additions(fake)
+
+    def test_inventory_rejects_count_and_class_preserving_baseline_rename(self):
+        # Reuse the portable source census; native discovery remains a separate CI gate.
+        spec=importlib.util.spec_from_file_location('native_inventory_fixture',ROOT/'scripts/tests/test_native_test_shards.py')
+        native=importlib.util.module_from_spec(spec);spec.loader.exec_module(native)
+        inventory=native.NativeWorkflowRoutingTests().current_source_inventory()
+        added=json.loads((ROOT/'scripts/text-script-integration-tests.json').read_text())
+        excluded=set(added)|set(C.SCROLL_RECOVERY_ADDITIONS)|set(C.SCROLL_CHAIN_ADDITIONS)
+        baseline=next(name for name in inventory if name not in excluded and name.split('/')[0] not in C.SAVE_PAYLOAD_CLASSES)
+        changed=sorted(name+'Renamed' if name == baseline else name for name in inventory)
+        self.assertEqual(len(changed),len(inventory))
+        self.assertEqual(len(set(changed)),len(inventory))
+        self.assertEqual({name.split('/')[0] for name in changed},{name.split('/')[0] for name in inventory})
+        with patch.object(C,'read',side_effect=lambda path: (ROOT/path).read_bytes()):
+            self.assertEqual(C.text_script_additions(inventory),set(added))
+            with self.assertRaisesRegex(ValueError,'Accepted248 native IDs changed'):
+                C.text_script_additions(changed)
 
 
 if __name__=='__main__':
