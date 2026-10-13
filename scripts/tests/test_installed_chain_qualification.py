@@ -187,7 +187,7 @@ class InstalledChainTests(unittest.TestCase):
                     'stableInstallerReplacement','disputedResourceCellRerun','scrollingResourceClassifierRun','realScreenCaptureAcceptance'):
             self.assertIs(C.FLAGS[key],False)
         self.assertEqual(set(C.REQUIRED_GATES), {f'current_gate_{n:02d}' for n in range(1,26)} |
-                         {'experimental_scroll_contract','experimental_scroll_prepare','experimental_scroll_demo','experimental_scroll_receipt','text_script_contracts'})
+                         {'experimental_scroll_contract','experimental_scroll_prepare','experimental_scroll_demo','experimental_scroll_receipt','text_script_contracts','scroll_text_script_contracts'})
         steps={name:dict(outcome='success',conclusion='success') for name in C.REQUIRED_GATES}
         steps.update({name:dict(outcome='skipped',conclusion='skipped') for name in
             ('live_scroll_resource','scroll_testing_classification','scroll_testing_contract')})
