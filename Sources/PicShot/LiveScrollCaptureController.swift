@@ -16,6 +16,12 @@ struct LiveScrollCaptureSnapshot: Equatable {
     var canCopy = false
     var canQuickSave = false
     var canPin = false
+    var canApplyImageChain = false
+    var chainTransactionID: UUID?
+    var chainContinueTitle = ""
+    var canContinueImageChain = false
+    var canReplaceImageChain = false
+    var canAbandonImageChain = false
     var pinUnavailableReason = ""
     var canPause = true
     var showsAutoScroll = true
@@ -38,6 +44,10 @@ struct LiveScrollCaptureActions {
     var copy: () -> Void = {}
     var quickSave: () -> Void = {}
     var pin: () -> Void = {}
+    var applyImageChain: () -> Void = {}
+    var continueImageChain: (UUID) -> Void = { _ in }
+    var replaceImageChain: (UUID) -> Void = { _ in }
+    var abandonImageChain: (UUID) -> Void = { _ in }
     var pauseResume: () -> Void = {}
     var autoScroll: () -> Void = {}
     var changeAxis: (ScrollAxis) -> Void = { _ in }
@@ -56,7 +66,7 @@ struct LiveScrollCaptureActions {
 /// Small native surfaces over the live target, with no activation or input
 /// monitors. Only the drag handle temporarily takes key focus, for Escape.
 @MainActor
-final class LiveScrollCaptureController: NSObject, NSWindowDelegate {
+final class LiveScrollCaptureController: NSObject, NSWindowDelegate, NSMenuDelegate {
     private(set) var snapshot = LiveScrollCaptureSnapshot()
     private(set) var placement: LiveScrollCaptureGeometry.Placement?
     private(set) var isRetired = false
@@ -67,6 +77,7 @@ final class LiveScrollCaptureController: NSObject, NSWindowDelegate {
     private var surface: LiveScrollToolbarView?
     private var preview: LiveScrollThumbnailView?
     private var actions: LiveScrollCaptureActions?
+    private var moreMenuTracking = false
     private var isShown = false
     private var cancellationRequested = false
     private var closeRequested = false
@@ -343,7 +354,7 @@ final class LiveScrollCaptureController: NSObject, NSWindowDelegate {
     }
 
     func makeMoreMenu() -> NSMenu {
-        let menu = NSMenu(); menu.autoenablesItems = false
+        let menu = NSMenu(); menu.autoenablesItems = false; menu.delegate = self
         let anchor = NSMenuItem(title: "", action: nil, keyEquivalent: "")
         anchor.image = liveScrollSymbol("ellipsis", title: "更多滚动截图选项")
         menu.addItem(anchor)
@@ -355,6 +366,17 @@ final class LiveScrollCaptureController: NSObject, NSWindowDelegate {
         add("快速保存 PNG…", #selector(quickSavePressed), id: "quickSave", enabled: snapshot.canQuickSave && !snapshot.busy)
         let pin = add(snapshot.pinUnavailableReason.isEmpty ? "贴到屏幕" : "贴到屏幕（超过 3200 万像素）", #selector(pinPressed), id: "pin", enabled: snapshot.canPin && !snapshot.busy)
         pin.toolTip = snapshot.pinUnavailableReason.isEmpty ? "保存为可恢复贴图；原尺寸最多 3200 万像素" : snapshot.pinUnavailableReason
+        menu.addItem(.separator())
+        add("使用截图链处理当前长图…", #selector(applyImageChainPressed), id: "imageChain", enabled: snapshot.canApplyImageChain && !snapshot.busy)
+        let continuation = add(snapshot.chainContinueTitle, #selector(continueImageChainPressed(_:)), id: "imageChain.continue", enabled: snapshot.canContinueImageChain && !snapshot.busy)
+        continuation.representedObject = snapshot.chainTransactionID?.uuidString
+        continuation.isHidden = snapshot.chainContinueTitle.isEmpty
+        let replacement = add("选择其他动作链重新处理…", #selector(replaceImageChainPressed(_:)), id: "imageChain.replace", enabled: snapshot.canReplaceImageChain && !snapshot.busy)
+        replacement.representedObject = snapshot.chainTransactionID?.uuidString
+        replacement.isHidden = snapshot.chainContinueTitle.isEmpty
+        let abandon = add("放弃未完成操作并继续采集…", #selector(abandonImageChainPressed(_:)), id: "imageChain.abandon", enabled: snapshot.canAbandonImageChain && !snapshot.busy)
+        abandon.representedObject = snapshot.chainTransactionID?.uuidString
+        abandon.isHidden = snapshot.chainContinueTitle.isEmpty
         menu.addItem(.separator())
         add("移动选区…", #selector(movePressed), id: "moveRegion", enabled: snapshot.canMoveRegion && !snapshot.busy)
         menu.addItem(.separator())
@@ -372,6 +394,16 @@ final class LiveScrollCaptureController: NSObject, NSWindowDelegate {
         return menu
     }
 
+    func menuWillOpen(_ menu: NSMenu) {
+        guard menu === surface?.moreButton.menu else { return }
+        updateMoreMenu(); moreMenuTracking = true
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        guard menu === surface?.moreButton.menu else { return }
+        moreMenuTracking = false; updateMoreMenu()
+    }
+
     private func updateMoreMenu() {
         // Keep the same menu while it is open. Frequent capture updates must not
         // replace native tracking with a different menu underneath the pointer.
@@ -383,6 +415,20 @@ final class LiveScrollCaptureController: NSObject, NSWindowDelegate {
             item.target = self; item.identifier = .init("scroll.live.reverseCrop")
             menu.insertItem(item, at: axisIndex + 1)
         } else if !snapshot.showsReverseCrop, let reverseItem { menu.removeItem(reverseItem) }
+        // Bind each actionable item to the transaction it represented. Replace
+        // items only outside native tracking; retained old item objects keep
+        // their old UUID and cannot target a newer transaction.
+        if !moreMenuTracking {
+            let commandIDs = ["scroll.live.imageChain.continue", "scroll.live.imageChain.replace", "scroll.live.imageChain.abandon"]
+            for (index, old) in menu.items.enumerated() where commandIDs.contains(old.identifier?.rawValue ?? "") {
+                if (old.representedObject as? String) != snapshot.chainTransactionID?.uuidString {
+                    let replacement = NSMenuItem(title: old.title, action: old.action, keyEquivalent: "")
+                    replacement.target = self; replacement.identifier = old.identifier
+                    replacement.representedObject = snapshot.chainTransactionID?.uuidString
+                    menu.removeItem(old); menu.insertItem(replacement, at: index)
+                }
+            }
+        }
         for item in menu.items {
             switch item.identifier?.rawValue {
             case "scroll.live.quickSave": item.isEnabled = snapshot.canQuickSave && !snapshot.busy
@@ -390,6 +436,14 @@ final class LiveScrollCaptureController: NSObject, NSWindowDelegate {
                 item.isEnabled = snapshot.canPin && !snapshot.busy
                 item.title = snapshot.pinUnavailableReason.isEmpty ? "贴到屏幕" : "贴到屏幕（超过 3200 万像素）"
                 item.toolTip = snapshot.pinUnavailableReason.isEmpty ? "保存为可恢复贴图；原尺寸最多 3200 万像素" : snapshot.pinUnavailableReason
+            case "scroll.live.imageChain": item.isEnabled = snapshot.canApplyImageChain && !snapshot.busy
+            case "scroll.live.imageChain.continue":
+                item.title = snapshot.chainContinueTitle; item.isHidden = snapshot.chainContinueTitle.isEmpty
+                item.isEnabled = snapshot.canContinueImageChain && !snapshot.busy
+            case "scroll.live.imageChain.replace":
+                item.isHidden = snapshot.chainContinueTitle.isEmpty; item.isEnabled = snapshot.canReplaceImageChain && !snapshot.busy
+            case "scroll.live.imageChain.abandon":
+                item.isHidden = snapshot.chainContinueTitle.isEmpty; item.isEnabled = snapshot.canAbandonImageChain && !snapshot.busy
             case "scroll.live.moveRegion": item.isEnabled = snapshot.canMoveRegion && !snapshot.busy
             case "scroll.live.axis.vertical":
                 item.isEnabled = snapshot.canChangeAxis && !snapshot.busy
@@ -409,6 +463,21 @@ final class LiveScrollCaptureController: NSObject, NSWindowDelegate {
     @objc private func copyPressed() { if !isRetired && snapshot.canCopy && !snapshot.busy { actions?.copy() } }
     @objc private func quickSavePressed() { if !isRetired && snapshot.canQuickSave && !snapshot.busy { actions?.quickSave() } }
     @objc private func pinPressed() { if !isRetired && snapshot.canPin && !snapshot.busy { actions?.pin() } }
+    @objc private func applyImageChainPressed() { if !isRetired && snapshot.canApplyImageChain && !snapshot.busy { actions?.applyImageChain() } }
+    private func transactionID(for item: NSMenuItem) -> UUID? {
+        guard let raw = item.representedObject as? String, let id = UUID(uuidString: raw),
+              id == snapshot.chainTransactionID else { return nil }
+        return id
+    }
+    @objc private func continueImageChainPressed(_ item: NSMenuItem) {
+        if !isRetired && snapshot.canContinueImageChain && !snapshot.busy, let id = transactionID(for: item) { actions?.continueImageChain(id) }
+    }
+    @objc private func replaceImageChainPressed(_ item: NSMenuItem) {
+        if !isRetired && snapshot.canReplaceImageChain && !snapshot.busy, let id = transactionID(for: item) { actions?.replaceImageChain(id) }
+    }
+    @objc private func abandonImageChainPressed(_ item: NSMenuItem) {
+        if !isRetired && snapshot.canAbandonImageChain && !snapshot.busy, let id = transactionID(for: item) { actions?.abandonImageChain(id) }
+    }
     @objc private func pausePressed() { if !isRetired && snapshot.canPause && !snapshot.busy { actions?.pauseResume() } }
     @objc private func autoPressed() { if !isRetired && snapshot.canAutoScroll && !snapshot.busy { actions?.autoScroll() } }
     @objc private func cancelPressed() { cancel() }

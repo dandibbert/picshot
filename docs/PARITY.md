@@ -6,7 +6,15 @@
 
 Baseline: [PixPin 3.5.5.1, released 11 September 2026][release]. Vendor research date: 6 October 2026; implementation/evidence updated 11 October 2026. The release is the version boundary; linked living manuals were consulted for behavior. Later manual changes do not silently expand or shrink that boundary. This ledger is a requirements and acceptance plan, not a reproduction of PixPin source, artwork, models, credentials, or services.
 
-## Separate experimental ARM 0.22.0 build263 qualification
+## Separate experimental ARM 0.22.0 build268 qualification
+
+**ARM build268**, source `8802502f7c809aa5874479087c5c89b951c9fd84`, [run38354289534](https://github.com/dandibbert/picshot/actions/runs/38354289534), qualifies only for the user-opted experimental distribution. It promotes the bounded fresh-image PNG Save payload correction supported by the single build267 comparison, plus already-focused-tested duplicate-preview recovery and truthful pause state after move failure. Existing Export/supplied previews, all output safeguards, scripts and image chains remain. These changes create **no ledger-row promotion** or claim of improved original227 memory, real acquisition or complete PixPin experience.
+
+The exact current inventory is **2,407 methods / 267 classes**, preserving all stable214 identities: 2,404 ordinary passes plus the same three actual-model methods subsequently passed within12/12 model tests. All1,875 focused methods,165 scrolling methods,30 required qualification gates and both actual installed formats pass. All133 ordered IDs/124 behavior requirements/nine context rows and stable classifications remain: ARM214 **64 Code /56 Partial /4 Missing**, Intel69 **50/61/13**. CFG-03's earlier experimental-only Partial scope remains; stable214 stays Missing there.
+
+The independent default4K observation ends at429.656250MiB RSS/88.456116MiB footprint, kernel peaks706.015625/309.753235MiB. Substantial cold and peak costs remain. Original227 fails its unchanged repeated-scroll limits and was not rerun. The original268 GitHub ZIP link was sent at07:37:18UTC and corrected guide v9 attached at07:43:54UTC on13 October2026; prior263 native ZIP and stable214 are preserved. This is a link/guide handoff, not proof of download or execution. See [exact268 qualification](VERIFICATION.md#build268-experimental-save-and-scroll-recovery-qualification).
+
+## Historical experimental ARM 0.22.0 build263 qualification
 
 **ARM build263**, source `efde8d1867fa1cc4c82bc04c8c9725cd5f39517a`, [run38335666429](https://github.com/dandibbert/picshot/actions/runs/38335666429), qualifies only for the user-opted experimental distribution. The [installed script record](TextScripts.md#build263-experimental-installed-qualification) binds explicit Save → one region → local OCR → isolated `transform(text)` → checked Copy, cached Copy retry and Close cleanup. Both actual ZIP/DMG installations pass the script and legacy-chain checks. Full coverage is 2,375 methods / 267 classes: 2,372 ordinary passes plus three deferrals closed by the later 12/12 model gate; all 1,843 focused methods, including 72 script methods, pass. These sets overlap.
 

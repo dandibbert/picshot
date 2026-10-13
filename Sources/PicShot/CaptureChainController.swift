@@ -485,6 +485,7 @@ import PicShotCore
         case .cancelled: heading = snapshot.receipts.isEmpty && snapshot.textReceipt == nil ? "已取消" : "已取消后续操作；以下已完成结果仍然保留"
         }
         runStatus.stringValue = snapshot.definition.name + " · " + heading
+            + (snapshot.isExistingScrollImage ? " · 来源：本次长截图" : "")
         runStatus.toolTip = runStatus.stringValue; runStatus.setAccessibilityLabel(runStatus.stringValue)
         runStatus.textColor = snapshot.status.canRetry ? .systemRed : .labelColor
         if snapshot.isTextScript {

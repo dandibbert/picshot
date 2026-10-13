@@ -62,16 +62,19 @@ struct CaptureChainSnapshot: Equatable {
     let capturedAt: Date?
     let retainedBytes: Int
     let isTextScript: Bool
+    let isExistingScrollImage: Bool
     let textReceipt: ChainTextCopyReceipt?
     let retainedTextBytes: Int
 
     // Default arguments preserve every existing image snapshot call site.
     init(runID: UUID, definition: CaptureChainDefinition, status: CaptureChainStatus,
          receipts: [CaptureChainReceipt], capturedAt: Date?, retainedBytes: Int,
-         isTextScript: Bool = false, textReceipt: ChainTextCopyReceipt? = nil, retainedTextBytes: Int = 0) {
+         isTextScript: Bool = false, textReceipt: ChainTextCopyReceipt? = nil, retainedTextBytes: Int = 0,
+         isExistingScrollImage: Bool = false) {
         self.runID = runID; self.definition = definition; self.status = status
         self.receipts = receipts; self.capturedAt = capturedAt; self.retainedBytes = retainedBytes
         self.isTextScript = isTextScript; self.textReceipt = textReceipt; self.retainedTextBytes = retainedTextBytes
+        self.isExistingScrollImage = isExistingScrollImage
     }
 }
 
@@ -129,6 +132,7 @@ final class CaptureChainRunner {
     private(set) var capture: ChainCapture?
     private(set) var capturedAt: Date?
     let isTextScript: Bool
+    private(set) var isExistingScrollImage = false
     private(set) var textReceipt: ChainTextCopyReceipt?
     // Byte counts describe retained payloads, not total process RSS or Swift's
     // allocator overhead. Images and each text phase are accounted separately.
@@ -141,7 +145,8 @@ final class CaptureChainRunner {
     var snapshot: CaptureChainSnapshot {
         CaptureChainSnapshot(runID: id, definition: definition, status: status,
             receipts: receipts, capturedAt: capturedAt, retainedBytes: retainedBytes,
-            isTextScript: isTextScript, textReceipt: textReceipt, retainedTextBytes: retainedTextBytes)
+            isTextScript: isTextScript, textReceipt: textReceipt, retainedTextBytes: retainedTextBytes,
+            isExistingScrollImage: isExistingScrollImage)
     }
     var onChange: ((CaptureChainSnapshot) -> Void)?
     var onTerminal: ((CaptureChainSnapshot) -> Void)?
@@ -163,6 +168,30 @@ final class CaptureChainRunner {
         self.isTextScript = false
     }
 
+    /// This route owns an existing immutable raster. Saved source metadata is
+    /// deliberately not resolved and dependencies.capture is never called.
+    convenience init(definition: CaptureChainDefinition, preparedCapture: ChainCapture,
+                     receipts: [CaptureChainReceipt] = [], dependencies: Dependencies,
+                     id: UUID = UUID()) throws {
+        try Self.validateReceiptPrefix(receipts, definition: definition)
+        self.init(definition: definition, dependencies: dependencies, id: id)
+        capture = preparedCapture; capturedAt = preparedCapture.capturedAt
+        self.receipts = receipts; isExistingScrollImage = true
+    }
+
+    nonisolated static func validateReceiptPrefix(_ receipts: [CaptureChainReceipt], definition: CaptureChainDefinition) throws {
+        guard receipts.count <= definition.outputs.count,
+              receipts.count <= CaptureChainDefinition.maximumOutputs else { throw CaptureChainError.invalidOutputs }
+        for (index, receipt) in receipts.enumerated() {
+            guard receipt.output == definition.outputs[index] else { throw CaptureChainError.invalidOutputs }
+            switch (receipt.output, receipt.value) {
+            case (.quickSavePNG, .saved(_, let count)) where count >= 0: break
+            case (.copy, .copied), (.pin, .pinned): break
+            default: throw CaptureChainError.invalidOutputs
+            }
+        }
+    }
+
     /// The public metadata retains only the same region/copy shape; executable
     /// source is frozen privately and is dropped when the run drains.
     init(textScript: TextScriptDefinition, dependencies: TextDependencies, id: UUID = UUID()) throws {
@@ -173,7 +202,11 @@ final class CaptureChainRunner {
 
     @discardableResult func start() -> Bool {
         guard status == .idle, task == nil, dependencies != nil || textDependencies != nil else { return false }
-        beginAttempt(status: .capturing)
+        if isExistingScrollImage {
+            guard capture != nil else { return false }
+            if receipts.count == definition.outputs.count { retire(.completed) }
+            else { beginAttempt(status: .running(index: receipts.count)) }
+        } else { beginAttempt(status: .capturing) }
         return true
     }
 

@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import SwiftUI
 import Combine
 import PicShotCore
@@ -44,6 +45,8 @@ import ImageIO
     private var activePresetOperation: UUID?
     private weak var activeScrollCapture: ScrollCaptureController?
     private var activeLiveScroll: LiveScrollSessionController?
+    private var activeCaptureChainScrollOwnerID: UUID?
+    var liveScrollSessionForVerification: LiveScrollSessionController? { activeLiveScroll }
     let pendingCaptureRecovery = PendingCaptureRecovery()
     private var pendingCaptureController: PendingCaptureController?
     /// Encoded providers stay retained by their editor CGImages; record that cost
@@ -66,9 +69,17 @@ import ImageIO
     private let isolatedChainDependencies: ((CaptureChainDefinition) throws -> CaptureChainRunner.Dependencies)?
     var hasActiveCaptureChain: Bool { activeCaptureChain?.blocksCapture == true }
     var retainedChainBytes: Int { activeCaptureChain?.retainedBytes ?? 0 }
-    private var retainedCaptureDraftBytes: Int {
-        EditorAdmissionPolicy.sum([pendingCaptureRecovery.retainedBytes, retainedChainBytes])
+    private var retainedChainAndScrollBytes: Int {
+        let checkpoint = activeLiveScroll?.retainedChainCapture
+        // One object is shared by the checkpoint and its current runner. Once
+        // that runner retires the checkpoint alone continues reserving its bytes.
+        let shared = checkpoint.map { input in activeCaptureChain?.capture?.image === input.image } ?? false
+        return EditorAdmissionPolicy.sum([retainedChainBytes, shared ? 0 : (checkpoint?.retainedBytes ?? 0)])
     }
+    private var retainedCaptureDraftBytes: Int {
+        EditorAdmissionPolicy.sum([pendingCaptureRecovery.retainedBytes, retainedChainAndScrollBytes])
+    }
+    var retainedCaptureDraftBytesForVerification: Int { retainedCaptureDraftBytes }
     private var barcodeTask: Task<Void, Never>?
     private var barcodeGeneration = UUID()
     weak var barcodeResultController: BarcodeResultController?
@@ -483,8 +494,10 @@ import ImageIO
         }
     }
     /// Both image and text actions reserve this same owner before acquisition.
-    private func beginCaptureChain(_ runner: CaptureChainRunner) -> Bool {
-        activeCaptureChain = runner
+    private func beginCaptureChain(_ runner: CaptureChainRunner, scrollOwnerID: UUID? = nil,
+                                   terminal: ((CaptureChainSnapshot) -> Void)? = nil) -> Bool {
+        guard activeCaptureChain == nil else { return false }
+        activeCaptureChain = runner; activeCaptureChainScrollOwnerID = scrollOwnerID
         hotKeys?.invalidateSelectedCaptureChainCommands(); captureChainController?.invalidateCommands()
         textScriptController?.setRunActive(true)
         runner.onChange = { [weak self] snapshot in
@@ -495,14 +508,17 @@ import ImageIO
         runner.onTerminal = { [weak self] snapshot in
             guard let self, self.activeCaptureChain?.id == snapshot.runID else { return }
             self.lastCaptureChainSnapshot = snapshot; self.activeCaptureChain = nil
+            self.activeCaptureChainScrollOwnerID = nil
             self.hotKeys?.invalidateSelectedCaptureChainCommands()
             self.textScriptController?.setRunActive(false)
             self.captureChainController?.update(snapshot: snapshot)
+            terminal?(snapshot)
         }
         mainWindow?.orderOut(nil); captureChainController?.hideForCapture()
         textScriptController?.hideForCapture()
         guard runner.start() else {
-            activeCaptureChain = nil; hotKeys?.invalidateSelectedCaptureChainCommands()
+            activeCaptureChain = nil; activeCaptureChainScrollOwnerID = nil
+            hotKeys?.invalidateSelectedCaptureChainCommands()
             textScriptController?.setRunActive(false)
             captureChainController?.showGuidance("动作链未开始，请重试。")
             return false
@@ -772,7 +788,7 @@ import ImageIO
         let admittedBytes = EditorAdmissionPolicy.sum([
             CaptureRecoveryPolicy.admissionBytes(incomingBytes: incoming,
                 drainingBytes: drainingProjectionBytes, pendingBytes: pendingCaptureRecovery.retainedBytes,
-                transferringPending: transferringPending), retainedChainBytes])
+                transferringPending: transferringPending), retainedChainAndScrollBytes])
         guard editorAdmission.refusal(existingRasterBytes: editorCosts(editors), incomingRasterBytes: admittedBytes) == nil else {
             if showAdmissionNotice && editorAdmissionNotices.recordRefusal() { showEditorAdmissionNotice() }; return false
         }
@@ -826,7 +842,9 @@ import ImageIO
         let saved=importedCount > 0 ? "\(importedCount) 张图片已保存到历史记录，暂未打开编辑窗口。\n" : "已保存到历史记录的图片仍可稍后打开。\n"
         let pending = pendingCaptureRecovery.retainedBytes > 0
             ? "待处理截图另占 \(pendingCaptureRecovery.retainedBytes) 字节，已计入新窗口准入。\n" : ""
-        let chain = retainedChainBytes > 0 ? "动作链另保留 \(retainedChainBytes) 字节，可在动作链窗口重试或取消。\n" : ""
+        let chain = activeLiveScroll?.retainedChainCapture != nil
+            ? "长截图动作链保留 \(retainedChainAndScrollBytes) 字节，可从长截图的更多菜单继续或放弃。\n"
+            : (retainedChainBytes > 0 ? "动作链另保留 \(retainedChainBytes) 字节，可在动作链窗口重试或取消。\n" : "")
         alert.informativeText=saved+pending+chain+"最多同时打开 6 个编辑窗口，估算的保留图像预算为 768 MiB（不是总进程内存上限）。请先保存并关闭不再需要的编辑窗口，再从历史记录打开图片。"
         alert.addButton(withTitle:"知道了");alert.runModal()
     }
@@ -1040,20 +1058,97 @@ import ImageIO
         beginLiveScroll()
     }
     private func beginLiveScroll(presentation: FrozenCapturePresentation? = nil) {
+        makeLiveScrollSession().start(presentation: presentation)
+    }
+
+    /// Acquisition is injected only after installing the same AppMain ownership,
+    /// output services and native controls used by the production scroll command.
+    func makeLiveScrollSessionForVerification(resourceStorageParent: URL = FileManager.default.temporaryDirectory) throws -> LiveScrollSessionController {
+        guard isolatedSaveWorkflow != nil, canStartCapture() else { throw CaptureError.busy }
+        return makeLiveScrollSession(resourceStorageParent: resourceStorageParent, automaticScrollPermission: { false })
+    }
+
+    private func makeLiveScrollSession(resourceStorageParent: URL = FileManager.default.temporaryDirectory,
+                                       automaticScrollPermission: @escaping () -> Bool = { AXIsProcessTrusted() }) -> LiveScrollSessionController {
         mainWindow?.orderOut(nil)
+        let chainDependencies = LiveScrollChainDependencies(definitions: { [weak self] in
+            guard let self else { throw CaptureError.cancelled }
+            return try self.chainCatalog().definitions
+        }, run: { [weak self] transaction, runID in
+            guard let self else { throw CaptureError.cancelled }
+            return try await self.runExistingScrollImageChain(transaction, runID: runID)
+        }, cancel: { [weak self] runID in
+            guard let self, let runner = self.activeCaptureChain, runner.id == runID,
+                  self.activeCaptureChainScrollOwnerID == self.activeLiveScroll?.sessionID else { return }
+            runner.cancel()
+        }, preflight: { [weak self] definition, committedCount, _, _ in
+            guard let self else { throw CaptureError.cancelled }
+            guard definition.outputs.dropFirst(committedCount).contains(.pin), self.isolatedChainDependencies == nil else { return }
+            guard let pins = self.pinSession else {
+                throw self.pinSessionLoadError ?? PicShotError.message("贴图存储暂不可用，当前长图仍保留。")
+            }
+            guard pins.livePinCount < PinSessionCoordinator.maximumLivePins else { throw PinSessionError.capacityExceeded }
+        })
         let controller = LiveScrollSessionController(onComplete: { [weak self] image in
             guard let self else { throw CaptureError.cancelled }
             try self.completeCapture(CapturedImage(image: image, presentation: nil), title: "长截图")
         }, onImport: { [weak self] in self?.openScrollImporter() }, onPin: { [weak self] image in
             guard let self else { throw CaptureError.cancelled }
             try self.pinLongCapture(image)
-        }, saveDestination: LiveScrollSaveDelivery(presenter: saveWorkflows))
+        }, saveDestination: LiveScrollSaveDelivery(presenter: saveWorkflows),
+           resourceStorageParent: resourceStorageParent, automaticScrollPermission: automaticScrollPermission,
+           chainDependencies: chainDependencies)
         controller.onClose = { [weak self, weak controller] in
             guard let self, self.activeLiveScroll === controller else { return }
             self.activeLiveScroll = nil
         }
         activeLiveScroll = controller
-        controller.start(presentation: presentation)
+        return controller
+    }
+
+    private func runExistingScrollImageChain(_ transaction: LiveScrollChainTransaction,
+                                             runID: UUID) async throws -> CaptureChainSnapshot {
+        guard !isTerminating, !busy, activeCaptureChain == nil,
+              activeLiveScroll?.sessionID == transaction.sessionID,
+              activeLiveScroll?.chainTransaction?.transactionID == transaction.transactionID,
+              activeLiveScroll?.chainAttemptID == runID else { throw CaptureError.busy }
+        try Task.checkCancellation()
+        let dependencies = try isolatedChainDependencies?(transaction.definition)
+            ?? productionExistingImageChainDependencies(transaction.definition)
+        let runner = try CaptureChainRunner(definition: transaction.definition, preparedCapture: transaction.capture,
+            receipts: transaction.receipts, dependencies: dependencies, id: runID)
+        let manager = try ensureCaptureChainManager()
+        manager.present()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<CaptureChainSnapshot, Error>) in
+                guard !Task.isCancelled else { continuation.resume(throwing: CancellationError()); return }
+                // Runner detaches its callbacks before the coordinator releases
+                // ownership and resumes this once-only terminal continuation.
+                if !beginCaptureChain(runner, scrollOwnerID: transaction.sessionID,
+                    terminal: { continuation.resume(returning: $0) }) {
+                    continuation.resume(throwing: CaptureError.busy)
+                }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                guard let self, self.activeCaptureChain?.id == runID,
+                      self.activeCaptureChainScrollOwnerID == transaction.sessionID else { return }
+                self.activeCaptureChain?.cancel()
+            }
+        }
+    }
+
+    private func productionExistingImageChainDependencies(_ definition: CaptureChainDefinition) throws -> CaptureChainRunner.Dependencies {
+        guard smoke == nil, isolatedSaveWorkflow == nil else { throw PicShotError.message("隔离运行未提供图片输出服务。") }
+        let delivery = SaveWorkflowDelivery(presenter: saveWorkflows)
+        return .init(capture: { throw CaptureError.cancelled }, savePNG: { [weak self] image in
+            await delivery.save(image: image, parent: self?.captureChainController?.window)
+        }, copy: { image in try LiveScrollClipboard.copy(image) }, pin: { [weak self] image in
+            guard let self, let pins = self.pinSession else {
+                throw self?.pinSessionLoadError ?? PicShotError.message("贴图存储暂不可用，当前长图仍保留。")
+            }
+            return try pins.add(originalImage: image, currentImage: image, title: definition.name)
+        }, cancelSave: { delivery.cancel() })
     }
     @objc func openScrollImporter() {
         guard activeLiveScroll == nil else { return }

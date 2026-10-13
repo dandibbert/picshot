@@ -100,8 +100,26 @@ enum LiveScrollUsabilityDemoFixture {
         }
         report["outputCase"] = output
         try writeReport(report, directory)
-        let realStream: [String: Any]
+        let scrollChain: [String: Any]
         if output["productSessionClosed"] as? Bool == true {
+            let chainDirectory = directory.appendingPathComponent("saved-image-chain")
+            do { scrollChain = try await LiveScrollChainDemoFixture.verify(evidenceDirectory: chainDirectory) }
+            catch {
+                let data = try? Data(contentsOf: chainDirectory.appendingPathComponent("live-scroll-chain.json"))
+                if let data, let saved = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+                    scrollChain = saved
+                } else {
+                    scrollChain = ["status": "failed", "productSessionClosed": false, "error": error.localizedDescription]
+                }
+            }
+        } else {
+            scrollChain = ["status": "blocked", "productSessionClosed": false,
+                           "reason": "Previous owned product session cleanup was not confirmed"]
+        }
+        report["scrollChainCase"] = scrollChain
+        try writeReport(report, directory)
+        let realStream: [String: Any]
+        if scrollChain["productSessionClosed"] as? Bool == true {
             realStream = await LiveScrollRealStreamFixture.run(outputDirectory: directory.appendingPathComponent("real-stream"))
         } else {
             realStream = ["status": "blocked", "permissionAlreadyGranted": permitted,
@@ -119,7 +137,8 @@ enum LiveScrollUsabilityDemoFixture {
             || (realStream["status"] as? String == "blocked" && !realPermission)
         let passed = illustrated["status"] as? String == "passed" && plain["status"] as? String == "passed"
             && automatic["status"] as? String == "passed"
-            && movement["status"] as? String == "passed" && output["status"] as? String == "passed" && realOutcomeAcceptable
+            && movement["status"] as? String == "passed" && output["status"] as? String == "passed"
+            && scrollChain["status"] as? String == "passed" && realOutcomeAcceptable
         report["status"] = passed ? "passed" : "failed"
         report["elapsedSeconds"] = ProcessInfo.processInfo.systemUptime - start
         try writeReport(report, directory)

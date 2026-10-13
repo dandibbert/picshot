@@ -400,7 +400,34 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
         inventory = self.current_source_inventory()
         plan = shards.make_plan(inventory, '', 'a' * 40, process_count=4)
         record = self.execute_pin_inventory_guard(plan)
-        self.assertEqual((record['discoveredCount'], record['discoveredClassCount']), (2407, 267))
+        spec = importlib.util.spec_from_file_location('qualification', Path(__file__).parents[1] / 'check-experimental-scroll-interactions.py')
+        qualification = importlib.util.module_from_spec(spec); spec.loader.exec_module(qualification)
+        scroll_added = sorted(qualification.scroll_chain_additions(inventory))
+        self.assertEqual(record['additiveExistingImageChainIDs'], scroll_added)
+        self.assertEqual(record['additiveExistingImageChainMethods'], len(scroll_added))
+        current_inventory, current_plan = inventory, plan
+        self.assertEqual([len(shard['tests']) for shard in current_plan['shards']], [644, 533, 617, 642])
+        self.assertEqual((len(inventory), len({name.split('/')[0] for name in inventory}),
+            hashlib.sha256(('\n'.join(inventory)+'\n').encode()).hexdigest()), qualification.CURRENT_NATIVE_INVENTORY)
+        inventory = [name for name in inventory if name not in scroll_added]
+        self.assertEqual((len(inventory), len({name.split('/')[0] for name in inventory})), (2407, 267))
+        plan = shards.make_plan(inventory, '', 'a' * 40, process_count=4)
+        self.assertEqual(current_inventory, sorted(inventory + scroll_added))
+        for before, after in zip(plan['shards'], current_plan['shards']):
+            self.assertEqual([name for name in after['tests'] if name not in scroll_added], before['tests'])
+        selection = re.search(r"--selection-regex '([^']+)'", self.step(
+            'Plan exhaustive and focused native test processes'))[1]
+        for count in (2, 4):
+            full = shards.make_plan(current_inventory, selection, 'a' * 40, process_count=count)
+            prior = shards.make_plan(inventory, selection, 'a' * 40, process_count=count)
+            self.assertEqual(full['selectedTests'], sorted(prior['selectedTests'] + scroll_added))
+            self.assertEqual((len(full['selectedTests']), hashlib.sha256(
+                ('\n'.join(full['selectedTests'])+'\n').encode()).hexdigest()), qualification.CURRENT_FOCUSED_INVENTORY)
+            self.assertEqual(full['timeoutSecondsPerProcess'], 420)
+            self.assertEqual([len(shard['tests']) for shard in full['shards']],
+                {2: [1013, 891], 4: [547, 395, 466, 496]}[count])
+            for before, after in zip(prior['shards'], full['shards']):
+                self.assertEqual([name for name in after['tests'] if name not in scroll_added], before['tests'])
         self.assertEqual(hashlib.sha256(('\n'.join(inventory) + '\n').encode()).hexdigest(),
                          '5c7d51efe5e1fc16a1d3dd5c5d5fc4ae35948893fc7e5feb92aaf7c83c9f5539')
         payload = json.loads((Path(__file__).parents[1] / 'save-payload-native-tests.json').read_text())
@@ -493,9 +520,10 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
             for old_shard, current_shard in zip(prior_focused['shards'], full_focused['shards']):
                 self.assertEqual([name for name in current_shard['tests'] if name not in text_added], old_shard['tests'])
         live = json.loads((Path(__file__).parents[1] / 'live-scroll-additive-tests.json').read_text())
-        self.assertEqual(len(live), 165)
         self.assertEqual(record['additiveLiveScrollIDs'], live)
-        self.assertEqual(record['additiveLiveScrollMethods'], 165)
+        self.assertEqual(record['additiveLiveScrollMethods'], len(live))
+        live = [name for name in live if name not in scroll_added]
+        self.assertEqual(len(live), 165)
         self.assertEqual(len(set(live) & set(payload_added)), 2)
         live = [name for name in live if name not in payload_added]
         self.assertEqual(len(live), 163)
@@ -503,7 +531,7 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
         live = [name for name in live if name not in recovery_added]
         self.assertEqual(len(live), 156)
         self.assertEqual(live, sorted(set(live)))
-        self.assertEqual([name for name in record['additiveLiveScrollIDs'] if name not in recovery_added and name not in payload_added], live)
+        self.assertEqual([name for name in record['additiveLiveScrollIDs'] if name not in recovery_added and name not in payload_added and name not in scroll_added], live)
         self.assertEqual(record['preserved214Methods'], 2047)
         self.assertEqual(hashlib.sha256(('\n'.join(live) + '\n').encode()).hexdigest(),
                          'a9c4eb4840fe1716651b164c9fc4c27c639738360adcb1a1d20030366b682f64')
@@ -517,8 +545,9 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
         self.assertEqual(sorted(feedback['baseline241'] + feedback['added']),
                          [name for name in inventory if '.SaveWorkflowUITests/' in name])
         chains = json.loads((Path(__file__).parents[1] / 'capture-chain-native-tests.json').read_text())
-        self.assertEqual(len(chains['added']), 95)
         self.assertEqual(record['additiveCaptureChainIDs'], chains['added'])
+        chains['added'] = [name for name in chains['added'] if name not in scroll_added]
+        self.assertEqual(len(chains['added']), 95)
         self.assertEqual(chains['added'], sorted(set(chains['added'])))
         self.assertEqual(hashlib.sha256(('\n'.join(chains['added'])+'\n').encode()).hexdigest(),
                          '1d0981cda725cf988eadd9252851f4ae56d4c97a8fb6f6989a253598e8b0e57f')

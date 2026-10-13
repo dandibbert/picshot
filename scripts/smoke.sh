@@ -213,6 +213,22 @@ PY
   else
     bash scripts/editable-annotation-smoke.sh "$app" "$PWD/dist/evidence/$format/editable-annotations" "$(git rev-parse HEAD)" functional
   fi
+  # Reuse the native live-scroll demo and original launcher bounds on this
+  # actual installed format. The new existing-image route has no resource cell.
+  scroll_chain_evidence="$PWD/dist/evidence/$format/live-scroll"
+  test ! -e "$scroll_chain_evidence"
+  mkdir "$scroll_chain_evidence"
+  PICSHOT_LIVE_SCROLL_DEMO_ONLY=1 \
+  PICSHOT_LIVE_SCROLL_TARGET="$PWD/.build/LiveScrollTarget.app/Contents/MacOS/LiveScrollTarget" \
+  python3 scripts/run-bounded-command.py \
+    --timeout-seconds 660 --grace-seconds 10 --max-log-bytes 1048576 \
+    --log "$scroll_chain_evidence/launch.log" --report "$scroll_chain_evidence/launch-report.json" \
+    -- swift scripts/launch-smoke-app.swift "$app" "$scroll_chain_evidence/demo.json"
+  python3 scripts/run-bounded-command.py \
+    --timeout-seconds 120 --grace-seconds 10 --max-log-bytes 1048576 \
+    --log "$scroll_chain_evidence/check.log" --report "$scroll_chain_evidence/check-report.json" \
+    -- python3 scripts/check-live-scroll-chain-demo.py \
+    --report "$scroll_chain_evidence/saved-image-chain/live-scroll-chain.json" --source "$(git rev-parse HEAD)"
   # Check this exact installed format before the EXIT trap removes its bundle.
   # Acquisition is synthetic; existing broad smoke and resource gates stay above.
   # Chain observation stays240s plus3s+3s owned cleanup;270s+10s stays below300s.

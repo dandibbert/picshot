@@ -143,6 +143,8 @@ jobs:
         python3 -O -m unittest discover -s scripts/tests -p 'test_capture_chain_demo.py'
         python3 -m unittest discover -s scripts/tests -p 'test_capture_chain_launcher_timeout.py'
         python3 -O -m unittest discover -s scripts/tests -p 'test_capture_chain_launcher_timeout.py'
+        python3 -m unittest discover -s scripts/tests -p 'test_live_scroll_chain_demo.py'
+        python3 -O -m unittest discover -s scripts/tests -p 'test_live_scroll_chain_demo.py'
     - name: Check text script packaging and installed evidence contracts
       if: ${{ contains(github.event.head_commit.message || '', '[text-script-integration]') }}
       timeout-minutes: 2
@@ -174,6 +176,7 @@ jobs:
         mkdir -p dist/live-scroll-demo
         swift scripts/launch-smoke-app.swift "$PWD/dist/PicShot.app" "$PWD/dist/live-scroll-demo/demo.json"
         python3 -c 'import json; r=json.load(open("dist/live-scroll-demo/demo.json")); assert r["status"] == "passed", r'
+        python3 scripts/check-live-scroll-chain-demo.py --report dist/live-scroll-demo/saved-image-chain/live-scroll-chain.json --source "$GITHUB_SHA"
     - name: Demonstrate named capture-chain recovery through actual native controls
       if: ${{ always() && contains(github.event.head_commit.message || '', '[capture-chain]') && steps.package_live_scroll.outcome == 'success' }}
       timeout-minutes: 5
@@ -957,6 +960,7 @@ jobs:
             -- bash -c "$picshot_scroll_prefix" scripts/live-scroll-installed.sh \
             "$PWD/dist/PicShot-0.22.0-macos-${{ matrix.arch }}.zip" \
             "$PWD/dist/live-scroll-installed" "$GITHUB_SHA"
+          python3 scripts/check-live-scroll-chain-demo.py --report dist/live-scroll-installed/demo/saved-image-chain/live-scroll-chain.json --source "$GITHUB_SHA"
       - name: Require direct release Escape rollback visible HUD and stale marker evidence
         id: experimental_scroll_receipt
         if: ${{ contains(github.event.head_commit.message || '', '[experimental-scroll-interactions]') }}
@@ -1213,19 +1217,12 @@ jobs:
                   and not (set(feedback_added) & set(feedback['baseline241']))
                   and sorted(feedback['baseline241'] + feedback_added) == [case for case in inventory if case.startswith('PicShotTests.SaveWorkflowUITests/') and case not in save_added],
                   'Save feedback class lost or added an unrecorded method')
-              chain = json.loads(native.bounded_text(Path('scripts/capture-chain-native-tests.json'), 128*1024))
-              native.need(type(chain) is dict and set(chain) == {'added', 'focused'}, 'Chain inventory schema differs')
-              chain_added = chain['added']
-              native.need(type(chain_added) is list and len(chain_added) == 95 and chain_added == sorted(set(chain_added))
-                  and all(native.SPECIFIER.fullmatch(case) and ('.CaptureChain' in case or '.SaveWorkflowDeliveryTests/' in case) for case in chain_added),
-                  'Explicit chain additions are invalid')
-              native.need(set(chain_added).issubset(inventory)
-                  and chain_added == [case for case in inventory if ('.CaptureChain' in case or '.SaveWorkflowDeliveryTests/' in case) and case not in save_added],
-                  'Chain classes lost or added an unrecorded method')
+              chain_added = sorted(save_qualification.chain_additions(inventory))
+              scroll_added = save_qualification.scroll_chain_additions(inventory)
               text_spec = importlib.util.spec_from_file_location('text_qualification', 'scripts/check-experimental-scroll-interactions.py')
               text_qualification = importlib.util.module_from_spec(text_spec); text_spec.loader.exec_module(text_qualification)
               text_added = text_qualification.text_script_additions(inventory)
-              additions = set(added) | set(feedback_added) | set(chain_added) | text_added | save_added
+              additions = set(added) | set(feedback_added) | set(chain_added) | text_added | save_added | scroll_added
               original = [case for case in inventory if case not in additions]
               original_shards = [[case for case in shard['tests'] if case not in additions] for shard in plan['shards']]
               native.need(len(original) == 2047 and len({case.split('/')[0] for case in original}) == 232
@@ -1243,6 +1240,7 @@ jobs:
                   additiveCaptureChainMethods=len(chain_added), additiveCaptureChainIDs=chain_added,
                   additiveTextScriptMethods=len(text_added), additiveTextScriptIDs=sorted(text_added),
                   additiveSavePayloadMethods=len(save_added), additiveSavePayloadIDs=sorted(save_added),
+                  additiveExistingImageChainMethods=len(scroll_added), additiveExistingImageChainIDs=sorted(scroll_added),
                   discoverySHA256=digest(Path('dist/native-test-discovery.log')),
                   fixtureSHA256=digest(Path('Tests/PicShotTests/PinAnchoredEditingTests.swift')))
               for label, expected in (('method', [method]), ('class', class_ids)):
@@ -1415,6 +1413,26 @@ jobs:
         with:
           name: PicShot-Installed-DMG-Capture-Chain-${{ matrix.arch }}-${{ github.sha }}
           path: dist/capture-chain-installed-evidence/dmg.zip
+          compression-level: 0
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Upload bounded installed ZIP existing-image chain evidence
+        if: ${{ always() && contains(github.event.head_commit.message || '', '[experimental-scroll-interactions]') }}
+        timeout-minutes: 2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Installed-ZIP-Live-Scroll-Chain-${{ matrix.arch }}-${{ github.sha }}
+          path: dist/live-scroll-chain-installed-evidence/zip.zip
+          compression-level: 0
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Upload bounded installed DMG existing-image chain evidence
+        if: ${{ always() && contains(github.event.head_commit.message || '', '[experimental-scroll-interactions]') }}
+        timeout-minutes: 2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Installed-DMG-Live-Scroll-Chain-${{ matrix.arch }}-${{ github.sha }}
+          path: dist/live-scroll-chain-installed-evidence/dmg.zip
           compression-level: 0
           if-no-files-found: ignore
           retention-days: 14

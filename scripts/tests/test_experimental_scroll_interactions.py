@@ -494,7 +494,7 @@ class ExperimentalInteractionTests(unittest.TestCase):
                 recovery_paths = [C.EVIDENCE/'demo'/name for name in C.PREVIEW_RECOVERY_VISUALS]
                 recovery_paths += [C.EVIDENCE/'demo/movement'/name for name in C.REJECTED_MOVE_VISUALS]
                 for path in recovery_paths: path.write_bytes(visual)
-                with patch.object(C,'source_record',return_value=source):
+                with patch.object(C,'source_record',return_value=source), patch.object(C,'scroll_chain_evidence',return_value=[]):
                     receipt=C.qualify();self.assertEqual(receipt['status'],'passed')
                     self.assertTrue(receipt['stationaryPreviewRecoveryAndRejectedMovePauseVerified'])
                     for path in recovery_paths:
@@ -551,6 +551,97 @@ class ExperimentalInteractionTests(unittest.TestCase):
                     C.save(C.ROOT/'source-identity.json',dict(identity,**package))
                     (C.ROOT/'installed-demo-prefix.sh').write_bytes(b'echo omitted')
                     with self.assertRaises(ValueError):C.source_record()
+            finally:os.chdir(previous)
+
+    def test_scroll_chain_subreport_and_saved_receipt_bind_the_strict_reader(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)/'saved-image-chain'; root.mkdir()
+            raw = dict(syntheticFixture=True)
+            report = root/'live-scroll-chain.json'; C.save(report, raw)
+            receipt = dict(evidenceSHA256={'live-scroll-chain.json': C.sha(report)})
+            C.save(root/'live-scroll-chain-receipt.json', receipt)
+            # Native pixels/geometry are adversarially checked in the reader's
+            # own fixture suite. This test isolates the enclosing gate's binding.
+            with patch.object(C.importlib.util, 'module_from_spec') as loaded:
+                reader = loaded.return_value
+                reader.validate.return_value = receipt
+                with patch.object(C.importlib.util, 'spec_from_file_location'):
+                    paths = C.scroll_chain_evidence(root, {'scrollChainCase': raw}, 'a'*40)
+                    self.assertEqual(paths, [report, root/'live-scroll-chain-receipt.json'])
+                    reader.validate.assert_called_once_with(report, 'a'*40)
+                    with self.assertRaisesRegex(ValueError, 'subreport differs'):
+                        C.scroll_chain_evidence(root, {'scrollChainCase': {}}, 'a'*40)
+                    C.save(root/'live-scroll-chain-receipt.json', {'evidenceSHA256': {}})
+                    with self.assertRaisesRegex(ValueError, 'changed after strict qualification'):
+                        C.scroll_chain_evidence(root, {'scrollChainCase': raw}, 'a'*40)
+            report.unlink()
+            with self.assertRaises(ValueError):
+                C.scroll_chain_evidence(root, {'scrollChainCase': raw}, 'a'*40)
+
+    def test_both_installed_scroll_chains_require_original_identity_launch_and_command_limits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            previous=Path.cwd();os.chdir(tmp)
+            try:
+                source=dict(sourceCommit='a'*40,build='269',version='0.22.0',architecture='arm64',
+                    executableSHA256='b'*64,plistSHA256='c'*64,buildInfoSHA256='d'*64)
+                formats=dict(formats={})
+                records={}
+                for extension in ('zip','dmg'):
+                    root=Path('dist/evidence')/extension/'live-scroll'
+                    app=str((Path('installed')/extension/'PicShot.app').resolve())
+                    formats['formats'][extension]=dict(bundlePath=app,buildVersion=source['build'],
+                        **{key:value for key,value in source.items() if key!='build'})
+                    value=demo();value.update(bundlePath=app,
+                        **{key:source[key] for key in ('sourceCommit','build','version')})
+                    records[root/'demo.json']=value
+                    records[root/'demo.json.launcher.json']=dict(status='exited',launcherExitCode=0,
+                        callbackReceived=True,createsNewApplicationInstance=True,ownedExitConfirmed=True,
+                        launchedIdentityMatches=True,timeoutSeconds=600,selectedAppPath=app,launchedAppPath=app,
+                        launchedExecutablePath=app+'/Contents/MacOS/PicShot',processIdentifier=123,elapsedSeconds=80)
+                    for stem,timeout,command in (
+                        ('launch',660,['swift','scripts/launch-smoke-app.swift',app,str((root/'demo.json').resolve())]),
+                        ('check',120,['python3','scripts/check-live-scroll-chain-demo.py','--report',
+                            str((root/'saved-image-chain/live-scroll-chain.json').resolve()),'--source',source['sourceCommit']])):
+                        records[root/(stem+'-report.json')]=dict(schema_version=1,status='exited',
+                            child_returncode=0,exit_code=0,cancel_signal=None,sigterm_sent=False,sigkill_sent=False,
+                            descendant_cleanup=False,termination_reason='exited',log_truncated=False,
+                            timeout_seconds=timeout,grace_seconds=10,duration_seconds=80,command=command,
+                            max_log_bytes=1048576,log_bytes=0,output_bytes=0)
+                    root.mkdir(parents=True)
+                    for stem in ('launch','check'):(root/(stem+'.log')).write_bytes(b'')
+                for path,value in records.items():C.save(path,value)
+                with patch.object(C,'scroll_chain_evidence',side_effect=lambda *args: []) as strict:
+                    result=C.installed_scroll_chains(source,formats)
+                    self.assertEqual(set(result),{'zip','dmg'})
+                    self.assertEqual(strict.call_count,2)
+                    self.assertNotEqual(result['zip']['sourceIdentity']['bundlePath'],result['dmg']['sourceIdentity']['bundlePath'])
+                    for extension in ('zip','dmg'):
+                        root=Path('dist/evidence')/extension/'live-scroll'
+                        for name,key,value in [('demo.json','sourceCommit','e'*40),
+                                ('demo.json.launcher.json','ownedExitConfirmed',False),
+                                ('demo.json.launcher.json','timeoutSeconds',601),
+                                ('launch-report.json','timeout_seconds',661),
+                                ('check-report.json','timeout_seconds',121),
+                                ('check-report.json','log_bytes',1),
+                                ('launch-report.json','exit_code',124)]:
+                            path=root/name;changed={**records[path],key:value};C.save(path,changed)
+                            with self.subTest(format=extension,file=name,field=key),self.assertRaises(ValueError):
+                                C.installed_scroll_chains(source,formats)
+                            C.save(path,records[path])
+                    with self.assertRaises(ValueError):C.installed_scroll_chains(source,{'formats':{'zip':formats['formats']['zip']}})
+                with patch.object(C,'scroll_chain_evidence',side_effect=ValueError('strict child failed')):
+                    with self.assertRaisesRegex(ValueError,'strict child failed'):
+                        C.installed_scroll_chains(source,formats)
+                failed=Path('dist/evidence/zip/live-scroll/saved-image-chain/live-scroll-chain.json')
+                C.save(failed,dict(status='failed',error='synthetic retained failure'))
+                C.archive_scroll_chains()
+                for extension in ('zip','dmg'):
+                    with C.zipfile.ZipFile(Path('dist/live-scroll-chain-installed-evidence')/(extension+'.zip')) as archive:
+                        expected={str(path) for path in (Path('dist/evidence')/extension/'live-scroll').rglob('*') if path.is_file()}
+                        self.assertEqual(set(archive.namelist()),expected)
+                        if extension=='zip':self.assertEqual(archive.read(str(failed)),failed.read_bytes())
+                with self.assertRaisesRegex(ValueError,'Fresh installed live-scroll archive'):
+                    C.archive_scroll_chains()
             finally:os.chdir(previous)
 
     def test_bounded_evidence_archive_and_oversized_file_rejection(self):
@@ -627,6 +718,11 @@ class WorkflowSelectionTests(unittest.TestCase):
             module=path.relative_to(REPO/'Tests').parts[0]
             inventory.extend(module+'.'+classes[0]+'/'+method for method in methods)
         inventory=sorted(inventory)
+        scroll_added=C.scroll_chain_additions(inventory)
+        current_inventory=inventory
+        self.assertEqual((len(inventory),len({name.split('/')[0] for name in inventory}),
+            hashlib.sha256(('\n'.join(inventory)+'\n').encode()).hexdigest()),C.CURRENT_NATIVE_INVENTORY)
+        inventory=[name for name in inventory if name not in scroll_added]
         self.assertEqual(len(inventory),2407)
         self.assertEqual(len(set(inventory)),2407)
         self.assertEqual(len({name.split('/')[0] for name in inventory}),267)
@@ -655,6 +751,8 @@ class WorkflowSelectionTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(('\n'.join(baseline)+'\n').encode()).hexdigest(),
                          '0f19081756c225e5b0fede62805ee01693d1409bf6552979ac74db409e3e4aab')
         live=json.loads((REPO/'scripts/live-scroll-additive-tests.json').read_text())
+        self.assertEqual(live,[name for name in current_inventory if '.LiveScroll' in name])
+        live=[name for name in live if name not in scroll_added]
         self.assertEqual(len(live),165);self.assertTrue(set(live).issubset(inventory))
         self.assertTrue(recovery.issubset(live))
         prior_live=[name for name in live if name not in recovery and name not in payload_added]
@@ -667,15 +765,15 @@ class WorkflowSelectionTests(unittest.TestCase):
         self.assertEqual(len(feedback_added),5)
         chain=json.loads((REPO/'scripts/capture-chain-native-tests.json').read_text())
         with patch.object(C,'load',side_effect=lambda path: payload if path.name=='save-payload-native-tests.json' else chain):
-            chain_added=C.chain_additions(inventory)
-        self.assertEqual(len(chain_added),95)
+            chain_added=C.chain_additions(current_inventory)
+        self.assertEqual(len(chain_added-scroll_added),95)
         for bad in ({}, {'added':chain['added'][:-1], 'focused':chain['focused']},
                     {**chain,'unexpected':0}):
             with patch.object(C,'load',side_effect=lambda path: payload if path.name=='save-payload-native-tests.json' else bad), self.assertRaises(ValueError):
-                C.chain_additions(inventory)
+                C.chain_additions(current_inventory)
         script_ids=json.loads((REPO/'scripts/text-script-integration-tests.json').read_text())
         with patch.object(C,'read',side_effect=lambda path: (REPO/path).read_bytes()):
-            script_added=C.text_script_additions(inventory)
+            script_added=C.text_script_additions(current_inventory)
         self.assertEqual(len(script_added),72)
         original=[name for name in inventory if name not in set(live) | feedback_added | chain_added | script_added | payload_added]
         self.assertEqual(len(original),2047)

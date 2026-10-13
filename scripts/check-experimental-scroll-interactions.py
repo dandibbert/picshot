@@ -396,6 +396,20 @@ def save_feedback_fields(save):
             need(detail_width > measured['detail'][2], 'Saved path did not exercise native truncation')
 
 
+def scroll_chain_evidence(root, demo, source):
+    """Independently decode the exact new subreport and bind it to its parent."""
+    need(root.is_dir() and not root.is_symlink(), 'Missing/symlinked saved-image-chain evidence directory')
+    report_path = root/'live-scroll-chain.json'
+    need(load(report_path) == demo.get('scrollChainCase'), 'Saved-image-chain subreport differs from installed session')
+    spec = importlib.util.spec_from_file_location('live_scroll_chain_evidence',
+        Path(__file__).with_name('check-live-scroll-chain-demo.py'))
+    reader = importlib.util.module_from_spec(spec); spec.loader.exec_module(reader)
+    receipt = reader.validate(report_path, source)
+    receipt_path = root/'live-scroll-chain-receipt.json'
+    need(receipt == load(receipt_path), 'Saved-image-chain bytes changed after strict qualification')
+    return [root/name for name in receipt['evidenceSHA256']] + [receipt_path]
+
+
 def qualify():
     source = source_record()
     installed = load(EVIDENCE/'package-identity.json')
@@ -425,9 +439,11 @@ def qualify():
     runner(inner, 660, 10, 'demo runner')
     fields(inner, dict(command=['swift', 'scripts/launch-smoke-app.swift', app,
                                str((EVIDENCE/'demo/demo.json').resolve())]), 'demo command')
+    chain_files = scroll_chain_evidence(EVIDENCE/'demo/saved-image-chain', demo, source['sourceCommit'])
     files = [EVIDENCE/'package-identity.json', EVIDENCE/'demo/demo.json',
              EVIDENCE/'demo/demo.json.launcher.json', EVIDENCE/'demo-launch.json',
              Path('dist/experimental-scroll-installed-report.json')]
+    files += chain_files
     for filename in PREVIEW_RECOVERY_VISUALS:
         path = EVIDENCE/'demo'/filename
         recovery_png(path)
@@ -470,6 +486,7 @@ def qualify():
     return dict(FLAGS, status='passed', sourceIdentity=source, originalSelectedAssertionsPreserved=True,
                 directDragReleaseEscapeAndStalePreviewVerified=True,
                 stationaryPreviewRecoveryAndRejectedMovePauseVerified=True,
+                existingLongImageSavedChainContinuationVerified=True,
                 observedRealStreamStatus=demo['realStream']['status'],
                 observedRealScreenCaptureValidated=demo['realScreenCaptureValidated'],
                 evidenceSHA256={str(path): sha(path) for path in files})
@@ -530,9 +547,14 @@ def chain_additions(inventory):
     chain = load(Path('scripts/capture-chain-native-tests.json'))
     need(type(chain) is dict and set(chain) == {'added', 'focused'}, 'Chain inventory schema differs')
     added = chain['added']
-    need(type(added) is list and len(added) == 95 and added == sorted(set(added))
+    current = {name for name in SCROLL_CHAIN_ADDITIONS if '.CaptureChain' in name or '.SaveWorkflowDeliveryTests/' in name}
+    need(type(added) is list and len(added) == 95 + len(current) and added == sorted(set(added))
          and all(type(name) is str and re.fullmatch(r'(?:PicShotCoreTests|PicShotTests)\.(?:CaptureChain\w*Tests|SaveWorkflowDeliveryTests)/test\w+', name) for name in added),
          'Chain additions differ')
+    preserved = [name for name in added if name not in current]
+    need(len(preserved) == 95 and hashlib.sha256(('\n'.join(preserved)+'\n').encode()).hexdigest()
+         == '1d0981cda725cf988eadd9252851f4ae56d4c97a8fb6f6989a253598e8b0e57f',
+         'Preserved capture-chain IDs differ')
     need(added == [name for name in inventory if name not in payload and ('.CaptureChain' in name or '.SaveWorkflowDeliveryTests/' in name)],
          'Chain methods lost or added outside explicit inventory')
     return set(added)
@@ -549,8 +571,56 @@ SCROLL_RECOVERY_ADDITIONS = (
 )
 
 
+CURRENT_NATIVE_INVENTORY = (2436, 271, '38a94e9f556705bb7b34260cca519f70d8058e59ef4f12b0701cf1a65ad79d07')
+CURRENT_FOCUSED_INVENTORY = (1904, '5aed3ad90bddfc24240efb9a0b15a4a4b35dd289eabb7cdb465e8d4ec941803f')
+SCROLL_CHAIN_ADDITIONS = (
+    'PicShotTests.CaptureChainPreparedInputTests/testAll15OrdersAndEveryReceiptPrefixDispatchOnlySuffixUsingIdenticalPreparedImage',
+    'PicShotTests.CaptureChainPreparedInputTests/testCancellationAtEveryOutputBoundaryContinuesWithFreshRunIDAndNoPrefixReplay',
+    'PicShotTests.CaptureChainPreparedInputTests/testCommittedSaveBeforeCancelDrainRemainsInContinuationAndDoesNotSaveAgain',
+    'PicShotTests.CaptureChainPreparedInputTests/testEachFailedOutputReentrantRetryPreservesCommittedPrefixAndNeverAcquires',
+    'PicShotTests.CaptureChainPreparedInputTests/testFinalCommitReentrantCancelHasCompleteReceiptAndPreparedReplayDispatchesNothing',
+    'PicShotTests.CaptureChainPreparedInputTests/testPinThenSavePickerCancellationContinuesOnlySaveAndCopy',
+    'PicShotTests.CaptureChainPreparedInputTests/testPreparedCompletionReleasesProviderWithoutKeepingImageInTerminalSnapshot',
+    'PicShotTests.CaptureChainPreparedInputTests/testPreparedReceiptValidationRejectsOutOfOrderMismatchedAndOverlongPrefixesBeforeDispatch',
+    'PicShotTests.CaptureChainPreparedInputTests/testSharedCheckpointProviderSurvivesCancelledSaveOnlyUntilBothOwnersRelease',
+    'PicShotTests.LiveScrollChainAppIntegrationTests/testAppCountsSharedRasterOnceAcrossCancelAndBlocksUnrelatedCaptureUntilAbandoned',
+    'PicShotTests.LiveScrollChainAppIntegrationTests/testDirectEditorAdmissionIncludesCancelledCheckpointAtExactByteBoundary',
+    'PicShotTests.LiveScrollChainAppIntegrationTests/testFullCloseDuringSaveKeepsAppReservationUntilDrainAndNeverMutatesCatalogOrDefaults',
+    'PicShotTests.LiveScrollChainAppIntegrationTests/testStaleRunnerManagerAndOldSessionCloseCannotCancelContinuationOrSuccessorSession',
+    'PicShotTests.LiveScrollChainSessionTests/testActualExactly32MillionPixelsPassesPostDrainAndRenderedImageChecksOnce',
+    'PicShotTests.LiveScrollChainSessionTests/testActualPostDrainPixelCrossingRejectsSaveThenPinBeforeRenderAndAnyOutput',
+    'PicShotTests.LiveScrollChainSessionTests/testAll15OrdersRenderOnceAcquireNothingAndDeliverIdenticalFrozenPixels',
+    'PicShotTests.LiveScrollChainSessionTests/testCancellationAtFinalCommitFinishesOwnerWithoutOfferingReplayForEveryOutputType',
+    'PicShotTests.LiveScrollChainSessionTests/testContinuationPreflightChecksOnlyUncommittedOutputsAfterPinAlreadyCommitted',
+    'PicShotTests.LiveScrollChainSessionTests/testExplicitAbandonReleasesCheckpointBeforeResumeAndStaleTransactionCannotControlSuccessor',
+    'PicShotTests.LiveScrollChainSessionTests/testFullCloseAndRunnerCancelAwaitOneOwnedSaveDrainBeforeReleasingProviderAndClosingOnce',
+    'PicShotTests.LiveScrollChainSessionTests/testFullCloseWaitsForHeldPreparationAndLateCompletionCannotRenderOrOutput',
+    'PicShotTests.LiveScrollChainSessionTests/testPendingCheckpointRejectsForcedOrdinaryOutputCaptureMoveAndAxisActions',
+    'PicShotTests.LiveScrollChainSessionTests/testPreflightRefusalAtEachPreparationBoundaryDispatchesNoOutputs',
+    'PicShotTests.LiveScrollChainSessionTests/testReplacementWarningCancelAndInvalidSelectionPreserveCheckpointThenExplicitNewChainReusesRaster',
+    'PicShotTests.LiveScrollChainSessionTests/testSaveFailureCancelBackReopenAndContinueKeepsFrozenDefinitionPrefixAndFreshAttemptID',
+    'PicShotTests.LiveScrollChainSessionTests/testUnconfirmedStopAfterCompleteChainRemainsTerminalAndStaleMoreCannotReplay',
+    'PicShotTests.LiveScrollChainTransactionTests/testCancelledAttemptExtendsOnlyMatchingPrefixAndKeepsFrozenIdentitiesAndRaster',
+    'PicShotTests.LiveScrollChainTransactionTests/testFullCommittedPrefixIsCompleteDespiteCancellationAndNewTransactionIntentionallyResetsOnlyReceipts',
+    'PicShotTests.LiveScrollChainTransactionTests/testStaleNonterminalWrongModeDefinitionAndRewrittenReceiptCallbacksLeaveCheckpointUntouched',
+)
+
+
+def scroll_chain_additions(inventory):
+    """The new source slice is additive to every delivered268 method identity."""
+    added = set(SCROLL_CHAIN_ADDITIONS)
+    need(added and added.issubset(inventory), 'Existing-image chain additions are missing or renamed')
+    classes = {name.split('/')[0] for name in added}
+    need(sorted(added) == [name for name in inventory if name.split('/')[0] in classes],
+         'Existing-image chain class has an unrecorded method')
+    return added
+
+
 def text_script_additions(inventory):
     """Bind exact266 additions while preserving all265/263 and accepted248 IDs."""
+    current_inventory = inventory
+    scroll_ids = scroll_chain_additions(inventory)
+    inventory = [name for name in inventory if name not in scroll_ids]
     added = json.loads(read(Path('scripts/text-script-integration-tests.json')))
     need(type(added) is list and len(added) == 72
          and all(type(name) is str and re.fullmatch(r'PicShot(?:CoreTests|Tests|TextScriptCoreTests|TextScriptHelperTests)\.TextScript\w+Tests/test\w+', name) for name in added)
@@ -580,6 +650,9 @@ def text_script_additions(inventory):
     need(len(inventory) == 2407 and len({name.split('/')[0] for name in inventory}) == 267
          and hashlib.sha256(('\n'.join(inventory)+'\n').encode()).hexdigest()
          == '5c7d51efe5e1fc16a1d3dd5c5d5fc4ae35948893fc7e5feb92aaf7c83c9f5539', 'Current native discovery differs from the exact2407 ID union')
+    need((len(current_inventory), len({name.split('/')[0] for name in current_inventory}),
+          hashlib.sha256(('\n'.join(current_inventory)+'\n').encode()).hexdigest()) == CURRENT_NATIVE_INVENTORY,
+         'Current native discovery differs from the exact additive existing-image chain union')
     return set(added)
 
 
@@ -807,6 +880,95 @@ def archive_capture_chains():
         partial.rename(target)
 
 
+def installed_scroll_chains(source, formats):
+    """Bind the new route to both actual installed bundles without new launches."""
+    need(type(formats.get('formats')) is dict and set(formats['formats']) == {'zip', 'dmg'},
+         'Both actual installed formats required for existing-image chains')
+    checked = {}
+    for extension in ('zip', 'dmg'):
+        root = Path('dist/evidence')/extension/'live-scroll'
+        need(root.is_dir() and not root.is_symlink(), 'Missing/symlinked installed live-scroll directory')
+        installed = formats['formats'][extension]
+        app = installed.get('bundlePath')
+        need(type(app) is str and app.startswith('/') and '..' not in Path(app).parts
+             and app.endswith('/' + extension + '/PicShot.app'), 'Installed live-scroll bundle path differs')
+        identity = dict(bundlePath=app, executablePath=app+'/Contents/MacOS/PicShot',
+            **{key: source[key] for key in ('sourceCommit', 'build', 'version', 'architecture',
+                'executableSHA256', 'plistSHA256', 'buildInfoSHA256')})
+        fields(installed, dict(buildVersion=source['build'], **{key: source[key] for key in
+            ('sourceCommit', 'version', 'architecture', 'executableSHA256', 'plistSHA256', 'buildInfoSHA256')}),
+            extension + ' existing-image chain installed identity')
+        demo = load(root/'demo.json')
+        fields(demo, dict(bundlePath=app, **{key: source[key] for key in ('sourceCommit', 'build', 'version')}),
+               extension + ' live-scroll demo identity')
+        demo_fields(demo)
+        files = scroll_chain_evidence(root/'saved-image-chain', demo, source['sourceCommit'])
+        launcher_path = root/'demo.json.launcher.json'
+        launcher = load(launcher_path)
+        fields(launcher, dict(status='exited', launcherExitCode=0, callbackReceived=True,
+            createsNewApplicationInstance=True, ownedExitConfirmed=True, launchedIdentityMatches=True,
+            timeoutSeconds=600, selectedAppPath=app, launchedAppPath=app,
+            launchedExecutablePath=identity['executablePath']), extension + ' live-scroll launcher')
+        number(launcher.get('processIdentifier'), extension + ' live-scroll pid', 1)
+        number(launcher.get('elapsedSeconds'), extension + ' live-scroll elapsed', 0, 600)
+        files += [root/'demo.json', launcher_path]
+        command_hashes = {}
+        for stem, timeout, command in (
+            ('launch', 660, ['swift', 'scripts/launch-smoke-app.swift', app, str((root/'demo.json').resolve())]),
+            ('check', 120, ['python3', 'scripts/check-live-scroll-chain-demo.py', '--report',
+                str((root/'saved-image-chain/live-scroll-chain.json').resolve()), '--source', source['sourceCommit']])):
+            report_path, log_path = root/(stem+'-report.json'), root/(stem+'.log')
+            run = load(report_path)
+            runner(run, timeout, 10, extension + ' existing-image chain '+stem)
+            fields(run, dict(schema_version=1, max_log_bytes=1048576, command=command), 'bounded live-scroll '+stem)
+            need(log_path.is_file() and not log_path.is_symlink() and log_path.stat().st_size <= 1048576,
+                 'Missing/symlinked/oversized live-scroll command log')
+            raw = log_path.read_bytes()
+            need(len(raw) <= 1048576 and type(run.get('log_bytes')) is int
+                 and type(run.get('output_bytes')) is int and run['log_bytes'] == run['output_bytes'] == len(raw),
+                 'Live-scroll command log byte counts differ')
+            command_hashes[report_path.name] = sha(report_path)
+            command_hashes[log_path.name] = hashlib.sha256(raw).hexdigest()
+        checked[extension] = dict(sourceIdentity=identity, boundedCommandSHA256=command_hashes,
+            evidenceSHA256={str(path.relative_to(root)): sha(path) for path in files})
+    need(checked['zip']['sourceIdentity']['bundlePath'] != checked['dmg']['sourceIdentity']['bundlePath'],
+         'Installed existing-image chain formats reused one bundle')
+    return checked
+
+
+def archive_scroll_chains():
+    # Keep all raw demo failures, native images and bounded logs even when a
+    # strict reader refused them. Archive bounds are the existing evidence caps.
+    output = Path('dist/live-scroll-chain-installed-evidence')
+    for extension in ('zip', 'dmg'):
+        root = Path('dist/evidence')/extension/'live-scroll'
+        if not root.exists():
+            continue
+        need(root.is_dir() and not root.is_symlink(), 'Unsafe installed live-scroll evidence directory')
+        files = []
+        for path in root.rglob('*'):
+            need(not path.is_symlink(), 'Symlinked installed live-scroll evidence')
+            if path.is_dir():
+                continue
+            need(path.is_file() and path.stat().st_size <= 16*1024**2, 'Unsafe/oversized installed live-scroll file')
+            files.append(path)
+        for path in (Path('dist/evidence/installed-format-identity.json'), ROOT/'source-identity.json',
+                     ROOT/'experimental-distribution.json'):
+            if path.is_file():
+                read(path); files.append(path)
+        need(files and len(files) <= 500 and sum(path.stat().st_size for path in files) < 256*1024**2,
+             'Installed live-scroll archive exceeds raw evidence bound')
+        output.mkdir(parents=True, exist_ok=True)
+        target, partial = output/(extension+'.zip'), output/(extension+'.partial.zip')
+        need(not target.exists() and not partial.exists() and not target.is_symlink() and not partial.is_symlink(),
+             'Fresh installed live-scroll archive destination required')
+        with zipfile.ZipFile(partial, 'x', zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+            for path in sorted(files):
+                archive.write(path, str(path))
+        need(partial.stat().st_size < 20*1024**2 - 65536, 'Installed live-scroll archive exceeds20MiB')
+        partial.rename(target)
+
+
 def final():
     source = source_record()
     receipt = qualify()
@@ -821,6 +983,7 @@ def final():
                                              'plistSHA256', 'buildInfoSHA256')}), 'actual ' + extension)
     chain_receipts = installed_capture_chains(source, formats)
     text_receipts = installed_text_scripts(source, formats)
+    scroll_chain_receipts = installed_scroll_chains(source, formats)
     spec = importlib.util.spec_from_file_location('native', Path('scripts/native-test-shards.py'))
     native = importlib.util.module_from_spec(spec); spec.loader.exec_module(native)
     for kind, planfile, directory, reportfile in (
@@ -828,6 +991,8 @@ def final():
             ('focused', 'focused-tests-plan.json', 'focused-test-shards', 'critical-tests-report.json')):
         plan = native.checked_plan(Path('dist')/planfile, source['sourceCommit'])
         text_ids = text_script_additions(plan['discoveredTests'])
+        scroll_ids = scroll_chain_additions(plan['discoveredTests'])
+        need(scroll_ids <= set(plan['selectedTests']), 'All existing-image chain methods must be selected in both plans')
         need(text_ids <= set(plan['selectedTests']), 'All72 script methods must be selected in both plans')
         payload_ids = save_payload_additions(plan['discoveredTests'])
         need(payload_ids <= set(plan['selectedTests']), 'All25 Save payload methods must be selected in both plans')
@@ -835,18 +1000,23 @@ def final():
         need(recovery_ids <= set(plan['selectedTests']), 'All7 recovery methods must be selected in both plans')
         if kind == 'full':
             live = json.loads(read(Path('scripts/live-scroll-additive-tests.json')))
-            need(len(live) == 165 and set(live).issubset(plan['discoveredTests']), 'Current165 live methods required')
+            need(live == [name for name in plan['discoveredTests'] if '.LiveScroll' in name]
+                 and len(live) == 185, 'All preserved and new live methods required')
             feedback = feedback_additions(plan['discoveredTests'])
             chains = chain_additions(plan['discoveredTests'])
-            stable = [name for name in plan['discoveredTests'] if name not in set(live) | feedback | chains | text_ids | payload_ids]
+            stable = [name for name in plan['discoveredTests'] if name not in set(live) | feedback | chains | text_ids | payload_ids | scroll_ids]
             need(len(stable) == 2047 and hashlib.sha256(('\n'.join(stable)+'\n').encode()).hexdigest()
                  == '926ac5674df90163b949fe461f0d4589ef72c8fc3215fa00b927564aae57cb44', 'Stable214 inventory changed')
             need(plan['selectedTests'] == plan['discoveredTests'], 'Full suite narrowed')
+        if kind == 'focused':
+            need((len(plan['selectedTests']), hashlib.sha256(('\n'.join(plan['selectedTests'])+'\n').encode()).hexdigest())
+                 == CURRENT_FOCUSED_INVENTORY, 'Current focused native inventory changed')
         aggregate = native.aggregate(plan, Path('dist')/directory)
         need(aggregate == load(Path('dist')/reportfile), 'Native aggregate differs: ' + kind)
         need(not (text_ids & set(aggregate['skippedTests'])), 'Script methods must pass without skips: ' + kind)
         need(not (recovery_ids & set(aggregate['skippedTests'])), 'Recovery methods must pass without skips: ' + kind)
         need(not (payload_ids & set(aggregate['skippedTests'])), 'Save payload methods must pass without skips: ' + kind)
+        need(not (scroll_ids & set(aggregate['skippedTests'])), 'Existing-image chain methods must pass without skips: ' + kind)
     record = dict(FLAGS, status='ready-for-user-opted-experimental-distribution', **source,
                   resourceFailurePreserved=PRIOR_FAILURE, remainingWorkflowChecksCompleted=True,
                   currentSourceFullAndFocusedNativeRepeated=True, currentSourceModelSuiteRepeated=True,
@@ -856,7 +1026,9 @@ def final():
                   installedFormatsSHA256=sha(Path('dist/evidence/installed-format-identity.json')),
                   currentSourceInstalledChainFormats=chain_receipts,
                   currentSourceInstalledTextScriptFormats=text_receipts,
+                  currentSourceInstalledExistingImageChainFormats=scroll_chain_receipts,
                   currentSourceTextScriptMethods=sorted(text_ids),
+                  currentSourceExistingImageChainMethods=sorted(scroll_ids),
                   requiresUserRealCaptureValidation=True, deliveryRepacked=False)
     save(ROOT/'experimental-distribution.json', record)
     for extension in ('zip', 'dmg'):
@@ -870,6 +1042,7 @@ def final():
 def archive():
     archive_capture_chains()
     archive_text_scripts()
+    archive_scroll_chains()
     # Only new experimental evidence is packed here. Ordinary evidence stays intact.
     files = sorted(path for root in (ROOT, EVIDENCE) if root.exists() for path in root.rglob('*') if path.is_file())
     files += [path for path in (Path('dist/experimental-scroll-installed.log'),

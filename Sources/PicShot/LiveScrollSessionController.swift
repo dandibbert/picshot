@@ -7,6 +7,16 @@ import PicShotCore
 @MainActor
 final class LiveScrollSessionController {
     var onClose: (() -> Void)?
+    let sessionID = UUID()
+    private let chainDependencies: LiveScrollChainDependencies?
+    private(set) var chainTransaction: LiveScrollChainTransaction?
+    private(set) var chainAttemptID: UUID?
+    private var chainTeardownWarning: String?
+    private var chainChoiceID: UUID?
+    private(set) var chainChoiceAlertForVerification: NSAlert?
+    private(set) var chainRenderCountForVerification = 0
+    private var retirement: Task<Void, Never>?
+    var retainedChainCapture: ChainCapture? { chainTransaction?.capture }
     private let onComplete: (CGImage) throws -> Void
     private let onImport: () -> Void
     private let onCopy: (CGImage) throws -> Void
@@ -75,7 +85,9 @@ final class LiveScrollSessionController {
          resourceStorageParent: URL = FileManager.default.temporaryDirectory,
          monotonicNow: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
          automaticScrollPermission: @escaping () -> Bool = { AXIsProcessTrusted() },
-         automaticScrollInput: ((CGEvent) throws -> Void)? = nil) {
+         automaticScrollInput: ((CGEvent) throws -> Void)? = nil,
+         chainDependencies: LiveScrollChainDependencies? = nil) {
+        self.chainDependencies = chainDependencies
         self.resourceStorageParent = resourceStorageParent
         self.monotonicNow = monotonicNow
         self.automaticScrollPermission = automaticScrollPermission
@@ -113,11 +125,11 @@ final class LiveScrollSessionController {
                 guard self.generation == token, let displayID = chosenScreen.displayID else { throw CancellationError() }
                 let source = try LiveScrollScreenSource(displayID: displayID, region: selected, screenSize: chosenScreen.frame.size)
                 try await self.beginSource(source, on: chosenScreen, token: token)
-            } catch CaptureError.cancelled { await self.retire() }
+            } catch CaptureError.cancelled { self.requestRetirement() }
             catch is CancellationError { }
             catch {
                 if self.controls != nil { self.paused = true; self.setStatus(error.localizedDescription, kind: .error) }
-                else { showError(error); await self.retire() }
+                else { showError(error); self.requestRetirement() }
             }
         }
     }
@@ -196,6 +208,10 @@ final class LiveScrollSessionController {
         actions.copy = { [weak self] in self?.finish(.copy) }
         actions.quickSave = { [weak self] in self?.finish(.save) }
         actions.pin = { [weak self] in self?.finish(.pin) }
+        actions.applyImageChain = { [weak self] in self?.chooseImageChain(replacingTransactionID: nil) }
+        actions.replaceImageChain = { [weak self] id in self?.chooseImageChain(replacingTransactionID: id) }
+        actions.continueImageChain = { [weak self] id in self?.continueImageChain(transactionID: id) }
+        actions.abandonImageChain = { [weak self] id in self?.confirmAbandonImageChain(transactionID: id) }
         actions.pauseResume = { [weak self] in self?.togglePause() }
         actions.autoScroll = { [weak self] in self?.toggleAutomatic() }
         actions.changeAxis = { [weak self] axis in self?.changeAxis(axis) }
@@ -214,7 +230,7 @@ final class LiveScrollSessionController {
     }
 
     private func placeControls() {
-        guard let screen, let region else { return }
+        guard !retired, let screen, let region else { return }
         let frame = CGRect(x: screen.frame.minX + region.minX,
                            y: screen.frame.maxY - region.maxY,
                            width: region.width, height: region.height)
@@ -305,11 +321,13 @@ final class LiveScrollSessionController {
     private func setStatus(_ text: String, kind: LiveScrollCaptureSnapshot.StatusKind) {
         guard !retired else { return }
         snapshot.status = deliveryWarning ?? text; snapshot.statusKind = deliveryWarning == nil ? kind : .warning
-        snapshot.paused = paused; snapshot.busy = finishing || transition != nil || regionDrag != nil
+        snapshot.paused = paused; snapshot.busy = finishing || transition != nil || regionDrag != nil || chainChoiceID != nil
         snapshot.canPause = !deliveryCompleted && !finishing && !captureLimitReached && transition == nil && regionDrag == nil && source != nil
         snapshot.canMoveRegion = !deliveryCompleted && !finishing && !captureLimitReached && transition == nil && regionDrag == nil && source != nil
         snapshot.canImport = !deliveryCompleted && lastState.width == 0 && !finishing
         let outputReady = !deliveryCompleted && !finishing && transition == nil && regionDrag == nil && lastState.width > 0
+        snapshot.canFinish = outputReady; snapshot.canCopy = outputReady
+        snapshot.canChangeAxis = !captureLimitReached && lastState.acceptedObservations <= 1
         snapshot.canQuickSave = outputReady && saveDestination != nil
         snapshot.canPin = outputReady && onPin != nil && Self.canPin(width: lastState.width, height: lastState.height)
         snapshot.pinUnavailableReason = lastState.width == 0 || Self.canPin(width: lastState.width, height: lastState.height) ? "" : "贴图最多支持 3200 万像素；可完成并编辑或快速保存原尺寸长图"
@@ -325,11 +343,26 @@ final class LiveScrollSessionController {
                 (paused ? "继续捕获并验证当前位置后可自动滚动" : "等待选区画面接上后可自动滚动"))
         if captureLimitReached { snapshot.canChangeAxis = false }
         if deliveryCompleted { snapshot.canFinish = false; snapshot.canCopy = false; snapshot.canChangeAxis = false }
+        let chainReady = !retired && !deliveryCompleted && !finishing && transition == nil
+            && regionDrag == nil && chainChoiceID == nil && lastState.width > 0 && chainDependencies != nil
+        snapshot.canApplyImageChain = chainReady && chainTransaction == nil
+        snapshot.canContinueImageChain = chainReady && chainTransaction != nil
+        snapshot.canReplaceImageChain = snapshot.canContinueImageChain
+        snapshot.canAbandonImageChain = snapshot.canContinueImageChain && !captureLimitReached
+        snapshot.chainTransactionID = chainTransaction?.transactionID
+        snapshot.chainContinueTitle = chainTransaction.map {
+            "继续「\($0.definition.name)」（\($0.receipts.count)/\($0.definition.outputs.count) 已完成）"
+        } ?? ""
+        if chainTransaction != nil || chainChoiceID != nil {
+            snapshot.canFinish = false; snapshot.canCopy = false; snapshot.canQuickSave = false; snapshot.canPin = false
+            snapshot.canPause = false; snapshot.canMoveRegion = false; snapshot.canAutoScroll = false
+            snapshot.canChangeAxis = false; snapshot.canImport = false
+        }
         controls?.update(snapshot: snapshot)
     }
 
     private func togglePause() {
-        guard transition == nil, regionDrag == nil, !finishing, !retired, !deliveryCompleted, let source else { return }
+        guard chainTransaction == nil, chainChoiceID == nil, transition == nil, regionDrag == nil, !finishing, !retired, !deliveryCompleted, let source else { return }
         if paused && updateCaptureLimit() {
             setStatus("已达到本次捕获上限，可完成保存已有长图", kind: .paused); return
         }
@@ -389,6 +422,221 @@ final class LiveScrollSessionController {
         }
     }
 
+    private var canCommandImageChain: Bool {
+        !retired && !deliveryCompleted && !finishing && transition == nil && regionDrag == nil
+            && chainChoiceID == nil && lastState.width > 0 && chainDependencies != nil
+    }
+
+    private func preflightImageChain(_ definition: CaptureChainDefinition, committedCount: Int,
+                                     width: Int, height: Int) throws {
+        guard committedCount >= 0, committedCount <= definition.outputs.count else { throw CaptureChainError.invalidOutputs }
+        if definition.outputs.dropFirst(committedCount).contains(.pin), !Self.canPin(width: width, height: height) {
+            throw PicShotError.message("贴图最多支持 3200 万像素；未开始任何后续输出，当前长图仍保留")
+        }
+        try chainDependencies?.preflight(definition, committedCount, width, height)
+    }
+
+    private func chooseImageChain(replacingTransactionID: UUID?) {
+        guard canCommandImageChain, replacingTransactionID == chainTransaction?.transactionID,
+              let dependencies = chainDependencies, let parent = controls?.toolbarWindow else { return }
+        let expectedTransaction = replacingTransactionID
+        let replacing = replacingTransactionID != nil
+        let token = generation, choice = UUID()
+        chainChoiceID = choice
+        do {
+            let definitions = try dependencies.definitions()
+            guard !retired, generation == token, chainChoiceID == choice else { return }
+            guard !definitions.isEmpty else { throw PicShotError.message("尚未保存截图链，请在截图链管理中创建后再选择。") }
+            let alert = NSAlert()
+            alert.messageText = replacing ? "选择其他动作链重新处理" : "使用截图链处理当前长图"
+            let prior = chainTransaction.map { "\n\n" + $0.committedDescription + "\n开始新动作链会从第一步执行，可能再次保存、复制或贴图。" } ?? ""
+            alert.informativeText = "来源：本次长截图。仅执行所选链的图片输出，按保存的顺序处理。" + prior
+            alert.addButton(withTitle: replacing ? "开始新动作链" : "处理当前长图").identifier = .init("scroll.live.imageChain.run")
+            alert.addButton(withTitle: "取消").identifier = .init("scroll.live.imageChain.choice.cancel")
+            let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 420, height: 28), pullsDown: false)
+            picker.identifier = .init("scroll.live.imageChain.choice")
+            for definition in definitions {
+                picker.addItem(withTitle: definition.name + " · " + definition.outputs.map(\.title).joined(separator: " → "))
+            }
+            alert.accessoryView = picker
+            chainChoiceID = choice; chainChoiceAlertForVerification = alert
+            setStatus(snapshot.status, kind: snapshot.statusKind)
+            alert.beginSheetModal(for: parent) { [weak self, weak picker] response in
+                guard let self, !self.retired, self.generation == token, self.chainChoiceID == choice else { return }
+                let selectedIndex = picker?.indexOfSelectedItem
+                self.chainChoiceID = nil; self.chainChoiceAlertForVerification = nil
+                self.setStatus(self.snapshot.status, kind: self.snapshot.statusKind)
+                guard response == .alertFirstButtonReturn, self.chainTransaction?.transactionID == expectedTransaction,
+                      let index = selectedIndex, definitions.indices.contains(index) else { return }
+                _ = self.startImageChain(definition: definitions[index], replacingTransactionID: expectedTransaction)
+            }
+        } catch {
+            if !retired, generation == token, chainChoiceID == choice {
+                chainChoiceID = nil; setStatus(error.localizedDescription, kind: .error)
+            }
+        }
+    }
+
+    /// Called only by an explicit Apply/New action. Equality revalidates the
+    /// picker snapshot, so stale selections cannot silently use edited metadata.
+    @discardableResult func startImageChain(definition: CaptureChainDefinition,
+                                            replacingTransactionID: UUID? = nil) -> Bool {
+        guard canCommandImageChain, chainTransaction?.transactionID == replacingTransactionID,
+              let dependencies = chainDependencies, let source, let assembler else { return false }
+        let token = generation
+        // Reserve before catalog/preflight callbacks, which may synchronously
+        // cancel or try another command in an injected/native observer.
+        finishing = true
+        do {
+            guard try dependencies.definitions().contains(definition) else { throw CaptureChainError.missingDefinition }
+            let width = chainTransaction?.capture.image.width ?? lastState.width
+            let height = chainTransaction?.capture.image.height ?? lastState.height
+            try preflightImageChain(definition, committedCount: 0, width: width, height: height)
+            guard !retired, generation == token else { return false }
+            if let old = chainTransaction {
+                // Validate the new transaction before discarding any old receipt.
+                chainTransaction = try LiveScrollChainTransaction(sessionID: sessionID, generation: generation,
+                    revisionID: old.revisionID, capture: old.capture, definition: definition)
+            }
+        } catch {
+            if !retired, generation == token { finishing = false; setStatus(error.localizedDescription, kind: .error) }
+            return false
+        }
+        paused = true; clearAutomaticState(); pauseCaptureClock()
+        snapshot.previewPositionVerified = false
+        setStatus("正在准备本次长截图…", kind: .finishing)
+        transition = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if !self.retired, self.generation == token {
+                    self.transition = nil; self.finishing = false
+                    self.setStatus(self.snapshot.status, kind: self.snapshot.statusKind)
+                }
+            }
+            do {
+                if self.chainTransaction == nil {
+                    do { try await source.pauseAndDrain() }
+                    catch { self.chainTeardownWarning = error.localizedDescription }
+                    await self.sampling?.value; self.sampling = nil
+                    try Task.checkCancellation()
+                    guard !self.retired, self.generation == token else { return }
+                    try self.preflightImageChain(definition, committedCount: 0,
+                        width: self.lastState.width, height: self.lastState.height)
+                    try Task.checkCancellation()
+                    guard !self.retired, self.generation == token else { return }
+                    let image = try await assembler.finish()
+                    self.chainRenderCountForVerification += 1
+                    try Task.checkCancellation()
+                    guard !self.retired, self.generation == token else { return }
+                    let captured = try ChainCapture(image: image)
+                    self.chainTransaction = try LiveScrollChainTransaction(sessionID: self.sessionID,
+                        generation: token, capture: captured, definition: definition)
+                }
+                guard let transaction = self.chainTransaction else { return }
+                try await self.performImageChain(transaction, token: token)
+            } catch is CancellationError {
+                if !self.retired, self.generation == token { self.setStatus("已停止后续操作，长图保持暂停", kind: .paused) }
+            } catch {
+                if !self.retired, self.generation == token {
+                    self.setStatus(error.localizedDescription + "；长图保持暂停", kind: .error)
+                }
+            }
+        }
+        return true
+    }
+
+    @discardableResult func continueImageChain(transactionID: UUID) -> Bool {
+        guard canCommandImageChain, let transaction = chainTransaction,
+              transaction.transactionID == transactionID else { return false }
+        let token = generation
+        finishing = true
+        do {
+            try preflightImageChain(transaction.definition, committedCount: transaction.receipts.count,
+                width: transaction.capture.image.width, height: transaction.capture.image.height)
+        } catch {
+            if !retired, generation == token { finishing = false; setStatus(error.localizedDescription, kind: .error) }
+            return false
+        }
+        guard !retired, generation == token else { return false }
+        setStatus("正在继续未完成的操作…", kind: .finishing)
+        transition = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if !self.retired, self.generation == token {
+                    self.transition = nil; self.finishing = false
+                    self.setStatus(self.snapshot.status, kind: self.snapshot.statusKind)
+                }
+            }
+            do { try await self.performImageChain(transaction, token: token) }
+            catch {
+                if !self.retired, self.generation == token { self.setStatus(error.localizedDescription, kind: .error) }
+            }
+        }
+        return true
+    }
+
+    private func performImageChain(_ transaction: LiveScrollChainTransaction, token: UInt64) async throws {
+        guard !retired, generation == token, chainTransaction?.transactionID == transaction.transactionID,
+              let dependencies = chainDependencies else { throw CancellationError() }
+        try Task.checkCancellation()
+        try preflightImageChain(transaction.definition, committedCount: transaction.receipts.count,
+            width: transaction.capture.image.width, height: transaction.capture.image.height)
+        try Task.checkCancellation()
+        guard !retired, generation == token, chainTransaction?.transactionID == transaction.transactionID else { return }
+        let runID = UUID()
+        chainAttemptID = runID
+        defer { if chainAttemptID == runID { chainAttemptID = nil } }
+        let result = try await dependencies.run(transaction, runID)
+        guard !retired, generation == token, chainAttemptID == runID,
+              var current = chainTransaction, current.transactionID == transaction.transactionID,
+              current.revisionID == transaction.revisionID else { return }
+        try current.accept(result, runID: runID)
+        chainTransaction = current
+        // A final successful output followed by cancellation is still complete.
+        if current.isComplete {
+            deliveryCompleted = true
+            if let warning = chainTeardownWarning {
+                deliveryWarning = "长图动作链已全部完成，但采集停止未确认：\(warning)。请关闭本次捕获。"
+                chainTransaction = nil
+                setStatus(deliveryWarning!, kind: .warning)
+            } else { requestRetirement() }
+        } else {
+            setStatus("已停止后续操作，长图保持暂停。已完成 \(current.receipts.count)/\(current.definition.outputs.count)；继续不会重复已完成操作。",
+                      kind: .paused)
+        }
+    }
+
+    private func confirmAbandonImageChain(transactionID: UUID) {
+        guard canCommandImageChain, let transaction = chainTransaction, transaction.transactionID == transactionID,
+              let parent = controls?.toolbarWindow, !captureLimitReached else { return }
+        let token = generation, choice = UUID()
+        let alert = NSAlert()
+        alert.messageText = "放弃未完成操作并继续采集？"
+        alert.informativeText = transaction.committedDescription
+            + "\n已保存的文件和贴图仍保留。放弃后将清除本次续传记录，再次处理长图可能重复输出。"
+        alert.addButton(withTitle: "放弃并继续采集").identifier = .init("scroll.live.imageChain.abandon.confirm")
+        alert.addButton(withTitle: "取消").identifier = .init("scroll.live.imageChain.abandon.cancel")
+        chainChoiceID = choice; chainChoiceAlertForVerification = alert
+        setStatus(snapshot.status, kind: snapshot.statusKind)
+        alert.beginSheetModal(for: parent) { [weak self] response in
+            guard let self, !self.retired, self.generation == token, self.chainChoiceID == choice else { return }
+            self.chainChoiceID = nil; self.chainChoiceAlertForVerification = nil
+            self.setStatus(self.snapshot.status, kind: self.snapshot.statusKind)
+            if response == .alertFirstButtonReturn { _ = self.abandonImageChain(transactionID: transactionID) }
+        }
+    }
+
+    /// The warning's explicit action is the only product caller. Release the
+    /// checkpoint before toggling acquisition; the next Finish is a new revision.
+    @discardableResult func abandonImageChain(transactionID: UUID) -> Bool {
+        guard canCommandImageChain, !captureLimitReached,
+              chainTransaction?.transactionID == transactionID else { return false }
+        chainTransaction = nil; chainTeardownWarning = nil
+        setStatus("已放弃未完成操作；已完成的外部结果仍保留", kind: .paused)
+        togglePause()
+        return true
+    }
+
     private enum OutputDestination: Equatable {
         case edit, copy, save, pin
         var completedMessage: String {
@@ -406,7 +654,7 @@ final class LiveScrollSessionController {
     }
 
     private func finish(_ destination: OutputDestination) {
-        guard !finishing, !retired, !deliveryCompleted, transition == nil, regionDrag == nil,
+        guard chainTransaction == nil, chainChoiceID == nil, !finishing, !retired, !deliveryCompleted, transition == nil, regionDrag == nil,
               lastState.width > 0, let source, let assembler else { return }
         if destination == .save && saveDestination == nil { return }
         if destination == .pin {
@@ -460,7 +708,7 @@ final class LiveScrollSessionController {
                     let warning = "\(destination.completedMessage)，但采集停止未确认：\(teardownWarning.localizedDescription)。请关闭本次捕获。"
                     self.deliveryWarning = warning
                     self.setStatus(warning, kind: .warning)
-                } else { await self.retire() }
+                } else { self.requestRetirement() }
             } catch is CancellationError {
                 guard !self.retired, self.generation == token else { return }
                 self.finishing = false
@@ -502,7 +750,7 @@ final class LiveScrollSessionController {
     }
 
     private func toggleAutomatic() {
-        guard !deliveryCompleted, !finishing, !paused, !captureLimitReached,
+        guard chainTransaction == nil, chainChoiceID == nil, !deliveryCompleted, !finishing, !paused, !captureLimitReached,
               transition == nil, regionDrag == nil, !retired, let source else { return }
         if automatic {
             stopAutomatic("已停止自动滚动，可继续手动滚动")
@@ -629,7 +877,7 @@ final class LiveScrollSessionController {
     /// Dragging moves only the visible proposal. Acquisition is drained once;
     /// an early mouse-up waits for that boundary before applying a new region.
     private func beginRegionDrag(id: UUID) -> Bool {
-        guard transition == nil, regionDrag == nil, !finishing, !retired,
+        guard chainTransaction == nil, chainChoiceID == nil, transition == nil, regionDrag == nil, !finishing, !retired,
               !deliveryCompleted, !captureLimitReached, let source, screen != nil else { return false }
         let drag = RegionDrag(id: id, generation: generation, wasPaused: paused,
                               originalRegion: source.region)
@@ -736,34 +984,51 @@ final class LiveScrollSessionController {
     }
 
     private func moveRegion() {
-        guard transition == nil, regionDrag == nil, !finishing, !retired, !deliveryCompleted,
+        guard chainTransaction == nil, chainChoiceID == nil, transition == nil, regionDrag == nil, !finishing, !retired, !deliveryCompleted,
               !captureLimitReached, let source, let screen else { return }
         let wasPaused = paused
+        let token = generation
         paused = true; clearAutomaticState()
         pauseCaptureClock(); snapshot.previewPositionVerified = false
         snapshot.busy = true; snapshot.status = "正在准备移动选区…"; controls?.update(snapshot: snapshot)
         transition = Task { [weak self] in
-            guard let self else { return }; defer { self.transition = nil; self.setStatus(self.snapshot.status, kind: self.snapshot.statusKind) }
+            guard let self else { return }
+            defer { if !self.retired, self.generation == token { self.transition = nil; self.setStatus(self.snapshot.status, kind: self.snapshot.statusKind) } }
             var applied = false
             do {
                 try await source.pauseAndDrain(); await self.sampling?.value; self.sampling = nil
+                try Task.checkCancellation()
+                guard !self.retired, self.generation == token else { return }
                 self.controls?.hide()
                 let mover = ManualScrollRegionMover(); self.mover = mover
                 let moved = try await mover.choose(screen: screen, region: source.region, movementAxis: wasPaused ? nil : self.axis)
+                try Task.checkCancellation()
+                guard !self.retired, self.generation == token else { return }
                 try source.moveRegion(to: moved); applied = true
                 self.region = source.region; self.mover = nil
                 if !wasPaused, !self.updateCaptureLimit() {
-                    try await source.resume(); self.paused = false; self.resumeCaptureClock()
+                    try await source.resume()
+                    try Task.checkCancellation()
+                    guard !self.retired, self.generation == token else { return }
+                    self.paused = false; self.resumeCaptureClock()
                 }
                 if let target = source.target { NSRunningApplication(processIdentifier: target.pid)?.activate(options: []) }
                 self.placeControls(); self.setStatus(self.captureLimitReached ? "已达到本次捕获上限，可完成保存已有长图" :
                     "选区已移动，滚动后继续验证接缝", kind: self.paused ? .paused : .capturing)
                 if !self.paused { self.startSampling() }
             } catch {
+                guard !self.retired, self.generation == token, !Task.isCancelled else { return }
                 self.mover = nil; self.region = source.region
                 if !wasPaused, !self.updateCaptureLimit() {
-                    do { try await source.resume(); self.paused = false; self.resumeCaptureClock() }
-                    catch { self.paused = true }
+                    do {
+                        try await source.resume()
+                        try Task.checkCancellation()
+                        guard !self.retired, self.generation == token else { return }
+                        self.paused = false; self.resumeCaptureClock()
+                    } catch {
+                        guard !self.retired, self.generation == token else { return }
+                        self.paused = true
+                    }
                 }
                 if let target = source.target { NSRunningApplication(processIdentifier: target.pid)?.activate(options: []) }
                 self.placeControls()
@@ -774,24 +1039,33 @@ final class LiveScrollSessionController {
     }
 
     private func changeAxis(_ next: ScrollAxis) {
-        guard !deliveryCompleted, !captureLimitReached, regionDrag == nil, next != axis,
+        guard chainTransaction == nil, chainChoiceID == nil, !retired, !deliveryCompleted, !captureLimitReached, regionDrag == nil, next != axis,
               lastState.acceptedObservations <= 1, transition == nil, !finishing,
               let source, let original = assembler else { return }
+        let token = generation
         paused = true; clearAutomaticState()
         pauseCaptureClock(); snapshot.previewPositionVerified = false
         snapshot.busy = true; snapshot.status = "正在切换方向…"; controls?.update(snapshot: snapshot)
         transition = Task { [weak self] in
             guard let self else { return }
-            defer { self.transition = nil; self.setStatus(self.snapshot.status, kind: self.snapshot.statusKind) }
+            defer { if !self.retired, self.generation == token { self.transition = nil; self.setStatus(self.snapshot.status, kind: self.snapshot.statusKind) } }
             var replacement: LiveScrollAssembler?
             do {
                 try await source.pauseAndDrain(); await self.sampling?.value; self.sampling = nil
+                try Task.checkCancellation()
+                guard !self.retired, self.generation == token else { return }
                 guard let first = await original.initialImageForAxisChange() else { throw CaptureError.busy }
+                try Task.checkCancellation()
+                guard !self.retired, self.generation == token else { return }
                 let fresh = LiveScrollAssembler(axis: next, generation: self.generation, storageParent: self.resourceStorageParent); replacement = fresh
                 let seed = try await fresh.observe(first)
+                try Task.checkCancellation()
                 try await source.resume()
+                try Task.checkCancellation()
+                guard !self.retired, self.generation == token else { await fresh.close(); return }
                 self.axis = next; self.assembler = fresh; replacement = nil
                 await original.close()
+                guard !self.retired, self.generation == token else { return }
                 self.lastState = seed.state; self.snapshot.axis = next
                 self.snapshot.previewPositionVerified = seed.state.matched && !seed.state.previewUnavailable
                 if let image = seed.preview { self.controls?.updatePreview(image: image, viewportFraction: seed.viewport) }
@@ -799,31 +1073,48 @@ final class LiveScrollSessionController {
                 self.startSampling()
             } catch {
                 await replacement?.close()
+                guard !self.retired, self.generation == token else { return }
                 self.setStatus("方向未切换，原长图仍保留：\(error.localizedDescription)", kind: .error)
             }
         }
     }
     private func openImporter() {
-        guard !deliveryCompleted, lastState.width == 0 else { return }
+        guard chainTransaction == nil, chainChoiceID == nil, !retired, !finishing, transition == nil, !deliveryCompleted, lastState.width == 0 else { return }
         Task { [weak self] in guard let self else { return }; await self.retire(); self.onImport() }
     }
-    func cancel() {
-        guard !retired else { return }
-        clearAutomaticState()
-        saveDestination?.cancel()
-        transition?.cancel(); sampling?.cancel(); mover?.cancel()
-        Task { [weak self] in await self?.retire() }
-    }
-    private func retire() async {
-        guard !retired else { return }
+    func cancel() { requestRetirement() }
+
+    private func requestRetirement() {
+        guard retirement == nil, !retired else { return }
         retired = true; generation &+= 1; paused = true; clearAutomaticState()
         pauseCaptureClock(); regionDrag = nil
+        let operation = transition
+        operation?.cancel(); sampling?.cancel(); mover?.cancel()
+        if let runID = chainAttemptID { chainDependencies?.cancel(runID) }
         saveDestination?.cancel()
+        // Invalidate and detach surfaces before observer callbacks can reenter.
+        chainChoiceID = nil
+        if let alert = chainChoiceAlertForVerification, let parent = alert.window.sheetParent {
+            parent.endSheet(alert.window, returnCode: .cancel)
+        }
+        chainChoiceAlertForVerification = nil
         controls?.teardown(); controls = nil
-        sampling?.cancel()
-        try? await source?.stop()
-        await sampling?.value; sampling = nil
-        await assembler?.close(); assembler = nil; source = nil
-        transition = nil; onClose?(); onClose = nil
+        retirement = Task { [self] in
+            try? await source?.stop()
+            await sampling?.value; sampling = nil
+            // Includes preparation, runner terminal settlement, and owned Save
+            // drainage. This separate task cannot be the captured operation.
+            await operation?.value
+            await assembler?.close(); assembler = nil; source = nil
+            chainAttemptID = nil; chainTransaction = nil; chainTeardownWarning = nil
+            transition = nil; retirement = nil
+            let close = onClose; onClose = nil
+            close?()
+        }
+    }
+
+    private func retire() async {
+        requestRetirement()
+        await retirement?.value
     }
 }
