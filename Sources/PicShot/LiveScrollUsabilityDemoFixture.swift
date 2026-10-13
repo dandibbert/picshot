@@ -364,7 +364,7 @@ enum LiveScrollUsabilityDemoFixture {
                 let recovered = session.stateForVerification
                 let recoveredDocument = try unwrap(await session.documentSnapshotForResourceVerification(),
                                                   "Stationary retry lost the accepted document")
-                let recoveredLabel = thumbnail.accessibilityLabel() ?? ""
+                let recoveredPreviewLabel = thumbnail.accessibilityLabel() ?? ""
                 let expectedFraction = CGRect(x: 0,
                     y: Double(recovered.fixedLeading + failedNativeOffset) / Double(recovered.height),
                     width: 1,
@@ -381,7 +381,7 @@ enum LiveScrollUsabilityDemoFixture {
                 recovery["recoveryMarkerVerified"] = thumbnail.isPositionVerified
                 recovery["recoveryMarkerGreen"] = thumbnail.viewportMarkerColor == .systemGreen
                 recovery["recoveryMarkerAtAcceptedViewport"] = fractionCorrect
-                recovery["recoveryAccessibilityVerified"] = recoveredLabel.contains("绿色") && !recoveredLabel.contains("尚未验证")
+                recovery["recoveryAccessibilityVerified"] = recoveredPreviewLabel.contains("绿色") && !recoveredPreviewLabel.contains("尚未验证")
                 recovery["recoveryAutoOff"] = !session.snapshotForVerification.autoScrolling
                 recovery["recoveryAutoLabel"] = auto.accessibilityLabel() ?? ""
                 recovery["durableSourceCountUnchanged"] = recoveredDocument.sourceCount == failedDocument.sourceCount
