@@ -631,7 +631,7 @@ class WorkflowSelectionTests(unittest.TestCase):
         self.assertEqual(len(set(inventory)),2407)
         self.assertEqual(len({name.split('/')[0] for name in inventory}),267)
         self.assertEqual(hashlib.sha256(('\n'.join(inventory)+'\n').encode()).hexdigest(),
-                         '89da6aece2514cafafdeea83cebf09a2a927400df4ee4cc4324d923183cf1b9a')
+                         '5c7d51efe5e1fc16a1d3dd5c5d5fc4ae35948893fc7e5feb92aaf7c83c9f5539')
         payload=json.loads((REPO/'scripts/save-payload-native-tests.json').read_text())
         with patch.object(C,'load',return_value=payload):
             payload_added=C.save_payload_additions(inventory)

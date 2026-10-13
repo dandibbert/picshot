@@ -170,6 +170,8 @@ final class SaveWorkflowUITests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: name); try? FileManager.default.removeItem(at: root) }
         let report = try await SaveWorkflowUIPreviewFixture.verify(evidenceDirectory: root)
         XCTAssertEqual(report["status"] as? String, "passed")
+        XCTAssertEqual(report["defaultPNGPreparationMode"] as? String, "encodedPayload")
+        XCTAssertEqual(report["defaultPNGPreparationModeObserved"] as? Bool, true)
         XCTAssertEqual((report["resourceCycles"] as? [[String: Any]])?.count, 10)
     }
     func testFixtureCanonicalDirectoryPassesNoFollowAndRawAliasStillFails() throws {
@@ -385,18 +387,17 @@ final class SaveWorkflowUITests: XCTestCase {
         }
     }
 
-    func testPNGPreparationModeDefaultsToLegacyAndIsExplicitlyInherited() throws {
+    func testPNGPreparationModeDefaultsToEncodedPayloadAndIsExplicitlyInherited() async throws {
         _ = NSApplication.shared
         let (defaults, name, root) = try isolated()
         defer { defaults.removePersistentDomain(forName: name); try? FileManager.default.removeItem(at: root) }
         let image = try SaveWorkflowUIPreviewFixture.sourceImage(width: 48, height: 32)
         let defaultPresenter = SaveWorkflowPresenter(defaults: defaults)
-        XCTAssertEqual(defaultPresenter.pngPreparationMode, .legacyPreview)
-        let defaultJob = try SaveWorkflowController(image: image, artifact: nil, settings: .init(baseURL: root),
-            defaults: defaults, copyAfterSaving: false)
-        defer { defaultJob.cancel() }
-        XCTAssertEqual(defaultJob.pngPreparationMode, .legacyPreview)
-        try SaveWorkflowSettings(baseURL: root).save(to: defaults)
+        defer { defaultPresenter.cancelAll() }
+        XCTAssertEqual(SavePNGPreparationMode.productionDefault, .encodedPayload)
+        XCTAssertEqual(defaultPresenter.pngPreparationMode, .encodedPayload)
+        let settings = SaveWorkflowSettings(baseURL: root, filenameTemplate: "default-{counter}")
+        try settings.save(to: defaults)
         for mode in [SavePNGPreparationMode.legacyPreview, .encodedPayload] {
             let presenter = SaveWorkflowPresenter(defaults: defaults, pngPreparationMode: mode)
             defer { presenter.cancelAll() }
@@ -407,6 +408,62 @@ final class SaveWorkflowUITests: XCTestCase {
             XCTAssertTrue(job.jobDrained); XCTAssertTrue(presenter.controllers.isEmpty)
         }
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+
+        let expectedBytes = try ImageExportService.encode(snapshot: ImageExportSnapshot(image: image), options: .init()).data
+        let expectedPixels = try SaveWorkflowUIPreviewFixture.pixels(image)
+        var savedURLs: Set<URL> = []
+        // Exercise both uninjected defaults through real encoding and publication.
+        for throughPresenter in [true, false] {
+            var savedCalls = 0, closeCalls = 0, drainCalls = 0
+            var receipt: SaveWorkflowSummary?
+            let onSaved: (SaveWorkflowResult) -> Void = { saved in
+                savedCalls += 1; receipt = SaveWorkflowSummary(saved)
+            }
+            var job: SaveWorkflowController? = try autoreleasepool {
+                if throughPresenter {
+                    defaultPresenter.onPresent = { presented in
+                        let close = presented.onClose, drained = presented.onDrained
+                        presented.onClose = { close?(); closeCalls += 1 }
+                        presented.onDrained = { drained?(); drainCalls += 1 }
+                    }
+                    return try XCTUnwrap(defaultPresenter.save(image: image, onSaved: onSaved))
+                }
+                let direct = try SaveWorkflowController(image: image, artifact: nil, settings: settings,
+                    defaults: defaults, copyAfterSaving: false, onSaved: onSaved)
+                direct.onClose = { closeCalls += 1 }; direct.onDrained = { drainCalls += 1 }
+                direct.revealForDecision(); direct.start()
+                return direct
+            }
+            defer { job?.cancel() }
+            weak var weakJob = job
+            weak var weakWindow = job?.window
+            weak var weakContent = job?.window?.contentView
+            XCTAssertEqual(job?.pngPreparationMode, .encodedPayload)
+            try await SaveWorkflowUIPreviewFixture.until({ job?.jobDrained == true }, "Default PNG Save did not drain")
+            XCTAssertEqual(job?.state, .completed); XCTAssertTrue(job?.window?.isVisible == true)
+            XCTAssertEqual(savedCalls, 1); XCTAssertEqual(closeCalls, 0); XCTAssertEqual(drainCalls, 1)
+            XCTAssertEqual(defaultPresenter.activeJobCount, 0); XCTAssertEqual(defaultPresenter.retainedInputBytes, 0)
+            XCTAssertEqual(defaultPresenter.controllers.count, throughPresenter ? 1 : 0)
+            let saved = try XCTUnwrap(job?.result), callbackReceipt = try XCTUnwrap(receipt)
+            XCTAssertEqual(callbackReceipt.savedURL, saved.savedURL)
+            XCTAssertEqual(callbackReceipt.byteCount, expectedBytes.count)
+            XCTAssertEqual(callbackReceipt.clipboardOutcome, .notRequested)
+            XCTAssertEqual(saved.byteCount, expectedBytes.count); XCTAssertEqual(saved.clipboardOutcome, .notRequested)
+            XCTAssertEqual(try Data(contentsOf: saved.savedURL), expectedBytes)
+            XCTAssertEqual(try SaveWorkflowUIPreviewFixture.pixels(SaveWorkflowUIPreviewFixture.decode(saved.savedURL)), expectedPixels)
+            XCTAssertTrue(savedURLs.insert(saved.savedURL).inserted)
+            job?.start(); job?.cancel(); job?.cancel(); job?.start()
+            XCTAssertEqual(job?.state, .closed); XCTAssertFalse(job?.window?.isVisible ?? true)
+            XCTAssertNil(job?.onClose); XCTAssertNil(job?.onDrained)
+            XCTAssertEqual(savedCalls, 1); XCTAssertEqual(closeCalls, 1); XCTAssertEqual(drainCalls, 1)
+            job = nil
+            try await SaveWorkflowUIPreviewFixture.until({ weakJob == nil && weakWindow == nil && weakContent == nil && defaultPresenter.controllers.isEmpty },
+                "Default PNG Save retained its drained controller or window")
+            XCTAssertEqual(defaultPresenter.activeJobCount, 0); XCTAssertEqual(defaultPresenter.retainedInputBytes, 0)
+            XCTAssertEqual(savedCalls, 1); XCTAssertEqual(closeCalls, 1); XCTAssertEqual(drainCalls, 1)
+            defaultPresenter.onPresent = nil
+        }
+        XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: root.path)), Set(savedURLs.map(\.lastPathComponent)))
     }
 
     func testEncodedPayloadModeKeepsSuppliedArtifactsAndPreviewAdmissionForEveryFormat() async throws {
@@ -417,21 +474,26 @@ final class SaveWorkflowUITests: XCTestCase {
         let image = try SaveWorkflowUIPreviewFixture.sourceImage(width: 48, height: 32)
         let preview = try ImageExportService.encode(snapshot: ImageExportSnapshot(image: image), options: .init()).firstPreview
         for format in ImageExportFormat.allCases {
-            let presenter = SaveWorkflowPresenter(defaults: defaults, pngPreparationMode: .encodedPayload)
-            defer { presenter.cancelAll() }
-            let artifact = ImageExportArtifact(data: Data("supplied-\(format.title)".utf8), options: .init(format: format),
-                width: 48, height: 32, pageCount: 1, firstPreview: preview, sourceURL: nil)
-            let expectedReservation = artifact.byteCount + preview.bytesPerRow * preview.height
-            ImageExportService.queue.isSuspended = true
-            let job = try XCTUnwrap(presenter.save(artifact: artifact, copy: false))
-            try await SaveWorkflowUIPreviewFixture.until({ job.state == .saving }, "Supplied artifact must bypass PNG encoding")
-            XCTAssertEqual(job.reservedInputBytes, expectedReservation)
-            XCTAssertEqual(presenter.retainedInputBytes, expectedReservation)
-            job.cancel()
-            XCTAssertEqual(presenter.retainedInputBytes, expectedReservation, "Cancelled work keeps admission until drain")
-            ImageExportService.queue.isSuspended = false
-            try await SaveWorkflowUIPreviewFixture.drained(presenter)
-            XCTAssertEqual(presenter.retainedInputBytes, 0); XCTAssertTrue(presenter.controllers.isEmpty)
+            for explicitPayload in [false, true] {
+                let presenter = explicitPayload ? SaveWorkflowPresenter(defaults: defaults, pngPreparationMode: .encodedPayload)
+                    : SaveWorkflowPresenter(defaults: defaults)
+                defer { presenter.cancelAll() }
+                XCTAssertEqual(presenter.pngPreparationMode, .encodedPayload)
+                let artifact = ImageExportArtifact(data: Data("supplied-\(format.title)".utf8), options: .init(format: format),
+                    width: 48, height: 32, pageCount: 1, firstPreview: preview, sourceURL: nil)
+                let expectedReservation = artifact.byteCount + preview.bytesPerRow * preview.height
+                ImageExportService.queue.isSuspended = true
+                let job = try XCTUnwrap(presenter.save(artifact: artifact, copy: false))
+                XCTAssertEqual(job.pngPreparationMode, .encodedPayload)
+                try await SaveWorkflowUIPreviewFixture.until({ job.state == .saving }, "Supplied artifact must bypass PNG encoding")
+                XCTAssertEqual(job.reservedInputBytes, expectedReservation)
+                XCTAssertEqual(presenter.retainedInputBytes, expectedReservation)
+                job.cancel()
+                XCTAssertEqual(presenter.retainedInputBytes, expectedReservation, "Cancelled work keeps admission until drain")
+                ImageExportService.queue.isSuspended = false
+                try await SaveWorkflowUIPreviewFixture.drained(presenter)
+                XCTAssertEqual(presenter.retainedInputBytes, 0); XCTAssertTrue(presenter.controllers.isEmpty)
+            }
         }
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
     }

@@ -1,12 +1,15 @@
 import AppKit
 import PicShotCore
 
-/// Init-only diagnostic choice. Keep the accepted preview path as the default
-/// until a separately reviewed matched Save comparison supports a change.
-enum SavePNGPreparationMode: Equatable, Sendable { case legacyPreview, encodedPayload }
+/// Fresh PNG Saves omit the unused preview; the legacy path remains an explicit
+/// init-only control for comparison and compatibility coverage.
+enum SavePNGPreparationMode: Equatable, Sendable {
+    case legacyPreview, encodedPayload
+    static let productionDefault: Self = .encodedPayload
+}
 
 /// Keep the genuine artifact alive for the original prepared-value lifetime,
-/// including collision UI and retry. Only fresh candidate PNGs omit a preview.
+/// including collision UI and retry. Only fresh PNG Saves may omit a preview.
 private enum SaveWorkflowPreparedOutput: Sendable {
     case artifact(ImageExportArtifact)
     case encodedPayload(ImageExportEncodedPayload)
@@ -45,7 +48,7 @@ final class SaveWorkflowPresenter {
     /// Set only by isolated native fixtures; production does not log paths.
     var directoryDiagnostic: ((SaveWorkflowDirectoryDiagnostic) -> Void)?
     init(defaults: UserDefaults = .standard, isSmoke: Bool = false,
-         pngPreparationMode: SavePNGPreparationMode = .legacyPreview,
+         pngPreparationMode: SavePNGPreparationMode = .productionDefault,
          afterPNGPreparationForDiagnostics: (() -> Void)? = nil) {
         self.defaults = defaults; self.isSmoke = isSmoke; self.pngPreparationMode = pngPreparationMode
         self.afterPNGPreparationForDiagnostics = afterPNGPreparationForDiagnostics
@@ -184,7 +187,7 @@ final class SaveWorkflowController: NSWindowController, NSWindowDelegate {
     private(set) var savePanel: NSSavePanel?
 
     init(image: CGImage?, artifact: ImageExportArtifact?, settings: SaveWorkflowSettings, defaults: UserDefaults,
-         copyAfterSaving: Bool, pngPreparationMode: SavePNGPreparationMode = .legacyPreview,
+         copyAfterSaving: Bool, pngPreparationMode: SavePNGPreparationMode = .productionDefault,
          afterPNGPreparationForDiagnostics: (() -> Void)? = nil, quietAutomatic: Bool = false, reservedInputBytes: Int = 0,
          copier: ((Data, String) -> Bool)? = nil, directoryDiagnostic: ((SaveWorkflowDirectoryDiagnostic) -> Void)? = nil,
          onSaved: ((SaveWorkflowResult) -> Void)? = nil) throws {

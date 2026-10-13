@@ -32,6 +32,12 @@ enum SaveWorkflowUIPreviewFixture {
         presenter.clipboardCopier = { data, type in board.clearContents(); return board.setData(data, forType: .init(type)) }
         defer { for controller in presenter.controllers { controller.cancel() } }
         do {
+            try require(presenter.pngPreparationMode == .encodedPayload, "Uninjected Save presenter must use the encodedPayload production default")
+            switch presenter.pngPreparationMode {
+            case .legacyPreview: report["defaultPNGPreparationMode"] = "legacyPreview"
+            case .encodedPayload: report["defaultPNGPreparationMode"] = "encodedPayload"
+            }
+            report["defaultPNGPreparationModeObserved"] = true
             guard let screen = NSScreen.main, let displayID = screen.displayID,
                   screen.visibleFrame.width >= 800, screen.visibleFrame.height >= 640 else { throw failure("Native save UI needs an 800×640 usable display") }
             var settings = SaveWorkflowSettings(baseURL: root, filenameTemplate: "final-{counter}")
@@ -94,6 +100,7 @@ enum SaveWorkflowUIPreviewFixture {
             presenter.onPresent = nil
             try menu("快速保存 PNG", editor)
             let quick = try unwrap(presenter.controllers.last, "Quick save did not create a job")
+            try require(quick.pngPreparationMode == presenter.pngPreparationMode, "Quick Save did not inherit the observed production default")
             try await until({ quick.state == .completed || quick.state == .failed }, "Quick save did not finish")
             let quickResult = try unwrap(quick.result, quick.statusLabel.stringValue)
             try require(try pixels(decode(quickResult.savedURL)) == expected, "Quick save serialized intermediate/unredacted pixels")

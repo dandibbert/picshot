@@ -24,7 +24,7 @@
     "PicShotTests.SaveWorkflowUITests/testEncodedPayloadModeKeepsSuppliedArtifactsAndPreviewAdmissionForEveryFormat",
     "PicShotTests.SaveWorkflowUITests/testEncodedPayloadQuietAutomaticCopyIsImmediateAndJobSurvivesEditorClose",
     "PicShotTests.SaveWorkflowUITests/testFreshPNGCollisionKeepBothRetriesPublicationAndKeepsVisibleSuccess",
-    "PicShotTests.SaveWorkflowUITests/testPNGPreparationModeDefaultsToLegacyAndIsExplicitlyInherited"
+    "PicShotTests.SaveWorkflowUITests/testPNGPreparationModeDefaultsToEncodedPayloadAndIsExplicitlyInherited"
   ],
   "focused": [
     "PicShotTests.ImageExportPNGStagingTests/testBothStillFormatsAndModesKeepPrivateExactStageAndCancelBeforeLaunch",
@@ -116,7 +116,7 @@
     "PicShotTests.SaveWorkflowUITests/testLongASCIIAndUnicodeSavePathsKeepOutcomeVisibleAtBothWidths",
     "PicShotTests.SaveWorkflowUITests/testNativeFolderPickerCancelPreservesDraftAndPreferences",
     "PicShotTests.SaveWorkflowUITests/testNativeWorkflowControlsFilesAndInstalledEvidence",
-    "PicShotTests.SaveWorkflowUITests/testPNGPreparationModeDefaultsToLegacyAndIsExplicitlyInherited",
+    "PicShotTests.SaveWorkflowUITests/testPNGPreparationModeDefaultsToEncodedPayloadAndIsExplicitlyInherited",
     "PicShotTests.SaveWorkflowUITests/testQuietAutomaticCopyIsImmediateAndJobSurvivesEditorClose",
     "PicShotTests.SaveWorkflowUITests/testReadyAndQueuedProgressStayVisibleWithoutPathOrErrorDetail",
     "PicShotTests.SaveWorkflowUITests/testRealSettingsPreviewInvalidTemplateAndUncommittedDraft"

@@ -402,7 +402,7 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
         record = self.execute_pin_inventory_guard(plan)
         self.assertEqual((record['discoveredCount'], record['discoveredClassCount']), (2407, 267))
         self.assertEqual(hashlib.sha256(('\n'.join(inventory) + '\n').encode()).hexdigest(),
-                         '89da6aece2514cafafdeea83cebf09a2a927400df4ee4cc4324d923183cf1b9a')
+                         '5c7d51efe5e1fc16a1d3dd5c5d5fc4ae35948893fc7e5feb92aaf7c83c9f5539')
         payload = json.loads((Path(__file__).parents[1] / 'save-payload-native-tests.json').read_text())
         self.assertEqual(set(payload), {'added', 'focused'})
         payload_added = payload['added']
@@ -411,9 +411,9 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
         self.assertEqual(record['additiveSavePayloadIDs'], payload_added)
         self.assertEqual(record['additiveSavePayloadMethods'], 25)
         self.assertEqual(hashlib.sha256(('\n'.join(payload_added) + '\n').encode()).hexdigest(),
-                         '15850dcece2db54991ea8098a603eb842c4e25a014e9c4070a341ff1531fc3f5')
+                         'fb6caa647da701ca40cb44139a26229052f2c204f4838cf756a4701b11fd63c1')
         self.assertEqual(hashlib.sha256(('\n'.join(payload['focused']) + '\n').encode()).hexdigest(),
-                         'e36eca20f9669438337cc03892caba4526067ff5b3132bc41ed8dd3bb123a326')
+                         'ed9db8041ef5f823b3f2ae655a32192359454e8c2fb7b49aad542c19a8d1b1a8')
         payload_classes = {name.split('/')[0] for name in payload['focused']}
         self.assertEqual(len(payload_classes), 5)
         self.assertEqual(payload['focused'], [name for name in inventory if name.split('/')[0] in payload_classes])

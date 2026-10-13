@@ -495,8 +495,8 @@ def save_payload_additions(inventory):
     record = load(Path('scripts/save-payload-native-tests.json'))
     need(type(record) is dict and set(record) == {'added', 'focused'}, 'Save payload inventory schema differs')
     for key, count, digest in [
-            ('added', 25, '15850dcece2db54991ea8098a603eb842c4e25a014e9c4070a341ff1531fc3f5'),
-            ('focused', 93, 'e36eca20f9669438337cc03892caba4526067ff5b3132bc41ed8dd3bb123a326')]:
+            ('added', 25, 'fb6caa647da701ca40cb44139a26229052f2c204f4838cf756a4701b11fd63c1'),
+            ('focused', 93, 'ed9db8041ef5f823b3f2ae655a32192359454e8c2fb7b49aad542c19a8d1b1a8')]:
         methods = record[key]
         need(type(methods) is list and len(methods) == count and methods == sorted(set(methods))
              and all(type(name) is str and re.fullmatch(r'PicShotTests\.\w+Tests/test\w+', name)
@@ -579,7 +579,7 @@ def text_script_additions(inventory):
          == 'a88b82f2a8e8828ee7e0ce31b52340106f32f37b8e831599d2859281ed876f7c', 'Preserved265 native discovery differs from the exact2382 ID union')
     need(len(inventory) == 2407 and len({name.split('/')[0] for name in inventory}) == 267
          and hashlib.sha256(('\n'.join(inventory)+'\n').encode()).hexdigest()
-         == '89da6aece2514cafafdeea83cebf09a2a927400df4ee4cc4324d923183cf1b9a', 'Current native discovery differs from the exact2407 ID union')
+         == '5c7d51efe5e1fc16a1d3dd5c5d5fc4ae35948893fc7e5feb92aaf7c83c9f5539', 'Current native discovery differs from the exact2407 ID union')
     return set(added)
 
 

@@ -33,6 +33,11 @@ enum SavePNGComparisonFixture {
               mode == "measure" || mode == "validate", evidenceDirectory.isFileURL else {
             throw failure("An exclusive measure/control-or-candidate or separate validate request is required")
         }
+        // V1 records the historical legacy default as a source invariant. Reject
+        // both modes before claiming the fixture or emitting identity or outputs.
+        guard SavePNGPreparationMode.productionDefault == .legacyPreview else {
+            throw failure("Historical save-png-comparison-v1 requires the legacyPreview production default")
+        }
         claimed = true
         try FileManager.default.createDirectory(at: evidenceDirectory, withIntermediateDirectories: true)
         if mode == "validate" {

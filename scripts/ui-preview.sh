@@ -152,6 +152,8 @@ for appearance in inputs['appearances']:
                 assert 0<dimensions[0]<=600 and 0<dimensions[1]<=800,(filename,dimensions)
 save=r['saveWorkflowUI']
 assert save['status']=='passed' and save['quietAutomaticFinalizedAction'],save
+if save.get('defaultPNGPreparationMode') != 'encodedPayload' or save.get('defaultPNGPreparationModeObserved') is not True:
+    raise SystemExit('Save UI did not observe the encoded-payload production default')
 assert not save['userPreferencesRead'] and not save['generalPasteboardReadOrWritten'],save
 assert not save['liveScreenCaptured'] and not save['networkAttempted'],save
 assert save['maximumSaveJobs']==2 and save['estimatedRetainedInputBudgetBytes']==256*1024*1024,save

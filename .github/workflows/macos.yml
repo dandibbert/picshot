@@ -772,6 +772,10 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p test_capture_chain_launcher_timeout.py -v
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_installed_chain_qualification.py -v
           PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p test_installed_chain_qualification.py -v
+          for pattern in test_save_png_comparison.py test_save_png_launcher_source.py; do
+            PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p "$pattern" -v
+            PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p "$pattern" -v
+          done
       - name: Check text script qualification contracts and ARM selection
         id: text_script_contracts
         timeout-minutes: 3
