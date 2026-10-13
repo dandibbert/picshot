@@ -112,6 +112,13 @@ CONTROL_KEYS = {'id', 'class', 'kind', 'viewPath', 'ancestorIDs', 'ownerWindowNu
 VISIBLE_KEYS = {'contained', 'cellSize', 'wrappedSize', 'textFits'}
 FIELD_KEYS = {'wraps', 'editableScrollable', 'alignmentWidth', 'nameAlternative', 'truncates', 'accessibleAlternative', 'fontSize'}
 RECT_KEYS = {'x', 'y', 'width', 'height'}
+# The retained image-chain manager remains in the progress window's owned view
+# tree. Its region-capture guidance must stay hidden throughout this text route.
+GUIDANCE_ID = 'capture-chain-guidance'
+GUIDANCE_TEXT = '一次截图，按顺序执行 1–3 个操作；仅在本机保存定义。'
+GUIDANCE_FIELDS = {'id':GUIDANCE_ID, 'class':'NSTextField', 'kind':'field', 'hidden':True,
+    'enabled':True, 'insideViewport':True, 'text':GUIDANCE_TEXT, 'tooltip':'',
+    'accessibilityValue':GUIDANCE_TEXT, 'accessibilityLabel':''}
 CONTROL_IDS = set(PHASES['choice']) | {'capture-chain-'+name for name in (
     'name','source','list','create','save','discard','delete','select','run','retry','cancel','close',
     'manage','result','text-scripts','current','status','run-status','receipt-0')}
@@ -154,7 +161,11 @@ def layout(artifact, phase):
         by_id[identifier] = row
         kind = row.get('kind')
         need(kind in classes and row.get('class') in classes[kind], 'unknown/forged native kind')
-        need(identifier in CONTROL_IDS or re.fullmatch('native-[0-9]+', identifier), 'foreign or unknown native identifier')
+        if identifier == GUIDANCE_ID:
+            need(phase in ('failure', 'result'), 'retained manager guidance is outside its progress phase')
+            fields(row, GUIDANCE_FIELDS, 'hidden retained manager guidance')
+        else:
+            need(identifier in CONTROL_IDS or re.fullmatch('native-[0-9]+', identifier), 'foreign or unknown native identifier')
         hidden = C.boolean(row, 'hidden', identifier)
         C.boolean(row, 'enabled', identifier)
         visible = C.boolean(row, 'insideViewport', identifier)
@@ -212,6 +223,8 @@ def layout(artifact, phase):
         elif row['class'] == 'NSButtonTextField': need(False, 'unowned private title control')
         ancestry[identifier] = set(parents)
     C.check_control_overlap(leaves, ancestry)
+    if phase in ('failure', 'result'):
+        fields(by_id.get(GUIDANCE_ID), GUIDANCE_FIELDS, 'required hidden retained manager guidance')
     for identifier, expected_text in PHASES[phase].items():
         row = by_id.get(identifier)
         is_field = identifier.endswith(('.title', '.description', '.name', '.outputs', '-status')) or '-receipt-' in identifier

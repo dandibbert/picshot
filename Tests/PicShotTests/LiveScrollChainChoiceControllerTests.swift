@@ -22,6 +22,9 @@ final class LiveScrollChainChoiceControllerTests: XCTestCase {
             try self.ready(choice)
             XCTAssertEqual(picker.indexOfSelectedItem, 0)
             XCTAssertEqual(picker.numberOfItems, 2)
+            try LiveScrollChoiceKeyboardTestSupport.verify(choice, phase: "image-choice") {
+                XCTAssertTrue(responses.isEmpty); XCTAssertTrue(selected.isEmpty)
+            }
             XCTAssertTrue(responses.isEmpty); XCTAssertTrue(selected.isEmpty)
             picker.selectItem(at: 1)
             XCTAssertTrue(NSApp.sendAction(try XCTUnwrap(picker.action), to: picker.target, from: picker))
@@ -137,6 +140,9 @@ final class LiveScrollChainChoiceControllerTests: XCTestCase {
                         }
                     } else {
                         XCTAssertNil(choice.accessoryView); XCTAssertNil(choice.selectedNameLabel); XCTAssertNil(choice.outputOrderLabel)
+                        try LiveScrollChoiceKeyboardTestSupport.verify(choice, phase: "abandonment-" + appearance.rawValue) {
+                            XCTAssertTrue(responses.isEmpty, "Keyboard navigation cannot confirm or cancel abandonment")
+                        }
                         let layout = try CaptureChainUIPreviewFixture.assertLayout(window: choice.window,
                             phase: "owned-choice-abandonment-" + appearance.rawValue)
                         XCTAssertEqual(layout["fullVisibleFramesChecked"] as? Bool, true)
@@ -310,6 +316,83 @@ final class LiveScrollChainChoiceControllerTests: XCTestCase {
         state.acceptsCallbacks = false; state.timer?.invalidate(); state.timer = nil
         XCTAssertFalse(NSApp.isRunning)
         try XCTUnwrap(state.result, "Owned application loop exited before its test body completed").get()
+    }
+}
+
+/// Verify AppKit's native focus transfer without changing keyboard preferences.
+/// The explicit loop is checked even when the host excludes controls from Tab.
+@MainActor
+enum LiveScrollChoiceKeyboardTestSupport {
+    static func verify(_ choice: LiveScrollChainChoiceController, phase: String,
+        file: StaticString = #filePath, line: UInt = #line, noExecution: () -> Void) throws {
+        var ordered: [NSView] = []
+        if let picker = choice.accessoryView { ordered.append(picker) }
+        ordered.append(contentsOf: choice.buttons.map { $0 as NSView })
+        let initial = try XCTUnwrap(ordered.first, file: file, line: line)
+        let window = choice.window
+        XCTAssertFalse(window.autorecalculatesKeyViewLoop, file: file, line: line)
+        XCTAssertTrue(window.initialFirstResponder === initial, file: file, line: line)
+        XCTAssertTrue(window.firstResponder === initial, "Initial focus must enter the owned control loop", file: file, line: line)
+        for index in ordered.indices {
+            XCTAssertTrue(ordered[index].nextKeyView === ordered[(index + 1) % ordered.count],
+                "The declared key-view loop must survive first presentation", file: file, line: line)
+        }
+        noExecution()
+
+        let fullKeyboardAccess = NSApp.isFullKeyboardAccessEnabled
+        let eligible = ordered.indices.filter { ordered[$0].canBecomeKeyView }
+        let identifiers = ordered.map { $0.identifier?.rawValue ?? String(describing: type(of: $0)) }
+        if fullKeyboardAccess {
+            XCTAssertEqual(eligible.count, ordered.count,
+                "Full keyboard access must expose every declared control", file: file, line: line)
+        }
+        if eligible.isEmpty {
+            XCTAssertTrue(initial.acceptsFirstResponder,
+                "An empty eligible ring requires the documented initial-responder fallback", file: file, line: line)
+        }
+        func focusID() -> String {
+            guard let responder = window.firstResponder else { return "nil" }
+            return (responder as? NSView)?.identifier?.rawValue ?? String(describing: type(of: responder))
+        }
+        let initialFocus = focusID()
+        var actual: [String: [String]] = [:], expected: [String: [String]] = [:]
+        var focusMatchesExpected = window.firstResponder === initial
+        var position = 0
+        // One extra step closes the eligible cycle when the initial control is
+        // excluded. At most four moves in each direction; no focus is injected.
+        for (direction, delta) in [("forward", 1), ("reverse", -1)] {
+            for _ in 0..<max(1, eligible.count + 1) {
+                let destination = (1...ordered.count).map {
+                    (position + delta * $0 + ordered.count) % ordered.count
+                }.first { eligible.contains($0) } ?? 0
+                if delta == 1 { window.selectNextKeyView(nil) }
+                else { window.selectPreviousKeyView(nil) }
+                actual[direction, default: []].append(focusID())
+                expected[direction, default: []].append(identifiers[destination])
+                let matches = window.firstResponder === ordered[destination]
+                focusMatchesExpected = focusMatchesExpected && matches
+                XCTAssertTrue(matches,
+                    "Native \(direction) focus must follow the declared eligible ring", file: file, line: line)
+                noExecution()
+                position = destination
+            }
+        }
+        for index in ordered.indices {
+            XCTAssertTrue(ordered[index].nextKeyView === ordered[(index + 1) % ordered.count],
+                "Native traversal must preserve the declared key-view loop", file: file, line: line)
+        }
+        let coverage = !focusMatchesExpected ? "Native focus did not match the declared eligible ring"
+            : eligible.isEmpty
+            ? "No controls eligible under host policy; native initial-responder fallback only, no all-controls Tab coverage"
+            : eligible.count == ordered.count ? "All declared controls traversed forward and backward"
+            : "Only the host-eligible subset traversed; excluded controls have no Tab coverage"
+        let receipt: [String: Any] = ["phase": phase, "fullKeyboardAccessEnabled": fullKeyboardAccess,
+            "orderedControlIDs": identifiers, "eligibleControlIDs": eligible.map { identifiers[$0] },
+            "excludedControlIDs": ordered.indices.filter { !eligible.contains($0) }.map { identifiers[$0] },
+            "initialActualFocus": initialFocus, "actualFocus": actual, "expectedFocus": expected,
+            "focusMatchesExpected": focusMatchesExpected, "coverage": coverage]
+        let data = try JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys])
+        print("PicShotChoiceKeyboardReceipt " + (try XCTUnwrap(String(data: data, encoding: .utf8), file: file, line: line)))
     }
 }
 

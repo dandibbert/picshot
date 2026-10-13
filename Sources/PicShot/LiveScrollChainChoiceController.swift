@@ -117,6 +117,7 @@ final class LiveScrollChainChoiceController: NSObject, NSWindowDelegate {
         let height = inset + 24 + gap + warningSectionHeight + descriptionHeight + choicesHeight + 20 + 32 + inset
         let panel = LiveScrollChainChoicePanel(contentRect: NSRect(x: 0, y: 0, width: sheetWidth, height: height),
             styleMask: [.titled], backing: .buffered, defer: false)
+        panel.autorecalculatesKeyViewLoop = false
         panel.title = "PicShot"
         panel.identifier = .init(identifierPrefix + ".sheet")
         panel.isReleasedWhenClosed = false; panel.hidesOnDeactivate = false
@@ -153,6 +154,8 @@ final class LiveScrollChainChoiceController: NSObject, NSWindowDelegate {
         panel.confirm = { [weak self] in self?.requestFinish(.alertFirstButtonReturn) }
         panel.cancel = { [weak self] in self?.requestFinish(.alertSecondButtonReturn) }
         popup?.nextKeyView = confirm; confirm.nextKeyView = cancel; cancel.nextKeyView = (popup as NSView?) ?? confirm
+        // Declare the owned loop's entry before AppKit first presents the sheet.
+        panel.initialFirstResponder = (popup as NSView?) ?? confirm
         if let popup { Self.fitPopupTitles(popup, rows: rows) }
         updateSelectedRow()
     }

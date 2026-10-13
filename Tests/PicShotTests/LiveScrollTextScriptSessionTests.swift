@@ -158,14 +158,39 @@ final class LiveScrollTextScriptSessionTests: XCTestCase {
     }
 
     func testAlreadyOversizedActiveDraftRejectsWithoutPausingOrDraining() async throws {
-        try await withSession(initial: { try self.makeTexture(width: 8_000, height: 4_001, origin: 0) }) { f in
+        // Each observation stays below the 24 MP frame limit; accepted scrolling
+        // grows the active composite beyond the separate 32 MP text limit.
+        try await withSession(initial: { try self.largeTexture(origin: 0) }) { f in
+            XCTAssertEqual(f.session.stateForVerification.width, 8_000)
+            XCTAssertEqual(f.session.stateForVerification.height, 2_000)
+            XCTAssertEqual(f.session.stateForVerification.acceptedObservations, 1)
             XCTAssertFalse(f.session.snapshotForVerification.paused)
+            XCTAssertEqual(f.source.pauseCalls, 0)
+            XCTAssertTrue(f.session.snapshotForVerification.canApplyTextScript)
+
+            try await f.deliver(self.largeTexture(origin: 1_300))
+            XCTAssertEqual(f.session.stateForVerification.width, 8_000)
+            XCTAssertEqual(f.session.stateForVerification.height, 3_300)
+            XCTAssertEqual(f.session.stateForVerification.acceptedObservations, 2)
+            XCTAssertFalse(f.session.snapshotForVerification.paused)
+            XCTAssertEqual(f.source.pauseCalls, 0)
+            XCTAssertTrue(f.session.snapshotForVerification.canApplyTextScript)
+
+            try await f.deliver(self.largeTexture(origin: 2_001))
+            XCTAssertEqual(f.session.stateForVerification.width, 8_000)
+            XCTAssertEqual(f.session.stateForVerification.height, 4_001)
+            XCTAssertEqual(f.session.stateForVerification.acceptedObservations, 3)
+            XCTAssertFalse(f.session.snapshotForVerification.paused)
+            XCTAssertEqual(f.source.pauseCalls, 0)
             XCTAssertFalse(f.session.snapshotForVerification.canApplyTextScript)
             XCTAssertFalse(f.session.startTextScript(definition: f.bridge.definitions[0]))
             XCTAssertFalse(f.session.snapshotForVerification.paused)
+            XCTAssertFalse(f.session.snapshotForVerification.busy)
+            XCTAssertTrue(f.source.waiting)
             XCTAssertEqual(f.source.pauseCalls, 0)
             XCTAssertEqual(f.session.textRenderCountForVerification, 0)
             XCTAssertTrue(f.bridge.attempts.isEmpty); XCTAssertNil(f.session.textAttemptID)
+            XCTAssertNil(f.session.stagedTextCapture); XCTAssertNil(f.session.chainTransaction)
             XCTAssertTrue(f.session.snapshotForVerification.status.contains("3200 万像素"))
             XCTAssertTrue(f.session.snapshotForVerification.status.contains("当前长图仍保留"))
         }

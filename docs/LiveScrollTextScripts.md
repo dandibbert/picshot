@@ -1,6 +1,6 @@
 # Saved text processing for the current long image
 
-This bounded candidate follows experimental278 and the separately focused279 recovery-guidance checkpoint. It adds one explicit More-menu route from an existing long capture to an already saved local text script. Native compilation, actual OCR/helper execution and installed acceptance are pending. It does not change stable214, original227 failed memory limits, the helper sandbox or the absence of real-ScreenCaptureKit validation.
+This bounded candidate follows experimental278 and the separately focused279 recovery-guidance checkpoint. It adds one explicit More-menu route from an existing long capture to an already saved local text script. Build281 compiled and ran the controlled native OCR/helper/Copy witness with exact final pixels and cached retry. Its external reader and two new native test paths failed; the scoped corrections and full installed qualification remain pending. It does not change stable214, original227 failed memory limits, the helper sandbox or the absence of real-ScreenCaptureKit validation.
 
 ## User flow and transaction
 

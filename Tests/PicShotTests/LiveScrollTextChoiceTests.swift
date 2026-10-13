@@ -38,6 +38,9 @@ final class LiveScrollTextChoiceTests: XCTestCase {
             XCTAssertTrue(picker.nextKeyView === choice.buttons[0])
             XCTAssertTrue(choice.buttons[0].nextKeyView === choice.buttons[1])
             XCTAssertTrue(choice.buttons[1].nextKeyView === picker)
+            try LiveScrollChoiceKeyboardTestSupport.verify(choice, phase: "text-choice") {
+                XCTAssertTrue(responses.isEmpty); XCTAssertTrue(executed.isEmpty)
+            }
             XCTAssertTrue(responses.isEmpty); XCTAssertTrue(executed.isEmpty)
             picker.selectItem(at: 1)
             XCTAssertTrue(NSApp.sendAction(try XCTUnwrap(picker.action), to: picker.target, from: picker))
