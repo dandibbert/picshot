@@ -494,8 +494,11 @@ final class LiveScrollToolbarView: NSView {
         statusLabel.textColor = error ? .systemRed : (warning ? .systemOrange : .secondaryLabelColor)
         statusIndicator.image = liveScrollSymbol(error || warning ? "exclamationmark.circle.fill" : "circle.fill", title: snapshot.status)
         statusIndicator.contentTintColor = error ? .systemRed : (warning ? .systemOrange : .systemGreen)
-        let title = error ? "重试捕获" : (snapshot.paused ? "继续捕获" : "暂停捕获")
-        pauseButton.image = liveScrollSymbol(error ? "arrow.clockwise" : (snapshot.paused ? "play.fill" : "pause.fill"), title: title)
+        // A failed move may already have resumed its original source. Keep the
+        // warning visible, but name this control by the action it actually takes.
+        let title = snapshot.paused ? (error ? "重试捕获" : "继续捕获") : "暂停捕获"
+        let symbol = snapshot.paused ? (error ? "arrow.clockwise" : "play.fill") : "pause.fill"
+        pauseButton.image = liveScrollSymbol(symbol, title: title)
         pauseButton.setAccessibilityLabel(title); pauseButton.toolTip = title
         pauseButton.isEnabled = snapshot.canPause && !snapshot.busy
         finishButton.isEnabled = snapshot.canFinish && !snapshot.busy

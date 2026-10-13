@@ -164,6 +164,9 @@ final class LiveScrollSessionController {
     func documentSnapshotForResourceVerification() async -> LiveScrollDocument.Snapshot? {
         await assembler?.documentSnapshotForResourceVerification()
     }
+    func failNextPreviewForTesting(_ failure: LiveScrollAssembler.PreviewFailureForTesting = .unavailable) async {
+        await assembler?.failNextPreviewForTesting(failure)
+    }
     var snapshotForVerification: LiveScrollCaptureSnapshot { snapshot }
     var stateForVerification: LiveScrollAssembler.State { lastState }
     var controlsForVerification: LiveScrollCaptureController? { controls }

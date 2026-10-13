@@ -11,7 +11,14 @@ import platform
 import plistlib
 import re
 import subprocess
+import struct
 import zipfile
+
+# Reuse the existing bounded native PNG decoder directly. The capture-chain
+# reader imports this module, so importing that reader here would be circular.
+_PNG_SPEC = importlib.util.spec_from_file_location('scroll_recovery_png', Path(__file__).with_name('check-automatic-mosaic-report.py'))
+_PNG = importlib.util.module_from_spec(_PNG_SPEC)
+_PNG_SPEC.loader.exec_module(_PNG)
 
 MARKER = '[experimental-scroll-interactions]'
 ROOT = Path('dist/experimental-scroll-interactions')
@@ -23,6 +30,10 @@ PREFIX_SHA = '44ee48f13fdfe6ec558a8d6adb63de52494f0650ca13dddf3fc4329ae7f63c1c'
 PRIOR_FAILURE = dict(runID='38130153505', build=227, warmRSSBytes=10780672,
                      warmLimitBytes=9830400, lateThreeRSSBytes=5177344,
                      lateLimitBytes=4915200, preserved=True)
+PREVIEW_RECOVERY_VISUALS = tuple('live-scroll-preview-' + state + '-' + appearance + '.png'
+    for state in ('failed', 'recovered') for appearance in ('light', 'dark'))
+REJECTED_MOVE_VISUALS = tuple('live-scroll-rejected-move-' + state + '-' + appearance + '.png'
+    for state in ('active', 'paused') for appearance in ('light', 'dark'))
 FLAGS = dict(distribution='user-opted-experimental', userOptedExperimentalDistribution=True,
              installerAcceptance=False, fullMemoryQualification=False, testingPackageEligible=False,
              partialMemoryQualification=False, stable214Unchanged=True, stableInstallerReplacement=False,
@@ -57,6 +68,16 @@ def read(path, limit=16 * 1024**2):
     raw = path.read_bytes()
     need(len(raw) <= limit, 'Input grew beyond bound: ' + str(path))
     return raw
+
+
+def recovery_png(path):
+    """Decode only the eight added native visuals within the existing file bound."""
+    raw = read(path)
+    need(len(raw) >= 33 and raw[:8] == b'\x89PNG\r\n\x1a\n', 'Invalid recovery PNG signature: ' + str(path))
+    width, height = struct.unpack_from('>II', raw, 16)
+    need(0 < width <= 4096 and 0 < height <= 4096 and width*height <= 4_000_000,
+         'Recovery PNG raster exceeds bound: ' + str(path))
+    return _PNG.png_rgba(raw)
 
 
 def sha(path, limit=128 * 1024**2):
@@ -176,6 +197,7 @@ def demo_fields(demo):
            gapAccessibilityDescribesUnverifiedPosition=True, gapRecoveryMarkerVerified=True,
            gapRecoveryMarkerGreen=True, gapRecoveryAccessibilityDescribesVerifiedPosition=True), 'gap preview')
     number(demo['illustratedCase'].get('acceptedReverseObservations'), 'reverse observations', 2)
+    recovery_fields(demo)
     move = demo['movementCase']
     fields(move, dict(moveAppliedThroughReturn=False, moveAppliedThroughMouseRelease=True,
                      actualSourcePixelsChanged=True, ownedTargetIdentityUnchanged=True), 'movement')
@@ -220,6 +242,62 @@ def demo_fields(demo):
     need(type(demo.get('realScreenCaptureValidated')) is bool
          and demo['realScreenCaptureValidated'] == (real['status'] == 'passed'), 'Real capture report differs')
 
+
+
+def recovery_fields(demo):
+    """Require the native stationary-preview and resumed-error Pause witnesses."""
+    preview = demo['illustratedCase'].get('stationaryPreviewRecovery')
+    fields(preview, dict(status='passed', injectedPreviewFailures=1,
+        nativeWheelEventsToFailure=1, nativeWheelEventsDuringRecovery=0,
+        failurePreviewUnavailable=True, failureMatched=True, failureRetainedPreviewPixels=True,
+        failureMarkerUnverified=True, failureMarkerAmber=True, failureAccessibilityUnverified=True,
+        failureAutoOff=True, failureAutoDisabled=True, failureAutoLabel='自动滚动',
+        recoveryRequiresFurtherInput=False, recoveryPreviewAvailable=True,
+        recoveryMarkerVerified=True, recoveryMarkerGreen=True, recoveryMarkerAtAcceptedViewport=True,
+        recoveryAccessibilityVerified=True, recoveryAutoOff=True, recoveryAutoLabel='自动滚动',
+        durableSourceCountUnchanged=True, durableStripCountUnchanged=True, durableDiskBytesUnchanged=True,
+        sourcePacingMaximumSeconds=2), 'stationary preview recovery')
+    for key in ('beforeFailureAcceptedObservations', 'failureAcceptedObservations', 'recoveryAcceptedObservations',
+                'beforeFailureOffset', 'failureOffset', 'failureNativeOffset', 'recoveryOffset', 'recoveryNativeOffset',
+                'failureHeight', 'recoveryHeight', 'stationaryFramesObserved'):
+        need(type(preview.get(key)) is int, 'Stationary preview recovery.' + key + ': integer required')
+    before_count = number(preview.get('beforeFailureAcceptedObservations'), 'before failure accepted', 1)
+    failure_count = number(preview.get('failureAcceptedObservations'), 'failed accepted', 2)
+    need(failure_count == before_count + 1, 'Preview failure did not follow exactly one accepted viewport')
+    before_offset = number(preview.get('beforeFailureOffset'), 'before failure offset')
+    failure_offset = number(preview.get('failureOffset'), 'failed viewport offset')
+    need(failure_offset == before_offset + 48, 'Preview failure did not follow the native 48px wheel input')
+    need(number(preview.get('failureNativeOffset'), 'failed native offset') == failure_offset,
+         'Failed accepted viewport differs from native source')
+    for first, second in [('failureAcceptedObservations', 'recoveryAcceptedObservations'),
+                          ('failureOffset', 'recoveryOffset'), ('failureHeight', 'recoveryHeight'),
+                          ('failureNativeOffset', 'recoveryNativeOffset')]:
+        need(number(preview.get(first), first) == number(preview.get(second), second),
+             'Stationary preview recovery changed ' + first)
+    number(preview.get('failureHeight'), 'failed output height', 480)
+    number(preview.get('stationaryFramesObserved'), 'stationary recovery observations', 1)
+    for key, state in [('failureAppearanceEvidence', 'failed'), ('recoveryAppearanceEvidence', 'recovered')]:
+        fields(preview.get(key), {appearance: 'live-scroll-preview-' + state + '-' + appearance + '.png'
+            for appearance in ('light', 'dark')}, 'preview ' + key)
+    move = demo['movementCase'].get('rejectedMovePause')
+    fields(move, dict(status='passed', injectedMoveFailures=1, resumeCallsAfterRejection=1, pauseCallsForDrag=1,
+        moveRoute='owned handle NSWindow.sendEvent mouseDown/mouseDragged/mouseUp with hit-test',
+        pauseButtonRoute='accepted native hit-test/mouse helper PortableSettingsUIPreviewFixture.click',
+        activeErrorStatus=True, activeSourceResumed=True, activePauseLabel='暂停捕获', activePauseTooltip='暂停捕获',
+        activePauseEnabled=True, sourceRegionPreserved=True, ownedTargetIdentityUnchanged=True,
+        pauseClickDrainedSource=True, pauseStoppedProviderCalls=True, pauseStoppedSamples=True,
+        pausedPreviewPixelsPreserved=True, pausedSourceRegionPreserved=True, pausedLabel='继续捕获',
+        nativeResumeRejoined=True, sourcePacingMaximumSeconds=2), 'rejected move Pause')
+    fields(demo['movementCase'], dict(ownedSourceStopped=True), 'movement source lifetime')
+    for first, second, low in [('retainedHeight', 'pausedHeight', 480),
+                               ('retainedOffset', 'pausedOffset', 1),
+                               ('retainedAcceptedObservations', 'pausedAcceptedObservations', 2)]:
+        need(type(move.get(first)) is int and type(move.get(second)) is int, 'Rejected move counts/geometry must be integers')
+        need(number(move.get(first), first, low) == number(move.get(second), second, low),
+             'Rejected move Pause changed ' + first)
+    for key, state in [('activeAppearanceEvidence', 'active'), ('pausedAppearanceEvidence', 'paused')]:
+        fields(move.get(key), {appearance: 'live-scroll-rejected-move-' + state + '-' + appearance + '.png'
+            for appearance in ('light', 'dark')}, 'move ' + key)
 
 
 def output_fields(output):
@@ -350,6 +428,14 @@ def qualify():
     files = [EVIDENCE/'package-identity.json', EVIDENCE/'demo/demo.json',
              EVIDENCE/'demo/demo.json.launcher.json', EVIDENCE/'demo-launch.json',
              Path('dist/experimental-scroll-installed-report.json')]
+    for filename in PREVIEW_RECOVERY_VISUALS:
+        path = EVIDENCE/'demo'/filename
+        recovery_png(path)
+        files.append(path)
+    for filename in REJECTED_MOVE_VISUALS:
+        path = EVIDENCE/'demo/movement'/filename
+        recovery_png(path)
+        files.append(path)
     for filename in ('live-scroll-movement-native-drag.png', 'live-scroll-movement-native-dark-drag.png',
                      'live-scroll-movement-native-rollback.png', 'live-scroll-movement-finished.png',
                      'live-scroll-movement-reference.png', 'live-scroll-movement-interaction.gif'):
@@ -383,6 +469,7 @@ def qualify():
          'Published pin PNG bytes differ')
     return dict(FLAGS, status='passed', sourceIdentity=source, originalSelectedAssertionsPreserved=True,
                 directDragReleaseEscapeAndStalePreviewVerified=True,
+                stationaryPreviewRecoveryAndRejectedMovePauseVerified=True,
                 observedRealStreamStatus=demo['realStream']['status'],
                 observedRealScreenCaptureValidated=demo['realScreenCaptureValidated'],
                 evidenceSHA256={str(path): sha(path) for path in files})
@@ -423,8 +510,19 @@ def chain_additions(inventory):
     return set(added)
 
 
+SCROLL_RECOVERY_ADDITIONS = (
+    'PicShotTests.LiveScrollAssemblerTransactionTests/testMismatchCannotSpendRecoveryAndFailedStationaryRetryIsBoundedBothAxes',
+    'PicShotTests.LiveScrollAssemblerTransactionTests/testStationaryPreviewRecoveryPreservesAcceptedStateAndSpoolBothDirectionsAndAxes',
+    'PicShotTests.LiveScrollAssemblerTransactionTests/testStationaryPreviewRecoveryPropagatesCancellationAndCloseCannotResurrectBothAxes',
+    'PicShotTests.LiveScrollAutomaticInteractionTests/testCommittedAndPendingPreviewRecoveryEnablesAutoWithoutRearmingOrChangingOutput',
+    'PicShotTests.LiveScrollAutomaticInteractionTests/testFailedStationaryRetryKeepsLastGoodThumbnailAndAutoDisabled',
+    'PicShotTests.LiveScrollAutomaticInteractionTests/testInitialPreviewFailureRecoversStationaryPositionWithoutStartingAuto',
+    'PicShotTests.LiveScrollAutomaticInteractionTests/testStationaryPreviewRecoveryAfterPauseOrMoveStillRequiresExplicitAutoToggle',
+)
+
+
 def text_script_additions(inventory):
-    """Bind actual discovery to the exact accepted248 plus candidate260 ID union."""
+    """Bind exact264 additions while preserving all263 and accepted248 IDs."""
     added = json.loads(read(Path('scripts/text-script-integration-tests.json')))
     need(type(added) is list and len(added) == 72
          and all(type(name) is str and re.fullmatch(r'PicShot(?:CoreTests|Tests|TextScriptCoreTests|TextScriptHelperTests)\.TextScript\w+Tests/test\w+', name) for name in added)
@@ -436,13 +534,19 @@ def text_script_additions(inventory):
          and inventory == sorted(set(inventory)), 'Native discovery must contain unique sorted IDs')
     need(added == [name for name in inventory if '.TextScript' in name],
          'Text script methods lost or added outside the explicit inventory')
-    original = [name for name in inventory if name not in set(added)]
+    recovery = set(SCROLL_RECOVERY_ADDITIONS)
+    need(recovery.issubset(inventory), 'Explicit264 scroll recovery methods missing or renamed')
+    baseline = [name for name in inventory if name not in recovery]
+    original = [name for name in baseline if name not in set(added)]
     need(len(original) == 2303 and hashlib.sha256(('\n'.join(original)+'\n').encode()).hexdigest()
          == '7366868482823631d5939adc3b411ff4d538c2c59090c2e35ebdea396b9e41ca',
          'Accepted248 native IDs changed')
-    need(len(inventory) == 2375 and len({name.split('/')[0] for name in inventory}) == 267 and hashlib.sha256(('\n'.join(inventory)+'\n').encode()).hexdigest()
+    need(len(baseline) == 2375 and len({name.split('/')[0] for name in baseline}) == 267 and hashlib.sha256(('\n'.join(baseline)+'\n').encode()).hexdigest()
          == '0f19081756c225e5b0fede62805ee01693d1409bf6552979ac74db409e3e4aab',
-         'Current native discovery differs from the exact2375 ID union')
+         'Preserved263 native discovery differs from the exact2375 ID union')
+    need(len(inventory) == 2382 and len({name.split('/')[0] for name in inventory}) == 267
+         and hashlib.sha256(('\n'.join(inventory)+'\n').encode()).hexdigest()
+         == 'a88b82f2a8e8828ee7e0ce31b52340106f32f37b8e831599d2859281ed876f7c', 'Current native discovery differs from the exact2382 ID union')
     return set(added)
 
 
@@ -692,9 +796,11 @@ def final():
         plan = native.checked_plan(Path('dist')/planfile, source['sourceCommit'])
         text_ids = text_script_additions(plan['discoveredTests'])
         need(text_ids <= set(plan['selectedTests']), 'All72 script methods must be selected in both plans')
+        recovery_ids = set(SCROLL_RECOVERY_ADDITIONS)
+        need(recovery_ids <= set(plan['selectedTests']), 'All7 recovery methods must be selected in both plans')
         if kind == 'full':
             live = json.loads(read(Path('scripts/live-scroll-additive-tests.json')))
-            need(len(live) == 156 and set(live).issubset(plan['discoveredTests']), 'Current156 live methods required')
+            need(len(live) == 163 and set(live).issubset(plan['discoveredTests']), 'Current163 live methods required')
             feedback = feedback_additions(plan['discoveredTests'])
             chains = chain_additions(plan['discoveredTests'])
             stable = [name for name in plan['discoveredTests'] if name not in set(live) | feedback | chains | text_ids]
@@ -704,6 +810,7 @@ def final():
         aggregate = native.aggregate(plan, Path('dist')/directory)
         need(aggregate == load(Path('dist')/reportfile), 'Native aggregate differs: ' + kind)
         need(not (text_ids & set(aggregate['skippedTests'])), 'Script methods must pass without skips: ' + kind)
+        need(not (recovery_ids & set(aggregate['skippedTests'])), 'Recovery methods must pass without skips: ' + kind)
     record = dict(FLAGS, status='ready-for-user-opted-experimental-distribution', **source,
                   resourceFailurePreserved=PRIOR_FAILURE, remainingWorkflowChecksCompleted=True,
                   currentSourceFullAndFocusedNativeRepeated=True, currentSourceModelSuiteRepeated=True,

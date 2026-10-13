@@ -87,6 +87,17 @@ final class LiveScrollCaptureControlsTests: XCTestCase {
         XCTAssertEqual(view.statusLabel.textColor, .systemRed)
         view.pauseButton.performClick(nil); view.copyButton.performClick(nil); view.finishButton.performClick(nil)
         XCTAssertEqual(pause, 2); XCTAssertEqual(copy, 2); XCTAssertEqual(finish, 2)
+        // Recovering a rejected move can leave an error explanation while the
+        // source is running again. The actual button action is still Pause.
+        state.paused = false; controller.update(snapshot: state)
+        XCTAssertEqual(view.pauseButton.accessibilityLabel(), "暂停捕获")
+        XCTAssertEqual(view.pauseButton.toolTip, "暂停捕获")
+        XCTAssertEqual(view.statusLabel.textColor, .systemRed)
+        XCTAssertEqual(view.statusLabel.stringValue, state.status)
+        view.pauseButton.performClick(nil); XCTAssertEqual(pause, 3)
+        state.paused = true; controller.update(snapshot: state)
+        XCTAssertEqual(view.pauseButton.accessibilityLabel(), "重试捕获")
+        XCTAssertEqual(view.pauseButton.toolTip, "重试捕获")
         XCTAssertEqual(controller.toolbarWindow?.frame, initialFrame)
         state.busy = true; controller.update(snapshot: state)
         XCTAssertFalse(view.pauseButton.isEnabled)

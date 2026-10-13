@@ -7,13 +7,35 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import struct
 import tempfile
 import unittest
+import zlib
 from unittest.mock import patch
 
 REPO = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location('experimental', REPO/'scripts/check-experimental-scroll-interactions.py')
 C = importlib.util.module_from_spec(SPEC); SPEC.loader.exec_module(C)
+
+
+def png_chunk(kind, payload):
+    return struct.pack('>I', len(payload)) + kind + payload + struct.pack('>I', zlib.crc32(kind + payload) & 0xffffffff)
+
+
+def fixture_png(width=2, height=2):
+    # Actual tiny opaque PNG bytes, solely a portable evidence-reader fixture.
+    rows = (b'\0' + bytes((24, 80, 160, 255)) * width) * height
+    return (b'\x89PNG\r\n\x1a\n' + png_chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 6, 0, 0, 0))
+            + png_chunk(b'IDAT', zlib.compress(rows)) + png_chunk(b'IEND', b''))
+
+
+def malformed_recovery_pngs(valid):
+    idat = valid.index(b'IDAT')
+    length = struct.unpack_from('>I', valid, idat - 4)[0]
+    bad_crc = bytearray(valid); bad_crc[idat + 4 + length] ^= 1
+    return dict(signature_only=valid[:8], header_only=valid[:33],
+                truncated_idat=valid[:idat + 4 + length - 1], missing_iend=valid[:-12],
+                truncated_iend=valid[:-1], corrupt_idat_crc=bytes(bad_crc))
 
 
 def demo():
@@ -31,6 +53,20 @@ def demo():
         gapMarkerUnverified=True, gapMarkerAmber=True, gapAccessibilityDescribesUnverifiedPosition=True,
         gapRecoveryMarkerVerified=True, gapRecoveryMarkerGreen=True,
         gapRecoveryAccessibilityDescribesVerifiedPosition=True)
+    result['illustratedCase']['stationaryPreviewRecovery'] = dict(status='passed', injectedPreviewFailures=1,
+        nativeWheelEventsToFailure=1, nativeWheelEventsDuringRecovery=0,
+        beforeFailureAcceptedObservations=30, beforeFailureOffset=1248,
+        failureAcceptedObservations=31, failureOffset=1296, failureHeight=1776, failureNativeOffset=1296,
+        failurePreviewUnavailable=True, failureMatched=True, failureRetainedPreviewPixels=True,
+        failureMarkerUnverified=True, failureMarkerAmber=True, failureAccessibilityUnverified=True,
+        failureAutoOff=True, failureAutoDisabled=True, failureAutoLabel='自动滚动', recoveryRequiresFurtherInput=False,
+        recoveryAcceptedObservations=31, recoveryOffset=1296, recoveryHeight=1776, recoveryNativeOffset=1296,
+        stationaryFramesObserved=1, recoveryPreviewAvailable=True, recoveryMarkerVerified=True,
+        recoveryMarkerGreen=True, recoveryMarkerAtAcceptedViewport=True, recoveryAccessibilityVerified=True,
+        recoveryAutoOff=True, recoveryAutoLabel='自动滚动', durableSourceCountUnchanged=True,
+        durableStripCountUnchanged=True, durableDiskBytesUnchanged=True, sourcePacingMaximumSeconds=2,
+        failureAppearanceEvidence={a: 'live-scroll-preview-failed-' + a + '.png' for a in ('light', 'dark')},
+        recoveryAppearanceEvidence={a: 'live-scroll-preview-recovered-' + a + '.png' for a in ('light', 'dark')})
     result['ordinaryTextCase']['addedAlignmentMarkers'] = False
     result['movementCase'].update(moveAppliedThroughReturn=False, moveAppliedThroughMouseRelease=True,
         actualSourcePixelsChanged=True, ownedTargetIdentityUnchanged=True, matchedMoveDisplacement=48,
@@ -43,6 +79,18 @@ def demo():
                             captureResumed=True, trailingMouseUpIgnored=True),
         dragAppearanceEvidence=dict(light='live-scroll-movement-native-drag.png',
                                     dark='live-scroll-movement-native-dark-drag.png', restoredAppearance='aqua'))
+    result['movementCase']['ownedSourceStopped'] = True
+    result['movementCase']['rejectedMovePause'] = dict(status='passed', injectedMoveFailures=1,
+        moveRoute='owned handle NSWindow.sendEvent mouseDown/mouseDragged/mouseUp with hit-test',
+        pauseButtonRoute='accepted native hit-test/mouse helper PortableSettingsUIPreviewFixture.click',
+        resumeCallsAfterRejection=1, pauseCallsForDrag=1, activeErrorStatus=True, activeSourceResumed=True,
+        activePauseLabel='暂停捕获', activePauseTooltip='暂停捕获', activePauseEnabled=True, sourceRegionPreserved=True,
+        ownedTargetIdentityUnchanged=True, retainedHeight=888, retainedOffset=408, retainedAcceptedObservations=31,
+        pauseClickDrainedSource=True, pauseStoppedProviderCalls=True, pauseStoppedSamples=True,
+        pausedHeight=888, pausedOffset=408, pausedAcceptedObservations=31, pausedPreviewPixelsPreserved=True,
+        pausedSourceRegionPreserved=True, pausedLabel='继续捕获', nativeResumeRejoined=True, sourcePacingMaximumSeconds=2,
+        activeAppearanceEvidence={a: 'live-scroll-rejected-move-active-' + a + '.png' for a in ('light', 'dark')},
+        pausedAppearanceEvidence={a: 'live-scroll-rejected-move-paused-' + a + '.png' for a in ('light', 'dark')})
     result['automaticCase'].update(productSessionControllerExercised=True,
         sessionSamplingLoopReimplementedByFixture=False, automaticInputLoopReimplementedByFixture=False,
         captureMode='injected-rendered-owned-window', globalInputPosted=False, realScreenCaptureClaimed=False,
@@ -252,6 +300,48 @@ class ExperimentalInteractionTests(unittest.TestCase):
                     else:changed['illustratedCase'][key]=False
                     with self.assertRaises(ValueError):C.demo_fields(changed)
 
+    def test_stationary_preview_and_rejected_move_require_every_native_observation(self):
+        for case, key in [('illustratedCase', 'stationaryPreviewRecovery'), ('movementCase', 'rejectedMovePause')]:
+            baseline = demo()[case][key]
+            for field, value in baseline.items():
+                mutations = ['DELETE']
+                if type(value) is bool: mutations += [not value, int(value)]
+                elif type(value) is int: mutations += [True, -1, float(value), float('nan')]
+                elif type(value) is str: mutations += ['wrong']
+                for mutation in mutations:
+                    with self.subTest(case=case, field=field, mutation=mutation):
+                        changed = demo()
+                        if mutation == 'DELETE': del changed[case][key][field]
+                        else: changed[case][key][field] = mutation
+                        with self.assertRaises(ValueError): C.demo_fields(changed)
+            for key2 in (x for x in baseline if x.endswith('AppearanceEvidence')):
+                for appearance in ('light', 'dark'):
+                    for mutation in ('DELETE', 'unrelated.png', '../escape.png'):
+                        changed = demo()
+                        if mutation == 'DELETE': del changed[case][key][key2][appearance]
+                        else: changed[case][key][key2][appearance] = mutation
+                        with self.assertRaises(ValueError): C.demo_fields(changed)
+        for value in (False, 1, None):
+            changed = demo(); changed['movementCase']['ownedSourceStopped'] = value
+            with self.assertRaises(ValueError): C.demo_fields(changed)
+
+    def test_stationary_recovery_cannot_accept_motion_rearm_auto_or_change_output(self):
+        for field in ('recoveryAcceptedObservations', 'recoveryOffset', 'recoveryHeight', 'recoveryNativeOffset',
+                      'beforeFailureAcceptedObservations', 'beforeFailureOffset', 'failureNativeOffset'):
+            changed = demo(); changed['illustratedCase']['stationaryPreviewRecovery'][field] += 1
+            with self.assertRaises(ValueError): C.demo_fields(changed)
+        for field, value in [('nativeWheelEventsDuringRecovery', 1), ('recoveryAutoOff', False),
+                             ('recoveryAutoLabel', '停止自动滚动'), ('stationaryFramesObserved', 0)]:
+            changed = demo(); changed['illustratedCase']['stationaryPreviewRecovery'][field] = value
+            with self.assertRaises(ValueError): C.demo_fields(changed)
+        for field in ('pausedHeight', 'pausedOffset', 'pausedAcceptedObservations'):
+            changed = demo(); changed['movementCase']['rejectedMovePause'][field] += 1
+            with self.assertRaises(ValueError): C.demo_fields(changed)
+        for field, value in [('activePauseLabel', '重试捕获'), ('activePauseTooltip', '重试捕获'),
+                             ('resumeCallsAfterRejection', 0), ('pauseCallsForDrag', 2), ('pauseClickDrainedSource', False)]:
+            changed = demo(); changed['movementCase']['rejectedMovePause'][field] = value
+            with self.assertRaises(ValueError): C.demo_fields(changed)
+
     def test_wrong_drag_or_falsely_verified_stale_preview_rejected(self):
         for path in [('movementCase', 'moveAppliedThroughMouseRelease'),
                      ('movementCase', 'duringDrag', 'previewPositionUnverified'),
@@ -328,6 +418,29 @@ class ExperimentalInteractionTests(unittest.TestCase):
                 path.write_text(raw)
                 with self.assertRaises(ValueError):C.load(path)
 
+    def test_recovery_png_requires_decodable_bounded_raster(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'recovery.png'
+            valid = fixture_png(); path.write_bytes(valid)
+            self.assertEqual(C.recovery_png(path), (2, 2, bytes((24, 80, 160, 255))*4))
+            for name, invalid in malformed_recovery_pngs(valid).items():
+                with self.subTest(mutation=name):
+                    path.write_bytes(invalid)
+                    with self.assertRaises(ValueError): C.recovery_png(path)
+            for width, height in ((0, 2), (2, 0), (4097, 1), (1, 4097), (2001, 2000)):
+                # Oversized declarations fail before allocating/decoding a raster.
+                invalid = (valid[:8] + png_chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 6, 0, 0, 0))
+                           + valid[33:])
+                path.write_bytes(invalid)
+                with self.assertRaises(ValueError): C.recovery_png(path)
+            # Valid chunks/CRCs do not excuse an invalid compressed raster length.
+            invalid = (valid[:33] + png_chunk(b'IDAT', zlib.compress(b'\0' + bytes(4))) + png_chunk(b'IEND', b''))
+            path.write_bytes(invalid)
+            with self.assertRaises(ValueError): C.recovery_png(path)
+            path.write_bytes(valid)
+            with path.open('r+b') as handle: handle.truncate(16*1024**2+1)
+            with self.assertRaises(ValueError): C.recovery_png(path)
+
     def test_qualify_rejects_identity_and_runner_mutations(self):
         with tempfile.TemporaryDirectory() as tmp:
             previous=Path.cwd();os.chdir(tmp)
@@ -354,7 +467,7 @@ class ExperimentalInteractionTests(unittest.TestCase):
                     timeoutSeconds=600,selectedAppPath=app,launchedAppPath=app,
                     launchedExecutablePath=installed['executablePath'],processIdentifier=123,elapsedSeconds=80.0)
                 output_root=C.EVIDENCE/'demo/output-actions';output_root.mkdir(parents=True)
-                visual=b'\x89PNG\r\n\x1a\nfixture'
+                visual=fixture_png()
                 output=d['outputCase']
                 output['stitchedCopyFailureThenSave']['savedPNGFileSHA256']=hashlib.sha256(visual).hexdigest()
                 output['singleViewportPin']['pinPNGFileSHA256']=hashlib.sha256(visual).hexdigest()
@@ -377,9 +490,22 @@ class ExperimentalInteractionTests(unittest.TestCase):
                                  'live-scroll-movement-native-rollback.png','live-scroll-movement-finished.png',
                                  'live-scroll-movement-reference.png','live-scroll-movement-interaction.gif'):
                     path=C.EVIDENCE/'demo/movement'/filename;path.parent.mkdir(exist_ok=True)
-                    path.write_bytes(b'\x89PNG\r\n\x1a\nfixture' if filename.endswith('.png') else b'GIF89afixture')
+                    path.write_bytes(visual if filename.endswith('.png') else b'GIF89afixture')
+                recovery_paths = [C.EVIDENCE/'demo'/name for name in C.PREVIEW_RECOVERY_VISUALS]
+                recovery_paths += [C.EVIDENCE/'demo/movement'/name for name in C.REJECTED_MOVE_VISUALS]
+                for path in recovery_paths: path.write_bytes(visual)
                 with patch.object(C,'source_record',return_value=source):
                     receipt=C.qualify();self.assertEqual(receipt['status'],'passed')
+                    self.assertTrue(receipt['stationaryPreviewRecoveryAndRejectedMovePauseVerified'])
+                    for path in recovery_paths:
+                        self.assertIn(str(path), receipt['evidenceSHA256'])
+                        path.unlink()
+                        with self.assertRaises(ValueError): C.qualify()
+                        for mutation, invalid in dict(not_png=b'not a PNG', **malformed_recovery_pngs(visual)).items():
+                            with self.subTest(visual=path.name, mutation=mutation):
+                                path.write_bytes(invalid)
+                                with self.assertRaises(ValueError): C.qualify()
+                        path.write_bytes(visual)
                     layout_path=output_root/'output-save-feedback-layout.json'
                     layout=C.load(layout_path);changed_layout=copy.deepcopy(layout)
                     del changed_layout['narrow'][1]['layout']['statusRequiredTextHeight']
@@ -501,11 +627,24 @@ class WorkflowSelectionTests(unittest.TestCase):
             module=path.relative_to(REPO/'Tests').parts[0]
             inventory.extend(module+'.'+classes[0]+'/'+method for method in methods)
         inventory=sorted(inventory)
-        self.assertEqual(len(inventory),2375)
-        self.assertEqual(len(set(inventory)),2375)
+        self.assertEqual(len(inventory),2382)
+        self.assertEqual(len(set(inventory)),2382)
         self.assertEqual(len({name.split('/')[0] for name in inventory}),267)
+        self.assertEqual(hashlib.sha256(('\n'.join(inventory)+'\n').encode()).hexdigest(),
+                         'a88b82f2a8e8828ee7e0ce31b52340106f32f37b8e831599d2859281ed876f7c')
+        recovery=set(C.SCROLL_RECOVERY_ADDITIONS)
+        self.assertEqual(len(recovery),7);self.assertTrue(recovery.issubset(inventory))
+        baseline=[name for name in inventory if name not in recovery]
+        self.assertEqual((len(baseline),len({name.split('/')[0] for name in baseline})),(2375,267))
+        self.assertEqual(hashlib.sha256(('\n'.join(baseline)+'\n').encode()).hexdigest(),
+                         '0f19081756c225e5b0fede62805ee01693d1409bf6552979ac74db409e3e4aab')
         live=json.loads((REPO/'scripts/live-scroll-additive-tests.json').read_text())
-        self.assertEqual(len(live),156);self.assertTrue(set(live).issubset(inventory))
+        self.assertEqual(len(live),163);self.assertTrue(set(live).issubset(inventory))
+        self.assertTrue(recovery.issubset(live))
+        prior_live=[name for name in live if name not in recovery]
+        self.assertEqual(len(prior_live),156)
+        self.assertEqual(hashlib.sha256(('\n'.join(prior_live)+'\n').encode()).hexdigest(),
+                         'a9c4eb4840fe1716651b164c9fc4c27c639738360adcb1a1d20030366b682f64')
         feedback=json.loads((REPO/'scripts/save-feedback-native-tests.json').read_text())
         with patch.object(C, 'load', return_value=feedback):
             feedback_added=C.feedback_additions(inventory)

@@ -1,18 +1,18 @@
 # Bounded local text scripting
 
-The user-facing goal is one region capture → local OCR → a saved JavaScript text transformation → checked text Copy. The standalone runtime passed the independently audited build254 decision gate. The current candidate integrates a separate explicit-save editor/catalog and the fixed OCR/script/Copy route into the existing action-chain owner; that integration still requires native and actual-package qualification. Delivered experimental build248 provides image-output chains only; stable214 and original227 memory failures remain unchanged.
+Experimental ARM **0.22.0/build263** qualifies for the user-opted fixed route: one region capture → local OCR → an explicitly saved JavaScript text transformation → checked text Copy. The separate editor/catalog, shared action-chain owner, cached Copy retry and Close cleanup pass exact-source native and both actual ZIP/DMG checks in the [263 record](#build263-experimental-installed-qualification). The independently audited standalone runtime254 remains separate historical evidence. Stable214, retained Intel69, original227 memory failures and full PixPin/real-ScreenCaptureKit limitations remain unchanged.
 
 ## Language and process boundary
 
-The candidate compiles an editable function body with the public JavaScriptCore C `JSObjectMakeFunction` API, passing recognized text as a separate string argument. It never interpolates input into source. A fresh noninspectable context has no native host objects, JSExport bridge, capture/clipboard/UI access, Node/JXA/browser APIs, file/network/process facilities or downloaded modules. Standard JavaScript language features remain available, including loops, allocation, regular expressions and nondeterministic Date/random values. This is not a small expression language or a deterministic-evaluation guarantee.
+The implementation compiles an editable function body with the public JavaScriptCore C `JSObjectMakeFunction` API, passing recognized text as a separate string argument. It never interpolates input into source. A fresh noninspectable context has no native host objects, JSExport bridge, capture/clipboard/UI access, Node/JXA/browser APIs, file/network/process facilities or downloaded modules. Standard JavaScript language features remain available, including loops, allocation, regular expressions and nondeterministic Date/random values. This is not a small expression language or a deterministic-evaluation guarantee.
 
 Only a primitive string can be returned. Objects, promises and boxed strings are rejected before coercion; exception values are never stringified. UTF-16 is inspected before allocating a native result, malformed surrogates are rejected, and accepted output preserves its characters without trimming. Errors use fixed codes, with no script/OCR/returned-text content in process metrics or stderr receipts.
 
-The helper is a separate executable with its own `com.apple.security.app-sandbox=true` entitlement. It has no inheritance, network, user-file, automation or application-group entitlement. The parent remains unsandboxed. Apple documents this independent-child arrangement in [Resolving App Sandbox Inheritance Problems](https://developer.apple.com/forums/thread/706390); PicShot's exact ad hoc signature and launch still require native evidence. Final helper entitlements and signing identities are checked after the outer bundle is signed. There is no unsandboxed fallback, private JavaScriptCore timeout API, sandbox-exec profile or OS-permission acceptance.
+The helper is a separate executable with its own `com.apple.security.app-sandbox=true` entitlement. It has no inheritance, network, user-file, automation or application-group entitlement. The parent remains unsandboxed. Apple documents this independent-child arrangement in [Resolving App Sandbox Inheritance Problems](https://developer.apple.com/forums/thread/706390); Build263 binds the exact ad hoc signatures, final/relocated helper identities and actual installed launches; this is experimental qualification, not stable acceptance. Final helper entitlements and signing identities are checked after the outer bundle is signed. There is no unsandboxed fallback, private JavaScriptCore timeout API, sandbox-exec profile or OS-permission acceptance.
 
 The absence of host APIs limits what script code can request. App Sandbox adds OS access restrictions but permits its own container and some system resources; it is not a promise of zero filesystem access or protection against every engine/OS vulnerability. Code-signature validity on an ad hoc build does not establish a verified external publisher.
 
-## Fixed candidate limits
+## Fixed runtime limits
 
 - Source body: 16 KiB UTF-8
 - Input and output: 32,768 UTF-16 units; output additionally 128 KiB UTF-8; empty results rejected
@@ -26,7 +26,7 @@ The kernel limits are installed and read back before evaluating code. A sampled 
 
 The parent uses bounded nonblocking pipes and only count/EOF drainage for stderr. All pipe endpoints explicitly have close-on-exec set; intended standard descriptors are duplicated for the child. No request/output temporary file or ambient credentials/environment override is provided. A successful result requires validated protocol and observed child exit. Unconfirmed exit or pipes retain admission; after failure/cancellation retained response bytes are discarded while required descriptor/process ownership stays alive for later cleanup.
 
-## Narrow native experiment
+## Standalone native runtime experiment
 
 The `[text-script-runtime]` job builds a dependency-free temporary SwiftPM package from an exact hash inventory of the new core/helper/client/fixture/test files. It checks a clean checkout and source commit, runs the isolated core/helper XCTest methods, and signs a standalone gate app. This does not rebuild or change the delivered PicShot product, codecs, models or disputed scroll-memory cell.
 
@@ -36,7 +36,7 @@ A distinct signed sandboxed **test-only** transport executable exercises malform
 
 Reports retain exact source/signing identities, fixed outcomes, bounds, timings, probe errno values, heartbeat gaps and cleanup receipts. They contain generated-input evidence only. A sandbox-launch, identity or cleanup failure blocks this runtime approach until its concrete cause is resolved. No permission exception or resource-limit change is inferred from a failed run.
 
-After independent native review, app integration must preserve image-chain v1 bytes, use one existing capture/receipt owner, freeze saved script/OCR options per run and cache successful transformation for clipboard-only retry. It must reject truncated OCR and avoid the direct OCR UI/automatic-copy route. Those integration and installed-package checks remain future work; this gate alone is not scripting delivery or full PixPin compatibility.
+The standalone gate required later integration to preserve image-chain v1 bytes, use one existing capture/receipt owner, freeze saved script/OCR options per run, cache successful transformation for clipboard-only retry and reject truncated OCR without the direct OCR UI/automatic-copy route. Those checks are now recorded separately under263; standalone254 alone never established app delivery or full PixPin compatibility.
 
 ## Build249 compilation result
 
@@ -158,3 +158,29 @@ Qualification source `84e2039d21941241b46109447680ddbbf1199081`, [run38334040686
 No actual discovery, native suite, model, installed or resource qualification ran. Later missing installation/evidence errors are downstream consequences, not additional product failures. The retained original archive11784003944 is124,359 bytes, SHA-256 `21ca8f34a7447dfd2fc0835135d5e757229234cd8034f7b31d862c3705fa93b9`; the exact decoded job log is retained independently.
 
 The next correction is restricted to the portable test fixture and this technical record. It supplies the production import in the synthetic context, explicitly verifies the current2375/267 inventory and exact72 script additions, then removes only those additions to retain every accepted2482303/258 hash/shard assertion and every earlier historical preservation assertion. Missing, extra, renamed or malformed script coverage and altered process/deadline/grouping must still reject. The production guard, native planner/runner, source/native tests, workflow, security boundary and all time/resource limits remain unchanged. The complete affected portable suite and relevant qualification contracts must pass in normal and optimized Python before another exact-product qualification run. This is a test-fixture correction, not installer acceptance or a change to the unresolved227 memory classification.
+
+
+## Build263 experimental installed qualification
+
+Source `efde8d1867fa1cc4c82bc04c8c9725cd5f39517a`, tree `9bba475793c78b3f88b070e11dabfb9777dc294c`, [run38335666429](https://github.com/dandibbert/picshot/actions/runs/38335666429), qualifies **only for the already user-opted experimental ARM distribution**. Product/native-test bytes remain exactly build261; build262's portable-fixture failure is retained above and corrected without changing runtime permissions, resource limits or original assertions. Stable214, retained Intel69 and the original227 failed resource classification are unchanged.
+
+Actual discovery covers **2,375 methods / 267 classes**. Ordinary execution passes 2,372, with three model deferrals subsequently passing in the **12/12** real-model suite; every current ID is covered. Focused execution passes **1,843/1,843**, including all 72 script methods. These selections overlap and are not additive. The unchanged original Save-crash path and both actual name-first-responder Command-S cases pass, including failed-write preservation of the exact raw draft, unchanged prior disk/catalog and once-only atomic retry. This does **not** supply the absent build258/259 crashed-thread stacks or prove their exact native crash cause; all historical failure records remain valid.
+
+Both actual ZIP and DMG installations pass source-bound helper packaging/relocation verification, the installed script witness/strict reader and legacy image-chain checks. Each format performs generated-image Vision OCR and one production-helper transformation, then two checked Copy attempts with one committed receipt after an injected first refusal. Failed-Copy/Close commits no text. Tracked image/text/owners, helper processes, pipes and run admission release. Independent review binds all 26 source/package/evidence inputs, eight script and eight legacy-chain native light/dark image/layout pairs per format, and exact legacy output pixels. Physical byte/signature inspection supplements the recorded successful macOS checks; it is not a new macOS signature verification run on Linux.
+
+The actual helper SHA-256 is `4401297b9829468730193575d670f50f1df1fd2a0067c8865293b9e8d76eaa2f`, CDHash `d3fa22c9c9f6a2c19b2a8f9a82039d39d76c26a9`; final/relocated signatures, embedded signed metadata and the sole Boolean `com.apple.security.app-sandbox=true` entitlement bind. This adds no unsandboxed fallback or callable host APIs. The independently tested build254 runtime/hostile matrix is historical and was not rerun as a build263 matrix. Its **388,857,856-byte** allocation observation still demonstrates overshoot of the **268,435,456-byte**, approximately 50-ms sampled RSS threshold; it is not a hard cap.
+
+The actual-ZIP default 3840×2160 editing/history/pin workload completes two warmups and eight measured cycles. Main RSS entry/first-release/warm/final is **67.890625 / 415.421875 / 416.625 / 430.453125 MiB**; sampled/kernel peaks are **707.9375 / 724.203125 MiB**. Warm-to-final growth is **13.828125 MiB**; the last three increments are 0.1875/0.625/0.40625 MiB, totaling 1.21875 MiB. Final footprint is 89.8936768 MiB; final volatile residency is 205.453125 MiB and overlaps RSS. The 749 samples include 675 timer observations at a nominal 50-ms cadence; tracked owners/descriptors end at zero. `memoryStabilityAssessed=false`: these finite observations do not show a plateau, full backing reclamation, zero leaks or stable memory, and omit other processes/WindowServer/GPU costs.
+
+The original227 repeated-scroll cell is **not rerun or reclassified**: after two warmups/eight 218-frame measurements, post-warmup RSS growth of 10,780,672 bytes exceeds 9,830,400 and the final-three total of 5,177,344 exceeds 4,915,200. Neither the default 4K workload nor scripting qualification is that cell's pass. Full memory/stable eligibility remains false; real ScreenCaptureKit/TCC, Retina crop/scaling, window exclusion, global event routing and third-party page seams/latency remain unverified. No full PixPin scripting, arbitrary graph, external-code import or callable PicShot/file/network/process API claim follows.
+
+### Build263 packages and native attachment handoff
+
+- Delivery ZIP `PicShot-EXPERIMENTAL-0.22.0-build263-macos-arm64.zip`: **20,970,790 bytes**, SHA-256 `7dbe1fc3b498929fd0505e84a7bc7811cedf398a6982801d9b45094c81762969`
+- Tested original ZIP: **21,808,204 bytes**, SHA-256 `7b7d2e9bcfac127b4e6d0a051c9edb45d0f8989e10094a78e0dba0ae75b8111b`
+- Tested DMG: **24,964,374 bytes**, SHA-256 `cc31631acd862ba99f7d895e1e398c8d05f1c2e95acca5514dc94596957d7693`; not included in this attachment handoff
+- Guide `PicShot-EXPERIMENTAL-0.22.0-build263-使用说明.txt`: **14,322 bytes**, SHA-256 `d6674467afcd99324d59f80a7e9a78a00613ec05a311766941a93f2591dcbf01`
+
+The delivery ZIP is losslessly recompressed for the attachment limit. Independent comparison verifies all 71 entry bytes/raw metadata, 47 data descriptors, six Mach-O signatures and the resource seal; CRC passes. The recompressed container was **not natively relaunched**: delivery relies on the actually tested original container and entry-by-entry equivalence, not a new installer run.
+
+Experimental ZIP and guide attachment handoff was accepted on **13 October 2026 at 03:47:27 UTC**. This records the format-specific handoff, not proof of user download or launch. Stable214 remains unchanged.

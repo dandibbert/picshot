@@ -132,9 +132,12 @@ enum LiveScrollUsabilityDemoFixture {
         let prefix = plain ? "live-scroll-plain-text" : "live-scroll"
         let start = ProcessInfo.processInfo.systemUptime
         var completedImage: CGImage?, completedCount = 0, frameRequests = 0
+        var holdStationaryRecovery = false
+        weak var observedSession: LiveScrollSessionController?
         let session = LiveScrollSessionController(onComplete: { image in
             completedImage = image; completedCount += 1
         }, onImport: {})
+        observedSession = session
         var wheel: Task<Void, Error>?
         var report: [String: Any] = ["status": "running", "productSessionControllerExercised": true,
             "addedAlignmentMarkers": !plain, "captureMode": capture.mode,
@@ -147,6 +150,15 @@ enum LiveScrollUsabilityDemoFixture {
             let initial = try await capture.image()
             try await session.startForVerification(targetFrame: window.frame, screen: screen, nextImage: {
                 try await Task.sleep(nanoseconds: 66_666_667)
+                // Pace only the next owned acquisition so both native appearances
+                // can show the real failure before the product retries a duplicate.
+                // Cancellation and the two-second cap keep normal drain bounded.
+                if holdStationaryRecovery && observedSession?.stateForVerification.previewUnavailable == true {
+                    let deadline = ProcessInfo.processInfo.systemUptime + 2
+                    while holdStationaryRecovery && ProcessInfo.processInfo.systemUptime < deadline {
+                        try await Task.sleep(nanoseconds: 25_000_000)
+                    }
+                }
                 frameRequests += 1
                 return try await capture.image()
             })
@@ -294,6 +306,100 @@ enum LiveScrollUsabilityDemoFixture {
                     session.stateForVerification.viewportOffset == Int(viewport.offset.rounded())
                 }
                 try require(pausePreserved && preserved, "Pause or gap changed the retained output")
+
+                // Fail one actual accepted preview, then leave the owned document
+                // completely stationary. The production sampler must recover it.
+                let beforeFailure = session.stateForVerification
+                let previewBeforeFailure = try normalizedPixels(try unwrap(thumbnail.image, "Preview missing before injected failure"))
+                let auto = try unwrap(findButton("scroll.live.autoScroll", in: controls.toolbarWindow?.contentView),
+                                      "Actual Auto control absent during recovery")
+                holdStationaryRecovery = true
+                await session.failNextPreviewForTesting()
+                try scroll(viewport.scrollView, pixels: 48)
+                try await waitFor("Accepted preview did not enter the induced failure", timeout: 5) {
+                    session.stateForVerification.previewUnavailable
+                        && session.stateForVerification.viewportOffset == beforeFailure.viewportOffset + 48
+                }
+                let failed = session.stateForVerification
+                let failedNativeOffset = Int(viewport.offset.rounded())
+                let failedDocument = try unwrap(await session.documentSnapshotForResourceVerification(),
+                                               "Failed preview lost the accepted document")
+                let failedFrameCount = session.sampledFramesForVerification
+                let failedLabel = thumbnail.accessibilityLabel() ?? ""
+                let retainedFailurePixels = try normalizedPixels(try unwrap(thumbnail.image, "Failure removed retained preview"))
+                    == previewBeforeFailure
+                var recovery: [String: Any] = ["status": "running", "injectedPreviewFailures": 1,
+                    "nativeWheelEventsToFailure": 1, "nativeWheelEventsDuringRecovery": 0,
+                    "beforeFailureAcceptedObservations": beforeFailure.acceptedObservations,
+                    "beforeFailureOffset": beforeFailure.viewportOffset,
+                    "failureAcceptedObservations": failed.acceptedObservations,
+                    "failureOffset": failed.viewportOffset, "failureHeight": failed.height,
+                    "failureNativeOffset": failedNativeOffset,
+                    "failurePreviewUnavailable": failed.previewUnavailable, "failureMatched": failed.matched,
+                    "failureRetainedPreviewPixels": retainedFailurePixels,
+                    "failureMarkerUnverified": !thumbnail.isPositionVerified,
+                    "failureMarkerAmber": thumbnail.viewportMarkerColor == .systemOrange,
+                    "failureAccessibilityUnverified": failedLabel.contains("尚未验证") && !failedLabel.contains("绿色"),
+                    "failureAutoOff": !session.snapshotForVerification.autoScrolling,
+                    "failureAutoLabel": auto.accessibilityLabel() ?? "",
+                    "failureAutoDisabled": !auto.isEnabled,
+                    "recoveryRequiresFurtherInput": false,
+                    "sourcePacingMaximumSeconds": 2,
+                    "failureAppearanceEvidence": ["light": "live-scroll-preview-failed-light.png", "dark": "live-scroll-preview-failed-dark.png"],
+                    "recoveryAppearanceEvidence": ["light": "live-scroll-preview-recovered-light.png", "dark": "live-scroll-preview-recovered-dark.png"]]
+                report["stationaryPreviewRecovery"] = recovery
+                try require(failed.matched && retainedFailurePixels && !thumbnail.isPositionVerified
+                    && thumbnail.viewportMarkerColor == .systemOrange && !auto.isEnabled
+                    && !session.snapshotForVerification.autoScrolling,
+                    "Failed preview lost accepted pixels or advertised a verified position/active Auto")
+                try recoveryAppearances(window: window, controls: controls, directory: directory,
+                    stem: "live-scroll-preview-failed", caption: "Preview unavailable · retained pixels · Auto off")
+                try require(session.stateForVerification.previewUnavailable,
+                            "Stationary recovery happened before native failure evidence was captured")
+                holdStationaryRecovery = false
+                try await waitFor("Stationary owned frame did not recover the unavailable preview", timeout: 5) {
+                    !session.stateForVerification.previewUnavailable && thumbnail.isPositionVerified
+                        && session.sampledFramesForVerification > failedFrameCount
+                }
+                let recovered = session.stateForVerification
+                let recoveredDocument = try unwrap(await session.documentSnapshotForResourceVerification(),
+                                                  "Stationary retry lost the accepted document")
+                let recoveredLabel = thumbnail.accessibilityLabel() ?? ""
+                let expectedFraction = CGRect(x: 0,
+                    y: Double(recovered.fixedLeading + failedNativeOffset) / Double(recovered.height),
+                    width: 1,
+                    height: Double(height - recovered.fixedLeading - recovered.fixedTrailing) / Double(recovered.height))
+                let fraction = thumbnail.viewportFraction
+                let fractionCorrect = abs(fraction.minY - expectedFraction.minY) < 0.000000000001
+                    && abs(fraction.height - expectedFraction.height) < 0.000000000001
+                    && fraction.minX == 0 && fraction.width == 1 && thumbnail.viewportMarker != nil
+                recovery["recoveryAcceptedObservations"] = recovered.acceptedObservations
+                recovery["recoveryOffset"] = recovered.viewportOffset; recovery["recoveryHeight"] = recovered.height
+                recovery["recoveryNativeOffset"] = Int(viewport.offset.rounded())
+                recovery["stationaryFramesObserved"] = session.sampledFramesForVerification - failedFrameCount
+                recovery["recoveryPreviewAvailable"] = !recovered.previewUnavailable
+                recovery["recoveryMarkerVerified"] = thumbnail.isPositionVerified
+                recovery["recoveryMarkerGreen"] = thumbnail.viewportMarkerColor == .systemGreen
+                recovery["recoveryMarkerAtAcceptedViewport"] = fractionCorrect
+                recovery["recoveryAccessibilityVerified"] = recoveredLabel.contains("绿色") && !recoveredLabel.contains("尚未验证")
+                recovery["recoveryAutoOff"] = !session.snapshotForVerification.autoScrolling
+                recovery["recoveryAutoLabel"] = auto.accessibilityLabel() ?? ""
+                recovery["durableSourceCountUnchanged"] = recoveredDocument.sourceCount == failedDocument.sourceCount
+                recovery["durableStripCountUnchanged"] = recoveredDocument.stripCount == failedDocument.stripCount
+                recovery["durableDiskBytesUnchanged"] = recoveredDocument.diskBytes == failedDocument.diskBytes
+                recovery["status"] = "passed"
+                report["stationaryPreviewRecovery"] = recovery
+                try require(recovered.acceptedObservations == failed.acceptedObservations
+                    && recovered.viewportOffset == failed.viewportOffset && recovered.height == failed.height
+                    && Int(viewport.offset.rounded()) == failedNativeOffset
+                    && recoveredDocument.sourceCount == failedDocument.sourceCount
+                    && recoveredDocument.stripCount == failedDocument.stripCount
+                    && recoveredDocument.diskBytes == failedDocument.diskBytes
+                    && fractionCorrect && thumbnail.viewportMarkerColor == .systemGreen
+                    && !session.snapshotForVerification.autoScrolling,
+                    "Stationary retry changed accepted output/spool/position or restarted Auto")
+                try recoveryAppearances(window: window, controls: controls, directory: directory,
+                    stem: "live-scroll-preview-recovered", caption: "Stationary preview recovered · verified position · Auto off")
             }
             maxOffset = max(maxOffset, Double(viewport.offset))
             let finalState = session.stateForVerification
@@ -669,6 +775,18 @@ enum LiveScrollUsabilityDemoFixture {
             "exactEquality": actual == expected, "dimensionsMatch": dimensions,
             "expectedHeight": reference.height, "actualHeight": output.height,
             "meanAbsoluteRGBAError": mean, "fractionOfChannelsDifferingByMoreThan8": fraction]
+    }
+
+    /// Save actual native scene pixels for both appearances, restoring Aqua.
+    private static func recoveryAppearances(window: NSWindow, controls: LiveScrollCaptureController,
+                                            directory: URL, stem: String, caption: String) throws {
+        let panels = [controls.toolbarWindow, controls.previewWindow, controls.outlineWindow, controls.handleWindow]
+        defer { for panel in panels { panel?.appearance = NSAppearance(named: .aqua) } }
+        for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
+            for panel in panels { panel?.appearance = NSAppearance(named: appearance) }
+            try writePNG(try scene(window: window, controls: controls, caption: caption),
+                         directory.appendingPathComponent(stem + "-" + name + ".png"))
+        }
     }
 
     private static func waitFor(_ message: String, timeout: Double,
@@ -1305,6 +1423,7 @@ extension LiveScrollUsabilityDemoFixture {
             "scope": "Persistent direct handle, native axis-constrained drag/release and Escape rollback with visible HUD/preview; actual changed source crop, continued capture and product Finish"]
         let started = ProcessInfo.processInfo.systemUptime
         var session: LiveScrollSessionController?
+        var ownedSource: MovementRejectingSource?
         var ownedWindow: NSWindow?
         var providerCalls = 0, providerRegions: [[CGFloat]] = []
         var trace: [[String: Any]] = []
@@ -1343,12 +1462,20 @@ extension LiveScrollUsabilityDemoFixture {
                 windowID: CGWindowID(window.windowNumber),
                 bounds: windowOnDisplay.offsetBy(dx: displayBounds.minX, dy: displayBounds.minY))
             let reference = MovementSourceReference()
-            let source = try LiveScrollVerificationFrameSource(region: originalRegion, displayBounds: displayBounds,
+            let baseSource = try LiveScrollVerificationFrameSource(region: originalRegion, displayBounds: displayBounds,
                 target: target, image: { [reference, weak scrollView, weak window] in
                     try await Task.sleep(nanoseconds: 66_666_667)
                     guard let source = reference.source, let scrollView, let window,
                           window.windowNumber == Int(target.windowID) else {
                         throw DemoFailure(errorDescription: "Owned movement source identity disappeared")
+                    }
+                    // The base source owns/cancels this worker. Hold only its next
+                    // post-rejection raster while native error controls are observed.
+                    if source.holdRejectedFrame {
+                        let deadline = ProcessInfo.processInfo.systemUptime + 2
+                        while source.holdRejectedFrame && ProcessInfo.processInfo.systemUptime < deadline {
+                            try await Task.sleep(nanoseconds: 25_000_000)
+                        }
                     }
                     let region = source.region
                     let crop = region.offsetBy(dx: -windowOnDisplay.minX, dy: -windowOnDisplay.minY)
@@ -1359,7 +1486,8 @@ extension LiveScrollUsabilityDemoFixture {
                     let full = try nativeImage(scrollView)
                     return try unwrap(full.cropping(to: crop), "Cannot crop actual moved source region")
                 })
-            reference.source = source
+            let source = MovementRejectingSource(base: baseSource)
+            ownedSource = source; reference.source = source
             var output: CGImage?, completions = 0
             let controller = LiveScrollSessionController(onComplete: { image in output = image; completions += 1 }, onImport: {})
             session = controller
@@ -1517,6 +1645,89 @@ extension LiveScrollUsabilityDemoFixture {
                 caption: "Escape cancels another drag · accepted region and long image preserved")
             story.append(rollbackScene)
             try writePNG(rollbackScene, directory.appendingPathComponent("live-scroll-movement-native-rollback.png"))
+            // Reject one proposal through the same native pointer path. All other
+            // movement/source operations, identities and lifetime belong to base.
+            let rejectedState = controller.stateForVerification
+            let rejectedThumbnail = try normalizedPixels(try unwrap(thumbnail.image, "No preview before rejected move"))
+            let rejectedRegion = source.region
+            let resumesBeforeRejection = source.resumeCount
+            let pausesBeforeRejection = source.pauseCount
+            source.rejectNextMove = true
+            let rejectDown = CGPoint(x: handleWindow.frame.midX, y: handleWindow.frame.midY)
+            let rejectPoint = CGPoint(x: rejectDown.x + 12, y: rejectDown.y - 16)
+            let rejectLocal = handle.convert(handleWindow.convertPoint(fromScreen: rejectDown), from: nil)
+            try require(handle.hitTest(handle.convert(rejectLocal, to: handle.superview)) === handle,
+                        "Rejected move handle is not hit-testable")
+            try movementMouse(.leftMouseDown, screenPoint: rejectDown, window: handleWindow)
+            try movementMouse(.leftMouseDragged, screenPoint: rejectPoint, window: handleWindow)
+            try movementMouse(.leftMouseUp, screenPoint: rejectPoint, window: handleWindow)
+            try await waitFor("Rejected move did not resume its original source with an active error", timeout: 5) {
+                source.rejectedMoveCount == 1 && source.resumeCount == resumesBeforeRejection + 1
+                    && source.captureRunning && !controller.snapshotForVerification.paused
+                    && !controller.snapshotForVerification.busy && controller.snapshotForVerification.statusKind == .error
+            }
+            let pause = try unwrap(findButton("scroll.live.pauseResume", in: controls.toolbarWindow?.contentView),
+                                   "Pause missing after rejected move resumed")
+            var rejection: [String: Any] = ["status": "running", "injectedMoveFailures": source.rejectedMoveCount,
+                "moveRoute": "owned handle NSWindow.sendEvent mouseDown/mouseDragged/mouseUp with hit-test",
+                "pauseButtonRoute": "accepted native hit-test/mouse helper PortableSettingsUIPreviewFixture.click",
+                "resumeCallsAfterRejection": source.resumeCount - resumesBeforeRejection,
+                "pauseCallsForDrag": source.pauseCount - pausesBeforeRejection,
+                "activeErrorStatus": controller.snapshotForVerification.statusKind == .error,
+                "activeSourceResumed": source.captureRunning && !controller.snapshotForVerification.paused,
+                "activePauseLabel": pause.accessibilityLabel() ?? "", "activePauseTooltip": pause.toolTip ?? "",
+                "activePauseEnabled": pause.isEnabled,
+                "sourceRegionPreserved": source.region == rejectedRegion,
+                "ownedTargetIdentityUnchanged": source.target == target,
+                "retainedHeight": rejectedState.height, "retainedOffset": rejectedState.viewportOffset,
+                "retainedAcceptedObservations": rejectedState.acceptedObservations,
+                "sourcePacingMaximumSeconds": 2,
+                "activeAppearanceEvidence": ["light": "live-scroll-rejected-move-active-light.png", "dark": "live-scroll-rejected-move-active-dark.png"],
+                "pausedAppearanceEvidence": ["light": "live-scroll-rejected-move-paused-light.png", "dark": "live-scroll-rejected-move-paused-dark.png"]]
+            report["rejectedMovePause"] = rejection
+            try require(pause.isEnabled && pause.accessibilityLabel() == "暂停捕获" && pause.toolTip == "暂停捕获"
+                && source.region == rejectedRegion && source.target == target,
+                "Resumed source error displayed Retry instead of the actual Pause action")
+            try recoveryAppearances(window: window, controls: controls, directory: directory,
+                stem: "live-scroll-rejected-move-active", caption: "Move rejected · original source resumed · Pause remains available")
+            try require(controller.snapshotForVerification.statusKind == .error
+                && !controller.snapshotForVerification.paused && pause.accessibilityLabel() == "暂停捕获",
+                "Active-error state disappeared before native Pause input")
+            let pausesBeforeClick = source.pauseCount
+            try PortableSettingsUIPreviewFixture.click(pause)
+            try await waitFor("Native Pause did not drain the resumed source after rejection", timeout: 5) {
+                controller.snapshotForVerification.paused && !controller.snapshotForVerification.busy
+                    && !source.captureRunning && source.pauseCount == pausesBeforeClick + 1
+            }
+            source.holdRejectedFrame = false
+            let pausedProviderCalls = providerCalls
+            let pausedSamples = controller.sampledFramesForVerification
+            try await Task.sleep(nanoseconds: 220_000_000)
+            let pausedState = controller.stateForVerification
+            let pausedPixels = try normalizedPixels(try unwrap(thumbnail.image, "Pause lost rejected move preview"))
+            rejection["pauseClickDrainedSource"] = source.pauseCount == pausesBeforeClick + 1 && !source.captureRunning
+            rejection["pauseStoppedProviderCalls"] = providerCalls == pausedProviderCalls
+            rejection["pauseStoppedSamples"] = controller.sampledFramesForVerification == pausedSamples
+            rejection["pausedHeight"] = pausedState.height; rejection["pausedOffset"] = pausedState.viewportOffset
+            rejection["pausedAcceptedObservations"] = pausedState.acceptedObservations
+            rejection["pausedPreviewPixelsPreserved"] = pausedPixels == rejectedThumbnail
+            rejection["pausedSourceRegionPreserved"] = source.region == rejectedRegion
+            rejection["pausedLabel"] = pause.accessibilityLabel() ?? ""
+            try require(pausedPixels == rejectedThumbnail && pausedState.height == rejectedState.height
+                && pausedState.viewportOffset == rejectedState.viewportOffset
+                && pausedState.acceptedObservations == rejectedState.acceptedObservations
+                && source.region == rejectedRegion && providerCalls == pausedProviderCalls
+                && controller.sampledFramesForVerification == pausedSamples && pause.accessibilityLabel() == "继续捕获",
+                "Native Pause failed to stop acquisition or preserve the accepted moved output")
+            try recoveryAppearances(window: window, controls: controls, directory: directory,
+                stem: "live-scroll-rejected-move-paused", caption: "Native Pause drained capture · accepted long image preserved")
+            try PortableSettingsUIPreviewFixture.click(pause)
+            try await waitFor("Native Resume after rejected-move Pause did not reconnect", timeout: 5) {
+                !controller.snapshotForVerification.paused && !controller.snapshotForVerification.busy
+                    && source.captureRunning && thumbnail.isPositionVerified
+            }
+            rejection["nativeResumeRejoined"] = true; rejection["status"] = "passed"
+            report["rejectedMovePause"] = rejection
             try await movementWheelRun(scrollView, session: controller, count: 60, phase: "after move", trace: &trace)
             let expectedOffset = Int(scrollView.contentView.bounds.minY.rounded()) + 48
             try await waitFor("Capture did not continue after moving its region", timeout: 5) {
@@ -1557,6 +1768,8 @@ extension LiveScrollUsabilityDemoFixture {
         report["providerCalls"] = providerCalls; report["providerRegions"] = providerRegions
         report["trace"] = trace
         await session?.closeForVerification()
+        report["ownedSourceStopped"] = ownedSource.map { $0.stopCount > 0 && !$0.captureRunning } ?? (session == nil)
+        if report["ownedSourceStopped"] as? Bool != true { report["status"] = "failed" }
         report["productSessionClosed"] = session?.isClosedForVerification ?? true
         if session?.isClosedForVerification == false { report["status"] = "failed"; report["cleanupError"] = "Session retirement unconfirmed" }
         ownedWindow?.close()
@@ -1567,7 +1780,43 @@ extension LiveScrollUsabilityDemoFixture {
         return report
     }
 
-    @MainActor private final class MovementSourceReference { weak var source: LiveScrollVerificationFrameSource? }
+    @MainActor private final class MovementSourceReference { weak var source: MovementRejectingSource? }
+
+    /// Verification-only owner of the existing source. One deliberate rejection
+    /// precedes delegation; normal frame identity, crop, mailbox and teardown stay
+    /// with the strongly owned base. Its image closure refers back only weakly.
+    @MainActor private final class MovementRejectingSource: LiveScrollFrameSource {
+        let base: LiveScrollVerificationFrameSource
+        var rejectNextMove = false
+        var holdRejectedFrame = false
+        private(set) var rejectedMoveCount = 0
+        private(set) var resumeCount = 0
+        private(set) var pauseCount = 0
+        private(set) var stopCount = 0
+        private(set) var captureRunning = false
+        init(base: LiveScrollVerificationFrameSource) { self.base = base }
+        var region: CGRect { base.region }
+        var displayBounds: CGRect { base.displayBounds }
+        var target: LiveScrollScreenSource.Target? { base.target }
+        var automaticScrollWatermark: LiveScrollFrameWatermark? { base.automaticScrollWatermark }
+        func start() async throws { try await base.start(); captureRunning = true }
+        func nextFrame(timeout: TimeInterval) async throws -> LiveScrollScreenSource.Frame? {
+            try await base.nextFrame(timeout: timeout)
+        }
+        func pauseAndDrain() async throws {
+            try await base.pauseAndDrain(); pauseCount += 1; captureRunning = false
+        }
+        func resume() async throws { try await base.resume(); resumeCount += 1; captureRunning = true }
+        func stop() async throws { try await base.stop(); stopCount += 1; captureRunning = false }
+        func validateTarget() throws { try base.validateTarget() }
+        func moveRegion(to proposed: CGRect) throws {
+            if rejectNextMove {
+                rejectNextMove = false; rejectedMoveCount += 1; holdRejectedFrame = true
+                throw DemoFailure(errorDescription: "Owned verification rejects exactly one proposed move")
+            }
+            try base.moveRegion(to: proposed)
+        }
+    }
 
     private static func movementWheelRun(_ view: NSScrollView, session: LiveScrollSessionController,
                                         count: Int, phase: String, trace: inout [[String: Any]]) async throws {

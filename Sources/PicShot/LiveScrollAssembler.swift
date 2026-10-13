@@ -43,6 +43,9 @@ actor LiveScrollAssembler {
     private var committedUpper = 0
     enum PreviewFailureForTesting { case unavailable, cancelled }
     private var nextPreviewFailureForTesting: PreviewFailureForTesting?
+    // One stationary retry per newly accepted anchor whose preview failed. Consume
+    // it before display work, so a persistent failure cannot retry on every frame.
+    private var stationaryPreviewRetryAvailable = false
 
     init(axis: ScrollAxis, generation: UInt64, storageParent: URL = FileManager.default.temporaryDirectory) {
         self.axis = axis; self.generation = generation; self.storageParent = storageParent
@@ -71,9 +74,7 @@ actor LiveScrollAssembler {
             }
             match = try LiveScrollMatcher.match(previous: previous, next: gray, axis: axis, configuration: configuration)
         } catch ScrollStitchError.duplicate {
-            state.matched = true
-            if !state.previewUnavailable { state.message = "已接上 · 继续滚动，或完成截图" }
-            return Update(state: state, preview: nil, viewport: .zero)
+            return try await stationaryUpdate()
         } catch is CancellationError { throw CancellationError() }
         catch {
             state.matched = false
@@ -82,9 +83,7 @@ actor LiveScrollAssembler {
         }
         try check()
         guard match.displacement != 0 else {
-            state.matched = true
-            if !state.previewUnavailable { state.message = "已接上 · 继续滚动，或完成截图" }
-            return Update(state: state, preview: nil, viewport: .zero)
+            return try await stationaryUpdate()
         }
         let bounds = match.contentBounds.rect
         let detected = CGRect(x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height)
@@ -144,6 +143,7 @@ actor LiveScrollAssembler {
         guard !cancelled else { throw CancellationError() }
         anchorGray = gray; anchorImage = image; offset = nextOffset
         state.acceptedObservations += 1; state.viewportOffset = offset
+        stationaryPreviewRetryAvailable = false
         install(acceptedSnapshot)
         // Logical dimensions include the verified pending viewport even if its
         // display cannot be regenerated. The old visible thumbnail stays intact.
@@ -193,6 +193,7 @@ actor LiveScrollAssembler {
     func initialImageForAxisChange() -> CGImage? { document == nil ? anchorImage : nil }
     func close() async {
         cancelled = true; nextPreviewFailureForTesting = nil
+        stationaryPreviewRetryAvailable = false
         document?.cancel()
         if let document { await document.close() }
         document = nil; anchorImage = nil; firstImage = nil; anchorGray = nil
@@ -209,10 +210,46 @@ actor LiveScrollAssembler {
         case .cancelled: throw CancellationError()
         }
     }
-    private func previewUnavailableUpdate() -> Update {
+    private func previewUnavailableUpdate(allowStationaryRetry: Bool = true) -> Update {
         state.previewUnavailable = true
+        stationaryPreviewRetryAvailable = allowStationaryRetry
         state.message = "预览暂时无法更新，已验证内容保留，可继续或完成"
         return Update(state: state, preview: nil, viewport: .zero)
+    }
+
+    /// Called only after the matcher verifies the current frame is stationary.
+    /// Rebuild from the already accepted anchor, including an uncommitted frontier;
+    /// the candidate frame never replaces it or changes the durable document.
+    private func stationaryUpdate() async throws -> Update {
+        try check()
+        state.matched = true
+        guard state.previewUnavailable, stationaryPreviewRetryAvailable, let anchorImage else {
+            if !state.previewUnavailable { state.message = "已接上 · 继续滚动，或完成截图" }
+            return Update(state: state, preview: nil, viewport: .zero)
+        }
+        stationaryPreviewRetryAvailable = false
+        do {
+            try injectPreviewFailureForTesting()
+            let preview: CGImage
+            let viewport: CGRect
+            if let document {
+                let recovered = try await document.preview(image: anchorImage, viewportOffset: offset, generation: generation)
+                preview = recovered.image; viewport = recovered.viewportFraction
+            } else {
+                preview = try Self.thumbnail(anchorImage)
+                viewport = CGRect(x: 0, y: 0, width: 1, height: 1)
+            }
+            try check()
+            state.previewUnavailable = false
+            state.message = "已接上 · 继续滚动，或完成截图"
+            return Update(state: state, preview: preview, viewport: viewport)
+        } catch is CancellationError { throw CancellationError() }
+        catch {
+            try check()
+            // Keep the failure and the UI's last good preview. Only accepting new
+            // motion opens another preview attempt; stationary polling is bounded.
+            return previewUnavailableUpdate(allowStationaryRetry: false)
+        }
     }
 
     private func install(_ snapshot: LiveScrollDocument.Snapshot) {

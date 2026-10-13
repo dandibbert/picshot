@@ -400,7 +400,32 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
         inventory = self.current_source_inventory()
         plan = shards.make_plan(inventory, '', 'a' * 40, process_count=4)
         record = self.execute_pin_inventory_guard(plan)
-        self.assertEqual((record['discoveredCount'], record['discoveredClassCount']), (2375, 267))
+        self.assertEqual((record['discoveredCount'], record['discoveredClassCount']), (2382, 267))
+        self.assertEqual(hashlib.sha256(('\n'.join(inventory) + '\n').encode()).hexdigest(),
+                         'a88b82f2a8e8828ee7e0ce31b52340106f32f37b8e831599d2859281ed876f7c')
+        spec = importlib.util.spec_from_file_location('qualification', Path(__file__).parents[1] / 'check-experimental-scroll-interactions.py')
+        qualification = importlib.util.module_from_spec(spec); spec.loader.exec_module(qualification)
+        recovery_added = list(qualification.SCROLL_RECOVERY_ADDITIONS)
+        self.assertEqual(len(recovery_added), 7)
+        self.assertEqual(recovery_added, sorted(set(recovery_added)))
+        self.assertTrue(set(recovery_added).issubset(inventory))
+        recovery_inventory, recovery_plan = inventory, plan
+        inventory = [name for name in recovery_inventory if name not in recovery_added]
+        self.assertEqual((len(inventory), len({name.split('/')[0] for name in inventory})), (2375, 267))
+        self.assertEqual(recovery_inventory, sorted(inventory + recovery_added))
+        plan = shards.make_plan(inventory, '', 'a' * 40, process_count=4)
+        self.assertEqual([len(shard['tests']) for shard in recovery_plan['shards']], [640, 514, 608, 620])
+        for old_shard, current_shard in zip(plan['shards'], recovery_plan['shards']):
+            self.assertEqual([name for name in current_shard['tests'] if name not in recovery_added], old_shard['tests'])
+        selection = re.search(r"--selection-regex '([^']+)'", self.step(
+            'Plan exhaustive and focused native test processes'))[1]
+        for count in (2, 4):
+            current_focused = shards.make_plan(recovery_inventory, selection, 'a' * 40, process_count=count)
+            prior_focused = shards.make_plan(inventory, selection, 'a' * 40, process_count=count)
+            self.assertEqual(current_focused['selectedTests'], sorted(prior_focused['selectedTests'] + recovery_added))
+            self.assertEqual(len(current_focused['selectedTests']), 1850)
+            for old_shard, current_shard in zip(prior_focused['shards'], current_focused['shards']):
+                self.assertEqual([name for name in current_shard['tests'] if name not in recovery_added], old_shard['tests'])
         self.assertEqual(hashlib.sha256(('\n'.join(inventory) + '\n').encode()).hexdigest(),
                          '0f19081756c225e5b0fede62805ee01693d1409bf6552979ac74db409e3e4aab')
         text_path = Path(__file__).parents[1] / 'text-script-integration-tests.json'
@@ -434,9 +459,14 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
             for old_shard, current_shard in zip(prior_focused['shards'], full_focused['shards']):
                 self.assertEqual([name for name in current_shard['tests'] if name not in text_added], old_shard['tests'])
         live = json.loads((Path(__file__).parents[1] / 'live-scroll-additive-tests.json').read_text())
+        self.assertEqual(len(live), 163)
+        self.assertEqual(record['additiveLiveScrollIDs'], live)
+        self.assertEqual(record['additiveLiveScrollMethods'], 163)
+        self.assertTrue(set(recovery_added).issubset(live))
+        live = [name for name in live if name not in recovery_added]
         self.assertEqual(len(live), 156)
         self.assertEqual(live, sorted(set(live)))
-        self.assertEqual(record['additiveLiveScrollIDs'], live)
+        self.assertEqual([name for name in record['additiveLiveScrollIDs'] if name not in recovery_added], live)
         self.assertEqual(record['preserved214Methods'], 2047)
         self.assertEqual(hashlib.sha256(('\n'.join(live) + '\n').encode()).hexdigest(),
                          'a9c4eb4840fe1716651b164c9fc4c27c639738360adcb1a1d20030366b682f64')
@@ -564,7 +594,14 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
         text_method = 'PicShotTests.TextScriptControllerTests/testNewDraftIsNotAutoSavedByCloseQuitSelectionOrReopen'
         baseline_method = next(name for name in inventory if '.TextScript' not in name)
         self.assertIn(text_method, inventory)
+        recovery_method = 'PicShotTests.LiveScrollAssemblerTransactionTests/testMismatchCannotSpendRecoveryAndFailedStationaryRetryIsBoundedBothAxes'
+        self.assertIn(recovery_method, inventory)
         alternatives = [
+            ('missing recovery method', [name for name in inventory if name != recovery_method],
+             'Complete native inventory is missing a required additive live-scroll method'),
+            ('renamed recovery method', sorted(name + 'Renamed' if name == recovery_method else name for name in inventory),
+             'Complete native inventory is missing a required additive live-scroll method'),
+            ('unrecorded recovery method', sorted(inventory + [recovery_method + 'Unexpected']), 'Accepted248 native IDs changed'),
             ('missing live classes', [name for name in inventory if '.LiveScroll' not in name], 'Complete native inventory'),
             ('missing live fixture', [name for name in inventory if not name.startswith('PicShotTests.LiveScrollResourceFixtureTests/')],
              'Complete native inventory'),

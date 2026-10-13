@@ -32,6 +32,171 @@ final class LiveScrollAutomaticInteractionTests: XCTestCase {
         }
     }
 
+    func testInitialPreviewFailureRecoversStationaryPositionWithoutStartingAuto() async throws {
+        try await withSession(seed: false) { fixture in
+            let toolbar = try fixture.toolbar(), thumbnail = try fixture.thumbnail()
+            await fixture.session.failNextPreviewForTesting()
+            try await fixture.deliver(Self.image(origin: 0))
+            XCTAssertTrue(fixture.session.stateForVerification.previewUnavailable)
+            XCTAssertNil(thumbnail.image)
+            XCTAssertFalse(thumbnail.isPositionVerified)
+            XCTAssertFalse(toolbar.autoButton.isEnabled)
+            XCTAssertEqual(fixture.session.snapshotForVerification.acceptedFrames, 1)
+            try await fixture.deliver(Self.image(origin: 0, salt: 101))
+            XCTAssertFalse(fixture.session.stateForVerification.matched)
+            XCTAssertTrue(fixture.session.stateForVerification.previewUnavailable)
+            XCTAssertNil(thumbnail.image)
+            try await fixture.deliver(Self.image(origin: 0))
+            XCTAssertFalse(fixture.session.stateForVerification.previewUnavailable)
+            XCTAssertTrue(fixture.session.snapshotForVerification.previewPositionVerified)
+            XCTAssertTrue(thumbnail.isPositionVerified)
+            XCTAssertEqual(thumbnail.viewportMarkerColor, .systemGreen)
+            self.assertViewport(thumbnail.viewportFraction, equals: CGRect(x: 0, y: 0, width: 1, height: 1))
+            XCTAssertTrue(toolbar.autoButton.isEnabled)
+            XCTAssertFalse(fixture.session.snapshotForVerification.autoScrolling)
+            XCTAssertEqual(fixture.input.events.count, 0)
+            XCTAssertEqual(fixture.session.snapshotForVerification.acceptedFrames, 1)
+            let recovered = try XCTUnwrap(thumbnail.image)
+            for _ in 0..<3 {
+                try await fixture.deliver(Self.image(origin: 0))
+                XCTAssertTrue(thumbnail.image === recovered, "Healthy duplicate frames must not rebuild the thumbnail")
+            }
+            try fixture.startAuto()
+            XCTAssertEqual(fixture.input.events.count, 1)
+            try await fixture.finish(origin: 0, length: 200)
+        }
+    }
+
+    func testCommittedAndPendingPreviewRecoveryEnablesAutoWithoutRearmingOrChangingOutput() async throws {
+        for offset in [43, 120] {
+            try await withSession { fixture in
+                try await fixture.deliver(Self.image(origin: 24))
+                let toolbar = try fixture.toolbar(), thumbnail = try fixture.thumbnail()
+                let lastGood = try XCTUnwrap(thumbnail.image)
+                try fixture.startAuto()
+                fixture.clock.now += 0.5
+                await fixture.session.failNextPreviewForTesting()
+                try await fixture.deliver(Self.image(origin: offset))
+                let failed = fixture.session.stateForVerification
+                XCTAssertTrue(failed.previewUnavailable)
+                XCTAssertEqual(failed.previewIsTransient, offset == 43)
+                XCTAssertEqual(failed.viewportOffset, offset)
+                XCTAssertEqual(failed.acceptedObservations, 3)
+                try fixture.assertStoppedWithManualCapture()
+                XCTAssertFalse(toolbar.autoButton.isEnabled)
+                XCTAssertFalse(thumbnail.isPositionVerified)
+                XCTAssertEqual(thumbnail.viewportMarkerColor, .systemOrange)
+                XCTAssertTrue(thumbnail.image === lastGood)
+                let stopMessage = fixture.session.snapshotForVerification.status
+                let before = await fixture.session.documentSnapshotForResourceVerification()
+                try await fixture.deliver(Self.image(origin: offset))
+                let recovered = fixture.session.stateForVerification
+                XCTAssertFalse(recovered.previewUnavailable)
+                XCTAssertEqual(recovered.previewIsTransient, failed.previewIsTransient)
+                XCTAssertEqual(recovered.viewportOffset, failed.viewportOffset)
+                XCTAssertEqual(recovered.acceptedObservations, failed.acceptedObservations)
+                XCTAssertEqual(recovered.committedSources, failed.committedSources)
+                XCTAssertEqual(recovered.diskBytes, failed.diskBytes)
+                let after = await fixture.session.documentSnapshotForResourceVerification()
+                XCTAssertEqual(after, before, "Stationary recovery must not flush the pending frontier or render output")
+                XCTAssertTrue(fixture.session.snapshotForVerification.previewPositionVerified)
+                XCTAssertTrue(thumbnail.isPositionVerified)
+                XCTAssertEqual(thumbnail.viewportMarkerColor, .systemGreen)
+                self.assertViewport(thumbnail.viewportFraction, equals:
+                    CGRect(x: 0, y: CGFloat(offset) / CGFloat(200 + offset), width: 1, height: 200 / CGFloat(200 + offset)))
+                XCTAssertTrue(toolbar.autoButton.isEnabled)
+                XCTAssertFalse(fixture.session.snapshotForVerification.autoScrolling)
+                XCTAssertEqual(fixture.session.snapshotForVerification.status, stopMessage,
+                               "Display recovery must not erase why Auto stopped")
+                XCTAssertEqual(fixture.input.events.count, 1)
+                let preview = try XCTUnwrap(thumbnail.image)
+                for _ in 0..<3 {
+                    try await fixture.deliver(Self.image(origin: offset))
+                    XCTAssertTrue(thumbnail.image === preview)
+                    XCTAssertEqual(fixture.input.events.count, 1)
+                }
+                try fixture.startAuto()
+                XCTAssertEqual(fixture.input.events.count, 2)
+                try await fixture.finish(origin: 0, length: 200 + offset)
+            }
+        }
+    }
+
+    func testFailedStationaryRetryKeepsLastGoodThumbnailAndAutoDisabled() async throws {
+        try await withSession { fixture in
+            try await fixture.deliver(Self.image(origin: 24))
+            let toolbar = try fixture.toolbar(), thumbnail = try fixture.thumbnail()
+            let lastGood = try XCTUnwrap(thumbnail.image)
+            try fixture.startAuto()
+            fixture.clock.now += 0.5
+            await fixture.session.failNextPreviewForTesting()
+            try await fixture.deliver(Self.image(origin: 43))
+            let before = await fixture.session.documentSnapshotForResourceVerification()
+            await fixture.session.failNextPreviewForTesting()
+            try await fixture.deliver(Self.image(origin: 43))
+            for _ in 0..<5 {
+                try await fixture.deliver(Self.image(origin: 43))
+                XCTAssertTrue(fixture.session.stateForVerification.previewUnavailable)
+                XCTAssertEqual(fixture.session.stateForVerification.viewportOffset, 43)
+                XCTAssertEqual(fixture.session.snapshotForVerification.acceptedFrames, 3)
+                XCTAssertFalse(fixture.session.snapshotForVerification.previewPositionVerified)
+                XCTAssertFalse(thumbnail.isPositionVerified)
+                XCTAssertEqual(thumbnail.viewportMarkerColor, .systemOrange)
+                XCTAssertTrue(thumbnail.image === lastGood)
+                XCTAssertFalse(toolbar.autoButton.isEnabled)
+                toolbar.autoButton.performClick(nil)
+                XCTAssertFalse(fixture.session.snapshotForVerification.autoScrolling)
+                XCTAssertEqual(fixture.input.events.count, 1)
+            }
+            let after = await fixture.session.documentSnapshotForResourceVerification()
+            XCTAssertEqual(after, before)
+            try await fixture.finish(origin: 0, length: 243)
+        }
+    }
+
+    func testStationaryPreviewRecoveryAfterPauseOrMoveStillRequiresExplicitAutoToggle() async throws {
+        for move in [false, true] {
+            try await withSession { fixture in
+                try await fixture.deliver(Self.image(origin: 24))
+                let toolbar = try fixture.toolbar()
+                try fixture.startAuto()
+                fixture.clock.now += 0.5
+                await fixture.session.failNextPreviewForTesting()
+                try await fixture.deliver(Self.image(origin: 43))
+                XCTAssertTrue(fixture.session.stateForVerification.previewUnavailable)
+                if move {
+                    let handle = try XCTUnwrap(fixture.session.controlsForVerification?.handleWindow?.contentView as? LiveScrollRegionDragHandle)
+                    let window = try XCTUnwrap(handle.window)
+                    let start = CGPoint(x: window.frame.midX, y: window.frame.midY)
+                    try Self.pointer(.leftMouseDown, handle: handle, screenPoint: start)
+                    try Self.pointer(.leftMouseDragged, handle: handle, screenPoint: CGPoint(x: start.x, y: start.y - 30))
+                    try Self.pointer(.leftMouseUp, handle: handle, screenPoint: CGPoint(x: start.x, y: start.y - 30))
+                } else {
+                    try PortableSettingsUIPreviewFixture.click(toolbar.pauseButton)
+                    try await Self.waitUntil { fixture.session.snapshotForVerification.paused && !fixture.session.snapshotForVerification.busy }
+                    try PortableSettingsUIPreviewFixture.click(toolbar.pauseButton)
+                }
+                try await Self.waitUntil { !fixture.session.snapshotForVerification.paused && !fixture.session.snapshotForVerification.busy }
+                XCTAssertEqual(fixture.source.resumeCalls, 1)
+                XCTAssertEqual(fixture.source.moveCalls, move ? 1 : 0)
+                XCTAssertFalse(fixture.session.snapshotForVerification.previewPositionVerified)
+                XCTAssertFalse(toolbar.autoButton.isEnabled)
+                fixture.clock.now += 30
+                try await fixture.deliver(Self.image(origin: 43))
+                XCTAssertFalse(fixture.session.stateForVerification.previewUnavailable)
+                XCTAssertEqual(fixture.session.stateForVerification.viewportOffset, 43)
+                XCTAssertEqual(fixture.session.snapshotForVerification.acceptedFrames, 3)
+                XCTAssertTrue(try fixture.thumbnail().isPositionVerified)
+                XCTAssertTrue(toolbar.autoButton.isEnabled)
+                XCTAssertFalse(fixture.session.snapshotForVerification.autoScrolling)
+                XCTAssertEqual(fixture.input.events.count, 1)
+                try fixture.startAuto()
+                XCTAssertEqual(fixture.input.events.count, 2)
+                try await fixture.finish(origin: 0, length: 243)
+            }
+        }
+    }
+
     func testNilFramesCannotRepeatOutstandingStepAndThreeSecondTimeoutKeepsManualCapture() async throws {
         try await withSession { fixture in
             try fixture.startAuto()
@@ -387,6 +552,16 @@ final class LiveScrollAutomaticInteractionTests: XCTestCase {
             XCTAssertTrue(toolbar.finishButton.isEnabled)
             try await fixture.finish(origin: 0, length: 200)
         }
+    }
+
+    private func assertViewport(_ actual: CGRect, equals expected: CGRect,
+                                file: StaticString = #filePath, line: UInt = #line) {
+        // CGRect intersection normalizes floating-point endpoints. Preserve all
+        // four geometric checks while allowing only rounding-scale error.
+        XCTAssertEqual(actual.origin.x, expected.origin.x, accuracy: 1e-12, file: file, line: line)
+        XCTAssertEqual(actual.origin.y, expected.origin.y, accuracy: 1e-12, file: file, line: line)
+        XCTAssertEqual(actual.width, expected.width, accuracy: 1e-12, file: file, line: line)
+        XCTAssertEqual(actual.height, expected.height, accuracy: 1e-12, file: file, line: line)
     }
 
     private func withSession(seed: Bool = true, permission: Bool = true,

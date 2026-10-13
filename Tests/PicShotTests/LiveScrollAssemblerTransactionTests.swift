@@ -13,7 +13,8 @@ final class LiveScrollAssemblerTransactionTests: XCTestCase {
 
     /// Nonrepeating texture in absolute document coordinates. This independently
     /// constructs either a viewport or the expected whole union, with no strip code.
-    private func image(_ axis: ScrollAxis, origin: Int, length: Int = 200, cross: Int = 64) throws -> CGImage {
+    private func image(_ axis: ScrollAxis, origin: Int, length: Int = 200, cross: Int = 64,
+                       salt: UInt64 = 7, luminanceDelta: Int = 0) throws -> CGImage {
         let width = axis == .vertical ? cross : length, height = axis == .vertical ? length : cross
         var data = [UInt8](repeating: 255, count: width * height * 4)
         for y in 0..<height { for x in 0..<width {
@@ -21,11 +22,11 @@ final class LiveScrollAssemblerTransactionTests: XCTestCase {
             let across = axis == .vertical ? x : y
             var value = UInt64(along) &* 0x9e3779b185ebca87
             value ^= UInt64(across) &* 0xc2b2ae3d27d4eb4f
-            value ^= 7
+            value ^= salt
             value = (value ^ (value >> 30)) &* 0xbf58476d1ce4e5b9
             value = (value ^ (value >> 27)) &* 0x94d049bb133111eb
             value ^= value >> 31
-            let pixel = UInt8(value % 216 + 20), index = (y * width + x) * 4
+            let pixel = UInt8(Int(value % 216 + 20) + luminanceDelta), index = (y * width + x) * 4
             data[index] = pixel; data[index + 1] = pixel; data[index + 2] = pixel
         } }
         return try XCTUnwrap(CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
@@ -49,6 +50,156 @@ final class LiveScrollAssemblerTransactionTests: XCTestCase {
         XCTAssertEqual(output.width, expected.width, file: file, line: line)
         XCTAssertEqual(output.height, expected.height, file: file, line: line)
         XCTAssertEqual(try pixels(output), try pixels(expected), file: file, line: line)
+    }
+
+    private func failPreview(_ assembler: LiveScrollAssembler, axis: ScrollAxis, offset: Int) async throws -> LiveScrollAssembler.Update {
+        let sign = offset < 0 ? -1 : 1
+        var offsets = [0]
+        if offset != 0 { offsets.append(sign * 24) }
+        if abs(offset) > 24 { offsets.append(offset) }
+        for prior in offsets.dropLast() { _ = try await assembler.observe(image(axis, origin: prior)) }
+        await assembler.failNextPreviewForTesting()
+        return try await assembler.observe(image(axis, origin: offset))
+    }
+
+    private func assertAcceptedStateUnchanged(_ actual: LiveScrollAssembler.State, _ expected: LiveScrollAssembler.State,
+                                             file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(actual.width, expected.width, file: file, line: line)
+        XCTAssertEqual(actual.height, expected.height, file: file, line: line)
+        XCTAssertEqual(actual.viewportOffset, expected.viewportOffset, file: file, line: line)
+        XCTAssertEqual(actual.acceptedObservations, expected.acceptedObservations, file: file, line: line)
+        XCTAssertEqual(actual.committedSources, expected.committedSources, file: file, line: line)
+        XCTAssertEqual(actual.diskBytes, expected.diskBytes, file: file, line: line)
+        XCTAssertEqual(actual.fixedLeading, expected.fixedLeading, file: file, line: line)
+        XCTAssertEqual(actual.fixedTrailing, expected.fixedTrailing, file: file, line: line)
+        XCTAssertEqual(actual.previewIsTransient, expected.previewIsTransient, file: file, line: line)
+    }
+
+    private func spoolFiles(_ parent: URL) throws -> [String: Data] {
+        let files = try XCTUnwrap(FileManager.default.enumerator(at: parent, includingPropertiesForKeys: [.isRegularFileKey]))
+        var result: [String: Data] = [:]
+        for case let url as URL in files {
+            if try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true {
+                result[String(url.path.dropFirst(parent.path.count))] = try Data(contentsOf: url)
+            }
+        }
+        return result
+    }
+
+    func testStationaryPreviewRecoveryPreservesAcceptedStateAndSpoolBothDirectionsAndAxes() async throws {
+        // 0: initial image; 24: bootstrap commit; 43: pending frontier; 120: committed extension.
+        for axis in ScrollAxis.allCases { for sign in [-1, 1] { for extent in [0, 24, 43, 120] {
+            let parent = try root()
+            defer { try? FileManager.default.removeItem(at: parent) }
+            let assembler = LiveScrollAssembler(axis: axis, generation: 49, storageParent: parent)
+            let offset = sign * extent
+            let failed = try await failPreview(assembler, axis: axis, offset: offset)
+            XCTAssertNil(failed.preview); XCTAssertTrue(failed.state.previewUnavailable)
+            XCTAssertEqual(failed.state.previewIsTransient, extent == 43)
+            let before = await assembler.documentSnapshotForResourceVerification()
+            let filesBefore = try spoolFiles(parent)
+            XCTAssertEqual(before?.sourceReadCount ?? 0, 0)
+
+            // Negative cases differ by one luminance level, so zero displacement is
+            // verified through matching instead of the exact-pixel fast path.
+            let candidate = try image(axis, origin: offset, luminanceDelta: sign < 0 ? 1 : 0)
+            let anchorGray = try ScrollImageIO.luminance(image(axis, origin: offset))
+            let candidateGray = try ScrollImageIO.luminance(candidate)
+            XCTAssertEqual(anchorGray.pixels == candidateGray.pixels, sign > 0)
+            XCTAssertEqual(try LiveScrollMatcher.match(previous: anchorGray, next: candidateGray, axis: axis).displacement, 0)
+            let recovered = try await assembler.observe(candidate)
+            XCTAssertTrue(recovered.state.matched); XCTAssertFalse(recovered.state.previewUnavailable)
+            assertAcceptedStateUnchanged(recovered.state, failed.state)
+            let preview = try XCTUnwrap(recovered.preview)
+            try assertOutput(preview, axis: axis, origin: min(0, offset), length: 200 + extent)
+            let start = CGFloat(offset - min(0, offset)) / CGFloat(200 + extent)
+            let length = CGFloat(200) / CGFloat(200 + extent)
+            XCTAssertEqual(recovered.viewport, axis == .vertical
+                ? CGRect(x: 0, y: start, width: 1, height: length)
+                : CGRect(x: start, y: 0, width: length, height: 1))
+            let after = await assembler.documentSnapshotForResourceVerification()
+            XCTAssertEqual(after, before, "Recovery must not flush, decode strips or mutate durable metadata")
+            XCTAssertEqual(try spoolFiles(parent), filesBefore, "Recovery must leave every spool byte unchanged")
+            for _ in 0..<3 {
+                let repeated = try await assembler.observe(candidate)
+                XCTAssertNil(repeated.preview, "Healthy stationary frames must not rebuild the preview")
+                XCTAssertFalse(repeated.state.previewUnavailable)
+                assertAcceptedStateUnchanged(repeated.state, failed.state)
+            }
+            let output = try await assembler.finish()
+            try assertOutput(output, axis: axis, origin: min(0, offset), length: 200 + extent)
+            let finished = await assembler.currentState()
+            XCTAssertEqual(finished.committedSources, failed.state.committedSources + (extent == 43 ? 1 : 0))
+            await assembler.close()
+            XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: parent.path).isEmpty)
+        } } }
+    }
+
+    func testMismatchCannotSpendRecoveryAndFailedStationaryRetryIsBoundedBothAxes() async throws {
+        for axis in ScrollAxis.allCases { for offset in [0, 43, 120] {
+            let parent = try root()
+            defer { try? FileManager.default.removeItem(at: parent) }
+            let assembler = LiveScrollAssembler(axis: axis, generation: 50, storageParent: parent)
+            let failed = try await failPreview(assembler, axis: axis, offset: offset)
+            let before = await assembler.documentSnapshotForResourceVerification()
+            let filesBefore = try spoolFiles(parent)
+            await assembler.failNextPreviewForTesting()
+            let rejected = try await assembler.observe(image(axis, origin: offset, salt: 101))
+            XCTAssertFalse(rejected.state.matched); XCTAssertTrue(rejected.state.previewUnavailable)
+            XCTAssertNil(rejected.preview)
+            assertAcceptedStateUnchanged(rejected.state, failed.state)
+            let retry = try await assembler.observe(image(axis, origin: offset))
+            XCTAssertTrue(retry.state.matched); XCTAssertTrue(retry.state.previewUnavailable)
+            XCTAssertNil(retry.preview, "Mismatch must leave the one-shot failure hook for the verified retry")
+            XCTAssertEqual(retry.state.message, failed.state.message)
+            for _ in 0..<5 {
+                let stationary = try await assembler.observe(image(axis, origin: offset))
+                XCTAssertNil(stationary.preview, "A failed retry must not start an unbounded stationary loop")
+                XCTAssertTrue(stationary.state.previewUnavailable)
+                XCTAssertEqual(stationary.state.message, failed.state.message)
+                assertAcceptedStateUnchanged(stationary.state, failed.state)
+            }
+            let after = await assembler.documentSnapshotForResourceVerification()
+            XCTAssertEqual(after, before); XCTAssertEqual(try spoolFiles(parent), filesBefore)
+            // The matcher and pending frontier remain usable after exhausting the
+            // display-only retry. New accepted motion gets its ordinary preview.
+            let moved = try await assembler.observe(image(axis, origin: offset + 12))
+            XCTAssertTrue(moved.state.matched); XCTAssertFalse(moved.state.previewUnavailable)
+            XCTAssertNotNil(moved.preview)
+            XCTAssertEqual(moved.state.acceptedObservations, failed.state.acceptedObservations + 1)
+            let output = try await assembler.finish()
+            try assertOutput(output, axis: axis, origin: 0, length: 212 + offset)
+            await assembler.close()
+        } }
+    }
+
+    func testStationaryPreviewRecoveryPropagatesCancellationAndCloseCannotResurrectBothAxes() async throws {
+        for axis in ScrollAxis.allCases { for offset in [0, 43, 120] {
+            let parent = try root()
+            defer { try? FileManager.default.removeItem(at: parent) }
+            let assembler = LiveScrollAssembler(axis: axis, generation: 51, storageParent: parent)
+            let failed = try await failPreview(assembler, axis: axis, offset: offset)
+            let before = await assembler.documentSnapshotForResourceVerification()
+            let filesBefore = try spoolFiles(parent)
+            await assembler.failNextPreviewForTesting(.cancelled)
+            do { _ = try await assembler.observe(image(axis, origin: offset)); XCTFail("Expected stationary preview cancellation") }
+            catch is CancellationError { }
+            catch { XCTFail("Unexpected \(error)") }
+            let cancelled = await assembler.currentState()
+            assertAcceptedStateUnchanged(cancelled, failed.state)
+            XCTAssertTrue(cancelled.previewUnavailable)
+            let after = await assembler.documentSnapshotForResourceVerification()
+            XCTAssertEqual(after, before); XCTAssertEqual(try spoolFiles(parent), filesBefore)
+            let stationary = try await assembler.observe(image(axis, origin: offset))
+            XCTAssertNil(stationary.preview); XCTAssertTrue(stationary.state.previewUnavailable)
+            let output = try await assembler.finish()
+            try assertOutput(output, axis: axis, origin: 0, length: 200 + offset)
+            await assembler.close(); await assembler.close()
+            do { _ = try await assembler.observe(image(axis, origin: offset)); XCTFail("Closed recovery must not resurrect output") }
+            catch is CancellationError { }
+            catch { XCTFail("Unexpected \(error)") }
+            XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: parent.path).isEmpty)
+        } }
     }
 
     func testReversalBefore96PixelCommitPreservesEveryVisitedPixelInBothDirectionsAndAxes() async throws {

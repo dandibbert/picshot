@@ -210,7 +210,29 @@ final class LiveScrollSessionInteractionTests: XCTestCase {
                 XCTAssertEqual(output.finishes + output.copies, 0)
 
                 source.failure = nil
-                try PortableSettingsUIPreviewFixture.click(Self.toolbar(session).finishButton)
+                let toolbar = try Self.toolbar(session)
+                if failure == .move {
+                    // The move failed but restoring the old source succeeded.
+                    // A real click must do the Pause action advertised by the UI.
+                    XCTAssertEqual(toolbar.pauseButton.accessibilityLabel(), "暂停捕获")
+                    XCTAssertEqual(toolbar.pauseButton.toolTip, "暂停捕获")
+                    XCTAssertEqual(toolbar.statusLabel.stringValue, failed.status)
+                    let pauses = source.pauseCalls
+                    try PortableSettingsUIPreviewFixture.click(toolbar.pauseButton)
+                    try await Self.waitUntil {
+                        session.snapshotForVerification.paused && !session.snapshotForVerification.busy
+                    }
+                    XCTAssertEqual(source.pauseCalls, pauses + 1)
+                    XCTAssertEqual(source.resumeCalls, 1)
+                    XCTAssertEqual(toolbar.pauseButton.accessibilityLabel(), "继续捕获")
+                    XCTAssertFalse(session.snapshotForVerification.autoScrolling)
+                    XCTAssertEqual(session.snapshotForVerification.pixelWidth, before.pixelWidth)
+                    XCTAssertEqual(session.snapshotForVerification.pixelHeight, before.pixelHeight)
+                    XCTAssertTrue(try Self.thumbnail(session).image === preview)
+                } else {
+                    XCTAssertEqual(toolbar.pauseButton.accessibilityLabel(), "重试捕获")
+                }
+                try PortableSettingsUIPreviewFixture.click(toolbar.finishButton)
                 try await Self.waitUntil { session.isClosedForVerification }
                 XCTAssertEqual(output.finishes, 1); XCTAssertEqual(output.copies, 0)
                 XCTAssertEqual(try Self.pixels(XCTUnwrap(output.image)), try Self.pixels(seed))
