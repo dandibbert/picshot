@@ -794,6 +794,8 @@ jobs:
         run: |
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_experimental_scroll_interactions.py -v
           PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p test_experimental_scroll_interactions.py -v
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_live_scroll_chain_demo.py -v
+          PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p test_live_scroll_chain_demo.py -v
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_capture_chain_demo.py -v
           PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p test_capture_chain_demo.py -v
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_capture_chain_launcher_timeout.py -v
