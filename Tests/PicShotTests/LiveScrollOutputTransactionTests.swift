@@ -171,15 +171,20 @@ final class LiveScrollOutputTransactionTests: XCTestCase {
             try fixture.dispatch("quickSave")
             try await Self.wait { fixture.save.pending }
             try PortableSettingsUIPreviewFixture.click(toolbar.cancelButton)
-            try await Self.wait { fixture.session.isClosedForVerification }
+            XCTAssertNil(fixture.session.controlsForVerification)
+            XCTAssertTrue(controls.isRetired)
+            XCTAssertFalse(fixture.session.isClosedForVerification)
             XCTAssertGreaterThan(fixture.save.cancelCalls, 0)
-            XCTAssertEqual(fixture.output.closes, 1)
-            XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: fixture.root.path).isEmpty)
+            XCTAssertEqual(fixture.output.closes, 0)
+            XCTAssertTrue(fixture.output.edits.isEmpty); XCTAssertTrue(fixture.output.copies.isEmpty)
+            XCTAssertTrue(fixture.output.pinAttempts.isEmpty)
 
             // Deliberately ignore cancellation inside the injected recipient to
             // exercise the owner's generation guard after a late success.
             fixture.save.complete()
-            try await Self.wait { fixture.save.returned == 1 }
+            try await Self.wait { fixture.save.returned == 1 && fixture.session.isClosedForVerification }
+            XCTAssertEqual(fixture.output.closes, 1)
+            XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: fixture.root.path).isEmpty)
             for _ in 0..<20 { await Task.yield() }
             XCTAssertNil(saveItem.action); XCTAssertNil(saveItem.target)
             XCTAssertNil(pinItem.action); XCTAssertNil(pinItem.target)
@@ -302,12 +307,12 @@ final class LiveScrollOutputTransactionTests: XCTestCase {
             }
             try await body(fixture)
         } catch {
-            await fixture.session.closeForVerification()
             fixture.save.complete(throwing: CancellationError())
+            await fixture.session.closeForVerification()
             throw error
         }
-        await fixture.session.closeForVerification()
         fixture.save.complete(throwing: CancellationError())
+        await fixture.session.closeForVerification()
         XCTAssertTrue(fixture.session.isClosedForVerification)
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
     }

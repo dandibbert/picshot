@@ -128,6 +128,8 @@ final class LiveScrollSessionInteractionTests: XCTestCase {
 
     func testCloseDuringHeldDragDrainMakesLateCompletionInert() async throws {
         try await withSession { session, source, _, output, _ in
+            var closes = 0
+            session.onClose = { closes += 1 }
             let controls = try XCTUnwrap(session.controlsForVerification)
             let handle = try Self.handle(session)
             let start = try Self.handleCenter(handle)
@@ -139,10 +141,14 @@ final class LiveScrollSessionInteractionTests: XCTestCase {
             try Self.pointer(.leftMouseUp, handle: handle, screenPoint: start.offsetBy(dx: 40, dy: -60))
             let beforeClose = session.snapshotForVerification
             session.cancel()
-            try await Self.waitUntil { session.isClosedForVerification }
             XCTAssertTrue(controls.isRetired)
+            XCTAssertNil(session.controlsForVerification)
+            XCTAssertFalse(session.isClosedForVerification)
+            XCTAssertEqual(closes, 0)
+            XCTAssertEqual(output.finishes + output.copies, 0)
             source.releaseDrain(); source.releaseDrain()
-            try await Self.waitUntil { source.completedDrains == 1 }
+            try await Self.waitUntil { source.completedDrains == 1 && session.isClosedForVerification }
+            XCTAssertEqual(closes, 1)
             staleEnd?(start); handle.cancelOperation(nil)
             XCTAssertEqual(source.region, original)
             XCTAssertEqual(source.moveCalls, 0); XCTAssertEqual(source.resumeCalls, 0)
@@ -151,12 +157,15 @@ final class LiveScrollSessionInteractionTests: XCTestCase {
             XCTAssertEqual(session.snapshotForVerification, beforeClose)
             XCTAssertNil(session.controlsForVerification)
             XCTAssertNil(handle.begin); XCTAssertNil(handle.move); XCTAssertNil(handle.end)
+            XCTAssertEqual(closes, 1)
         }
     }
 
     func testCloseDuringHeldResumeCannotPublishAfterMoveOrRejectedMoveRecovery() async throws {
         for rejectMove in [false, true] {
             try await withSession { session, source, _, output, clock in
+                var closes = 0
+                session.onClose = { closes += 1 }
                 let handle = try Self.handle(session)
                 let start = try Self.handleCenter(handle)
                 let original = source.region
@@ -170,9 +179,13 @@ final class LiveScrollSessionInteractionTests: XCTestCase {
                 XCTAssertEqual(session.activeCaptureDurationForVerification, 33)
                 let beforeClose = session.snapshotForVerification
                 session.cancel()
-                try await Self.waitUntil { session.isClosedForVerification }
+                XCTAssertNil(session.controlsForVerification)
+                XCTAssertFalse(session.isClosedForVerification)
+                XCTAssertEqual(closes, 0)
+                XCTAssertEqual(output.finishes + output.copies, 0)
                 source.releaseResume(); source.releaseResume()
-                try await Self.waitUntil { source.completedResumes == 1 }
+                try await Self.waitUntil { source.completedResumes == 1 && session.isClosedForVerification }
+                XCTAssertEqual(closes, 1)
                 XCTAssertEqual(source.moveCalls, 1); XCTAssertEqual(source.resumeCalls, 1)
                 XCTAssertEqual(source.region, rejectMove ? original : original.offsetBy(dx: 0, dy: 60))
                 XCTAssertEqual(source.stopCalls, 1)
@@ -180,6 +193,7 @@ final class LiveScrollSessionInteractionTests: XCTestCase {
                 XCTAssertEqual(session.snapshotForVerification, beforeClose)
                 XCTAssertEqual(output.finishes + output.copies, 0)
                 XCTAssertNil(session.controlsForVerification)
+                XCTAssertEqual(closes, 1)
             }
         }
     }

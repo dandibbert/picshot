@@ -118,8 +118,9 @@ final class LiveScrollDeliveryTests: XCTestCase {
         let screen = try XCTUnwrap(NSScreen.main)
         let source = FinishSource(image: try image(), screen: screen)
         source.holdPause = true
-        var finishes = 0, copies = 0
+        var finishes = 0, copies = 0, closes = 0
         let controller = LiveScrollSessionController(onComplete: { _ in finishes += 1 }, onImport: {}, onCopy: { _ in copies += 1 })
+        controller.onClose = { closes += 1 }
         do {
             try await controller.startForVerification(source: source, screen: screen)
             try await wait { controller.snapshotForVerification.canFinish }
@@ -127,13 +128,18 @@ final class LiveScrollDeliveryTests: XCTestCase {
             try PortableSettingsUIPreviewFixture.click(toolbar.finishButton)
             try await wait { source.pausePending }
             try PortableSettingsUIPreviewFixture.click(toolbar.cancelButton)
-            try await wait { controller.isClosedForVerification }
+            XCTAssertNil(controller.controlsForVerification)
+            XCTAssertFalse(controller.isClosedForVerification)
+            XCTAssertEqual(closes, 0)
+            XCTAssertEqual(finishes, 0); XCTAssertEqual(copies, 0)
             source.releasePause()
-            try await wait { source.pauseReturned }
+            try await wait { source.pauseReturned && controller.isClosedForVerification }
+            XCTAssertEqual(closes, 1)
             for _ in 0..<20 { await Task.yield() }
             controller.show()
             XCTAssertEqual(finishes, 0); XCTAssertEqual(copies, 0)
             XCTAssertNil(controller.controlsForVerification)
+            XCTAssertEqual(closes, 1)
         } catch {
             source.releasePause()
             await controller.closeForVerification()

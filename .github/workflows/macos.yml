@@ -8,8 +8,8 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[text-script-xctest-diagnostic]') && 'text-script-xctest-diagnostic' || contains(github.event.head_commit.message || '', '[text-script-runtime]') && 'text-script-runtime' || contains(github.event.head_commit.message || '', '[experimental-installer227]') && 'experimental-installer227' || contains(github.event.head_commit.message || '', '[blocked-installers227]') && 'blocked-installers227' || contains(github.event.head_commit.message || '', '[live-scroll-remainder]') && 'live-scroll-remainder' || contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') && 'pin-ui-diagnostic' || contains(github.event.head_commit.message || '', '[shortcut-isolation]') && 'shortcut-isolation' || contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && 'intel154-fresh-diagnostic' || contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && 'native-timeout-diagnostic' || contains(github.event.head_commit.message || '', '[installed-diagnostic]') && 'installed-diagnostic' || contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-product-resource' || contains(github.event.head_commit.message || '', '[seed-render-crop]') && 'seed-render-crop' || contains(github.event.head_commit.message || '', '[effect-context]') && 'effect-context' || contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && 'renderer-scope-controls' || contains(github.event.head_commit.message || '', '[renderer-storage]') && 'renderer-storage' || contains(github.event.head_commit.message || '', '[drawing-pair]') && 'drawing-pair' || contains(github.event.head_commit.message || '', '[editable-observation]') && 'editable-observation' || contains(github.event.head_commit.message || '', '[callout-retirement]') && 'callout-retirement' || contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-documents' || contains(github.event.head_commit.message || '', '[multiwindow-memory]') && 'multiwindow-memory' || contains(github.event.head_commit.message || '', '[recording-wait]') && 'recording-wait' || contains(github.event.head_commit.message || '', '[manual-hash]') && 'manual-hash' || contains(github.event.head_commit.message || '', '[scroll-memory]') && 'scroll-memory' || contains(github.event.head_commit.message || '', '[decode-exit-latch]') && 'decode-exit-latch' || contains(github.event.head_commit.message || '', '[decode-timing-v3]') && 'decode-timing-v3' || contains(github.event.head_commit.message || '', '[decode-large]') && 'decode-large' || contains(github.event.head_commit.message || '', '[pin-workflows]') && 'pins-010' || contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
-  cancel-in-progress: ${{ !contains(github.event.head_commit.message || '', '[text-script-xctest-diagnostic]') && !contains(github.event.head_commit.message || '', '[text-script-runtime]') && !contains(github.event.head_commit.message || '', '[experimental-installer227]') && !contains(github.event.head_commit.message || '', '[blocked-installers227]') && !contains(github.event.head_commit.message || '', '[live-scroll-remainder]') && !contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') && !contains(github.event.head_commit.message || '', '[shortcut-isolation]') && !contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && !(contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]')) && !contains(github.event.head_commit.message || '', '[seed-render-crop]') && !contains(github.event.head_commit.message || '', '[effect-context]') && !contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && !contains(github.event.head_commit.message || '', '[renderer-storage]') && !contains(github.event.head_commit.message || '', '[drawing-pair]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
+  group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[live-scroll-xctest-diagnostic]') && 'live-scroll-xctest-diagnostic' || contains(github.event.head_commit.message || '', '[text-script-xctest-diagnostic]') && 'text-script-xctest-diagnostic' || contains(github.event.head_commit.message || '', '[text-script-runtime]') && 'text-script-runtime' || contains(github.event.head_commit.message || '', '[experimental-installer227]') && 'experimental-installer227' || contains(github.event.head_commit.message || '', '[blocked-installers227]') && 'blocked-installers227' || contains(github.event.head_commit.message || '', '[live-scroll-remainder]') && 'live-scroll-remainder' || contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') && 'pin-ui-diagnostic' || contains(github.event.head_commit.message || '', '[shortcut-isolation]') && 'shortcut-isolation' || contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && 'intel154-fresh-diagnostic' || contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && 'native-timeout-diagnostic' || contains(github.event.head_commit.message || '', '[installed-diagnostic]') && 'installed-diagnostic' || contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-product-resource' || contains(github.event.head_commit.message || '', '[seed-render-crop]') && 'seed-render-crop' || contains(github.event.head_commit.message || '', '[effect-context]') && 'effect-context' || contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && 'renderer-scope-controls' || contains(github.event.head_commit.message || '', '[renderer-storage]') && 'renderer-storage' || contains(github.event.head_commit.message || '', '[drawing-pair]') && 'drawing-pair' || contains(github.event.head_commit.message || '', '[editable-observation]') && 'editable-observation' || contains(github.event.head_commit.message || '', '[callout-retirement]') && 'callout-retirement' || contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-documents' || contains(github.event.head_commit.message || '', '[multiwindow-memory]') && 'multiwindow-memory' || contains(github.event.head_commit.message || '', '[recording-wait]') && 'recording-wait' || contains(github.event.head_commit.message || '', '[manual-hash]') && 'manual-hash' || contains(github.event.head_commit.message || '', '[scroll-memory]') && 'scroll-memory' || contains(github.event.head_commit.message || '', '[decode-exit-latch]') && 'decode-exit-latch' || contains(github.event.head_commit.message || '', '[decode-timing-v3]') && 'decode-timing-v3' || contains(github.event.head_commit.message || '', '[decode-large]') && 'decode-large' || contains(github.event.head_commit.message || '', '[pin-workflows]') && 'pins-010' || contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
+  cancel-in-progress: ${{ !contains(github.event.head_commit.message || '', '[live-scroll-xctest-diagnostic]') && !contains(github.event.head_commit.message || '', '[text-script-xctest-diagnostic]') && !contains(github.event.head_commit.message || '', '[text-script-runtime]') && !contains(github.event.head_commit.message || '', '[experimental-installer227]') && !contains(github.event.head_commit.message || '', '[blocked-installers227]') && !contains(github.event.head_commit.message || '', '[live-scroll-remainder]') && !contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') && !contains(github.event.head_commit.message || '', '[shortcut-isolation]') && !contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && !(contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]')) && !contains(github.event.head_commit.message || '', '[seed-render-crop]') && !contains(github.event.head_commit.message || '', '[effect-context]') && !contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && !contains(github.event.head_commit.message || '', '[renderer-storage]') && !contains(github.event.head_commit.message || '', '[drawing-pair]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
 jobs:
   text-script-xctest-diagnostic:
     if: ${{ contains(github.event.head_commit.message || '', '[text-script-xctest-diagnostic]') }}
@@ -114,7 +114,7 @@ jobs:
         retention-days: 14
         compression-level: 6
   live-scroll-preview:
-    if: ${{ contains(github.event.head_commit.message || '', '[live-scroll-preview]') }}
+    if: ${{ contains(github.event.head_commit.message || '', '[live-scroll-preview]') || contains(github.event.head_commit.message || '', '[live-scroll-xctest-diagnostic]') }}
     runs-on: macos-15
     timeout-minutes: 40
     steps:
@@ -155,19 +155,30 @@ jobs:
         python3 -O -m unittest discover -s scripts/tests -p 'test_text_script_package.py'
         python3 -m unittest discover -s scripts/tests -p 'test_text_script_demo.py'
         python3 -O -m unittest discover -s scripts/tests -p 'test_text_script_demo.py'
+    - name: Check exact LiveScroll owned-XCTest diagnostic contracts
+      if: ${{ contains(github.event.head_commit.message || '', '[live-scroll-xctest-diagnostic]') }}
+      timeout-minutes: 2
+      run: |
+        mkdir -p dist/live-scroll-xctest
+        PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_live_scroll_xctest_diagnostic.py -v
+        PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p test_live_scroll_xctest_diagnostic.py -v
     - name: Build native dependencies
+      id: live_scroll_dependencies
       timeout-minutes: 15
       run: python3 scripts/run-bounded-command.py --timeout-seconds 840 --log dist/live-scroll-dependencies.log --report dist/live-scroll-dependencies.json -- python3 scripts/build-native-codecs.py --arch arm64
     - name: Build separate owned native scrolling target
+      if: ${{ !contains(github.event.head_commit.message || '', '[live-scroll-xctest-diagnostic]') }}
       timeout-minutes: 3
       run: python3 scripts/run-bounded-command.py --timeout-seconds 150 --log dist/live-scroll-target-build.log --report dist/live-scroll-target-build.json -- bash scripts/build-live-scroll-target.sh "$PWD/.build/LiveScrollTarget.app"
     - name: Package exact signed preview application
+      if: ${{ !contains(github.event.head_commit.message || '', '[live-scroll-xctest-diagnostic]') }}
       id: package_live_scroll
       timeout-minutes: 15
       env:
         PICSHOT_PACKAGE_APP_ONLY: '1'
       run: python3 scripts/run-bounded-command.py --timeout-seconds 840 --log dist/live-scroll-package.log --report dist/live-scroll-package.json -- bash scripts/package.sh
     - name: Demonstrate actual native scrolling and growing preview
+      if: ${{ !contains(github.event.head_commit.message || '', '[live-scroll-xctest-diagnostic]') }}
       timeout-minutes: 5
       env:
         PICSHOT_LIVE_SCROLL_DEMO_ONLY: '1'
@@ -229,13 +240,13 @@ jobs:
         compression-level: 6
     - name: Compile live scrolling app and focused tests
       id: compile_live_scroll_tests
-      if: ${{ always() && steps.package_live_scroll.outcome == 'success' }}
+      if: ${{ always() && (steps.package_live_scroll.outcome == 'success' || (contains(github.event.head_commit.message || '', '[live-scroll-xctest-diagnostic]') && steps.live_scroll_dependencies.outcome == 'success')) }}
       timeout-minutes: 10
       run: |
         python3 scripts/run-bounded-command.py --timeout-seconds 540 --log dist/live-scroll-build.log --report dist/live-scroll-build.json -- swift build --build-tests
     - name: Test live scrolling matcher storage stream and geometry
       id: test_live_scroll
-      if: ${{ always() && steps.compile_live_scroll_tests.outcome == 'success' }}
+      if: ${{ always() && !contains(github.event.head_commit.message || '', '[live-scroll-xctest-diagnostic]') && steps.compile_live_scroll_tests.outcome == 'success' }}
       timeout-minutes: 8
       run: |
         python3 scripts/run-bounded-command.py --timeout-seconds 420 --log dist/live-scroll-tests.log --report dist/live-scroll-tests.json -- swift test --skip-build --filter LiveScroll
@@ -249,6 +260,19 @@ jobs:
         native.need(not skipped,'Live scrolling cases cannot be skipped')
         Path('dist/live-scroll-test-inventory.json').write_text(json.dumps({'passed':passed,'skipped':skipped,'count':len(expected)},indent=2)+'\n')
         PY
+    - name: Preserve complete discovery for exact185 owned diagnostic
+      id: live_scroll_owned_discovery
+      if: ${{ always() && contains(github.event.head_commit.message || '', '[live-scroll-xctest-diagnostic]') && steps.compile_live_scroll_tests.outcome == 'success' }}
+      timeout-minutes: 2
+      run: python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/live-scroll-xctest/native-test-discovery.log --report dist/live-scroll-xctest/discovery-report.json -- swift test list --skip-build
+    - name: Diagnose exact185 with unbuffered boundaries and owned stacks
+      if: ${{ always() && contains(github.event.head_commit.message || '', '[live-scroll-xctest-diagnostic]') && steps.live_scroll_owned_discovery.outcome == 'success' }}
+      timeout-minutes: 9
+      run: >-
+        python3 scripts/run-bounded-command.py --timeout-seconds 510 --grace-seconds 10 --max-log-bytes 1048576
+        --log dist/live-scroll-xctest/diagnostic.log --report dist/live-scroll-xctest/diagnostic-report.json
+        -- python3 scripts/diagnose-live-scroll-xctest.py --source "$GITHUB_SHA" --source-root "$PWD"
+        --inventory dist/live-scroll-xctest/native-test-discovery.log --directory dist/live-scroll-xctest/owned
     - name: Verify visible Save status and unchanged Save workflows
       if: ${{ always() && contains(github.event.head_commit.message || '', '[save-feedback]') && steps.compile_live_scroll_tests.outcome == 'success' }}
       timeout-minutes: 8
@@ -441,6 +465,7 @@ jobs:
           dist/live-scroll-*.log
           dist/live-scroll-*.json
           dist/live-scroll-demo/
+          dist/live-scroll-xctest/
           dist/capture-chain-demo/
           dist/capture-chain-*.log
           dist/capture-chain-*.json
@@ -707,7 +732,7 @@ jobs:
           retention-days: 14
 
   build:
-    if: ${{ !contains(github.event.head_commit.message || '', '[text-script-xctest-diagnostic]') && !contains(github.event.head_commit.message || '', '[text-script-runtime]') && !contains(github.event.head_commit.message || '', '[experimental-installer227]') && !contains(github.event.head_commit.message || '', '[blocked-installers227]') && !contains(github.event.head_commit.message || '', '[live-scroll-remainder]') && !contains(github.event.head_commit.message || '', '[live-scroll-preview]') && !contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') && !contains(github.event.head_commit.message || '', '[shortcut-isolation]') && !contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') && !contains(github.event.head_commit.message || '', '[codec-attribution]') && !contains(github.event.head_commit.message || '', '[codec-staging]') && !contains(github.event.head_commit.message || '', '[codec-avif-confirmation]') && !contains(github.event.head_commit.message || '', '[runner-only]') && !contains(github.event.head_commit.message || '', '[scroll-memory]') && !contains(github.event.head_commit.message || '', '[manual-hash]') && !contains(github.event.head_commit.message || '', '[recording-wait]') && !contains(github.event.head_commit.message || '', '[multiwindow-memory]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-documents]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
+    if: ${{ !contains(github.event.head_commit.message || '', '[live-scroll-xctest-diagnostic]') && !contains(github.event.head_commit.message || '', '[text-script-xctest-diagnostic]') && !contains(github.event.head_commit.message || '', '[text-script-runtime]') && !contains(github.event.head_commit.message || '', '[experimental-installer227]') && !contains(github.event.head_commit.message || '', '[blocked-installers227]') && !contains(github.event.head_commit.message || '', '[live-scroll-remainder]') && !contains(github.event.head_commit.message || '', '[live-scroll-preview]') && !contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') && !contains(github.event.head_commit.message || '', '[shortcut-isolation]') && !contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') && !contains(github.event.head_commit.message || '', '[codec-attribution]') && !contains(github.event.head_commit.message || '', '[codec-staging]') && !contains(github.event.head_commit.message || '', '[codec-avif-confirmation]') && !contains(github.event.head_commit.message || '', '[runner-only]') && !contains(github.event.head_commit.message || '', '[scroll-memory]') && !contains(github.event.head_commit.message || '', '[manual-hash]') && !contains(github.event.head_commit.message || '', '[recording-wait]') && !contains(github.event.head_commit.message || '', '[multiwindow-memory]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-documents]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
     strategy:
       fail-fast: false
       matrix:
