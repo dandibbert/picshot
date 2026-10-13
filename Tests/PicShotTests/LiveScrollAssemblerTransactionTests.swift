@@ -14,11 +14,13 @@ final class LiveScrollAssemblerTransactionTests: XCTestCase {
     /// Nonrepeating texture in absolute document coordinates. This independently
     /// constructs either a viewport or the expected whole union, with no strip code.
     private func image(_ axis: ScrollAxis, origin: Int, length: Int = 200, cross: Int = 64,
-                       salt: UInt64 = 7, luminanceDelta: Int = 0) throws -> CGImage {
+                       salt: UInt64 = 7, luminanceDelta: Int = 0, fixedLeading: Int = 0) throws -> CGImage {
         let width = axis == .vertical ? cross : length, height = axis == .vertical ? length : cross
         var data = [UInt8](repeating: 255, count: width * height * 4)
         for y in 0..<height { for x in 0..<width {
-            let along = (axis == .vertical ? y : x) + origin + 10_000
+            let position = axis == .vertical ? y : x
+            let repeated = fixedLeading > 0 && (position < fixedLeading || position + origin == fixedLeading)
+            let along = repeated ? 10_000 : position + origin + 10_000
             let across = axis == .vertical ? x : y
             var value = UInt64(along) &* 0x9e3779b185ebca87
             value ^= UInt64(across) &* 0xc2b2ae3d27d4eb4f
@@ -84,6 +86,104 @@ final class LiveScrollAssemblerTransactionTests: XCTestCase {
             }
         }
         return result
+    }
+
+    func testLostOverlapAdvicePreservesLastGoodPixelsAndAnchorBothAxes() async throws {
+        for axis in ScrollAxis.allCases {
+            let parent = try root()
+            defer { try? FileManager.default.removeItem(at: parent) }
+            let assembler = LiveScrollAssembler(axis: axis, generation: 52, storageParent: parent)
+            _ = try await assembler.observe(image(axis, origin: 0))
+            let accepted = try await assembler.observe(image(axis, origin: 24))
+            let gap = try image(axis, origin: 1_000)
+            XCTAssertThrowsError(try LiveScrollMatcher.match(previous: ScrollImageIO.luminance(image(axis, origin: 24)),
+                next: ScrollImageIO.luminance(gap), axis: axis)) {
+                XCTAssertEqual($0 as? ScrollStitchError, .noOverlap)
+            }
+            let before = await assembler.documentSnapshotForResourceVerification()
+            let filesBefore = try spoolFiles(parent)
+            let rejected = try await assembler.observe(gap)
+            XCTAssertFalse(rejected.state.matched); XCTAssertNil(rejected.preview)
+            XCTAssertEqual(rejected.state.message, "暂未接上，可稍往回滚重试")
+            assertAcceptedStateUnchanged(rejected.state, accepted.state)
+            let after = await assembler.documentSnapshotForResourceVerification()
+            XCTAssertEqual(after, before); XCTAssertEqual(try spoolFiles(parent), filesBefore)
+            let retained = try await assembler.finish()
+            try assertOutput(retained, axis: axis, origin: 0, length: 224)
+            let recovered = try await assembler.observe(image(axis, origin: 36))
+            XCTAssertTrue(recovered.state.matched)
+            XCTAssertEqual(recovered.state.viewportOffset, 36, "Recovery must use the last accepted anchor")
+            let output = try await assembler.finish()
+            try assertOutput(output, axis: axis, origin: 0, length: 236)
+            await assembler.close()
+        }
+    }
+
+    func testUncertainPlainTextBoundaryAdvicePreservesSeedAndRecoversForwardBothAxes() async throws {
+        for axis in ScrollAxis.allCases {
+            let parent = try root()
+            defer { try? FileManager.default.removeItem(at: parent) }
+            let assembler = LiveScrollAssembler(axis: axis, generation: 53, storageParent: parent)
+            let seed = try LiveScrollRecoveryArticleFixture.image(origin: 320, axis: axis)
+            let uncertain = try LiveScrollRecoveryArticleFixture.image(origin: 328, axis: axis)
+            XCTAssertThrowsError(try LiveScrollMatcher.match(previous: ScrollImageIO.luminance(seed),
+                next: ScrollImageIO.luminance(uncertain), axis: axis)) {
+                XCTAssertEqual($0 as? LiveScrollMatchError, .uncertainContentBounds)
+            }
+            let accepted = try await assembler.observe(seed)
+            let filesBefore = try spoolFiles(parent)
+            let rejected = try await assembler.observe(uncertain)
+            XCTAssertFalse(rejected.state.matched); XCTAssertNil(rejected.preview)
+            XCTAssertEqual(rejected.state.message, "固定区域边界暂不明确，请缓慢滚动重试")
+            assertAcceptedStateUnchanged(rejected.state, accepted.state)
+            let document = await assembler.documentSnapshotForResourceVerification()
+            XCTAssertNil(document); XCTAssertEqual(try spoolFiles(parent), filesBefore)
+            let retained = try await assembler.finish()
+            XCTAssertEqual(try pixels(retained), try pixels(seed))
+            // Existing real article evidence: 320 -> 328 is uncertain, while
+            // continuing FORWARD to 336 exposes the true 36-pixel boundary.
+            let recovered = try await assembler.observe(LiveScrollRecoveryArticleFixture.image(origin: 336, axis: axis))
+            XCTAssertTrue(recovered.state.matched); XCTAssertNotNil(recovered.preview)
+            XCTAssertEqual(recovered.state.viewportOffset, 16)
+            XCTAssertEqual(recovered.state.acceptedObservations, 2)
+            XCTAssertEqual(recovered.state.fixedLeading, 36)
+            let output = try await assembler.finish()
+            let expected = try LiveScrollRecoveryArticleFixture.image(origin: 320, length: 496, axis: axis)
+            XCTAssertEqual(output.width, expected.width); XCTAssertEqual(output.height, expected.height)
+            XCTAssertEqual(try pixels(output), try pixels(expected))
+            await assembler.close()
+        }
+    }
+
+    func testUnsupportedFixedContentAdviceKeepsAcceptedImageFinishableBothAxes() async throws {
+        for axis in ScrollAxis.allCases {
+            let parent = try root()
+            defer { try? FileManager.default.removeItem(at: parent) }
+            let assembler = LiveScrollAssembler(axis: axis, generation: 54, storageParent: parent)
+            // Repeated fixed rows plus one equal body boundary row make the
+            // one-pixel motion exact, reaching the actual unsupported guard.
+            let seed = try image(axis, origin: 0, fixedLeading: 40)
+            let candidate = try image(axis, origin: 1, fixedLeading: 40)
+            XCTAssertThrowsError(try LiveScrollMatcher.match(previous: ScrollImageIO.luminance(seed),
+                next: ScrollImageIO.luminance(candidate), axis: axis)) {
+                XCTAssertEqual($0 as? LiveScrollMatchError, .unsupportedFixedContent)
+            }
+            let accepted = try await assembler.observe(seed)
+            let filesBefore = try spoolFiles(parent)
+            let rejected = try await assembler.observe(candidate)
+            XCTAssertFalse(rejected.state.matched); XCTAssertNil(rejected.preview)
+            XCTAssertEqual(rejected.state.message, "固定区域不支持；可先完成，再重选正文")
+            assertAcceptedStateUnchanged(rejected.state, accepted.state)
+            let document = await assembler.documentSnapshotForResourceVerification()
+            XCTAssertNil(document); XCTAssertEqual(try spoolFiles(parent), filesBefore)
+            let output = try await assembler.finish()
+            XCTAssertEqual(output.width, seed.width); XCTAssertEqual(output.height, seed.height)
+            XCTAssertEqual(try pixels(output), try pixels(seed))
+            let stationary = try await assembler.observe(seed)
+            XCTAssertTrue(stationary.state.matched)
+            assertAcceptedStateUnchanged(stationary.state, accepted.state)
+            await assembler.close()
+        }
     }
 
     func testStationaryPreviewRecoveryPreservesAcceptedStateAndSpoolBothDirectionsAndAxes() async throws {
@@ -383,5 +483,49 @@ final class LiveScrollAssemblerTransactionTests: XCTestCase {
         let finalState = await assembler.currentState()
         XCTAssertEqual(finalState.committedSources, 4)
         await assembler.close()
+    }
+}
+
+/// Reuses the unchanged native article captured for LiveScrollPlainTextMatcherTests.
+/// Only the existing 36-pixel fixed heading and an exact body slice are composed.
+enum LiveScrollRecoveryArticleFixture {
+    static func image(origin: Int, length: Int = 480, axis: ScrollAxis = .vertical) throws -> CGImage {
+        let width = 640, articleHeight = 1_200, header = 36
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("PicShotCoreTests/Fixtures/LiveScrollPlainTextLuminance.rle.b64")
+        let text = try String(contentsOf: url, encoding: .utf8)
+        let payload = try XCTUnwrap(Data(base64Encoded: text, options: .ignoreUnknownCharacters))
+        let encoded = [UInt8](payload)
+        guard encoded.count >= 12, Array(encoded[0..<4]) == Array("PSG1".utf8), (encoded.count - 12) % 3 == 0 else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        func uint32(_ offset: Int) -> Int {
+            (0..<4).reduce(0) { $0 | (Int(encoded[offset + $1]) << ($1 * 8)) }
+        }
+        guard uint32(4) == width, uint32(8) == articleHeight,
+              origin >= 0, length >= header, origin + length <= articleHeight else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        var article: [UInt8] = []
+        article.reserveCapacity(width * articleHeight)
+        for index in stride(from: 12, to: encoded.count, by: 3) {
+            let count = Int(encoded[index]) | (Int(encoded[index + 1]) << 8)
+            guard count > 0, count <= width * articleHeight - article.count else { throw CocoaError(.fileReadCorruptFile) }
+            article.append(contentsOf: repeatElement(encoded[index + 2], count: count))
+        }
+        guard article.count == width * articleHeight else { throw CocoaError(.fileReadCorruptFile) }
+        let gray = Array(article[0..<header * width]) + Array(article[(header + origin) * width..<(length + origin) * width])
+        let outputWidth = axis == .vertical ? width : length
+        let outputHeight = axis == .vertical ? length : width
+        var pixels = gray
+        if axis == .horizontal {
+            for y in 0..<length { for x in 0..<width { pixels[x * length + y] = gray[y * width + x] } }
+        }
+        // DeviceGray matches ScrollImageIO's original luminance space, avoiding
+        // a second RGB-to-gray conversion that would change the retained fixture.
+        return try XCTUnwrap(CGImage(width: outputWidth, height: outputHeight, bitsPerComponent: 8, bitsPerPixel: 8,
+            bytesPerRow: outputWidth, space: CGColorSpaceCreateDeviceGray(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+            provider: CGDataProvider(data: Data(pixels) as CFData)!, decode: nil, shouldInterpolate: false, intent: .defaultIntent))
     }
 }

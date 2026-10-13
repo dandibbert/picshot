@@ -78,7 +78,16 @@ actor LiveScrollAssembler {
         } catch is CancellationError { throw CancellationError() }
         catch {
             state.matched = false
-            state.message = "暂未接上，稍往回滚即可继续"
+            switch error {
+            case ScrollStitchError.noOverlap:
+                state.message = "暂未接上，可稍往回滚重试"
+            case LiveScrollMatchError.uncertainContentBounds:
+                state.message = "固定区域边界暂不明确，请缓慢滚动重试"
+            case LiveScrollMatchError.unsupportedFixedContent:
+                state.message = "固定区域不支持；可先完成，再重选正文"
+            default:
+                state.message = error.localizedDescription
+            }
             return Update(state: state, preview: nil, viewport: .zero)
         }
         try check()
@@ -88,7 +97,7 @@ actor LiveScrollAssembler {
         let bounds = match.contentBounds.rect
         let detected = CGRect(x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height)
         if let scrollingRect, scrollingRect != detected {
-            state.matched = false; state.message = "页面固定区域变了，往回滚到已捕获位置重接"
+            state.matched = false; state.message = "固定区域已变化，请缓慢滚动重试；已有内容可完成"
             return Update(state: state, preview: nil, viewport: .zero)
         }
         let sum = offset.addingReportingOverflow(match.displacement)

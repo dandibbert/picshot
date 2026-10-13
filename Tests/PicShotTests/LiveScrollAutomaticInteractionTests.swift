@@ -8,6 +8,8 @@ import PicShotCore
 /// time are injected. No desktop capture, TCC request or clipboard write occurs.
 @MainActor
 final class LiveScrollAutomaticInteractionTests: XCTestCase {
+    private static var retainedWarningEvidence: Set<String> = []
+
     func testSlowFirstFrameCannotArmAutoBeforeVerifiedSeed() async throws {
         try await withSession(seed: false) { fixture in
             let toolbar = try fixture.toolbar()
@@ -409,6 +411,76 @@ final class LiveScrollAutomaticInteractionTests: XCTestCase {
         }
     }
 
+    func testLostOverlapWarningSurvivesManualAndAutomaticSessionAndKeepsFinishPixels() async throws {
+        for useAuto in [false, true] {
+            try await withSession { fixture in
+                try await fixture.deliver(Self.image(origin: 24))
+                let accepted = fixture.session.stateForVerification
+                let preview = try XCTUnwrap(fixture.thumbnail().image)
+                let viewport = try fixture.thumbnail().viewportFraction
+                if useAuto { try fixture.startAuto(); fixture.clock.now += 0.5 }
+                try await fixture.deliver(Self.image(origin: 1_000))
+                try fixture.assertRecoveryWarning("暂未接上，可稍往回滚重试", after: accepted,
+                    preview: preview, viewport: viewport, automaticWasStarted: useAuto)
+                try await fixture.finish(origin: 0, length: 224)
+            }
+        }
+    }
+
+    func testUncertainArticleWarningSurvivesAutoStopAndForwardRecoveryRequiresExplicitAuto() async throws {
+        for useAuto in [false, true] {
+            try await withSession(seed: false, size: CGSize(width: 640, height: 480)) { fixture in
+                try await fixture.deliver(LiveScrollRecoveryArticleFixture.image(origin: 320))
+                let accepted = fixture.session.stateForVerification
+                let preview = try XCTUnwrap(fixture.thumbnail().image)
+                let viewport = try fixture.thumbnail().viewportFraction
+                if useAuto { try fixture.startAuto(); fixture.clock.now += 0.5 }
+                try await fixture.deliver(LiveScrollRecoveryArticleFixture.image(origin: 328))
+                try fixture.assertRecoveryWarning("固定区域边界暂不明确，请缓慢滚动重试", after: accepted,
+                    preview: preview, viewport: viewport, automaticWasStarted: useAuto)
+                try await fixture.deliver(LiveScrollRecoveryArticleFixture.image(origin: 336))
+                XCTAssertEqual(fixture.session.stateForVerification.viewportOffset, 16)
+                XCTAssertEqual(fixture.session.snapshotForVerification.acceptedFrames, 2)
+                XCTAssertEqual(fixture.session.snapshotForVerification.pixelWidth, 640)
+                XCTAssertEqual(fixture.session.snapshotForVerification.pixelHeight, 496)
+                XCTAssertTrue(fixture.session.snapshotForVerification.previewPositionVerified)
+                XCTAssertTrue(try fixture.thumbnail().isPositionVerified)
+                XCTAssertEqual(try fixture.thumbnail().viewportMarkerColor, .systemGreen)
+                XCTAssertEqual(fixture.session.snapshotForVerification.statusKind, .capturing)
+                XCTAssertEqual(fixture.session.snapshotForVerification.status, "正在接长 · 固定页眉/页脚保留一次")
+                XCTAssertTrue(try fixture.toolbar().autoButton.isEnabled)
+                XCTAssertFalse(fixture.session.snapshotForVerification.autoScrolling)
+                XCTAssertEqual(fixture.input.events.count, useAuto ? 1 : 0)
+                try fixture.startAuto()
+                XCTAssertTrue(fixture.session.snapshotForVerification.autoScrolling)
+                XCTAssertEqual(fixture.input.events.count, useAuto ? 2 : 1)
+                try await fixture.finish(expected: LiveScrollRecoveryArticleFixture.image(origin: 320, length: 496))
+            }
+        }
+    }
+
+    func testUnsupportedFixedContentWarningSurvivesAutoStopAndKeepsFinishPixels() async throws {
+        for useAuto in [false, true] {
+            try await withSession(seed: false) { fixture in
+                let seed = try Self.image(origin: 0, fixedLeading: 40)
+                try await fixture.deliver(seed)
+                let accepted = fixture.session.stateForVerification
+                let preview = try XCTUnwrap(fixture.thumbnail().image)
+                let viewport = try fixture.thumbnail().viewportFraction
+                if useAuto { try fixture.startAuto(); fixture.clock.now += 0.5 }
+                try await fixture.deliver(Self.image(origin: 1, fixedLeading: 40))
+                try fixture.assertRecoveryWarning("固定区域不支持；可先完成，再重选正文", after: accepted,
+                    preview: preview, viewport: viewport, automaticWasStarted: useAuto)
+                // The next manual retry has a different cause; a stored Auto
+                // stop notice must not hide its current recovery advice.
+                try await fixture.deliver(Self.image(origin: 1_000, salt: 101))
+                try fixture.assertRecoveryWarning("暂未接上，可稍往回滚重试", after: accepted,
+                    preview: preview, viewport: viewport, automaticWasStarted: useAuto)
+                try await fixture.finish(expected: seed)
+            }
+        }
+    }
+
     func testPauseAndResumeDiscardOutstandingStepWithoutRearming() async throws {
         try await withSession { fixture in
             let toolbar = try fixture.toolbar()
@@ -564,11 +636,11 @@ final class LiveScrollAutomaticInteractionTests: XCTestCase {
         XCTAssertEqual(actual.height, expected.height, accuracy: 1e-12, file: file, line: line)
     }
 
-    private func withSession(seed: Bool = true, permission: Bool = true,
+    private func withSession(seed: Bool = true, permission: Bool = true, size: CGSize = CGSize(width: 64, height: 200),
                              _ body: (Fixture) async throws -> Void) async throws {
         _ = NSApplication.shared
         guard let screen = NSScreen.main else { throw XCTSkip("A native macOS screen is required for session controls") }
-        let fixture = Fixture(screen: screen, permission: permission)
+        let fixture = Fixture(screen: screen, permission: permission, size: size)
         do {
             try await fixture.session.startForVerification(source: fixture.source, screen: screen)
             try await Self.waitUntil { fixture.source.mailbox.counters.waitingReaders == 1 }
@@ -610,11 +682,12 @@ final class LiveScrollAutomaticInteractionTests: XCTestCase {
 
     /// Absolute document coordinates independently generate each viewport and
     /// the complete expected union. No assembler or strip-writing code is reused.
-    private static func image(origin: Int, length: Int = 200, salt: UInt64 = 7) throws -> CGImage {
+    private static func image(origin: Int, length: Int = 200, salt: UInt64 = 7, fixedLeading: Int = 0) throws -> CGImage {
         let width = 64
         var data = [UInt8](repeating: 255, count: width * length * 4)
         for y in 0..<length { for x in 0..<width {
-            var value = UInt64(y + origin + 10_000) &* 0x9e3779b185ebca87
+            let repeated = fixedLeading > 0 && (y < fixedLeading || y + origin == fixedLeading)
+            var value = UInt64(repeated ? 10_000 : y + origin + 10_000) &* 0x9e3779b185ebca87
             value ^= UInt64(x) &* 0xc2b2ae3d27d4eb4f
             value ^= salt
             value = (value ^ (value >> 30)) &* 0xbf58476d1ce4e5b9
@@ -666,8 +739,8 @@ final class LiveScrollAutomaticInteractionTests: XCTestCase {
         let input: Input
         let session: LiveScrollSessionController
 
-        init(screen: NSScreen, permission: Bool) {
-            let source = Source(displayBounds: screen.frame), clock = Clock(), output = Output()
+        init(screen: NSScreen, permission: Bool, size: CGSize) {
+            let source = Source(displayBounds: screen.frame, size: size), clock = Clock(), output = Output()
             let input = Input(clock: clock, permitted: permission)
             self.source = source; self.clock = clock; self.output = output; self.input = input
             session = LiveScrollSessionController(onComplete: { output.image = $0; output.finishes += 1 },
@@ -714,14 +787,85 @@ final class LiveScrollAutomaticInteractionTests: XCTestCase {
             XCTAssertEqual(source.stopCalls, 0)
             XCTAssertEqual(source.mailbox.counters.waitingReaders, 1)
         }
+        func assertRecoveryWarning(_ message: String, after accepted: LiveScrollAssembler.State,
+                                   preview: CGImage, viewport: CGRect, automaticWasStarted: Bool) throws {
+            try assertStoppedWithManualCapture()
+            let expected = automaticWasStarted ? "自动滚动已停：\(message)" : message
+            let state = session.snapshotForVerification, toolbar = try self.toolbar(), thumbnail = try self.thumbnail()
+            XCTAssertEqual(state.status, expected)
+            XCTAssertEqual(toolbar.statusLabel.stringValue, expected)
+            XCTAssertEqual(toolbar.statusLabel.toolTip, expected)
+            XCTAssertEqual(toolbar.statusLabel.accessibilityLabel(), expected)
+            XCTAssertEqual(state.acceptedFrames, accepted.acceptedObservations)
+            XCTAssertEqual(state.pixelWidth, accepted.width); XCTAssertEqual(state.pixelHeight, accepted.height)
+            XCTAssertEqual(session.stateForVerification.viewportOffset, accepted.viewportOffset)
+            XCTAssertEqual(session.stateForVerification.committedSources, accepted.committedSources)
+            XCTAssertEqual(session.stateForVerification.diskBytes, accepted.diskBytes)
+            XCTAssertFalse(state.previewPositionVerified); XCTAssertFalse(thumbnail.isPositionVerified)
+            XCTAssertEqual(thumbnail.viewportMarkerColor, .systemOrange)
+            XCTAssertEqual(thumbnail.viewportFraction, viewport)
+            XCTAssertTrue(thumbnail.image === preview)
+            XCTAssertFalse(toolbar.autoButton.isEnabled)
+            toolbar.autoButton.performClick(nil)
+            XCTAssertFalse(session.snapshotForVerification.autoScrolling)
+            XCTAssertEqual(input.events.count, automaticWasStarted ? 1 : 0)
+            try retainRecoveryWarningEvidence(message, automaticWasStarted: automaticWasStarted)
+        }
+        private func retainRecoveryWarningEvidence(_ message: String, automaticWasStarted: Bool) throws {
+            guard let path = ProcessInfo.processInfo.environment["PICSHOT_SCROLL_GUIDANCE_EVIDENCE"],
+                  !path.isEmpty else { return }
+            let reason: String
+            switch message {
+            case "暂未接上，可稍往回滚重试": reason = "lost-overlap"
+            case "固定区域边界暂不明确，请缓慢滚动重试": reason = "uncertain-boundary"
+            case "固定区域不支持；可先完成，再重选正文": reason = "unsupported-fixed-content"
+            default: XCTFail("Unexpected recovery warning evidence case"); return
+            }
+            // Six fixed phases, two appearances each. Repeated manual retries
+            // cannot add another image or replace the first receipt in this run.
+            let phase = "scroll-guidance-" + reason + (automaticWasStarted ? "-auto" : "-manual")
+            let directory = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+            let key = directory.path + "/" + phase
+            // Reserve before fallible capture so a later retry cannot overwrite
+            // the first attempt's evidence when native layout validation throws.
+            guard LiveScrollAutomaticInteractionTests.retainedWarningEvidence.insert(key).inserted else { return }
+            let window = try XCTUnwrap(session.controlsForVerification?.toolbarWindow)
+            let previousAppearance = window.appearance
+            defer {
+                window.appearance = previousAppearance
+                window.contentView?.needsDisplay = true; window.displayIfNeeded()
+            }
+            let state = session.snapshotForVerification
+            let receipt: [String: Any] = ["warningReason": reason, "automaticWasStarted": automaticWasStarted,
+                "status": state.status, "statusKind": String(describing: state.statusKind),
+                "paused": state.paused, "busy": state.busy, "autoScrolling": state.autoScrolling,
+                "canFinish": state.canFinish, "canCopy": state.canCopy,
+                "previewPositionVerified": state.previewPositionVerified,
+                "pixelWidth": state.pixelWidth, "pixelHeight": state.pixelHeight,
+                "acceptedFrames": state.acceptedFrames,
+                "originalWindowAppearance": previousAppearance?.name.rawValue ?? "inherited"]
+            // Existing owned-native capture preserves full control frames,
+            // visible strings, tooltips, AX values and text-fit measurements.
+            // It writes both PNGs/receipts before reporting any layout failure.
+            let artifacts = try CaptureChainUIPreviewFixture.captureOwnedEvidence(window: window,
+                phase: phase, evidenceDirectory: directory)
+            for var artifact in artifacts {
+                let appearance = try XCTUnwrap(artifact["appearance"] as? String)
+                artifact["session"] = receipt
+                try JSONSerialization.data(withJSONObject: artifact, options: [.prettyPrinted, .sortedKeys])
+                    .write(to: directory.appendingPathComponent(phase + "-" + appearance + "-layout.json"), options: .atomic)
+            }
+        }
         func finish(origin: Int, length: Int) async throws {
+            try await finish(expected: LiveScrollAutomaticInteractionTests.image(origin: origin, length: length))
+        }
+        func finish(expected: CGImage) async throws {
             let count = input.events.count
             try PortableSettingsUIPreviewFixture.click(toolbar().finishButton)
             try await LiveScrollAutomaticInteractionTests.waitUntil { self.session.isClosedForVerification }
             XCTAssertEqual(output.finishes, 1); XCTAssertEqual(output.copies, 0)
             XCTAssertEqual(input.events.count, count)
             let actual = try XCTUnwrap(output.image)
-            let expected = try LiveScrollAutomaticInteractionTests.image(origin: origin, length: length)
             XCTAssertEqual(actual.width, expected.width); XCTAssertEqual(actual.height, expected.height)
             XCTAssertEqual(try LiveScrollAutomaticInteractionTests.pixels(actual), try LiveScrollAutomaticInteractionTests.pixels(expected))
         }
@@ -741,11 +885,14 @@ final class LiveScrollAutomaticInteractionTests: XCTestCase {
         var targetFailure = false
         private var running = false, stopped = false
 
-        init(displayBounds: CGRect) { self.displayBounds = displayBounds }
+        init(displayBounds: CGRect, size: CGSize) {
+            self.displayBounds = displayBounds
+            region.size = size
+        }
         func start() async throws {
             guard !stopped else { throw LiveScrollSourceError.stopped }
             generation &+= 1; running = true
-            mailbox.activate(generation: generation, width: 64, height: 200)
+            mailbox.activate(generation: generation, width: Int(region.width), height: Int(region.height))
         }
         func nextFrame(timeout: TimeInterval) async throws -> LiveScrollScreenSource.Frame? {
             readCalls += 1

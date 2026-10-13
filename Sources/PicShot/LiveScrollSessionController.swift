@@ -219,7 +219,7 @@ final class LiveScrollSessionController {
         actions.beginRegionDrag = { [weak self] id in self?.beginRegionDrag(id: id) ?? false }
         actions.endRegionDrag = { [weak self] id, frame in self?.endRegionDrag(id: id, frame: frame) }
         actions.importImages = { [weak self] in self?.openImporter() }
-        actions.help = { [weak self] in guard let self else { return }; self.setStatus("滚动页面自动接长；接不上时稍往回滚。暂停保留内容，完成进入编辑。", kind: self.snapshot.statusKind) }
+        actions.help = { [weak self] in guard let self else { return }; self.setStatus("滚动页面自动接长；接不上时按提示重试。暂停保留内容，完成进入编辑。", kind: self.snapshot.statusKind) }
         actions.cancel = { [weak self] in self?.cancel() }
         actions.onClose = { [weak self] in self?.cancel() }
         controls = LiveScrollCaptureController(actions: actions)
@@ -777,7 +777,9 @@ final class LiveScrollSessionController {
         }
         guard lastState.matched, !lastState.previewUnavailable else {
             lastAutomaticObservation = nil
-            if automatic { stopAutomatic("自动滚动已停，稍往回滚接回长图；已有内容保留") }
+            // A later rejected manual retry may have a different cause. Keep
+            // that current advice visible while Auto remains stopped.
+            if automatic || automaticStopMessage != nil { stopAutomatic("自动滚动已停：\(lastState.message)") }
             return
         }
         let mark = LiveScrollFrameWatermark(generation: frame.generation, sequence: frame.sequence)

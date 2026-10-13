@@ -832,11 +832,35 @@ class WorkflowSelectionTests(unittest.TestCase):
             module=path.relative_to(REPO/'Tests').parts[0]
             inventory.extend(module+'.'+classes[0]+'/'+method for method in methods)
         inventory=sorted(inventory)
+        guidance_added=C.scroll_guidance_additions(inventory)
+        self.assertEqual(len(guidance_added),6)
+        self.assertEqual(list(C.SCROLL_GUIDANCE_ADDITIONS),sorted(guidance_added))
+        preserved278=[name for name in inventory if name not in guidance_added]
+        self.assertEqual((len(preserved278),len({name.split('/')[0] for name in preserved278}),
+            hashlib.sha256(('\n'.join(preserved278)+'\n').encode()).hexdigest()),C.PRESERVED278_NATIVE_INVENTORY)
+        self.assertEqual(inventory,sorted(preserved278+list(guidance_added)))
+        for method in sorted(guidance_added):
+            mutations={
+                'missing':[name for name in inventory if name!=method],
+                'renamed':sorted(name+'Renamed' if name==method else name for name in inventory),
+                'wrong module':sorted(name.replace('PicShotTests.', 'PicShotCoreTests.', 1) if name==method else name for name in inventory),
+                'extra':sorted(inventory+[method+'Unexpected']),
+                'duplicate':sorted(inventory+[method]),
+            }
+            for label,changed in mutations.items():
+                with self.subTest(guidance=method,mutation=label),self.assertRaises(ValueError):
+                    C.scroll_guidance_additions(changed)
+                with self.subTest(guidance=method,combined_guard=label),self.assertRaises(ValueError):
+                    C.text_script_additions(changed)
+        for changed in (preserved278,list(reversed(inventory))):
+            with self.subTest(stale_or_unsorted=True),self.assertRaises(ValueError):
+                C.scroll_guidance_additions(changed)
         scroll_added=C.scroll_chain_additions(inventory)
+        self.assertFalse(guidance_added & scroll_added)
         current_inventory=inventory
         self.assertEqual((len(inventory),len({name.split('/')[0] for name in inventory}),
             hashlib.sha256(('\n'.join(inventory)+'\n').encode()).hexdigest()),C.CURRENT_NATIVE_INVENTORY)
-        inventory=[name for name in inventory if name not in scroll_added]
+        inventory=[name for name in preserved278 if name not in scroll_added]
         self.assertEqual(len(inventory),2407)
         self.assertEqual(len(set(inventory)),2407)
         self.assertEqual(len({name.split('/')[0] for name in inventory}),267)
@@ -866,7 +890,9 @@ class WorkflowSelectionTests(unittest.TestCase):
                          '0f19081756c225e5b0fede62805ee01693d1409bf6552979ac74db409e3e4aab')
         live=json.loads((REPO/'scripts/live-scroll-additive-tests.json').read_text())
         self.assertEqual(live,[name for name in current_inventory if '.LiveScroll' in name])
-        live=[name for name in live if name not in scroll_added]
+        self.assertEqual(len(live),195)
+        self.assertTrue(guidance_added.issubset(live))
+        live=[name for name in live if name not in scroll_added and name not in guidance_added]
         self.assertEqual(len(live),165);self.assertTrue(set(live).issubset(inventory))
         self.assertTrue(recovery.issubset(live))
         prior_live=[name for name in live if name not in recovery and name not in payload_added]

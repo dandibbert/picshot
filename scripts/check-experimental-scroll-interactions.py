@@ -593,8 +593,18 @@ SCROLL_RECOVERY_ADDITIONS = (
 )
 
 
-CURRENT_NATIVE_INVENTORY = (2440, 272, 'd951f8ac10252217989e958a6e216662f9f700dfbfd8ce7546ce9df263d2e0fe')
-CURRENT_FOCUSED_INVENTORY = (1908, '93709150a83a2a3a8c09cc3f79cc9531651f570892ca581b51c7d890886c09ad')
+PRESERVED278_NATIVE_INVENTORY = (2440, 272, 'd951f8ac10252217989e958a6e216662f9f700dfbfd8ce7546ce9df263d2e0fe')
+PRESERVED278_FOCUSED_INVENTORY = (1908, '93709150a83a2a3a8c09cc3f79cc9531651f570892ca581b51c7d890886c09ad')
+CURRENT_NATIVE_INVENTORY = (2446, 272, 'cb4c7562b61acbe85a76baab2cfad28c601de3b197eb97340c74f134075da8f0')
+CURRENT_FOCUSED_INVENTORY = (1914, 'a2b347f3dcdc7e010730706a8db5ba5886392dd41bb69daa7dd1f79c2eb05e6a')
+SCROLL_GUIDANCE_ADDITIONS = (
+    'PicShotTests.LiveScrollAssemblerTransactionTests/testLostOverlapAdvicePreservesLastGoodPixelsAndAnchorBothAxes',
+    'PicShotTests.LiveScrollAssemblerTransactionTests/testUncertainPlainTextBoundaryAdvicePreservesSeedAndRecoversForwardBothAxes',
+    'PicShotTests.LiveScrollAssemblerTransactionTests/testUnsupportedFixedContentAdviceKeepsAcceptedImageFinishableBothAxes',
+    'PicShotTests.LiveScrollAutomaticInteractionTests/testLostOverlapWarningSurvivesManualAndAutomaticSessionAndKeepsFinishPixels',
+    'PicShotTests.LiveScrollAutomaticInteractionTests/testUncertainArticleWarningSurvivesAutoStopAndForwardRecoveryRequiresExplicitAuto',
+    'PicShotTests.LiveScrollAutomaticInteractionTests/testUnsupportedFixedContentWarningSurvivesAutoStopAndKeepsFinishPixels',
+)
 SCROLL_CHAIN_ADDITIONS = (
     'PicShotTests.CaptureChainPreparedInputTests/testAll15OrdersAndEveryReceiptPrefixDispatchOnlySuffixUsingIdenticalPreparedImage',
     'PicShotTests.CaptureChainPreparedInputTests/testCancellationAtEveryOutputBoundaryContinuesWithFreshRunIDAndNoPrefixReplay',
@@ -638,6 +648,31 @@ SCROLL_CHAIN_CHOICE_ADDITIONS = (
 )
 
 
+def scroll_guidance_additions(inventory):
+    """The six guidance methods preserve the exact delivered278 native union."""
+    need(type(inventory) is list and all(type(name) is str for name in inventory)
+         and inventory == sorted(set(inventory)), 'Native discovery must contain unique sorted IDs')
+    added = set(SCROLL_GUIDANCE_ADDITIONS)
+    need(added.issubset(inventory), 'Explicit279 scroll guidance methods missing or renamed')
+    preserved = [name for name in inventory if name not in added]
+    need((len(preserved), len({name.split('/')[0] for name in preserved}),
+          hashlib.sha256(('\n'.join(preserved)+'\n').encode()).hexdigest()) == PRESERVED278_NATIVE_INVENTORY,
+         'Preserved278 native IDs changed')
+    return added
+
+
+def check_focused_inventory(inventory):
+    need(type(inventory) is list and all(type(name) is str for name in inventory)
+         and inventory == sorted(set(inventory)), 'Focused discovery must contain unique sorted IDs')
+    guidance = set(SCROLL_GUIDANCE_ADDITIONS)
+    need(guidance.issubset(inventory), 'All6 guidance methods must be selected in both plans')
+    preserved = [name for name in inventory if name not in guidance]
+    need((len(preserved), hashlib.sha256(('\n'.join(preserved)+'\n').encode()).hexdigest())
+         == PRESERVED278_FOCUSED_INVENTORY, 'Preserved278 focused native IDs changed')
+    need((len(inventory), hashlib.sha256(('\n'.join(inventory)+'\n').encode()).hexdigest())
+         == CURRENT_FOCUSED_INVENTORY, 'Current focused native inventory changed')
+
+
 def scroll_chain_additions(inventory):
     """The new source slice is additive to every delivered268 method identity."""
     added = set(SCROLL_CHAIN_ADDITIONS)
@@ -651,6 +686,9 @@ def scroll_chain_additions(inventory):
 def text_script_additions(inventory):
     """Bind exact266 additions while preserving all265/263 and accepted248 IDs."""
     current_inventory = inventory
+    guidance_ids = scroll_guidance_additions(inventory)
+    preserved278 = [name for name in inventory if name not in guidance_ids]
+    inventory = preserved278
     scroll_ids = scroll_chain_additions(inventory)
     inventory = [name for name in inventory if name not in scroll_ids]
     added = json.loads(read(Path('scripts/text-script-integration-tests.json')))
@@ -684,8 +722,8 @@ def text_script_additions(inventory):
          == '5c7d51efe5e1fc16a1d3dd5c5d5fc4ae35948893fc7e5feb92aaf7c83c9f5539', 'Current native discovery differs from the exact2407 ID union')
     need((len(current_inventory), len({name.split('/')[0] for name in current_inventory}),
           hashlib.sha256(('\n'.join(current_inventory)+'\n').encode()).hexdigest()) == CURRENT_NATIVE_INVENTORY,
-         'Current native discovery differs from the exact additive existing-image chain union')
-    preserved269 = [name for name in current_inventory if name not in SCROLL_CHAIN_CHOICE_ADDITIONS]
+         'Current native discovery differs from the exact additive guidance union')
+    preserved269 = [name for name in preserved278 if name not in SCROLL_CHAIN_CHOICE_ADDITIONS]
     need(len(preserved269) == 2436 and hashlib.sha256(('\n'.join(preserved269)+'\n').encode()).hexdigest()
          == '38a94e9f556705bb7b34260cca519f70d8058e59ef4f12b0701cf1a65ad79d07',
          'Preserved269 native IDs changed')
@@ -1027,6 +1065,8 @@ def final():
             ('focused', 'focused-tests-plan.json', 'focused-test-shards', 'critical-tests-report.json')):
         plan = native.checked_plan(Path('dist')/planfile, source['sourceCommit'])
         text_ids = text_script_additions(plan['discoveredTests'])
+        guidance_ids = scroll_guidance_additions(plan['discoveredTests'])
+        need(guidance_ids <= set(plan['selectedTests']), 'All6 guidance methods must be selected in both plans')
         scroll_ids = scroll_chain_additions(plan['discoveredTests'])
         need(scroll_ids <= set(plan['selectedTests']), 'All existing-image chain methods must be selected in both plans')
         need(text_ids <= set(plan['selectedTests']), 'All72 script methods must be selected in both plans')
@@ -1037,7 +1077,7 @@ def final():
         if kind == 'full':
             live = json.loads(read(Path('scripts/live-scroll-additive-tests.json')))
             need(live == [name for name in plan['discoveredTests'] if '.LiveScroll' in name]
-                 and len(live) == 189, 'All preserved and new live methods required')
+                 and len(live) == 195, 'All preserved and new live methods required')
             feedback = feedback_additions(plan['discoveredTests'])
             chains = chain_additions(plan['discoveredTests'])
             stable = [name for name in plan['discoveredTests'] if name not in set(live) | feedback | chains | text_ids | payload_ids | scroll_ids]
@@ -1045,12 +1085,12 @@ def final():
                  == '926ac5674df90163b949fe461f0d4589ef72c8fc3215fa00b927564aae57cb44', 'Stable214 inventory changed')
             need(plan['selectedTests'] == plan['discoveredTests'], 'Full suite narrowed')
         if kind == 'focused':
-            need((len(plan['selectedTests']), hashlib.sha256(('\n'.join(plan['selectedTests'])+'\n').encode()).hexdigest())
-                 == CURRENT_FOCUSED_INVENTORY, 'Current focused native inventory changed')
+            check_focused_inventory(plan['selectedTests'])
         aggregate = native.aggregate(plan, Path('dist')/directory)
         need(aggregate == load(Path('dist')/reportfile), 'Native aggregate differs: ' + kind)
         need(not (text_ids & set(aggregate['skippedTests'])), 'Script methods must pass without skips: ' + kind)
         need(not (recovery_ids & set(aggregate['skippedTests'])), 'Recovery methods must pass without skips: ' + kind)
+        need(not (guidance_ids & set(aggregate['skippedTests'])), 'Guidance methods must pass without skips: ' + kind)
         need(not (payload_ids & set(aggregate['skippedTests'])), 'Save payload methods must pass without skips: ' + kind)
         need(not (scroll_ids & set(aggregate['skippedTests'])), 'Existing-image chain methods must pass without skips: ' + kind)
     record = dict(FLAGS, status='ready-for-user-opted-experimental-distribution', **source,
@@ -1064,6 +1104,7 @@ def final():
                   currentSourceInstalledTextScriptFormats=text_receipts,
                   currentSourceInstalledExistingImageChainFormats=scroll_chain_receipts,
                   currentSourceTextScriptMethods=sorted(text_ids),
+                  currentSourceScrollGuidanceMethods=sorted(guidance_ids),
                   currentSourceExistingImageChainMethods=sorted(scroll_ids),
                   requiresUserRealCaptureValidation=True, deliveryRepacked=False)
     save(ROOT/'experimental-distribution.json', record)

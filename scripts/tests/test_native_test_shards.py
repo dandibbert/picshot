@@ -402,39 +402,60 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
         record = self.execute_pin_inventory_guard(plan)
         spec = importlib.util.spec_from_file_location('qualification', Path(__file__).parents[1] / 'check-experimental-scroll-interactions.py')
         qualification = importlib.util.module_from_spec(spec); spec.loader.exec_module(qualification)
+        guidance_added = sorted(qualification.scroll_guidance_additions(inventory))
+        self.assertEqual(len(guidance_added), 6)
+        preserved278 = [name for name in inventory if name not in guidance_added]
+        self.assertEqual((len(preserved278), len({name.split('/')[0] for name in preserved278}),
+            hashlib.sha256(('\n'.join(preserved278)+'\n').encode()).hexdigest()), qualification.PRESERVED278_NATIVE_INVENTORY)
+        prior278_plan = shards.make_plan(preserved278, '', 'a' * 40, process_count=4)
+        self.assertEqual(inventory, sorted(preserved278 + guidance_added))
+        self.assertEqual([len(shard['tests']) for shard in prior278_plan['shards']], [647, 534, 617, 642])
+        self.assertEqual(plan['timeoutSecondsPerProcess'], 420)
+        for before, after in zip(prior278_plan['shards'], plan['shards']):
+            self.assertEqual([name for name in after['tests'] if name not in guidance_added], before['tests'])
         scroll_added = sorted(qualification.scroll_chain_additions(inventory))
+        self.assertFalse(set(guidance_added) & set(scroll_added))
         self.assertEqual(record['additiveExistingImageChainIDs'], scroll_added)
         self.assertEqual(record['additiveExistingImageChainMethods'], len(scroll_added))
         current_inventory, current_plan = inventory, plan
         choice_added = set(qualification.SCROLL_CHAIN_CHOICE_ADDITIONS)
         self.assertEqual(len(choice_added), 4)
-        preserved269 = [name for name in inventory if name not in choice_added]
+        preserved269 = [name for name in preserved278 if name not in choice_added]
         self.assertEqual((len(preserved269), hashlib.sha256(('\n'.join(preserved269)+'\n').encode()).hexdigest()),
             (2436, '38a94e9f556705bb7b34260cca519f70d8058e59ef4f12b0701cf1a65ad79d07'))
-        self.assertEqual([len(shard['tests']) for shard in current_plan['shards']], [647, 534, 617, 642])
+        self.assertEqual([len(shard['tests']) for shard in current_plan['shards']], [647, 534, 617, 648])
         self.assertEqual((len(inventory), len({name.split('/')[0] for name in inventory}),
             hashlib.sha256(('\n'.join(inventory)+'\n').encode()).hexdigest()), qualification.CURRENT_NATIVE_INVENTORY)
-        inventory = [name for name in inventory if name not in scroll_added]
+        inventory = [name for name in preserved278 if name not in scroll_added]
         self.assertEqual((len(inventory), len({name.split('/')[0] for name in inventory})), (2407, 267))
         plan = shards.make_plan(inventory, '', 'a' * 40, process_count=4)
-        self.assertEqual(current_inventory, sorted(inventory + scroll_added))
+        self.assertEqual(current_inventory, sorted(inventory + scroll_added + guidance_added))
         for before, after in zip(plan['shards'], current_plan['shards']):
-            self.assertEqual([name for name in after['tests'] if name not in scroll_added], before['tests'])
+            self.assertEqual([name for name in after['tests'] if name not in scroll_added and name not in guidance_added], before['tests'])
         selection = re.search(r"--selection-regex '([^']+)'", self.step(
             'Plan exhaustive and focused native test processes'))[1]
         focused_plans = {}
         for count in (2, 4):
             full = shards.make_plan(current_inventory, selection, 'a' * 40, process_count=count)
             focused_plans[count] = full
+            qualification.check_focused_inventory(full['selectedTests'])
+            prior278 = shards.make_plan(preserved278, selection, 'a' * 40, process_count=count)
+            self.assertEqual(full['selectedTests'], sorted(prior278['selectedTests'] + guidance_added))
+            self.assertEqual((len(prior278['selectedTests']), hashlib.sha256(
+                ('\n'.join(prior278['selectedTests'])+'\n').encode()).hexdigest()), qualification.PRESERVED278_FOCUSED_INVENTORY)
+            self.assertEqual([len(shard['tests']) for shard in prior278['shards']],
+                {2: [1016, 892], 4: [550, 396, 466, 496]}[count])
+            for before, after in zip(prior278['shards'], full['shards']):
+                self.assertEqual([name for name in after['tests'] if name not in guidance_added], before['tests'])
             prior = shards.make_plan(inventory, selection, 'a' * 40, process_count=count)
-            self.assertEqual(full['selectedTests'], sorted(prior['selectedTests'] + scroll_added))
+            self.assertEqual(full['selectedTests'], sorted(prior['selectedTests'] + scroll_added + guidance_added))
             self.assertEqual((len(full['selectedTests']), hashlib.sha256(
                 ('\n'.join(full['selectedTests'])+'\n').encode()).hexdigest()), qualification.CURRENT_FOCUSED_INVENTORY)
             self.assertEqual(full['timeoutSecondsPerProcess'], 420)
             self.assertEqual([len(shard['tests']) for shard in full['shards']],
-                {2: [1016, 892], 4: [550, 396, 466, 496]}[count])
+                {2: [1016, 898], 4: [550, 396, 466, 502]}[count])
             for before, after in zip(prior['shards'], full['shards']):
-                self.assertEqual([name for name in after['tests'] if name not in scroll_added], before['tests'])
+                self.assertEqual([name for name in after['tests'] if name not in scroll_added and name not in guidance_added], before['tests'])
         for index in (0, 1):
             self.assertEqual(sorted(focused_plans[4]['shards'][index]['tests']
                                     + focused_plans[4]['shards'][index + 2]['tests']),
@@ -533,7 +554,8 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
         live = json.loads((Path(__file__).parents[1] / 'live-scroll-additive-tests.json').read_text())
         self.assertEqual(record['additiveLiveScrollIDs'], live)
         self.assertEqual(record['additiveLiveScrollMethods'], len(live))
-        live = [name for name in live if name not in scroll_added]
+        self.assertEqual(len(live), 195)
+        live = [name for name in live if name not in scroll_added and name not in guidance_added]
         self.assertEqual(len(live), 165)
         self.assertEqual(len(set(live) & set(payload_added)), 2)
         live = [name for name in live if name not in payload_added]
@@ -542,7 +564,7 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
         live = [name for name in live if name not in recovery_added]
         self.assertEqual(len(live), 156)
         self.assertEqual(live, sorted(set(live)))
-        self.assertEqual([name for name in record['additiveLiveScrollIDs'] if name not in recovery_added and name not in payload_added and name not in scroll_added], live)
+        self.assertEqual([name for name in record['additiveLiveScrollIDs'] if name not in recovery_added and name not in payload_added and name not in scroll_added and name not in guidance_added], live)
         self.assertEqual(record['preserved214Methods'], 2047)
         self.assertEqual(hashlib.sha256(('\n'.join(live) + '\n').encode()).hexdigest(),
                          'a9c4eb4840fe1716651b164c9fc4c27c639738360adcb1a1d20030366b682f64')
@@ -684,30 +706,75 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
              'Complete native inventory is missing a required additive live-scroll method'),
             ('renamed recovery method', sorted(name + 'Renamed' if name == recovery_method else name for name in inventory),
              'Complete native inventory is missing a required additive live-scroll method'),
-            ('unrecorded recovery method', sorted(inventory + [recovery_method + 'Unexpected']), 'Accepted248 native IDs changed'),
+            ('unrecorded recovery method', sorted(inventory + [recovery_method + 'Unexpected']), 'Preserved278 native IDs changed'),
             ('missing live classes', [name for name in inventory if '.LiveScroll' not in name], 'Complete native inventory'),
             ('missing live fixture', [name for name in inventory if not name.startswith('PicShotTests.LiveScrollResourceFixtureTests/')],
              'Complete native inventory'),
             ('missing codec classes', [name for name in inventory if name.split('/')[0] not in
              {'PicShotTests.CodecStagingComparisonTests', 'PicShotTests.ImageExportPNGStagingTests'}], 'Save payload methods lost or added outside explicit inventory'),
             ('missing recording classes', [name for name in inventory if not name.startswith('PicShotTests.RecordingInput')],
-             'Accepted248 native IDs changed'),
-            ('missing final method', inventory[:-1], 'Text script methods lost or added outside the explicit inventory'),
+             'Preserved278 native IDs changed'),
+            ('missing final method', inventory[:-1], 'Preserved278 native IDs changed'),
             ('extra baseline method', sorted(inventory + ['PicShotTests.RecordingInputEffectsTests/testUnexpected']),
-             'Accepted248 native IDs changed'),
+             'Preserved278 native IDs changed'),
             ('renamed final method', sorted(inventory[:-1] + [inventory[-1] + 'Renamed']),
-             'Text script methods lost or added outside the explicit inventory'),
-            ('missing baseline method', [name for name in inventory if name != baseline_method], 'Accepted248 native IDs changed'),
+             'Preserved278 native IDs changed'),
+            ('missing baseline method', [name for name in inventory if name != baseline_method], 'Preserved278 native IDs changed'),
             ('renamed baseline method', sorted(name + 'Renamed' if name == baseline_method else name for name in inventory),
-             'Accepted248 native IDs changed'),
+             'Preserved278 native IDs changed'),
             ('missing script method', [name for name in inventory if name != text_method],
-             'Text script methods lost or added outside the explicit inventory'),
+             'Preserved278 native IDs changed'),
             ('renamed script method', sorted(name + 'Renamed' if name == text_method else name for name in inventory),
-             'Text script methods lost or added outside the explicit inventory'),
+             'Preserved278 native IDs changed'),
         ]
+        spec = importlib.util.spec_from_file_location('qualification', Path(__file__).parents[1] / 'check-experimental-scroll-interactions.py')
+        qualification = importlib.util.module_from_spec(spec); spec.loader.exec_module(qualification)
+        guidance = qualification.SCROLL_GUIDANCE_ADDITIONS
+        alternatives.append(('stale278 inventory', [name for name in inventory if name not in guidance],
+                             'Complete native inventory is missing a required additive live-scroll method'))
+        for method in guidance:
+            self.assertIn(method, inventory)
+            alternatives.extend([
+                ('missing guidance method', [name for name in inventory if name != method],
+                 'Complete native inventory is missing a required additive live-scroll method'),
+                ('renamed guidance method', sorted(name + 'Renamed' if name == method else name for name in inventory),
+                 'Complete native inventory is missing a required additive live-scroll method'),
+                ('wrong guidance module', sorted(name.replace('PicShotTests.', 'PicShotCoreTests.', 1) if name == method else name for name in inventory),
+                 'Complete native inventory is missing a required additive live-scroll method'),
+                ('unrecorded guidance method', sorted(inventory + [method + 'Unexpected']), 'Preserved278 native IDs changed'),
+            ])
         for label, changed, rejection in alternatives:
             with self.subTest(mutation=label), self.assertRaisesRegex(ValueError, re.escape(rejection)):
                 self.execute_pin_inventory_guard(shards.make_plan(changed, '', 'a' * 40, process_count=4))
+
+    def test_focused_guidance_inventory_rejects_missing_extra_and_wrong_ids(self):
+        spec = importlib.util.spec_from_file_location('qualification', Path(__file__).parents[1] / 'check-experimental-scroll-interactions.py')
+        qualification = importlib.util.module_from_spec(spec); spec.loader.exec_module(qualification)
+        selection = re.search(r"--selection-regex '([^']+)'", self.step(
+            'Plan exhaustive and focused native test processes'))[1]
+        inventory = shards.make_plan(self.current_source_inventory(), selection, 'a' * 40,
+                                     process_count=4)['selectedTests']
+        qualification.check_focused_inventory(inventory)
+        guidance = qualification.SCROLL_GUIDANCE_ADDITIONS
+        baseline = next(name for name in inventory if name not in guidance)
+        mutations = [
+            ('stale278', [name for name in inventory if name not in guidance]),
+            ('missing baseline', [name for name in inventory if name != baseline]),
+            ('renamed baseline', sorted(name + 'Renamed' if name == baseline else name for name in inventory)),
+            ('unsorted', list(reversed(inventory))),
+            ('duplicate baseline', sorted(inventory + [baseline])),
+        ]
+        for method in guidance:
+            mutations.extend([
+                ('missing guidance', [name for name in inventory if name != method]),
+                ('renamed guidance', sorted(name + 'Renamed' if name == method else name for name in inventory)),
+                ('wrong guidance module', sorted(name.replace('PicShotTests.', 'PicShotCoreTests.', 1) if name == method else name for name in inventory)),
+                ('extra guidance', sorted(inventory + [method + 'Unexpected'])),
+                ('duplicate guidance', sorted(inventory + [method])),
+            ])
+        for label, changed in mutations:
+            with self.subTest(mutation=label), self.assertRaises(ValueError):
+                qualification.check_focused_inventory(changed)
 
     def test_pin_preflight_rejects_selection_process_deadline_and_grouping_changes(self):
         plan = shards.make_plan(self.current_source_inventory(), '', 'a' * 40, process_count=4)

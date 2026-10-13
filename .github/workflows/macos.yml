@@ -259,6 +259,8 @@ jobs:
       id: test_live_scroll
       if: ${{ always() && !contains(github.event.head_commit.message || '', '[live-scroll-xctest-diagnostic]') && steps.compile_live_scroll_tests.outcome == 'success' }}
       timeout-minutes: 8
+      env:
+        PICSHOT_SCROLL_GUIDANCE_EVIDENCE: ${{ contains(github.event.head_commit.message || '', '[scroll-guidance]') && format('{0}/dist/live-scroll-warning-native', github.workspace) || '' }}
       run: |
         python3 scripts/run-bounded-command.py --timeout-seconds 420 --log dist/live-scroll-tests.log --report dist/live-scroll-tests.json -- swift test --skip-build --filter LiveScroll
         python3 - <<'PY'
@@ -476,6 +478,7 @@ jobs:
           dist/live-scroll-*.log
           dist/live-scroll-*.json
           dist/live-scroll-demo/
+          dist/live-scroll-warning-native/
           dist/live-scroll-xctest/
           dist/capture-chain-demo/
           dist/capture-chain-*.log
