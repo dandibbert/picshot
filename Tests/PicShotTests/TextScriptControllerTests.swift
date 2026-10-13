@@ -97,22 +97,69 @@ import XCTest
     }
 
     func testNewDraftIsNotAutoSavedByCloseQuitSelectionOrReopen() throws {
-        let f = try fixture(); defer { f.close() }
+        // Diagnostic-only fixed lifecycle markers. Direct stderr writes avoid
+        // stdout buffering; no name, source, draft or runtime text is logged.
+        let diagnostic = ProcessInfo.processInfo.environment["PICSHOT_TEXT_SCRIPT_LIFECYCLE_DIAGNOSTIC"] == "1"
+        func phase(_ label: String, _ controller: TextScriptController? = nil) {
+            guard diagnostic else { return }
+            let application: NSApplication? = NSApp
+            let running = application?.isRunning == true ? 1 : 0
+            let active = application?.isActive == true ? 1 : 0
+            let policy = application?.activationPolicy().rawValue ?? -1
+            let visible: Int
+            if let window = controller?.window { visible = window.isVisible ? 1 : 0 } else { visible = -1 }
+            let line = "PICSHOT_TEXT_SCRIPT_LIFECYCLE phase=\(label) pid=\(ProcessInfo.processInfo.processIdentifier) running=\(running) active=\(active) policy=\(policy) visible=\(visible)\n"
+            FileHandle.standardError.write(Data(line.utf8))
+        }
+        phase("fixture-before")
+        let f = try fixture()
+        defer {
+            phase("original-close-before", f.controller)
+            f.close()
+            phase("original-close-after", f.controller)
+        }
+        phase("fixture-after", f.controller)
+        phase("first-new-before", f.controller)
         try press("create", in: f.controller)
+        phase("first-new-after", f.controller)
         let source: NSTextView = try view("source", in: f.controller)
+        phase("first-quit-before", f.controller)
         XCTAssertFalse(f.controller.requestApplicationTermination())
+        phase("first-quit-after", f.controller)
+        phase("dirty-close-before", f.controller)
         f.controller.close()
+        phase("dirty-close-after", f.controller)
         XCTAssertEqual(source.string, TextScriptController.exampleSource)
         XCTAssertTrue(try TextScriptStore(directory: f.directory).definitions.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: manifest(f).path))
+        phase("unsaved-assertions-after", f.controller)
+        phase("discard-before", f.controller)
         try press("discard", in: f.controller)
-        XCTAssertEqual(source.string, ""); XCTAssertTrue(f.controller.requestApplicationTermination())
-        try press("create", in: f.controller); try press("save", in: f.controller)
+        phase("discard-after", f.controller)
+        XCTAssertEqual(source.string, "")
+        phase("discarded-quit-before", f.controller)
         XCTAssertTrue(f.controller.requestApplicationTermination())
+        phase("discarded-quit-after", f.controller)
+        phase("second-new-before", f.controller)
+        try press("create", in: f.controller)
+        phase("second-new-after", f.controller)
+        phase("save-before", f.controller)
+        try press("save", in: f.controller)
+        phase("save-after", f.controller)
+        phase("saved-quit-before", f.controller)
+        XCTAssertTrue(f.controller.requestApplicationTermination())
+        phase("saved-quit-after", f.controller)
+        phase("restored-init-before", f.controller)
         let restored = TextScriptController(store: try TextScriptStore(directory: f.directory))
-        defer { restored.close() }
+        defer {
+            phase("restored-close-before", restored)
+            restored.close()
+            phase("restored-close-after", restored)
+        }
+        phase("restored-init-after", restored)
         let restoredSource: NSTextView = try view("source", in: restored)
         XCTAssertEqual(restoredSource.string, TextScriptController.exampleSource)
+        phase("restored-assertions-after", restored)
     }
 
     func testRunRequiresSavedCleanDefinitionAndCoalescesQueuedRequests() async throws {
