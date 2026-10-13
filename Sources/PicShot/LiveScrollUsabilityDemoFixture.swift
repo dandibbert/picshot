@@ -24,9 +24,12 @@ enum LiveScrollUsabilityDemoFixture {
         let start = ProcessInfo.processInfo.systemUptime
         let permitted = CGPreflightScreenCaptureAccess()
         let screen = try unwrap(NSScreen.main, "Native demo requires an available display")
+        let geometryControls = try await verifyOwnedWindowGeometry(screen: screen, directory: directory)
         let visible = screen.visibleFrame
-        let window = NSWindow(contentRect: CGRect(x: visible.midX - 390, y: visible.midY - 200,
-            width: CGFloat(width), height: CGFloat(height)), styleMask: .borderless, backing: .buffered, defer: false)
+        let requestedFrame = CGRect(x: visible.midX - 390, y: visible.midY - 200,
+                                    width: CGFloat(width), height: CGFloat(height))
+        let appliedFrame = alignedWindowOrigin(requestedFrame)
+        let window = NSWindow(contentRect: appliedFrame, styleMask: .borderless, backing: .buffered, defer: false)
         window.title = "PicShot · Native continuous-scroll document"
         window.isReleasedWhenClosed = false; window.hasShadow = false
         window.backgroundColor = .white; window.appearance = NSAppearance(named: .aqua)
@@ -44,12 +47,15 @@ enum LiveScrollUsabilityDemoFixture {
             "ownedWindowScreenshotAcquisitionStarted": capture.screenCaptureStarted,
             "realScreenCaptureClaimed": false, "realScreenCaptureValidated": false,
             "sourceBoundary": "Owned-window cases inject a frame provider into the production session; only the separately reported realStream phase can validate production SCStream delivery. No phase requests TCC permission.",
+            "ownedWindowGeometryControls": geometryControls,
+            "ownedWindowRequestedFrame": geometryRect(requestedFrame),
+            "ownedWindowAppliedFrame": geometryRect(appliedFrame),
             "firstNativeWindowPixelsMilliseconds": firstPixelsMS,
             "sourceCommit": Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String ?? "unknown"]
         if !capture.screenCaptureStarted { report["limitation"] = capture.reason }
         try writeReport(report, directory)
         let illustrated = await productCycle(viewport: viewport, window: window, screen: screen,
-            capture: capture, directory: directory, plain: false)
+            capture: capture, directory: directory, requestedFrame: requestedFrame, appliedFrame: appliedFrame, plain: false)
         report["illustratedCase"] = illustrated
         try writeReport(report, directory)
         guard illustrated["productSessionClosed"] as? Bool == true else {
@@ -61,7 +67,7 @@ enum LiveScrollUsabilityDemoFixture {
             throw DemoFailure(errorDescription: "Previous native demo session cleanup was not confirmed")
         }
         let plain = await productCycle(viewport: viewport, window: window, screen: screen,
-            capture: capture, directory: directory, plain: true)
+            capture: capture, directory: directory, requestedFrame: requestedFrame, appliedFrame: appliedFrame, plain: true)
         report["ordinaryTextCase"] = plain
         try writeReport(report, directory)
         let automatic: [String: Any]
@@ -147,7 +153,8 @@ enum LiveScrollUsabilityDemoFixture {
     }
 
     private static func productCycle(viewport: DemoViewport, window: NSWindow, screen: NSScreen,
-                                     capture: CaptureSource, directory: URL, plain: Bool) async -> [String: Any] {
+                                     capture: CaptureSource, directory: URL, requestedFrame: CGRect,
+                                     appliedFrame: CGRect, plain: Bool) async -> [String: Any] {
         let prefix = plain ? "live-scroll-plain-text" : "live-scroll"
         let start = ProcessInfo.processInfo.systemUptime
         var completedImage: CGImage?, completedCount = 0, frameRequests = 0
@@ -166,7 +173,13 @@ enum LiveScrollUsabilityDemoFixture {
         do {
             try scroll(viewport.scrollView, pixels: -Int(viewport.offset.rounded()))
             viewport.document.illustrated = !plain
-            let initial = try await capture.image()
+            let initial = try await capture.image(recordGeometry: true)
+            let geometry = try recordSourceGeometry(window: window, viewport: viewport, screen: screen,
+                requested: requestedFrame, applied: appliedFrame, image: initial,
+                bitmap: capture.lastNativeSnapshot, directory: directory, name: prefix)
+            report["sourceGeometry"] = geometry
+            try require(exactSourceGeometry(window: window, viewport: viewport, image: initial),
+                        "Owned native source geometry differs from declared640x480 before sampling")
             try await session.startForVerification(targetFrame: window.frame, screen: screen, nextImage: {
                 try await Task.sleep(nanoseconds: 66_666_667)
                 // Pace only the next owned acquisition so both native appearances
@@ -500,8 +513,10 @@ enum LiveScrollUsabilityDemoFixture {
         let start = ProcessInfo.processInfo.systemUptime
         let boundedOffset = 640
         let visible = screen.visibleFrame
-        let window = NSWindow(contentRect: CGRect(x: visible.midX - 390, y: visible.midY - 200,
-            width: CGFloat(width), height: CGFloat(height)), styleMask: .borderless, backing: .buffered, defer: false)
+        let requestedFrame = CGRect(x: visible.midX - 390, y: visible.midY - 200,
+                                    width: CGFloat(width), height: CGFloat(height))
+        let appliedFrame = alignedWindowOrigin(requestedFrame)
+        let window = NSWindow(contentRect: appliedFrame, styleMask: .borderless, backing: .buffered, defer: false)
         window.title = "PicShot · Bounded native automatic scrolling"
         window.isReleasedWhenClosed = false; window.hasShadow = false
         window.backgroundColor = .white; window.appearance = NSAppearance(named: .aqua)
@@ -558,7 +573,13 @@ enum LiveScrollUsabilityDemoFixture {
             "expectedNativeEndOffset": boundedOffset, "expectedOutputWidth": width,
             "expectedOutputHeight": height + boundedOffset, "limitation": capture.reason]
         do {
-            let initial = try await capture.image()
+            let initial = try await capture.image(recordGeometry: true)
+            let geometry = try recordSourceGeometry(window: window, viewport: viewport, screen: screen,
+                requested: requestedFrame, applied: appliedFrame, image: initial,
+                bitmap: capture.lastNativeSnapshot, directory: directory, name: prefix)
+            report["sourceGeometry"] = geometry
+            try require(exactSourceGeometry(window: window, viewport: viewport, image: initial),
+                        "Owned automatic source geometry differs from declared640x480 before sampling")
             try await session.startForVerification(targetFrame: window.frame, screen: screen, nextImage: {
                 frameRequests += 1
                 try await Task.sleep(nanoseconds: frameRequests == 1 ? 300_000_000 : 100_000_000)
@@ -1182,6 +1203,212 @@ enum LiveScrollUsabilityDemoFixture {
         if let image = update.preview { controls.updatePreview(image: image, viewportFraction: update.viewport) }
     }
 
+    // Align the requested origin before AppKit constructs the owned window.
+    // Preserve its declared size; never repair a captured raster afterwards.
+    private static func alignedWindowOrigin(_ requested: CGRect) -> CGRect {
+        // This fixture captures one raster pixel per logical point. Use whole
+        // points even on a2x screen, where half-points are backing-pixel aligned.
+        CGRect(origin: CGPoint(x: requested.minX.rounded(.down), y: requested.minY.rounded(.down)),
+               size: requested.size)
+    }
+
+    private static func geometryRect(_ rect: CGRect) -> [Double] {
+        [Double(rect.minX), Double(rect.minY), Double(rect.width), Double(rect.height)]
+    }
+
+    private static func sourceGeometry(window: NSWindow, viewport: DemoViewport, screen: NSScreen,
+                                       requested: CGRect, applied: CGRect) -> [String: Any] {
+        ["requestedFrame": geometryRect(requested), "appliedFrame": geometryRect(applied),
+         "windowFrame": geometryRect(window.frame),
+         "windowContentRect": geometryRect(window.contentRect(forFrameRect: window.frame)),
+         "contentLayoutRect": geometryRect(window.contentLayoutRect),
+         "contentViewFrame": geometryRect(window.contentView?.frame ?? .zero),
+         "contentViewBounds": geometryRect(window.contentView?.bounds ?? .zero),
+         "viewportFrame": geometryRect(viewport.frame), "viewportBounds": geometryRect(viewport.bounds),
+         "viewportBackingPixelRect": geometryRect(viewport.convertToBacking(viewport.bounds)),
+         "windowBackingPixelRect": geometryRect(screen.convertRectToBacking(window.frame)),
+         "backingScaleFactor": Double(window.backingScaleFactor),
+         "screenFrame": geometryRect(screen.frame), "screenVisibleFrame": geometryRect(screen.visibleFrame),
+         "scrollViewFrame": geometryRect(viewport.scrollView.frame),
+         "clipBounds": geometryRect(viewport.scrollView.contentView.bounds),
+         "nativeOffset": Double(viewport.offset)]
+    }
+
+    private static func exactSourceGeometry(window: NSWindow, viewport: DemoViewport, image: CGImage) -> Bool {
+        let expected = CGSize(width: width, height: height)
+        return window.frame.size == expected && window.contentView?.bounds.size == expected
+            && viewport.bounds == CGRect(origin: .zero, size: expected)
+            && viewport.scrollView.frame == CGRect(x: 0, y: headerHeight, width: width, height: height - headerHeight)
+            && image.width == width && image.height == height
+    }
+
+    private static func writeGeometry(_ record: [String: Any], to url: URL) throws {
+        try JSONSerialization.data(withJSONObject: record, options: [.prettyPrinted, .sortedKeys])
+            .write(to: url, options: .atomic)
+    }
+
+    private static func recordSourceGeometry(window: NSWindow, viewport: DemoViewport, screen: NSScreen,
+                                             requested: CGRect, applied: CGRect, image: CGImage,
+                                             bitmap: [String: Any]?, directory: URL, name: String) throws -> [String: Any] {
+        var record = sourceGeometry(window: window, viewport: viewport, screen: screen,
+                                    requested: requested, applied: applied)
+        record["phase"] = "before-production-session-sampling"
+        record["cgImageDimensions"] = [image.width, image.height]
+        record["nativeBitmap"] = bitmap ?? ["used": false, "reason": "ScreenCaptureKit owned-window acquisition"]
+        record["exactDeclaredGeometry"] = exactSourceGeometry(window: window, viewport: viewport, image: image)
+        record["rasterCroppedOrRescaled"] = false
+        try writeGeometry(record, to: directory.appendingPathComponent(name + "-source-geometry.json"))
+        return record
+    }
+
+    private static func verifyOwnedWindowGeometry(screen: NSScreen, directory: URL) async throws -> [String: Any] {
+        let start = ProcessInfo.processInfo.systemUptime
+        let limit = 10.0
+        let visible = screen.visibleFrame
+        let origin = CGPoint(x: (visible.midX - 390).rounded(.down), y: (visible.midY - 200).rounded(.down))
+        let receipt = directory.appendingPathComponent("live-scroll-geometry-controls.json")
+        var cases: [[String: Any]] = []
+        var record: [String: Any] = ["schemaVersion": 1, "status": "running",
+            "sourceCommit": Bundle.main.infoDictionary?["PicShotSourceCommit"] as? String ?? "unknown",
+            "declaredDimensions": [width, height], "cooperativeLimitSeconds": limit,
+            "originAlignment": "whole logical points before window construction; one snapshot pixel per point",
+            "maximumCases": 4, "maximumSnapshots": 12, "rasterCroppedOrRescaled": false,
+            "productionMatcherAndAssemblerUnchanged": true,
+            "legacyExpansionRequired": false, "nativeOffsets": [0, 12, 67], "cases": cases]
+        try writeGeometry(record, to: receipt)
+        do {
+            for aligned in [false, true] {
+                for halfPoint in [false, true] {
+                    try Task.checkCancellation()
+                    try require(ProcessInfo.processInfo.systemUptime - start < limit, "Owned geometry controls exceeded their deadline")
+                    let requested = CGRect(x: origin.x, y: origin.y + (halfPoint ? 0.5 : 0),
+                                           width: CGFloat(width), height: CGFloat(height))
+                    let name = "live-scroll-geometry-" + (aligned ? "aligned-" : "legacy-")
+                        + (halfPoint ? "half-point" : "integer")
+                    let result = await geometryPlacementCase(screen: screen, directory: directory, name: name,
+                        requested: requested, aligned: aligned, deadline: start + limit,
+                        generation: UInt64(cases.count + 1))
+                    cases.append(result); record["cases"] = cases
+                    record["elapsedSeconds"] = ProcessInfo.processInfo.systemUptime - start
+                    try writeGeometry(record, to: receipt)
+                }
+            }
+            try require(ProcessInfo.processInfo.systemUptime - start < limit, "Owned geometry controls exceeded their deadline")
+            try require(cases.count == 4 && cases.allSatisfy {
+                $0["controlCompleted"] as? Bool == true && $0["assemblerClosed"] as? Bool == true
+                    && $0["ownedWindowClosed"] as? Bool == true
+            }, "Owned geometry controls did not preserve every observation and cleanup")
+            let aligned = cases.filter { $0["originAlignedBeforeConstruction"] as? Bool == true }
+            try require(aligned.count == 2 && aligned.allSatisfy { $0["status"] as? String == "passed" },
+                        "Aligned owned geometry controls failed exact dimensions or native displacement")
+            record["status"] = "passed"
+            try writeGeometry(record, to: receipt)
+            return record
+        } catch {
+            record["status"] = "failed"; record["error"] = error.localizedDescription
+            record["elapsedSeconds"] = ProcessInfo.processInfo.systemUptime - start
+            try? writeGeometry(record, to: receipt)
+            throw error
+        }
+    }
+
+    private static func geometryPlacementCase(screen: NSScreen, directory: URL, name: String,
+                                               requested: CGRect, aligned: Bool, deadline: Double,
+                                               generation: UInt64) async -> [String: Any] {
+        let applied = aligned ? alignedWindowOrigin(requested) : requested
+        let window = NSWindow(contentRect: applied, styleMask: .borderless, backing: .buffered, defer: false)
+        window.title = "PicShot · Owned geometry control"
+        window.isReleasedWhenClosed = false; window.hasShadow = false
+        window.backgroundColor = .white; window.appearance = NSAppearance(named: .aqua)
+        let viewport = DemoViewport(frame: CGRect(x: 0, y: 0, width: width, height: height))
+        window.contentView = viewport; window.orderFrontRegardless(); window.displayIfNeeded()
+        defer { window.close() }
+        let assembler = LiveScrollAssembler(axis: .vertical, generation: generation)
+        let receipt = directory.appendingPathComponent(name + ".json")
+        var phases: [[String: Any]] = []
+        var seedFrame: ScrollFrame?
+        var result: [String: Any] = ["name": name, "status": "running",
+            "originAlignedBeforeConstruction": aligned, "requestedFrame": geometryRect(requested),
+            "appliedFrame": geometryRect(applied), "legacyExpansionRequired": false,
+            "rasterCroppedOrRescaled": false, "phases": phases]
+        do {
+            try writeGeometry(result, to: receipt)
+            for offset in [0, 12, 67] {
+                try Task.checkCancellation()
+                try require(ProcessInfo.processInfo.systemUptime < deadline, "Owned geometry control exceeded its deadline")
+                if offset != 0 { try scroll(viewport.scrollView, pixels: offset - Int(viewport.offset.rounded())) }
+                var phase = sourceGeometry(window: window, viewport: viewport, screen: screen,
+                                           requested: requested, applied: applied)
+                phase["requestedNativeOffset"] = offset
+                phases.append(phase); result["phases"] = phases
+                try writeGeometry(result, to: receipt)
+                var bitmap: [String: Any] = [:]
+                let image = try nativeImage(viewport) { bitmap = $0 }
+                phase["nativeBitmap"] = bitmap
+                phase["cgImageDimensions"] = [image.width, image.height]
+                phase["exactDeclaredGeometry"] = exactSourceGeometry(window: window, viewport: viewport, image: image)
+                let filename = name + "-offset-\(offset).png"
+                phase["snapshot"] = filename
+                phases[phases.count - 1] = phase; result["phases"] = phases
+                try writeGeometry(result, to: receipt)
+                try writePNG(image, directory.appendingPathComponent(filename))
+                let gray = try autoreleasepool { try ScrollImageIO.luminance(image) }
+                if let seed = seedFrame {
+                    do {
+                        let match = try LiveScrollMatcher.match(previous: seed, next: gray, axis: .vertical)
+                        phase["directMatcherFromSeed"] = ["status": "matched", "displacement": match.displacement,
+                            "contentBounds": [match.contentBounds.rect.x, match.contentBounds.rect.y,
+                                              match.contentBounds.rect.width, match.contentBounds.rect.height],
+                            "fixedLeading": match.contentBounds.insets.top,
+                            "fixedTrailing": match.contentBounds.insets.bottom,
+                            "verifiedPixels": match.quality.verifiedPixels,
+                            "mismatchedPixels": match.quality.mismatchedPixels]
+                        phase["exactDirectDisplacement"] = match.displacement == offset
+                    } catch {
+                        phase["directMatcherFromSeed"] = ["status": "rejected",
+                            "errorType": String(reflecting: type(of: error)), "error": String(describing: error)]
+                        phase["exactDirectDisplacement"] = false
+                    }
+                } else {
+                    seedFrame = gray
+                    phase["directMatcherFromSeed"] = ["status": "seed", "displacement": 0]
+                    phase["exactDirectDisplacement"] = offset == 0
+                }
+                phases[phases.count - 1] = phase; result["phases"] = phases
+                try writeGeometry(result, to: receipt)
+                let update = try await assembler.observe(image)
+                phase["matched"] = update.state.matched
+                phase["acceptedOffset"] = update.state.viewportOffset
+                phase["acceptedObservations"] = update.state.acceptedObservations
+                phase["outputDimensions"] = [update.state.width, update.state.height]
+                phase["fixedLeading"] = update.state.fixedLeading; phase["fixedTrailing"] = update.state.fixedTrailing
+                phase["exactNativeDisplacement"] = update.state.matched && update.state.viewportOffset == offset
+                    && Int(viewport.offset.rounded()) == offset
+                phases[phases.count - 1] = phase; result["phases"] = phases
+                try writeGeometry(result, to: receipt)
+                try require(ProcessInfo.processInfo.systemUptime < deadline, "Owned geometry control exceeded its deadline")
+                if aligned {
+                    try require(phase["exactDeclaredGeometry"] as? Bool == true
+                        && phase["exactNativeDisplacement"] as? Bool == true
+                        && phase["exactDirectDisplacement"] as? Bool == true,
+                        "Aligned owned viewport changed dimensions or failed native displacement")
+                }
+            }
+            await assembler.close()
+            window.close()
+            result["assemblerClosed"] = true; result["ownedWindowClosed"] = !window.isVisible
+            result["controlCompleted"] = true; result["status"] = aligned ? "passed" : "observed"
+        } catch {
+            await assembler.close()
+            window.close()
+            result["assemblerClosed"] = true; result["status"] = "failed"
+            result["ownedWindowClosed"] = !window.isVisible; result["controlCompleted"] = false
+            result["error"] = error.localizedDescription
+        }
+        try? writeGeometry(result, to: receipt)
+        return result
+    }
+
     private static func scroll(_ view: NSScrollView, pixels: Int) throws {
         let event = try unwrap(CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
                                        wheel1: Int32(-pixels), wheel2: 0, wheel3: 0), "Cannot construct owned wheel event")
@@ -1197,6 +1424,7 @@ enum LiveScrollUsabilityDemoFixture {
         let filter: SCContentFilter?
         let mode: String
         let reason: String
+        private(set) var lastNativeSnapshot: [String: Any]?
         var screenCaptureStarted: Bool { filter != nil }
         init(viewport: NSView, filter: SCContentFilter?, reason: String) {
             self.viewport = viewport; self.filter = filter; self.reason = reason
@@ -1217,8 +1445,13 @@ enum LiveScrollUsabilityDemoFixture {
                     reason: "Existing permission preflight passed but ScreenCaptureKit setup failed: \(error.localizedDescription). Used explicitly injected owned native pixels.")
             }
         }
-        func image() async throws -> CGImage {
-            guard let filter else { return try LiveScrollUsabilityDemoFixture.nativeImage(viewport) }
+        func image(recordGeometry: Bool = false) async throws -> CGImage {
+            guard let filter else {
+                if recordGeometry {
+                    return try LiveScrollUsabilityDemoFixture.nativeImage(viewport) { self.lastNativeSnapshot = $0 }
+                }
+                return try LiveScrollUsabilityDemoFixture.nativeImage(viewport)
+            }
             let configuration = SCStreamConfiguration()
             configuration.width = LiveScrollUsabilityDemoFixture.width; configuration.height = LiveScrollUsabilityDemoFixture.height
             configuration.showsCursor = false
@@ -1325,8 +1558,9 @@ enum LiveScrollUsabilityDemoFixture {
                 "method": "Every output scanline's native unique row accent is checked against independent row numbering; output dimensions require one fixed header and one contiguous document range"]
     }
 
-    private static func nativeImage(_ view: NSView) throws -> CGImage {
+    private static func nativeImage(_ view: NSView, measurement: (([String: Any]) -> Void)? = nil) throws -> CGImage {
         view.layoutSubtreeIfNeeded(); view.displayIfNeeded()
+        let boundsBeforeCache = view.bounds
         let w = Int(view.bounds.width), h = Int(view.bounds.height)
         try require(w > 0 && h > 0 && w * h <= 2_000_000, "Unbounded native snapshot")
         let bitmap = try unwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h,
@@ -1334,7 +1568,13 @@ enum LiveScrollUsabilityDemoFixture {
             colorSpaceName: .deviceRGB, bytesPerRow: w * 4, bitsPerPixel: 32), "Native snapshot allocation failed")
         bitmap.bitmapData?.initialize(repeating: 0, count: bitmap.bytesPerRow * h)
         bitmap.size = view.bounds.size; view.cacheDisplay(in: view.bounds, to: bitmap)
-        return try unwrap(bitmap.cgImage, "Native snapshot was empty")
+        let image = try unwrap(bitmap.cgImage, "Native snapshot was empty")
+        measurement?(["used": true, "viewBoundsBeforeCache": geometryRect(boundsBeforeCache),
+            "viewBoundsAfterCache": geometryRect(view.bounds),
+            "allocatedBitmapDimensions": [w, h], "bitmapDimensionsAfterCache": [bitmap.pixelsWide, bitmap.pixelsHigh],
+            "bitmapLogicalSizeAfterCache": [Double(bitmap.size.width), Double(bitmap.size.height)],
+            "cgImageDimensions": [image.width, image.height]])
+        return image
     }
 
     private static func scene(window: NSWindow, controls: LiveScrollCaptureController, caption: String) throws -> CGImage {

@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import subprocess
 import struct
+import sys
 import tempfile
 import unittest
 import zlib
@@ -151,6 +152,87 @@ def output_demo():
 
 
 class ExperimentalInteractionTests(unittest.TestCase):
+    def test_installed_parent_guard_rejects_failure_identity_and_child_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report = Path(tmp)/'demo.json'
+            child_path = Path(tmp)/'saved-image-chain/live-scroll-chain.json'
+            identity = dict(bundlePath='/private/installed/zip/PicShot.app', sourceCommit='a'*40,
+                            version='0.22.0', build='277')
+            child = dict(status='passed', sourceCommit=identity['sourceCommit'], syntheticFixture=True)
+            baseline = dict(demo(), **identity, scrollChainCase=child)
+            def check():
+                return C.check_parent(report, identity['bundlePath'], identity['sourceCommit'],
+                                      identity['version'], identity['build'])
+            C.save(report, baseline); C.save(child_path, child)
+            self.assertEqual(check(), dict(status='passed', sourceIdentity=identity, parentAndChildMatched=True))
+            # The actual installed276 failures retained only this wrapper while
+            # their independently stored child reports still passed.
+            C.save(report, dict(status='failed', error='Product-session demo failed'))
+            with self.assertRaisesRegex(ValueError, 'demo.status: differs/missing'): check()
+            for key, value in [('status', 'failed'), ('status', None), ('sourceCommit', 'b'*40),
+                               ('bundlePath', '/private/installed/dmg/PicShot.app'), ('build', '276'),
+                               ('version', '0.21.0'), ('scrollChainCase', {}), ('installerAcceptance', True)]:
+                changed = {**baseline, key: value}; C.save(report, changed)
+                with self.subTest(parent_field=key), self.assertRaises(ValueError): check()
+            for key in ('status', 'sourceCommit', 'bundlePath', 'build', 'version', 'scrollChainCase'):
+                changed = copy.deepcopy(baseline); del changed[key]; C.save(report, changed)
+                with self.subTest(missing_parent_field=key), self.assertRaises(ValueError): check()
+            changed = copy.deepcopy(baseline); changed['automaticCase']['status'] = 'failed'; C.save(report, changed)
+            with self.assertRaises(ValueError): check()
+            C.save(report, baseline)
+            for key, value in [('status', 'failed'), ('sourceCommit', 'b'*40), ('syntheticFixture', False)]:
+                C.save(child_path, {**child, key: value})
+                with self.subTest(child_field=key), self.assertRaises(ValueError): check()
+            # An identically stale or failed child in both files still fails.
+            for key, value in [('status', 'failed'), ('sourceCommit', 'b'*40)]:
+                changed_child = {**child, key: value}
+                C.save(report, {**baseline, 'scrollChainCase': changed_child}); C.save(child_path, changed_child)
+                with self.subTest(matched_bad_child=key), self.assertRaises(ValueError): check()
+
+    def test_installed_parent_guard_requires_bounded_strict_parent_and_child_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); report = root/'demo.json'; child_path = root/'saved-image-chain/live-scroll-chain.json'
+            child = dict(status='passed', sourceCommit='a'*40)
+            baseline = dict(demo(), bundlePath='/private/installed/zip/PicShot.app', sourceCommit='a'*40,
+                            version='0.22.0', build='277', scrollChainCase=child)
+            def check(): return C.check_parent(report, baseline['bundlePath'], 'a'*40, '0.22.0', '277')
+            C.save(report, baseline); C.save(child_path, child)
+            for path in (report, child_path):
+                original = path.read_bytes()
+                for malformed in (b'{"status":"passed","status":"failed"}', b'{"status":NaN}', b'[]', b'{'):
+                    path.write_bytes(malformed)
+                    with self.subTest(file=path.name, raw=malformed), self.assertRaises(ValueError): check()
+                path.unlink()
+                with self.subTest(missing=path.name), self.assertRaises(ValueError): check()
+                target = root/'symlink-target.json'; target.write_bytes(original); path.symlink_to(target)
+                with self.subTest(symlink=path.name), self.assertRaises(ValueError): check()
+                path.unlink()
+                with path.open('wb') as output: output.truncate(16*1024**2+1)
+                with self.subTest(oversized=path.name), self.assertRaises(ValueError): check()
+                path.write_bytes(original)
+            saved = root/'saved-image-chain'; moved = root/'moved-chain'; saved.rename(moved); saved.symlink_to(moved)
+            with self.assertRaises(ValueError): check()
+
+    def test_installed_parent_guard_cli_fails_closed_under_optimization(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report = Path(tmp)/'demo.json'; child_path = Path(tmp)/'saved-image-chain/live-scroll-chain.json'
+            child = dict(status='passed', sourceCommit='a'*40)
+            value = dict(demo(), bundlePath='/private/installed/zip/PicShot.app', sourceCommit='a'*40,
+                         version='0.22.0', build='277', scrollChainCase=child)
+            C.save(child_path, child)
+            args = [str(REPO/'scripts/check-experimental-scroll-interactions.py'), 'check-parent',
+                    '--report', str(report), '--app', value['bundlePath'], '--source', 'a'*40,
+                    '--version', '0.22.0', '--build', '277']
+            for options in ([], ['-O']):
+                C.save(report, value)
+                result = subprocess.run([sys.executable, *options, *args], capture_output=True, text=True, timeout=20)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout)['status'], 'passed')
+                C.save(report, {**value, 'status': 'failed'})
+                result = subprocess.run([sys.executable, *options, *args], capture_output=True, text=True, timeout=20)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('demo.status: differs/missing', result.stderr)
+
     def test_output_rejection_lost_draft_duplicate_callback_and_changed_pixels_fail(self):
         for path, value in [
             (('stitchedCopyFailureThenSave','copyFailurePausedDraftAndAlternativePreserved'), False),
@@ -703,6 +785,38 @@ class WorkflowSelectionTests(unittest.TestCase):
             self.assertIn("steps.experimental_scroll_distribution.outcome == 'success'",step)
             self.assertIn('PicShot-EXPERIMENTAL-macos-',step)
             self.assertNotIn('testing-qualification.json',step)
+
+    def test_installed_parent_precheck_preserves_child_command_and_bounds(self):
+        smoke = (REPO/'scripts/smoke.sh').read_text()
+        block = smoke.split('  scroll_chain_evidence=', 1)[1].split('  chain_evidence=', 1)[0]
+        launch = block.index('-- swift scripts/launch-smoke-app.swift "$app" "$scroll_chain_evidence/demo.json"')
+        parent = block.index('-- python3 scripts/check-experimental-scroll-interactions.py check-parent')
+        child = block.index('-- python3 scripts/check-live-scroll-chain-demo.py')
+        self.assertLess(launch, parent); self.assertLess(parent, child)
+        self.assertEqual(block.count('--timeout-seconds 660 --grace-seconds 10 --max-log-bytes 1048576'), 1)
+        self.assertEqual(block.count('--timeout-seconds 120 --grace-seconds 10 --max-log-bytes 1048576'), 2)
+        self.assertIn('--report "$scroll_chain_evidence/demo.json" --app "$app" --source "$(git rev-parse HEAD)"', block)
+        self.assertIn('--version "$(/usr/libexec/PlistBuddy -c \'Print :CFBundleShortVersionString\' "$app/Contents/Info.plist")"', block)
+        self.assertIn('--build "$(/usr/libexec/PlistBuddy -c \'Print :CFBundleVersion\' "$app/Contents/Info.plist")"', block)
+        self.assertIn('--report "$scroll_chain_evidence/saved-image-chain/live-scroll-chain.json" --source "$(git rev-parse HEAD)"', block)
+
+    def test_focused_geometry_route_runs_parent_contracts_before_unchanged_child(self):
+        preview = self.workflow.split('  live-scroll-preview:\n', 1)[1]
+        preview = re.split(r'^  [a-z][a-z0-9-]*:\s*$', preview, maxsplit=1, flags=re.M)[0]
+        contracts = preview.split('    - name: Check complete scrolling parent and installed identity contracts\n', 1)[1].split('    - name:', 1)[0]
+        self.assertIn("contains(github.event.head_commit.message || '', '[scroll-geometry]')", contracts)
+        self.assertIn('timeout-minutes: 2', contracts)
+        for mode in ('python3', 'python3 -O'):
+            self.assertIn(mode + ' -m unittest discover -s scripts/tests -p test_experimental_scroll_interactions.py', contracts)
+        native = preview.split('    - name: Demonstrate actual native scrolling and growing preview\n', 1)[1].split('    - name:', 1)[0]
+        self.assertIn('timeout-minutes: 5', native)
+        self.assertLess(native.index('swift scripts/launch-smoke-app.swift'), native.index('check-experimental-scroll-interactions.py check-parent'))
+        self.assertLess(native.index('check-experimental-scroll-interactions.py check-parent'), native.index('python3 scripts/check-live-scroll-chain-demo.py'))
+        self.assertIn('--timeout-seconds 120 --grace-seconds 10 --max-log-bytes 1048576', native)
+        self.assertIn('--report "$PWD/dist/live-scroll-demo/demo.json" --app "$PWD/dist/PicShot.app" --source "$GITHUB_SHA"', native)
+        for field in ('CFBundleShortVersionString', 'CFBundleVersion'):
+            self.assertIn("PlistBuddy -c 'Print :" + field + "' \"$PWD/dist/PicShot.app/Contents/Info.plist\"", native)
+        self.assertIn('python3 scripts/check-live-scroll-chain-demo.py --report dist/live-scroll-demo/saved-image-chain/live-scroll-chain.json --source "$GITHUB_SHA"', native)
 
     def test_current_2375_inventory_and_original_2047_ids(self):
         # Same portable source sentinel as native-test-shards; actual discovery

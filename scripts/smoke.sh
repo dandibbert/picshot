@@ -224,6 +224,14 @@ PY
     --timeout-seconds 660 --grace-seconds 10 --max-log-bytes 1048576 \
     --log "$scroll_chain_evidence/launch.log" --report "$scroll_chain_evidence/launch-report.json" \
     -- swift scripts/launch-smoke-app.swift "$app" "$scroll_chain_evidence/demo.json"
+  # A successful child cannot qualify a failed or differently sourced parent.
+  python3 scripts/run-bounded-command.py \
+    --timeout-seconds 120 --grace-seconds 10 --max-log-bytes 1048576 \
+    --log "$scroll_chain_evidence/parent-check.log" --report "$scroll_chain_evidence/parent-check-report.json" \
+    -- python3 scripts/check-experimental-scroll-interactions.py check-parent \
+    --report "$scroll_chain_evidence/demo.json" --app "$app" --source "$(git rev-parse HEAD)" \
+    --version "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" \
+    --build "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")"
   python3 scripts/run-bounded-command.py \
     --timeout-seconds 120 --grace-seconds 10 --max-log-bytes 1048576 \
     --log "$scroll_chain_evidence/check.log" --report "$scroll_chain_evidence/check-report.json" \

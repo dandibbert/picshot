@@ -162,6 +162,12 @@ jobs:
         mkdir -p dist/live-scroll-xctest
         PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_live_scroll_xctest_diagnostic.py -v
         PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p test_live_scroll_xctest_diagnostic.py -v
+    - name: Check complete scrolling parent and installed identity contracts
+      if: ${{ contains(github.event.head_commit.message || '', '[scroll-geometry]') }}
+      timeout-minutes: 2
+      run: |
+        python3 -m unittest discover -s scripts/tests -p test_experimental_scroll_interactions.py
+        python3 -O -m unittest discover -s scripts/tests -p test_experimental_scroll_interactions.py
     - name: Build native dependencies
       id: live_scroll_dependencies
       timeout-minutes: 15
@@ -186,7 +192,12 @@ jobs:
       run: |
         mkdir -p dist/live-scroll-demo
         swift scripts/launch-smoke-app.swift "$PWD/dist/PicShot.app" "$PWD/dist/live-scroll-demo/demo.json"
-        python3 -c 'import json; r=json.load(open("dist/live-scroll-demo/demo.json")); assert r["status"] == "passed", r'
+        python3 scripts/run-bounded-command.py --timeout-seconds 120 --grace-seconds 10 --max-log-bytes 1048576 \
+          --log dist/live-scroll-demo/parent-check.log --report dist/live-scroll-demo/parent-check-report.json \
+          -- python3 scripts/check-experimental-scroll-interactions.py check-parent \
+          --report "$PWD/dist/live-scroll-demo/demo.json" --app "$PWD/dist/PicShot.app" --source "$GITHUB_SHA" \
+          --version "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PWD/dist/PicShot.app/Contents/Info.plist")" \
+          --build "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PWD/dist/PicShot.app/Contents/Info.plist")"
         python3 scripts/check-live-scroll-chain-demo.py --report dist/live-scroll-demo/saved-image-chain/live-scroll-chain.json --source "$GITHUB_SHA"
     - name: Demonstrate named capture-chain recovery through actual native controls
       if: ${{ always() && contains(github.event.head_commit.message || '', '[capture-chain]') && steps.package_live_scroll.outcome == 'success' }}

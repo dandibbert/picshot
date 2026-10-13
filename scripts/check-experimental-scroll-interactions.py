@@ -396,6 +396,28 @@ def save_feedback_fields(save):
             need(detail_width > measured['detail'][2], 'Saved path did not exercise native truncation')
 
 
+def check_parent(report, app, source, version, build):
+    """Fail the installed smoke before child qualification if its parent failed."""
+    need(type(source) is str and re.fullmatch('[0-9a-f]{40}', source), 'Invalid expected parent source')
+    need(type(app) is str and app.startswith('/') and str(Path(app)) == app
+         and '..' not in Path(app).parts and app.endswith('/PicShot.app'), 'Invalid expected parent bundle')
+    need(type(version) is str and re.fullmatch('[0-9]+(?:\\.[0-9]+)+', version)
+         and type(build) is str and re.fullmatch('[1-9][0-9]*', build), 'Invalid expected parent version/build')
+    need(report.parent.is_dir() and not report.parent.is_symlink(), 'Missing/symlinked parent evidence directory')
+    demo = load(report)
+    demo_fields(demo)
+    identity = dict(bundlePath=app, sourceCommit=source, version=version, build=build)
+    fields(demo, identity, 'installed live-scroll parent identity')
+    root = report.parent/'saved-image-chain'
+    need(root.is_dir() and not root.is_symlink(), 'Missing/symlinked saved-image-chain evidence directory')
+    child = load(root/'live-scroll-chain.json')
+    fields(child, dict(status='passed', sourceCommit=source), 'installed live-scroll child identity')
+    need(child == demo.get('scrollChainCase'), 'Saved-image-chain subreport differs from installed session')
+    # Native pixels and geometry remain the existing, separately bounded child
+    # check. This precheck cannot create its qualification receipt or relax it.
+    return dict(status='passed', sourceIdentity=identity, parentAndChildMatched=True)
+
+
 def scroll_chain_evidence(root, demo, source):
     """Independently decode the exact new subreport and bind it to its parent."""
     need(root.is_dir() and not root.is_symlink(), 'Missing/symlinked saved-image-chain evidence directory')
@@ -1078,18 +1100,26 @@ def archive():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('prepare', 'qualify', 'final', 'archive'))
-    action = parser.parse_args().action
-    if action == 'prepare':
+    actions = parser.add_subparsers(dest='action', required=True)
+    for action in ('prepare', 'qualify', 'final', 'archive'):
+        actions.add_parser(action)
+    parent = actions.add_parser('check-parent')
+    parent.add_argument('--report', type=Path, required=True)
+    for name in ('app', 'source', 'version', 'build'):
+        parent.add_argument('--' + name, required=True)
+    args = parser.parse_args()
+    if args.action == 'check-parent':
+        print(json.dumps(check_parent(args.report, args.app, args.source, args.version, args.build), sort_keys=True))
+    elif args.action == 'prepare':
         forbid_resource()
         need(not ROOT.exists(), 'Fresh experimental evidence directory required')
         identity = context()
         prefix = selected_prefix(read(SCRIPT))
         save(ROOT/'source-identity.json', dict(identity, **packages(identity)))
         (ROOT/'installed-demo-prefix.sh').write_bytes(prefix)
-    elif action == 'qualify':
+    elif args.action == 'qualify':
         save(ROOT/'interaction-receipt.json', qualify())
-    elif action == 'final':
+    elif args.action == 'final':
         final()
     else:
         archive()
