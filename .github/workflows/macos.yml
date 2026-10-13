@@ -643,7 +643,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(contains(github.event.head_commit.message || '', '[intel-only]') && '[{"runner":"macos-15-intel","arch":"x86_64"}]' || '[{"runner":"macos-15","arch":"arm64"},{"runner":"macos-15-intel","arch":"x86_64"}]') }}
+        include: ${{ fromJSON(contains(github.event.head_commit.message || '', '[text-script-qualification]') && '[{"runner":"macos-15","arch":"arm64"}]' || contains(github.event.head_commit.message || '', '[intel-only]') && '[{"runner":"macos-15-intel","arch":"x86_64"}]' || '[{"runner":"macos-15","arch":"arm64"},{"runner":"macos-15-intel","arch":"x86_64"}]') }}
     runs-on: ${{ matrix.runner }}
     # Retain the prior 90-minute full validation allowance plus the independent
     # 55-minute installed-default gate, two 4-minute portable contract steps,
@@ -707,6 +707,23 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p test_capture_chain_launcher_timeout.py -v
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_installed_chain_qualification.py -v
           PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p test_installed_chain_qualification.py -v
+      - name: Check text script qualification contracts and ARM selection
+        id: text_script_contracts
+        timeout-minutes: 3
+        env:
+          PICSHOT_TRIGGER_MESSAGE: "${{ github.event.head_commit.message || '' }}"
+        run: |
+          python3 - <<'PY'
+          import os, platform
+          message = os.environ['PICSHOT_TRIGGER_MESSAGE']
+          if '[text-script-qualification]' in message:
+              if '[experimental-scroll-interactions]' not in message or platform.machine() != 'arm64':
+                  raise SystemExit('ARM qualification requires explicit experimental marker and ARM runner')
+          PY
+          for pattern in test_text_script_launcher_source.py test_text_script_package.py test_text_script_demo.py test_installed_text_script_qualification.py; do
+            PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p "$pattern" -v
+            PYTHONDONTWRITEBYTECODE=1 python3 -O -m unittest discover -s scripts/tests -p "$pattern" -v
+          done
       - name: Check explicit live scrolling testing classification
         id: scroll_testing_contract
         if: ${{ !contains(github.event.head_commit.message || '', '[experimental-scroll-interactions]') }}
@@ -777,7 +794,7 @@ jobs:
           python3 -m unittest discover -s scripts/tests -p test_native_test_shards.py -v
           python3 scripts/run-bounded-command.py --timeout-seconds 60 --log dist/native-test-discovery.log --report dist/native-test-discovery-report.json -- swift test list --skip-build
           python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$NATIVE_TEST_PROCESS_COUNT" --output dist/native-tests-plan.json
-          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$FOCUSED_TEST_PROCESS_COUNT" --selection-regex 'CaptureChain|LiveScroll|AnnotationStyle|LocalAnnotationShortcut|PortableAnnotationPreferences|PortableSettings|AnnotationToolbarOrder|DrawingRaster|EditableProductResource|EditableProductRetirement|EditableComponent|PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|AnnotationEditing|CaptureAspectRatio|CaptureRatio|MultiWindow|ImageOutputDecoration|EditorOutput|PinOriginalCurrent|ManualScroll|ScrollPreview|ScrollSequencePreview|AnnotationFreehand|AnnotationTextLine|NumberedCallout|AutomaticMosaic|RepeatedRegion|AutomaticPinOCR|PinOCR|TextResultSourceSelection|PinManagement|PinWorkflow|LaTeXPin|PinLaTeX|PinGroup|PinDesktop|EditorToolbarHierarchy|SaveWorkflow|OwnedVideoExportStage|ImageBacking|Codec|NativeExport|AnimatedWebP|WebPContainer|RecordingWebP|CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingInput|RecordingHotKey|RecordingTransport|RecordingCommandCoordinator|SettingsAndMenuTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' --output dist/focused-tests-plan.json
+          python3 scripts/native-test-shards.py plan --inventory dist/native-test-discovery.log --source "$GITHUB_SHA" --process-count "$FOCUSED_TEST_PROCESS_COUNT" --selection-regex 'TextScript|CaptureChain|LiveScroll|AnnotationStyle|LocalAnnotationShortcut|PortableAnnotationPreferences|PortableSettings|AnnotationToolbarOrder|DrawingRaster|EditableProductResource|EditableProductRetirement|EditableComponent|PendingCapture|CaptureRecoveryPolicy|PinEditableAdmission|EditableAnnotation|EditableCapture|AnnotationEditing|CaptureAspectRatio|CaptureRatio|MultiWindow|ImageOutputDecoration|EditorOutput|PinOriginalCurrent|ManualScroll|ScrollPreview|ScrollSequencePreview|AnnotationFreehand|AnnotationTextLine|NumberedCallout|AutomaticMosaic|RepeatedRegion|AutomaticPinOCR|PinOCR|TextResultSourceSelection|PinManagement|PinWorkflow|LaTeXPin|PinLaTeX|PinGroup|PinDesktop|EditorToolbarHierarchy|SaveWorkflow|OwnedVideoExportStage|ImageBacking|Codec|NativeExport|AnimatedWebP|WebPContainer|RecordingWebP|CapturePreset|CaptureElement|ImageExport|RecognizedBarcode|BarcodeVision|PinBarcode|PinExport|TextResultBarcode|AnnotationPath|Scroll.*Sequence|ScrollStitcher|PinText|RecognizedText|Recognition|GIF|AnnotationEffectsTests|AnnotationEffectsPreviewTests|RecordingInput|RecordingHotKey|RecordingTransport|RecordingCommandCoordinator|SettingsAndMenuTests|RecordingCameraTests|RecordingCompositionTests|RecordingOverlayControlTests|RecordingCompositionSmokeTests|RecordingRecovery|VideoTrimTests|RecordingPauseTests|LocalInferenceResourceTests|LocalInferenceServiceTests|InferenceTestSynchronizationTests' --output dist/focused-tests-plan.json
       - name: Reproduce settings interaction and recording regressions
         id: current_gate_11
         # Additive early reproduction preserves the five recording and twelve settings UI IDs,
@@ -1133,7 +1150,10 @@ jobs:
               native.need(set(chain_added).issubset(inventory)
                   and chain_added == [case for case in inventory if '.CaptureChain' in case or '.SaveWorkflowDeliveryTests/' in case],
                   'Chain classes lost or added an unrecorded method')
-              additions = set(added) | set(feedback_added) | set(chain_added)
+              text_spec = importlib.util.spec_from_file_location('text_qualification', 'scripts/check-experimental-scroll-interactions.py')
+              text_qualification = importlib.util.module_from_spec(text_spec); text_spec.loader.exec_module(text_qualification)
+              text_added = text_qualification.text_script_additions(inventory)
+              additions = set(added) | set(feedback_added) | set(chain_added) | text_added
               original = [case for case in inventory if case not in additions]
               original_shards = [[case for case in shard['tests'] if case not in additions] for shard in plan['shards']]
               native.need(len(original) == 2047 and len({case.split('/')[0] for case in original}) == 232
@@ -1149,6 +1169,7 @@ jobs:
                   preserved214Methods=len(original), additiveLiveScrollMethods=len(added), additiveLiveScrollIDs=added,
                   additiveSaveFeedbackMethods=len(feedback_added), additiveSaveFeedbackIDs=feedback_added,
                   additiveCaptureChainMethods=len(chain_added), additiveCaptureChainIDs=chain_added,
+                  additiveTextScriptMethods=len(text_added), additiveTextScriptIDs=sorted(text_added),
                   discoverySHA256=digest(Path('dist/native-test-discovery.log')),
                   fixtureSHA256=digest(Path('Tests/PicShotTests/PinAnchoredEditingTests.swift')))
               for label, expected in (('method', [method]), ('class', class_ids)):
@@ -1321,6 +1342,26 @@ jobs:
         with:
           name: PicShot-Installed-DMG-Capture-Chain-${{ matrix.arch }}-${{ github.sha }}
           path: dist/capture-chain-installed-evidence/dmg.zip
+          compression-level: 0
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Upload bounded installed ZIP text script evidence
+        if: ${{ always() && contains(github.event.head_commit.message || '', '[experimental-scroll-interactions]') }}
+        timeout-minutes: 2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Installed-ZIP-Text-Script-${{ matrix.arch }}-${{ github.sha }}
+          path: dist/text-script-installed-evidence/zip.zip
+          compression-level: 0
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Upload bounded installed DMG text script evidence
+        if: ${{ always() && contains(github.event.head_commit.message || '', '[experimental-scroll-interactions]') }}
+        timeout-minutes: 2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: PicShot-Installed-DMG-Text-Script-${{ matrix.arch }}-${{ github.sha }}
+          path: dist/text-script-installed-evidence/dmg.zip
           compression-level: 0
           if-no-files-found: ignore
           retention-days: 14

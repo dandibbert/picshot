@@ -30,7 +30,7 @@ FLAGS = dict(distribution='user-opted-experimental', userOptedExperimentalDistri
              publicRelease=False, mainMerged=False, realScreenCaptureAcceptance=False)
 # Every ordinary executable gate is required; only the original resource/classifier
 # branch and its testing-only distribution/budget are replaced in opt-in mode.
-REQUIRED_GATES = ('current_gate_01', 'current_gate_02', 'current_gate_03', 'current_gate_04', 'current_gate_05', 'current_gate_06', 'current_gate_07', 'current_gate_08', 'current_gate_09', 'current_gate_10', 'current_gate_11', 'current_gate_12', 'current_gate_13', 'current_gate_14', 'current_gate_15', 'current_gate_16', 'current_gate_17', 'current_gate_18', 'current_gate_19', 'current_gate_20', 'current_gate_21', 'current_gate_22', 'current_gate_23', 'current_gate_24', 'current_gate_25', 'experimental_scroll_contract', 'experimental_scroll_prepare', 'experimental_scroll_demo', 'experimental_scroll_receipt')
+REQUIRED_GATES = ('current_gate_01', 'current_gate_02', 'current_gate_03', 'current_gate_04', 'current_gate_05', 'current_gate_06', 'current_gate_07', 'current_gate_08', 'current_gate_09', 'current_gate_10', 'current_gate_11', 'current_gate_12', 'current_gate_13', 'current_gate_14', 'current_gate_15', 'current_gate_16', 'current_gate_17', 'current_gate_18', 'current_gate_19', 'current_gate_20', 'current_gate_21', 'current_gate_22', 'current_gate_23', 'current_gate_24', 'current_gate_25', 'experimental_scroll_contract', 'experimental_scroll_prepare', 'experimental_scroll_demo', 'experimental_scroll_receipt', 'text_script_contracts')
 
 
 def need(value, message):
@@ -423,6 +423,149 @@ def chain_additions(inventory):
     return set(added)
 
 
+def text_script_additions(inventory):
+    """Bind actual discovery to the exact accepted248 plus candidate260 ID union."""
+    added = json.loads(read(Path('scripts/text-script-integration-tests.json')))
+    need(type(added) is list and len(added) == 72
+         and all(type(name) is str and re.fullmatch(r'PicShot(?:CoreTests|Tests|TextScriptCoreTests|TextScriptHelperTests)\.TextScript\w+Tests/test\w+', name) for name in added)
+         and added == sorted(set(added))
+         and hashlib.sha256(('\n'.join(added)+'\n').encode()).hexdigest()
+         == 'fabb6746e6dff19fa4aae030f48b722260a4f648f7223d685ee449120d1b6ebf',
+         'Explicit72 text script IDs differ')
+    need(type(inventory) is list and all(type(name) is str for name in inventory)
+         and inventory == sorted(set(inventory)), 'Native discovery must contain unique sorted IDs')
+    need(added == [name for name in inventory if '.TextScript' in name],
+         'Text script methods lost or added outside the explicit inventory')
+    original = [name for name in inventory if name not in set(added)]
+    need(len(original) == 2303 and hashlib.sha256(('\n'.join(original)+'\n').encode()).hexdigest()
+         == '7366868482823631d5939adc3b411ff4d538c2c59090c2e35ebdea396b9e41ca',
+         'Accepted248 native IDs changed')
+    need(len(inventory) == 2375 and len({name.split('/')[0] for name in inventory}) == 267 and hashlib.sha256(('\n'.join(inventory)+'\n').encode()).hexdigest()
+         == '0f19081756c225e5b0fede62805ee01693d1409bf6552979ac74db409e3e4aab',
+         'Current native discovery differs from the exact2375 ID union')
+    return set(added)
+
+
+TEXT_SCRIPT_EVIDENCE_FILES = {'text-script-installed.json', 'text-script-installed.json.launcher.json',
+    'text-script-demo.json', 'package-proof', 'text-script-source.png', 'text-script-copied.txt',
+    'text-script-retry-catalog.json', 'text-script-close-catalog.json',
+    'text-script-retry-case.json', 'text-script-close-case.json'} | {
+    phase + '-' + mode + suffix for phase in ('text-script-editor', 'text-script-retry-failure',
+                                             'text-script-result', 'text-script-close-failure')
+    for mode in ('light', 'dark') for suffix in ('.png', '-layout.json')}
+
+
+def installed_text_scripts(source, formats):
+    """Rebind both strict native receipts after smoke removes its working apps."""
+    need(type(formats.get('formats')) is dict and set(formats['formats']) == {'zip', 'dmg'},
+         'Both actual installed formats required for text scripts')
+    proof_path = Path('dist/text-script-package-proof.json')
+    proof = load(proof_path)
+    fields(proof, dict(schemaVersion=1, sourceCommit=source['sourceCommit'], version=source['version'],
+        build=source['build'], architectures=[source['architecture']], executableSHA256=source['executableSHA256'],
+        appInfoPlistSHA256=source['plistSHA256'], buildInfoSHA256=source['buildInfoSHA256'],
+        appSignatureVerified=True, sameTeamIdentifierVerified=True, relocationVerified=True,
+        helperEntitlementsVerifiedAfterOuterSigning=True, helperSignedInfoPlistVerifiedAfterOuterSigning=True,
+        installedRuntimeAcceptanceVerified=False), 'original signed text script package')
+    helper = proof.get('helper')
+    fields(helper, dict(path='Contents/Helpers/PicShotTextScriptHelper', identifier='com.picshot.TextScriptHelper',
+        strictSignatureVerified=True), 'text helper')
+    entitlements = helper.get('entitlements')
+    need(type(entitlements) is dict and set(entitlements) == {'com.apple.security.app-sandbox'}
+         and entitlements['com.apple.security.app-sandbox'] is True,
+         'Text helper requires the sole Boolean sandbox entitlement')
+    need(type(helper.get('sha256')) is str and re.fullmatch('[0-9a-f]{64}', helper['sha256'])
+         and type(helper.get('cdHash')) is str and re.fullmatch('[0-9a-f]{40}', helper['cdHash']), 'Text helper hashes differ')
+    checked = {}
+    for extension in ('zip', 'dmg'):
+        root = Path('dist/evidence')/extension/'text-script'
+        need(root.is_dir() and not root.is_symlink(), 'Missing/symlinked installed text directory')
+        installed = formats['formats'][extension]
+        app = installed.get('bundlePath')
+        need(type(app) is str and app.startswith('/') and '..' not in Path(app).parts
+             and app.endswith('/' + extension + '/PicShot.app'), 'Installed text bundle path differs')
+        fields(installed, dict(buildVersion=source['build'], **{key: source[key] for key in
+            ('sourceCommit', 'version', 'architecture', 'executableSHA256', 'plistSHA256', 'buildInfoSHA256')}),
+            extension + ' text installed identity')
+        path = root/'text-script-receipt.json'
+        receipt = load(path)
+        fields(receipt, dict(schemaVersion=1, status='passed', installerAcceptance=False,
+            realScreenCaptureAcceptance=False, original227MemoryAcceptance=False, hardMemoryCapClaimed=False,
+            exactGeneratedTextOutputVerified=True, onceOnlyCaptureOCRTransformVerified=True,
+            checkedCopyRetryAndCloseVerified=True, sourceAndFinalPackageBound=True,
+            scope='Installed saved editor and region/OCR/script/Copy owner; generated acquisition, actual Apple Vision and signed production helper, checked private clipboard'),
+            extension + ' installed text receipt')
+        identity = dict(appPath=app, helperSHA256=helper['sha256'], helperCDHash=helper['cdHash'],
+            **{key: source[key] for key in ('sourceCommit', 'build', 'version', 'architecture', 'executableSHA256')})
+        fields(receipt.get('sourceIdentity'), identity, extension + ' text source identity')
+        need(read(root/'package-proof.json') == read(proof_path), 'Installed helper proof differs from original signed package')
+        hashes = receipt.get('evidenceSHA256')
+        need(type(hashes) is dict and set(hashes) == TEXT_SCRIPT_EVIDENCE_FILES, 'Complete fixed text evidence set required')
+        total = 0
+        for name, expected in hashes.items():
+            need(type(expected) is str and re.fullmatch('[0-9a-f]{64}', expected), 'Invalid retained text digest')
+            data = read(root/('package-proof.json' if name == 'package-proof' else name))
+            total += len(data)
+            need(total <= 96*1024**2, 'Retained text evidence exceeds96MiB')
+            need(hashlib.sha256(data).hexdigest() == expected, 'Installed text evidence changed: '+name)
+        command_hashes = {}
+        for stem, timeout, command in (
+            ('proof', 180, ['python3', 'scripts/verify-text-script-package.py', '--app', app,
+                            '--source', source['sourceCommit'], '--report', str((root/'package-proof.json').resolve()), '--verify-relocation']),
+            ('launch', 270, ['swift', 'scripts/launch-smoke-app.swift', app, str((root/'text-script-installed.json').resolve())]),
+            ('check', 120, ['python3', 'scripts/check-text-script-demo.py', '--report',
+                            str((root/'text-script-installed.json').resolve()), '--source', source['sourceCommit'],
+                            '--package-proof', str((root/'package-proof.json').resolve()), '--source-root', str(Path.cwd())])):
+            report_path, log_path = root/(stem+'-report.json'), root/(stem+'.log')
+            run = load(report_path)
+            runner(run, timeout, 10, extension + ' text '+stem)
+            fields(run, dict(schema_version=1, max_log_bytes=1048576, command=command), 'bounded text '+stem)
+            need(log_path.is_file() and not log_path.is_symlink() and log_path.stat().st_size <= 1048576,
+                 'Missing/symlinked/oversized text command log')
+            log = log_path.read_bytes()
+            need(type(run.get('log_bytes')) is int and type(run.get('output_bytes')) is int
+                 and run['log_bytes'] == run['output_bytes'] == len(log), 'Text command log byte counts differ')
+            command_hashes[report_path.name] = sha(report_path)
+            command_hashes[log_path.name] = hashlib.sha256(log).hexdigest()
+        checked[extension] = dict(receiptPath=str(path), receiptSHA256=sha(path), sourceIdentity=identity,
+            evidenceSHA256=hashes, boundedCommandSHA256=command_hashes)
+    need(checked['zip']['sourceIdentity']['appPath'] != checked['dmg']['sourceIdentity']['appPath'],
+         'Installed text formats reused one bundle')
+    return checked
+
+
+def archive_text_scripts():
+    """Keep separate bounded diagnostics, including failed/incomplete witnesses."""
+    output = Path('dist/text-script-installed-evidence')
+    for extension in ('zip', 'dmg'):
+        root = Path('dist/evidence')/extension/'text-script'
+        if not root.exists():
+            continue
+        need(root.is_dir() and not root.is_symlink(), 'Unsafe installed text evidence directory')
+        files = sorted(root.iterdir())
+        need(files and len(files) <= 48, 'Installed text evidence file-count bound')
+        total = 0
+        for path in files:
+            need(path.is_file() and not path.is_symlink() and path.suffix in ('.json', '.png', '.log', '.txt')
+                 and path.stat().st_size <= 16*1024**2, 'Unsafe/oversized installed text evidence file')
+            total += path.stat().st_size
+        need(total <= 96*1024**2, 'Installed text evidence exceeds96MiB')
+        for identity in (Path('dist/text-script-package-proof.json'), Path('dist/evidence/installed-format-identity.json'),
+                         ROOT/'source-identity.json', ROOT/'experimental-distribution.json'):
+            if identity.exists():
+                read(identity, 1024**2)
+                files.append(identity)
+        output.mkdir(parents=True, exist_ok=True)
+        target, partial = output/(extension+'.zip'), output/(extension+'.partial.zip')
+        need(not target.exists() and not target.is_symlink() and not partial.exists() and not partial.is_symlink(),
+             'Fresh installed text archive destination required')
+        with zipfile.ZipFile(partial, 'x', zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+            for path in files:
+                archive.write(path, str(path))
+        need(partial.stat().st_size < 20*1024**2 - 65536, 'Installed text archive exceeds20MiB')
+        partial.rename(target)
+
+
 CHAIN_EVIDENCE_FILES = {'demo.json', 'demo.json.launcher.json', 'capture-chain-demo.json',
     'chain-source-numbered.png', 'chain-saved.png', 'chain-copied.png', 'chain-pin.png',
     'chain-pin-reloaded.png', 'chain-close-saved.png', 'chain-catalog.json', 'chain-close-catalog.json'} | {
@@ -540,24 +683,27 @@ def final():
                **{key: source[key] for key in ('sourceCommit', 'version', 'architecture', 'executableSHA256',
                                              'plistSHA256', 'buildInfoSHA256')}), 'actual ' + extension)
     chain_receipts = installed_capture_chains(source, formats)
+    text_receipts = installed_text_scripts(source, formats)
     spec = importlib.util.spec_from_file_location('native', Path('scripts/native-test-shards.py'))
     native = importlib.util.module_from_spec(spec); spec.loader.exec_module(native)
     for kind, planfile, directory, reportfile in (
             ('full', 'native-tests-plan.json', 'native-test-shards', 'test-report.json'),
             ('focused', 'focused-tests-plan.json', 'focused-test-shards', 'critical-tests-report.json')):
         plan = native.checked_plan(Path('dist')/planfile, source['sourceCommit'])
-        need(len(plan['discoveredTests']) == 2303, 'Current2303 native inventory required')
+        text_ids = text_script_additions(plan['discoveredTests'])
+        need(text_ids <= set(plan['selectedTests']), 'All72 script methods must be selected in both plans')
         if kind == 'full':
             live = json.loads(read(Path('scripts/live-scroll-additive-tests.json')))
             need(len(live) == 156 and set(live).issubset(plan['discoveredTests']), 'Current156 live methods required')
             feedback = feedback_additions(plan['discoveredTests'])
             chains = chain_additions(plan['discoveredTests'])
-            stable = [name for name in plan['discoveredTests'] if name not in set(live) | feedback | chains]
+            stable = [name for name in plan['discoveredTests'] if name not in set(live) | feedback | chains | text_ids]
             need(len(stable) == 2047 and hashlib.sha256(('\n'.join(stable)+'\n').encode()).hexdigest()
                  == '926ac5674df90163b949fe461f0d4589ef72c8fc3215fa00b927564aae57cb44', 'Stable214 inventory changed')
             need(plan['selectedTests'] == plan['discoveredTests'], 'Full suite narrowed')
-        need(native.aggregate(plan, Path('dist')/directory) == load(Path('dist')/reportfile),
-             'Native aggregate differs: ' + kind)
+        aggregate = native.aggregate(plan, Path('dist')/directory)
+        need(aggregate == load(Path('dist')/reportfile), 'Native aggregate differs: ' + kind)
+        need(not (text_ids & set(aggregate['skippedTests'])), 'Script methods must pass without skips: ' + kind)
     record = dict(FLAGS, status='ready-for-user-opted-experimental-distribution', **source,
                   resourceFailurePreserved=PRIOR_FAILURE, remainingWorkflowChecksCompleted=True,
                   currentSourceFullAndFocusedNativeRepeated=True, currentSourceModelSuiteRepeated=True,
@@ -566,6 +712,8 @@ def final():
                   interactionReceiptSHA256=sha(ROOT/'interaction-receipt.json'),
                   installedFormatsSHA256=sha(Path('dist/evidence/installed-format-identity.json')),
                   currentSourceInstalledChainFormats=chain_receipts,
+                  currentSourceInstalledTextScriptFormats=text_receipts,
+                  currentSourceTextScriptMethods=sorted(text_ids),
                   requiresUserRealCaptureValidation=True, deliveryRepacked=False)
     save(ROOT/'experimental-distribution.json', record)
     for extension in ('zip', 'dmg'):
@@ -578,6 +726,7 @@ def final():
 
 def archive():
     archive_capture_chains()
+    archive_text_scripts()
     # Only new experimental evidence is packed here. Ordinary evidence stays intact.
     files = sorted(path for root in (ROOT, EVIDENCE) if root.exists() for path in root.rglob('*') if path.is_file())
     files += [path for path in (Path('dist/experimental-scroll-installed.log'),

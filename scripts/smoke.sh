@@ -226,6 +226,26 @@ PY
     --log "$chain_evidence/check.log" --report "$chain_evidence/check-report.json" \
     -- python3 scripts/check-capture-chain-demo.py \
     --report "$chain_evidence/demo.json" --source "$(git rev-parse HEAD)"
+  # Revalidate and run the text witness against each actual installed format
+  # before cleanup removes its bundle. The original smoke/default gates remain.
+  text_evidence="$PWD/dist/evidence/$format/text-script"
+  test ! -e "$text_evidence"
+  mkdir "$text_evidence"
+  python3 scripts/run-bounded-command.py \
+    --timeout-seconds 180 --grace-seconds 10 --max-log-bytes 1048576 \
+    --log "$text_evidence/proof.log" --report "$text_evidence/proof-report.json" \
+    -- python3 scripts/verify-text-script-package.py --app "$app" \
+    --source "$(git rev-parse HEAD)" --report "$text_evidence/package-proof.json" --verify-relocation
+  cmp dist/text-script-package-proof.json "$text_evidence/package-proof.json"
+  PICSHOT_TEXT_SCRIPT_DEMO_ONLY=1 python3 scripts/run-bounded-command.py \
+    --timeout-seconds 270 --grace-seconds 10 --max-log-bytes 1048576 \
+    --log "$text_evidence/launch.log" --report "$text_evidence/launch-report.json" \
+    -- swift scripts/launch-smoke-app.swift "$app" "$text_evidence/text-script-installed.json"
+  python3 scripts/run-bounded-command.py \
+    --timeout-seconds 120 --grace-seconds 10 --max-log-bytes 1048576 \
+    --log "$text_evidence/check.log" --report "$text_evidence/check-report.json" \
+    -- python3 scripts/check-text-script-demo.py --report "$text_evidence/text-script-installed.json" \
+    --source "$(git rev-parse HEAD)" --package-proof "$text_evidence/package-proof.json" --source-root "$PWD"
 done
 # Preserve both complete installer smoke paths before the independent default
 # product gate. Four 620s application wrappers + 120s compilation + 300s decode

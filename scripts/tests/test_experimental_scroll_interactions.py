@@ -487,7 +487,7 @@ class WorkflowSelectionTests(unittest.TestCase):
             self.assertIn('PicShot-EXPERIMENTAL-macos-',step)
             self.assertNotIn('testing-qualification.json',step)
 
-    def test_current_2208_inventory_and_original_2047_ids(self):
+    def test_current_2375_inventory_and_original_2047_ids(self):
         # Same portable source sentinel as native-test-shards; actual discovery
         # and all current native IDs still execute in the unchanged workflow.
         inventory=[]
@@ -501,8 +501,9 @@ class WorkflowSelectionTests(unittest.TestCase):
             module=path.relative_to(REPO/'Tests').parts[0]
             inventory.extend(module+'.'+classes[0]+'/'+method for method in methods)
         inventory=sorted(inventory)
-        self.assertEqual(len(inventory),2303)
-        self.assertEqual(len(set(inventory)),2303)
+        self.assertEqual(len(inventory),2375)
+        self.assertEqual(len(set(inventory)),2375)
+        self.assertEqual(len({name.split('/')[0] for name in inventory}),267)
         live=json.loads((REPO/'scripts/live-scroll-additive-tests.json').read_text())
         self.assertEqual(len(live),156);self.assertTrue(set(live).issubset(inventory))
         feedback=json.loads((REPO/'scripts/save-feedback-native-tests.json').read_text())
@@ -517,7 +518,11 @@ class WorkflowSelectionTests(unittest.TestCase):
                     {**chain,'unexpected':0}):
             with patch.object(C, 'load', return_value=bad), self.assertRaises(ValueError):
                 C.chain_additions(inventory)
-        original=[name for name in inventory if name not in set(live) | feedback_added | chain_added]
+        script_ids=json.loads((REPO/'scripts/text-script-integration-tests.json').read_text())
+        with patch.object(C, 'read', return_value=json.dumps(script_ids).encode()):
+            script_added=C.text_script_additions(inventory)
+        self.assertEqual(len(script_added),72)
+        original=[name for name in inventory if name not in set(live) | feedback_added | chain_added | script_added]
         self.assertEqual(len(original),2047)
         self.assertEqual(hashlib.sha256(('\n'.join(original)+'\n').encode()).hexdigest(),
                          '926ac5674df90163b949fe461f0d4589ef72c8fc3215fa00b927564aae57cb44')
