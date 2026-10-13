@@ -186,10 +186,10 @@ struct TextScriptDraftHistory {
         sourceView.textColor = .textColor; sourceView.backgroundColor = .textBackgroundColor
         sourceView.textContainerInset = NSSize(width: 8, height: 8)
         sourceView.isVerticallyResizable = true; sourceView.isHorizontallyResizable = false
-        sourceView.minSize = .zero; sourceView.maxSize = NSSize(width: .greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
+        sourceView.minSize = .zero; sourceView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         sourceView.autoresizingMask = [.width]
         sourceView.textContainer?.widthTracksTextView = true
-        sourceView.textContainer?.containerSize = NSSize(width: 560, height: .greatestFiniteMagnitude)
+        sourceView.textContainer?.containerSize = NSSize(width: 560, height: CGFloat.greatestFiniteMagnitude)
         sourceView.delegate = self
         sourceView.onUndo = { [weak self] in self?.undoSource() }
         sourceView.onRedo = { [weak self] in self?.redoSource() }
