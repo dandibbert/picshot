@@ -742,19 +742,20 @@ jobs:
     # 55-minute installed-default gate, two 4-minute portable contract steps,
     # and seven minutes for cleanup and evidence publication overhead.
     # Intel adds 14 minutes to each four-process native stage: 160 + 14 + 14 = 188.
-    # ARM retains its prior 160-minute allowance and 16/30-minute native stages.
+    # ARM retains its prior 160-minute allowance; both native stages use four processes.
     # Individual test, product, cancellation and smoke deadlines stay unchanged.
     # Two exact pin regressions add 16 minutes without reducing any prior gate allowance.
     # Early same-ZIP recording witness adds orchestration allowance only:
     # 20 minutes execution plus 2 for its upload; no existing limit changes.
     # ARM: 176 + 22 = 198; Intel: 204 + 22 = 226. All prior allowances remain.
     # Installed fidelity adds120m (3 checks +106 wrapper +10 uploads +1 reserve).
-    # This changes only the enclosing allowance: ARM318 / Intel346.
-    timeout-minutes: ${{ matrix.arch == 'x86_64' && 346 || 318 }}
+    # The focused ARM subdivision adds14m for two extra bounded processes:
+    # ARM318 +14 =332 / Intel346. Each native process retains its420s cap.
+    timeout-minutes: ${{ matrix.arch == 'x86_64' && 346 || 332 }}
     env:
-      # Subdivide exhaustive ARM processes; preserve focused isolation.
+      # Four deterministic class buckets preserve each complete selected inventory.
       NATIVE_TEST_PROCESS_COUNT: '4'
-      FOCUSED_TEST_PROCESS_COUNT: ${{ matrix.arch == 'x86_64' && '4' || '2' }}
+      FOCUSED_TEST_PROCESS_COUNT: '4'
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       - name: Test bounded CI command runner and annotation evidence checker
@@ -1327,9 +1328,9 @@ jobs:
           PYTHON
       - name: Check annotation, GIF, recording durability and inference boundaries
         id: current_gate_21
-        # Intel: 4 * (420s command + 10s cleanup allowance) + 60s stage overhead
-        # = 1780s within 30 minutes. ARM keeps two processes within 16 minutes.
-        timeout-minutes: ${{ matrix.arch == 'x86_64' && 30 || 16 }}
+        # Both architectures: 4 * (420s command + 10s cleanup allowance)
+        # + 60s stage overhead = 1780s within 30 minutes.
+        timeout-minutes: 30
         run: |
           set -o pipefail
           execution_status=0

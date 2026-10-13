@@ -347,7 +347,7 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
             return result, [json.loads(line) for line in calls.read_text().splitlines()]
 
     def test_planning_routes_full_and_focused_counts_independently(self):
-        for arch, focused in [('arm64', 2), ('x86_64', 4)]:
+        for arch, focused in [('arm64', 4), ('x86_64', 4)]:
             with self.subTest(arch=arch):
                 result, calls = self.execute('Plan exhaustive and focused native test processes', arch)
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -422,8 +422,10 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
             self.assertEqual([name for name in after['tests'] if name not in scroll_added], before['tests'])
         selection = re.search(r"--selection-regex '([^']+)'", self.step(
             'Plan exhaustive and focused native test processes'))[1]
+        focused_plans = {}
         for count in (2, 4):
             full = shards.make_plan(current_inventory, selection, 'a' * 40, process_count=count)
+            focused_plans[count] = full
             prior = shards.make_plan(inventory, selection, 'a' * 40, process_count=count)
             self.assertEqual(full['selectedTests'], sorted(prior['selectedTests'] + scroll_added))
             self.assertEqual((len(full['selectedTests']), hashlib.sha256(
@@ -433,6 +435,10 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
                 {2: [1016, 892], 4: [550, 396, 466, 496]}[count])
             for before, after in zip(prior['shards'], full['shards']):
                 self.assertEqual([name for name in after['tests'] if name not in scroll_added], before['tests'])
+        for index in (0, 1):
+            self.assertEqual(sorted(focused_plans[4]['shards'][index]['tests']
+                                    + focused_plans[4]['shards'][index + 2]['tests']),
+                             focused_plans[2]['shards'][index]['tests'])
         self.assertEqual(hashlib.sha256(('\n'.join(inventory) + '\n').encode()).hexdigest(),
                          '5c7d51efe5e1fc16a1d3dd5c5d5fc4ae35948893fc7e5feb92aaf7c83c9f5539')
         payload = json.loads((Path(__file__).parents[1] / 'save-payload-native-tests.json').read_text())
@@ -713,7 +719,7 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
                 self.execute_pin_inventory_guard({**plan, **mutation})
 
     def test_every_process_runs_and_failure_remains_failure_after_aggregation(self):
-        for arch, focused in [('arm64', 2), ('x86_64', 4)]:
+        for arch, focused in [('arm64', 4), ('x86_64', 4)]:
             for name, count in [('Test native modules', 4),
                     ('Check annotation, GIF, recording durability and inference boundaries', focused)]:
                 for failed_index in ('', '0'):
@@ -726,18 +732,18 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
                         self.assertEqual(result.returncode == 0, not failed_index)
 
     def test_only_arm_full_stage_receives_four_process_cleanup_allowance(self):
-        # Retain the historical regression ID while fixing Intel's old shortage.
+        # Retain the historical regression ID; both focused stages now subdivide.
         full = re.search(r'^        timeout-minutes: (.+)$', self.step('Test native modules'), re.M)[1]
         focused = re.search(r'^        timeout-minutes: (.+)$', self.step(
             'Check annotation, GIF, recording durability and inference boundaries'), re.M)[1]
         self.assertEqual([self.scalar(full, arch) for arch in ['arm64', 'x86_64']], [30, 30])
-        self.assertEqual([self.scalar(focused, arch) for arch in ['arm64', 'x86_64']], [16, 30])
+        self.assertEqual([self.scalar(focused, arch) for arch in ['arm64', 'x86_64']], [30, 30])
         budgets = self.checked_serial_budgets()
         # Retain early witness22m plus standalone installed fidelity120m.
-        self.assertEqual([budgets[arch]['jobMinutes'] for arch in ['arm64', 'x86_64']], [176 + 22 + 120, 204 + 22 + 120])
+        self.assertEqual([budgets[arch]['jobMinutes'] for arch in ['arm64', 'x86_64']], [176 + 14 + 22 + 120, 204 + 22 + 120])
         self.assertEqual([budgets[arch]['regressionMinutes'] for arch in ['arm64', 'x86_64']], [16, 16])
         self.assertEqual(budgets['arm64']['regressionRequiredSeconds'], 920)
-        self.assertEqual(budgets['arm64']['focusedRequiredSeconds'], 920)
+        self.assertEqual(budgets['arm64']['focusedRequiredSeconds'], 1780)
         self.assertEqual(budgets['x86_64']['focusedRequiredSeconds'], 1780)
         self.assertEqual(budgets['x86_64']['fullRequiredSeconds'], 1780)
 
@@ -813,12 +819,13 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
 
     def test_each_intel_stage_rejects_the_old_budget_and_insufficient_cleanup_margin(self):
         for name in ['Check annotation, GIF, recording durability and inference boundaries', 'Test native modules']:
-            for minutes in [16, 28, 29]:
-                arm_minutes = 30 if name == 'Test native modules' else 16
-                value = f"${{{{ matrix.arch == 'x86_64' && {minutes} || {arm_minutes} }}}}"
-                with self.subTest(stage=name, minutes=minutes), mock.patch.object(self, 'build', self.replace_stage_budget(name, value)):
-                    with self.assertRaisesRegex(ValueError, 'serial process envelope'):
-                        self.checked_serial_budgets()
+            for arch in ['arm64', 'x86_64']:
+                for minutes in [16, 28, 29]:
+                    intel, arm = (minutes, 30) if arch == 'x86_64' else (30, minutes)
+                    value = f"${{{{ matrix.arch == 'x86_64' && {intel} || {arm} }}}}"
+                    with self.subTest(arch=arch, stage=name, minutes=minutes), mock.patch.object(self, 'build', self.replace_stage_budget(name, value)):
+                        with self.assertRaisesRegex(ValueError, 'serial process envelope'):
+                            self.checked_serial_budgets()
 
     def test_stage_budget_tracks_process_count_and_rejects_native_deadline_changes(self):
         enlarged = self.build.replace("NATIVE_TEST_PROCESS_COUNT: '4'", "NATIVE_TEST_PROCESS_COUNT: '8'")
@@ -829,9 +836,9 @@ class NativeWorkflowRoutingTests(unittest.TestCase):
             self.checked_serial_budgets()
 
     def test_intel_job_preserves_allowance_for_both_stage_increases(self):
-        for arch, values in [('x86_64', [160, 174, 187, 188, 203, 226, 345]), ('arm64', [160, 175, 198, 317])]:
+        for arch, values in [('x86_64', [160, 174, 187, 188, 203, 226, 345]), ('arm64', [160, 175, 198, 317, 318, 331])]:
             for minutes in values:
-                intel, arm = (minutes, 318) if arch == 'x86_64' else (346, minutes)
+                intel, arm = (minutes, 332) if arch == 'x86_64' else (346, minutes)
                 changed, count = re.subn(r'^    timeout-minutes: .+$',
                     f"    timeout-minutes: ${{{{ matrix.arch == 'x86_64' && {intel} || {arm} }}}}",
                     self.build, count=1, flags=re.M)
