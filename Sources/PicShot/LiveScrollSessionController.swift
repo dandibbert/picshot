@@ -322,8 +322,15 @@ final class LiveScrollSessionController {
                     guard self.generation == token, !self.retired else { break }
                     self.paused = true; self.clearAutomaticState()
                     self.pauseCaptureClock(); self.snapshot.previewPositionVerified = false
+                    // Durable source slots cannot be reclaimed by pausing or
+                    // revisiting old content. Keep accepted output available,
+                    // but never offer a restart that must reject new pixels.
+                    let exhaustedSources = (error as? LiveScrollDocument.Failure) == .sourceLimit
+                    if exhaustedSources { self.captureLimitReached = true }
                     try? await source.pauseAndDrain()
-                    self.setStatus("\(error.localizedDescription) 已保留当前长图，可继续或完成", kind: .error)
+                    self.setStatus(exhaustedSources ? "已满100段，请完成" :
+                        "\(error.localizedDescription) 已保留当前长图，可继续或完成",
+                        kind: exhaustedSources ? .paused : .error)
                     break
                 }
             }
@@ -379,7 +386,7 @@ final class LiveScrollSessionController {
     }
 
     private func togglePause() {
-        guard chainTransaction == nil, chainChoiceID == nil, textChoiceID == nil, textAttemptID == nil, transition == nil, regionDrag == nil, !finishing, !retired, !deliveryCompleted, let source else { return }
+        guard chainTransaction == nil, chainChoiceID == nil, textChoiceID == nil, textAttemptID == nil, transition == nil, regionDrag == nil, !finishing, !retired, !deliveryCompleted, !captureLimitReached, let source else { return }
         if paused && updateCaptureLimit() {
             setStatus("已达到本次捕获上限，可完成保存已有长图", kind: .paused); return
         }
@@ -1219,6 +1226,7 @@ final class LiveScrollSessionController {
               lastState.acceptedObservations <= 1, transition == nil, !finishing,
               let source, let original = assembler else { return }
         let token = generation
+        let wasPaused = paused
         paused = true; clearAutomaticState()
         pauseCaptureClock(); snapshot.previewPositionVerified = false
         snapshot.busy = true; snapshot.status = "正在切换方向…"; controls?.update(snapshot: snapshot)
@@ -1236,17 +1244,20 @@ final class LiveScrollSessionController {
                 let fresh = LiveScrollAssembler(axis: next, generation: self.generation, storageParent: self.resourceStorageParent); replacement = fresh
                 let seed = try await fresh.observe(first)
                 try Task.checkCancellation()
-                try await source.resume()
+                if !wasPaused { try await source.resume() }
                 try Task.checkCancellation()
                 guard !self.retired, self.generation == token else { await fresh.close(); return }
                 self.axis = next; self.assembler = fresh; replacement = nil
                 await original.close()
                 guard !self.retired, self.generation == token else { return }
                 self.lastState = seed.state; self.snapshot.axis = next
-                self.snapshot.previewPositionVerified = seed.state.matched && !seed.state.previewUnavailable
+                self.snapshot.previewPositionVerified = !wasPaused && seed.state.matched && !seed.state.previewUnavailable
                 if let image = seed.preview { self.controls?.updatePreview(image: image, viewportFraction: seed.viewport) }
-                self.paused = false; self.resumeCaptureClock(); self.setStatus("方向已切换，继续滚动", kind: .capturing)
-                self.startSampling()
+                self.paused = wasPaused
+                if !wasPaused { self.resumeCaptureClock() }
+                self.setStatus(wasPaused ? "方向已切换，仍暂停" : "方向已切换，继续滚动",
+                    kind: wasPaused ? .paused : .capturing)
+                if !wasPaused { self.startSampling() }
             } catch {
                 await replacement?.close()
                 guard !self.retired, self.generation == token else { return }
