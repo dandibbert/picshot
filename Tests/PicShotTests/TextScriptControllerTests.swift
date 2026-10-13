@@ -40,6 +40,107 @@ import XCTest
         }
     }
 
+    func testNativeCommandSaveWhileNameIsFirstResponderCommitsOnceAndRestoresControls() throws {
+        try withApplicationLoop { [self] in
+            let f = try fixture()
+            defer { f.store.beforeManifestCommit = nil; f.close() }
+            try ready(f.controller)
+            try click("create", in: f.controller)
+            let window = try XCTUnwrap(f.controller.window)
+            let name: NSTextField = try view("name", in: f.controller)
+            let source: NSTextView = try view("source", in: f.controller)
+            let saveButton = try button("save", in: f.controller)
+            let discardButton = try button("discard", in: f.controller)
+            let runButton = try button("run", in: f.controller)
+            name.selectText(nil)
+            let editor = try XCTUnwrap(name.currentEditor() as? NSTextView)
+            let savedName = "键盘保存工单脚本"
+            editor.insertText(savedName, replacementRange: NSRange(location: 0, length: (editor.string as NSString).length))
+            XCTAssertTrue(window.firstResponder === editor)
+            XCTAssertEqual(editor.string, savedName); XCTAssertFalse(editor.hasMarkedText())
+            XCTAssertTrue(saveButton.isEnabled); XCTAssertFalse(runButton.isEnabled)
+            XCTAssertTrue(f.store.definitions.isEmpty)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: manifest(f).path))
+            let save = try textKey(window, "s", code: 1, flags: .command)
+            var writes = 0, runs = 0
+            f.controller.onRun = { _, _ in runs += 1 }
+            f.store.beforeManifestCommit = {
+                writes += 1
+                XCTAssertFalse(saveButton.isEnabled); XCTAssertFalse(name.isEnabled)
+                // A synchronous duplicate command during the atomic write must
+                // stay blocked by isSaving, including after focus resignation.
+                XCTAssertTrue(window.performKeyEquivalent(with: save))
+            }
+            // Do not move focus or click Save: this exercises the field editor's
+            // synchronous resignation when Save disables the name field.
+            XCTAssertTrue(window.firstResponder === editor)
+            XCTAssertTrue(window.performKeyEquivalent(with: save))
+            XCTAssertEqual(writes, 1); XCTAssertEqual(runs, 0)
+            let saved = try XCTUnwrap(f.store.definitions.first)
+            XCTAssertEqual(saved.name, savedName); XCTAssertEqual(saved.source, TextScriptController.exampleSource)
+            XCTAssertEqual(f.store.selectedID, saved.id)
+            XCTAssertEqual(try TextScriptStore(directory: f.directory).index, f.store.index)
+            XCTAssertEqual(name.stringValue, savedName); XCTAssertEqual(source.string, saved.source)
+            XCTAssertTrue(name.isEnabled); XCTAssertTrue(source.isEditable); XCTAssertTrue(runButton.isEnabled)
+            XCTAssertFalse(saveButton.isEnabled); XCTAssertFalse(discardButton.isEnabled)
+            XCTAssertTrue(f.controller.requestApplicationTermination())
+            XCTAssertTrue(window.performKeyEquivalent(with: save)); XCTAssertEqual(writes, 1)
+        }
+    }
+
+    func testNativeCommandSaveFailureWhileNameIsFirstResponderPreservesDraftAndRetriesAtomically() throws {
+        try withApplicationLoop { [self] in
+            let original = try definition(), f = try fixture([original])
+            defer { f.store.beforeManifestCommit = nil; f.close() }
+            try ready(f.controller)
+            let window = try XCTUnwrap(f.controller.window)
+            let name: NSTextField = try view("name", in: f.controller)
+            let source: NSTextView = try view("source", in: f.controller)
+            let saveButton = try button("save", in: f.controller)
+            let discardButton = try button("discard", in: f.controller)
+            let runButton = try button("run", in: f.controller)
+            let before = f.store.index, bytes = try Data(contentsOf: manifest(f))
+            let draftName = "失败后重试的名称"
+            name.selectText(nil)
+            let editor = try XCTUnwrap(name.currentEditor() as? NSTextView)
+            editor.insertText(draftName, replacementRange: NSRange(location: 0, length: (editor.string as NSString).length))
+            XCTAssertTrue(window.firstResponder === editor)
+            XCTAssertEqual(editor.string, draftName); XCTAssertFalse(editor.hasMarkedText())
+            let save = try textKey(window, "s", code: 1, flags: .command)
+            var attempts = 0, accepted = 0, fail = true
+            f.store.beforeManifestCommit = {
+                attempts += 1
+                if fail { throw TextScriptCatalogError.saveFailed }
+                accepted += 1
+            }
+            XCTAssertTrue(window.performKeyEquivalent(with: save))
+            XCTAssertEqual(attempts, 1); XCTAssertEqual(accepted, 0)
+            XCTAssertEqual(f.store.index, before); XCTAssertEqual(try Data(contentsOf: manifest(f)), bytes)
+            XCTAssertEqual(try TextScriptStore(directory: f.directory).index, before)
+            XCTAssertEqual(name.stringValue, draftName); XCTAssertEqual(source.string, original.source)
+            XCTAssertTrue(name.isEnabled); XCTAssertTrue(source.isEditable)
+            XCTAssertTrue(saveButton.isEnabled); XCTAssertTrue(discardButton.isEnabled); XCTAssertFalse(runButton.isEnabled)
+            let status: NSTextField = try view("status", in: f.controller)
+            XCTAssertEqual(status.stringValue, TextScriptCatalogError.saveFailed.errorDescription)
+            XCTAssertFalse(f.controller.requestApplicationTermination())
+            fail = false
+            name.selectText(nil)
+            let retryEditor = try XCTUnwrap(name.currentEditor() as? NSTextView)
+            XCTAssertTrue(window.firstResponder === retryEditor)
+            XCTAssertEqual(retryEditor.string, draftName); XCTAssertFalse(retryEditor.hasMarkedText())
+            XCTAssertTrue(window.performKeyEquivalent(with: save))
+            XCTAssertEqual(attempts, 2); XCTAssertEqual(accepted, 1)
+            let saved = try XCTUnwrap(f.store.definition(id: original.id))
+            XCTAssertEqual(saved.name, draftName); XCTAssertEqual(saved.source, original.source)
+            XCTAssertEqual(f.store.definitions, [saved]); XCTAssertEqual(f.store.selectedID, original.id)
+            XCTAssertEqual(try TextScriptStore(directory: f.directory).index, f.store.index)
+            XCTAssertTrue(name.isEnabled); XCTAssertTrue(source.isEditable); XCTAssertTrue(runButton.isEnabled)
+            XCTAssertFalse(saveButton.isEnabled); XCTAssertFalse(discardButton.isEnabled)
+            XCTAssertTrue(f.controller.requestApplicationTermination())
+            XCTAssertTrue(window.performKeyEquivalent(with: save)); XCTAssertEqual(attempts, 2)
+        }
+    }
+
     func testFailedSaveRetainsExactDraftAndUsesOnlyFixedDiagnostics() throws {
         let original = try definition(), f = try fixture([original]); defer { f.close() }
         let source: NSTextView = try view("source", in: f.controller)

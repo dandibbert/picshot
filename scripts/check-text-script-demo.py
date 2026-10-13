@@ -100,7 +100,7 @@ def layout(artifact, phase):
     rows = value.get('controls')
     need(type(rows) is list and 5 <= len(rows) <= 160, 'bounded native control census')
     by_id, paths, leaves = {}, {}, []
-    classes = {'button': {'NSButton', 'CaptureChainRunButton', 'TextScriptRunButton'},
+    classes = {'button': {'NSButton', 'NSPopUpButton', 'CaptureChainRunButton', 'TextScriptRunButton'},
         'field': {'NSTextField', 'NSButtonTextField'}, 'source': {'TextScriptBoundedTextView'},
         'table': {'NSTableView'}, 'other': {'NSScroller'}}
     for row in rows:

@@ -66,6 +66,7 @@ struct TextScriptDraftHistory {
     private var closeRequested = false
     private var wantsVisible = false
     private var isSaving = false
+    private var refreshingControls = false
     private var sourceHistory = TextScriptDraftHistory()
     var sourceUndoRetainedBytesForVerification: Int { sourceHistory.retainedBytes }
 
@@ -276,6 +277,12 @@ struct TextScriptDraftHistory {
         status.textColor = error ? .systemRed : .secondaryLabelColor
     }
     private func refreshControls() {
+        // Disabling a focused native field can synchronously resign its editor
+        // and call back through invalidateCommands. Keep that invalidation, but
+        // do not re-enter AppKit setters before the outer setter has returned.
+        guard !refreshingControls else { return }
+        refreshingControls = true
+        defer { refreshingControls = false }
         let clean = cleanSavedDraft != nil
         nameField.isEnabled = canEdit && hasDraft; sourceView.isEditable = canEdit && hasDraft
         sourceView.isSelectable = hasDraft

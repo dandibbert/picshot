@@ -261,6 +261,36 @@ class SchemaMutations(unittest.TestCase):
             else:rows[0]['hitTest']=False
             with self.subTest(mutation=mutation),self.assertRaises(ValueError):C.layout(value,'text-script-retry-failure')
 
+    def test_native_popup_subclass_keeps_hidden_ownership_and_title_ancestry_checks(self):
+        value=artifacts('text-script-retry-failure')[0]
+        rows=value['layout']['controls']
+        popup=control('capture-chain-source',6)
+        popup.update(**{'class':'NSPopUpButton'},hidden=True)
+        child=control('native-999',7,'field')
+        child.update(**{'class':'NSButtonTextField'},hidden=True,
+            viewPath=popup['viewPath']+[0],ancestorIDs=[popup['id']])
+        rows.extend([popup,child])
+        C.layout(value,'text-script-retry-failure')
+        for mutation in ('unknown-class','wrong-kind','foreign-window','unowned','missing-path',
+                         'duplicate-path','forged-parent','title-mismatch'):
+            changed=copy.deepcopy(value);controls=changed['layout']['controls']
+            target=controls[-2]
+            if mutation=='unknown-class':target['class']='NSUnreviewedButton'
+            elif mutation=='wrong-kind':target['kind']='field'
+            elif mutation=='foreign-window':target['ownerWindowNumber']=99
+            elif mutation=='unowned':target['owned']=False
+            elif mutation=='missing-path':del target['viewPath']
+            elif mutation=='duplicate-path':target['viewPath']=controls[0]['viewPath']
+            elif mutation=='forged-parent':controls[-1]['ancestorIDs']=[]
+            else:controls[-1]['text']='unrelated title'
+            with self.subTest(mutation=mutation),self.assertRaises(ValueError):
+                C.layout(changed,'text-script-retry-failure')
+        # A visible instance still needs complete geometry and a real hit target.
+        rows.pop();popup['hidden']=False
+        C.layout(value,'text-script-retry-failure')
+        popup['hitTest']=False
+        with self.assertRaises(ValueError):C.layout(value,'text-script-retry-failure')
+
     def test_long_name_and_source_remain_usable(self):
         for key,bad in [('wraps',False),('verticalScroll',False),('completeSourceAccessible',False),
                         ('editableSelectable',False),('accessibilityValue','truncated'),('fontSize',10)]:

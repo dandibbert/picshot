@@ -272,8 +272,24 @@ jobs:
         native.need(not skipped,'Capture chain cases cannot be skipped')
         Path('dist/capture-chain-test-inventory.json').write_text(json.dumps({'passed':passed,'skipped':skipped,'count':len(expected)},indent=2)+'\n')
         PYTHON
-    - name: Verify text script catalog editor execution and existing runtime methods
+    - name: Verify original text editor Save crash path before the full script group
+      id: text_script_save_regression
       if: ${{ always() && contains(github.event.head_commit.message || '', '[text-script-integration]') && steps.compile_live_scroll_tests.outcome == 'success' }}
+      timeout-minutes: 8
+      run: |
+        PICSHOT_TEXT_SCRIPT_LIFECYCLE_DIAGNOSTIC=1 python3 scripts/run-bounded-command.py --timeout-seconds 420 --log dist/text-script-save-regression.log --report dist/text-script-save-regression.json -- swift test --skip-build --filter 'TextScriptControllerTests/testNewDraftIsNotAutoSavedByCloseQuitSelectionOrReopen$'
+        python3 - <<'PYTHON'
+        import importlib.util,json
+        from pathlib import Path
+        spec=importlib.util.spec_from_file_location('native','scripts/native-test-shards.py')
+        native=importlib.util.module_from_spec(spec);spec.loader.exec_module(native)
+        expected=['PicShotTests.TextScriptControllerTests/testNewDraftIsNotAutoSavedByCloseQuitSelectionOrReopen']
+        passed,skipped=native.case_results(Path('dist/text-script-save-regression.log').read_text(),expected)
+        native.need(not skipped, 'Original editor Save crash path cannot be skipped')
+        Path('dist/text-script-save-regression-inventory.json').write_text(json.dumps({'passed':passed,'skipped':skipped,'count':1},indent=2)+'\n')
+        PYTHON
+    - name: Verify text script catalog editor execution and existing runtime methods
+      if: ${{ always() && contains(github.event.head_commit.message || '', '[text-script-integration]') && steps.compile_live_scroll_tests.outcome == 'success' && steps.text_script_save_regression.outcome == 'success' }}
       timeout-minutes: 8
       run: |
         python3 scripts/run-bounded-command.py --timeout-seconds 420 --log dist/text-script-tests.log --report dist/text-script-tests.json -- swift test --skip-build --filter TextScript
