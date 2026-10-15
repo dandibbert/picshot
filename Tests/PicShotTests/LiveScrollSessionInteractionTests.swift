@@ -427,8 +427,287 @@ final class LiveScrollSessionInteractionTests: XCTestCase {
         }
     }
 
+    func testActualCapturePixelMinimumKeepsBoundaryActiveAndShortSeedsPausedWithExactOutput() async throws {
+        let sizes = [(24, 48), (23, 48), (24, 47), (48, 23), (47, 24), (23, 23)]
+        for (width, height) in sizes {
+            let supported = width == 24 && height == 48
+            let seed = try Self.sourceLimitImage(origin: 0, length: height, crossLength: width)
+            // Deliberately larger logical points cannot qualify an undersized
+            // CGImage. The production sampling path must inspect its pixels.
+            try await withSession(seed: seed, allOutputRoutes: true,
+                                  sourceSize: CGSize(width: 96, height: 96)) { session, source, seed, output, clock in
+                let toolbar = try Self.toolbar(session)
+                if supported {
+                    try await Self.waitUntil { session.snapshotForVerification.previewPositionVerified }
+                    XCTAssertFalse(session.snapshotForVerification.paused)
+                    XCTAssertTrue(session.snapshotForVerification.canPause)
+                    XCTAssertTrue(session.snapshotForVerification.canMoveRegion)
+                    XCTAssertTrue(session.snapshotForVerification.canAutoScroll)
+                    XCTAssertTrue(toolbar.autoButton.isEnabled)
+                    XCTAssertEqual(source.pauseCalls, 0)
+                } else {
+                    try await Self.waitUntil { session.snapshotForVerification.paused && source.completedDrains == 1 }
+                    try Self.assertUnsupportedCaptureControls(session, width: width, height: height)
+                    XCTAssertEqual(session.snapshotForVerification.status, "选区过小，请重选")
+                    XCTAssertEqual(session.snapshotForVerification.statusKind, .warning)
+                    XCTAssertFalse(session.stateForVerification.matched)
+                    XCTAssertFalse(LiveScrollMatcher.supportsCapture(width: width, height: height, axis: .horizontal))
+                    let accepted = session.stateForVerification
+                    let preview = try XCTUnwrap(Self.thumbnail(session).image)
+                    let samples = session.sampledFramesForVerification
+                    for _ in 0..<3 { try Self.dispatchStaleAcquisitionActions(session) }
+                    source.offer(seed)
+                    await Task.yield()
+                    clock.now += 10_000
+                    Self.assertRetainedState(session, equals: accepted)
+                    XCTAssertTrue(try Self.thumbnail(session).image === preview)
+                    XCTAssertEqual(session.sampledFramesForVerification, samples)
+                    XCTAssertEqual(session.activeCaptureDurationForVerification, 0)
+                    XCTAssertEqual(source.pauseCalls, 1); XCTAssertEqual(source.resumeCalls, 0)
+                    XCTAssertEqual(source.moveCalls, 0); XCTAssertEqual(output.automaticEvents, 0)
+                    XCTAssertEqual(session.snapshotForVerification.axis, .vertical)
+                    XCTAssertTrue(session.snapshotForVerification.paused)
+                    XCTAssertFalse(session.snapshotForVerification.previewPositionVerified)
+                    if width == 23 && height == 23 {
+                        try Self.assertStatusVisibleAndRetainEvidence(session, phase: "scroll-state-small-both-axes")
+                    }
+                }
+                XCTAssertEqual(session.snapshotForVerification.pixelWidth, width)
+                XCTAssertEqual(session.snapshotForVerification.pixelHeight, height)
+                XCTAssertEqual(session.snapshotForVerification.acceptedFrames, 1)
+                XCTAssertFalse(session.captureLimitReachedForVerification)
+                try Self.assertAllOutputRoutes(session)
+                try PortableSettingsUIPreviewFixture.click(toolbar.finishButton)
+                try await Self.waitUntil { session.isClosedForVerification }
+                let delivered = try XCTUnwrap(output.image)
+                XCTAssertEqual(delivered.width, width); XCTAssertEqual(delivered.height, height)
+                XCTAssertEqual(try Self.pixels(delivered), try Self.pixels(seed))
+                XCTAssertEqual(output.finishes, 1); XCTAssertEqual(output.automaticEvents, 0)
+            }
+        }
+    }
+
+    func testHorizontalOnlySeedRequiresExplicitAxisThenContinueAndFreshMatchedPixels() async throws {
+        try await withSession(seed: Self.sourceLimitImage(origin: 0, length: 48, axis: .horizontal),
+                              allOutputRoutes: true, seedAutomatically: false) { session, source, seed, output, clock in
+            let toolbar = try Self.toolbar(session)
+            let controls = try XCTUnwrap(session.controlsForVerification)
+            try await Self.waitUntil { source.mailbox.counters.waitingReaders == 1 }
+            XCTAssertEqual(session.snapshotForVerification.acceptedFrames, 0)
+            XCTAssertEqual(session.stateForVerification.width, 0)
+            XCTAssertFalse(session.snapshotForVerification.canChangeAxis)
+            XCTAssertFalse(try Self.menuItem(session, "axis.horizontal").isEnabled)
+            XCTAssertFalse(try Self.menuItem(session, "axis.vertical").isEnabled)
+            XCTAssertNil(try Self.thumbnail(session).image)
+
+            // Hold acquisition before it publishes the first CGImage. Even an
+            // enabled stale menu must not admit an axis transition until the
+            // session knows the actual seed dimensions.
+            source.holdNextFrame = true
+            source.offer(seed)
+            try await Self.waitUntil { source.hasPendingFrame }
+            let beforeSeed = session.snapshotForVerification, generation = source.generation
+            let beforeSeedState = session.stateForVerification
+            var stale = beforeSeed
+            stale.canChangeAxis = true
+            for _ in 0..<3 {
+                controls.update(snapshot: stale)
+                try Self.dispatchMenu(session, "axis.horizontal")
+                try Self.dispatchMenu(session, "axis.vertical")
+            }
+            await Task.yield()
+            XCTAssertEqual(session.snapshotForVerification, beforeSeed)
+            Self.assertRetainedState(session, equals: beforeSeedState)
+            XCTAssertEqual(session.sampledFramesForVerification, 0)
+            XCTAssertEqual(source.generation, generation)
+            XCTAssertTrue(source.operations.isEmpty)
+            XCTAssertEqual(source.pauseCalls, 0); XCTAssertEqual(source.resumeCalls, 0)
+            XCTAssertEqual(source.moveCalls, 0); XCTAssertEqual(output.automaticEvents, 0)
+            XCTAssertEqual(session.snapshotForVerification.axis, .vertical)
+            XCTAssertFalse(session.snapshotForVerification.paused)
+            XCTAssertFalse(session.snapshotForVerification.autoScrolling)
+            XCTAssertFalse(session.snapshotForVerification.previewPositionVerified)
+            XCTAssertTrue(source.hasPendingFrame)
+            controls.update(snapshot: beforeSeed)
+            source.releaseFrame(); source.releaseFrame()
+            try await Self.waitUntil { session.snapshotForVerification.paused && source.completedDrains == 1 }
+            try Self.assertUnsupportedCaptureControls(session, width: 48, height: 24)
+            XCTAssertEqual(session.snapshotForVerification.status, "请切横向或重选")
+            XCTAssertTrue(session.snapshotForVerification.canChangeAxis)
+            try Self.assertStatusVisibleAndRetainEvidence(session, phase: "scroll-state-small-vertical")
+            let retiredGeneration = source.generation
+            let sampled = session.sampledFramesForVerification
+            for _ in 0..<3 {
+                try Self.dispatchButton(toolbar.pauseButton); try Self.dispatchButton(toolbar.autoButton)
+                try Self.dispatchMenu(session, "moveRegion", requireEnabled: false)
+            }
+            XCTAssertEqual(source.pauseCalls, 1); XCTAssertEqual(source.resumeCalls, 0)
+            XCTAssertEqual(source.moveCalls, 0); XCTAssertEqual(output.automaticEvents, 0)
+
+            clock.now += 5_000
+            try Self.dispatchMenu(session, "axis.horizontal")
+            try await Self.waitUntil { session.snapshotForVerification.axis == .horizontal && !session.snapshotForVerification.busy }
+            XCTAssertTrue(session.snapshotForVerification.paused)
+            XCTAssertEqual(session.snapshotForVerification.status, "方向已切换，仍暂停")
+            XCTAssertTrue(session.snapshotForVerification.canPause)
+            XCTAssertEqual(toolbar.pauseButton.accessibilityLabel(), "继续捕获")
+            XCTAssertFalse(session.snapshotForVerification.previewPositionVerified)
+            XCTAssertFalse(session.snapshotForVerification.canAutoScroll)
+            XCTAssertFalse(session.snapshotForVerification.autoScrolling)
+            XCTAssertEqual(session.sampledFramesForVerification, sampled, "Changing direction must reuse the exact seed without capture")
+            XCTAssertEqual(session.snapshotForVerification.acceptedFrames, 1)
+            XCTAssertEqual(source.resumeCalls, 0); XCTAssertEqual(source.moveCalls, 0)
+            XCTAssertEqual(source.operations, ["pause", "pause"])
+            XCTAssertEqual(session.activeCaptureDurationForVerification, 0)
+            let preview = try XCTUnwrap(Self.thumbnail(session).image)
+            XCTAssertEqual(preview.width, seed.width); XCTAssertEqual(preview.height, seed.height)
+            try Self.assertAllOutputRoutes(session)
+
+            source.holdResume = true
+            try PortableSettingsUIPreviewFixture.click(toolbar.pauseButton)
+            try await Self.waitUntil { source.hasPendingResume }
+            for _ in 0..<3 { try Self.dispatchButton(toolbar.pauseButton); try Self.dispatchButton(toolbar.autoButton) }
+            clock.now += 5_000
+            XCTAssertEqual(source.resumeCalls, 1)
+            XCTAssertEqual(session.activeCaptureDurationForVerification, 0)
+            source.releaseResume(); source.releaseResume()
+            try await Self.waitUntil { !session.snapshotForVerification.paused && !session.snapshotForVerification.busy }
+            XCTAssertEqual(source.completedResumes, 1)
+            XCTAssertFalse(session.snapshotForVerification.previewPositionVerified)
+            XCTAssertFalse(session.snapshotForVerification.canAutoScroll)
+            try await Self.deliver(seed, to: session, source: source, generation: retiredGeneration)
+            XCTAssertFalse(session.snapshotForVerification.previewPositionVerified)
+            try await Self.deliver(Self.sourceLimitImage(origin: 0, length: 48, axis: .horizontal, salt: 101),
+                                   to: session, source: source)
+            XCTAssertFalse(session.snapshotForVerification.previewPositionVerified)
+            let mismatchSequence = source.sequence
+            try await Self.deliver(seed, to: session, source: source, sequence: mismatchSequence)
+            try await Self.deliver(seed, to: session, source: source, generation: source.generation + 1)
+            XCTAssertFalse(session.snapshotForVerification.previewPositionVerified)
+            XCTAssertFalse(session.snapshotForVerification.canAutoScroll)
+            XCTAssertFalse(try Self.thumbnail(session).isPositionVerified)
+            XCTAssertTrue(try Self.thumbnail(session).image === preview)
+            for _ in 0..<3 { try Self.dispatchButton(toolbar.autoButton) }
+            XCTAssertEqual(output.automaticEvents, 0)
+            try await Self.deliver(seed, to: session, source: source)
+            XCTAssertTrue(session.snapshotForVerification.previewPositionVerified)
+            XCTAssertTrue(try Self.thumbnail(session).isPositionVerified)
+            XCTAssertTrue(session.snapshotForVerification.canAutoScroll)
+            XCTAssertTrue(toolbar.autoButton.isEnabled)
+            XCTAssertFalse(session.snapshotForVerification.autoScrolling)
+            XCTAssertEqual(session.snapshotForVerification.acceptedFrames, 1)
+            XCTAssertEqual(output.automaticEvents, 0)
+            clock.now += 7
+            XCTAssertEqual(session.activeCaptureDurationForVerification, 7)
+            try PortableSettingsUIPreviewFixture.click(toolbar.copyButton)
+            try await Self.waitUntil { session.isClosedForVerification }
+            let delivered = try XCTUnwrap(output.image)
+            XCTAssertEqual(delivered.width, 48); XCTAssertEqual(delivered.height, 24)
+            XCTAssertEqual(try Self.pixels(delivered), try Self.pixels(seed))
+            XCTAssertEqual(output.copies, 1); XCTAssertEqual(output.finishes, 0)
+        }
+    }
+
+    func testUnsupportedAxisPreservesValidActiveOrPausedSeedWithoutDrainAndDisarmsAuto() async throws {
+        for axis in [ScrollAxis.vertical, .horizontal] {
+            for initiallyPaused in [false, true] {
+                try await withSession(seed: Self.sourceLimitImage(origin: 0, length: 48, axis: axis)) { session, source, seed, output, clock in
+                    let toolbar = try Self.toolbar(session)
+                    if axis == .horizontal {
+                        try await Self.waitUntil { session.snapshotForVerification.paused && source.completedDrains == 1 }
+                        try Self.dispatchMenu(session, "axis.horizontal")
+                        try await Self.waitUntil { session.snapshotForVerification.axis == .horizontal && !session.snapshotForVerification.busy }
+                        try PortableSettingsUIPreviewFixture.click(toolbar.pauseButton)
+                        try await Self.waitUntil { !session.snapshotForVerification.paused && !session.snapshotForVerification.busy }
+                        try await Self.deliver(seed, to: session, source: source)
+                    }
+                    try await Self.waitUntil { session.snapshotForVerification.canAutoScroll }
+                    if initiallyPaused {
+                        try PortableSettingsUIPreviewFixture.click(toolbar.pauseButton)
+                        try await Self.waitUntil { session.snapshotForVerification.paused && !session.snapshotForVerification.busy }
+                    } else {
+                        try PortableSettingsUIPreviewFixture.click(toolbar.autoButton)
+                        XCTAssertTrue(session.snapshotForVerification.autoScrolling)
+                        XCTAssertEqual(output.automaticEvents, 1)
+                    }
+                    let accepted = session.stateForVerification
+                    let before = session.snapshotForVerification
+                    let operations = source.operations, generation = source.generation
+                    let region = source.region, samples = session.sampledFramesForVerification
+                    let preview = try XCTUnwrap(Self.thumbnail(session).image)
+                    let rejectedAxis = axis == .vertical ? "horizontal" : "vertical"
+                    for _ in 0..<3 { try Self.dispatchMenu(session, "axis." + rejectedAxis) }
+                    let rejected = session.snapshotForVerification
+                    XCTAssertEqual(rejected.axis, axis); XCTAssertEqual(rejected.paused, initiallyPaused)
+                    XCTAssertEqual(rejected.previewPositionVerified, before.previewPositionVerified)
+                    XCTAssertFalse(rejected.autoScrolling); XCTAssertFalse(rejected.busy)
+                    XCTAssertEqual(rejected.status, "方向未改，选区过小")
+                    XCTAssertEqual(rejected.statusKind, .warning)
+                    XCTAssertTrue(rejected.statusDetail.contains("\(seed.width)×\(seed.height)"))
+                    XCTAssertTrue(rejected.statusDetail.contains(axis == .vertical ? "横向至少需要48×24像素" : "纵向至少需要24×48像素"))
+                    XCTAssertEqual(toolbar.statusLabel.accessibilityHelp(), rejected.statusDetail)
+                    XCTAssertEqual(source.operations, operations, "An unsupported direction must be rejected before any drain or resume")
+                    XCTAssertEqual(source.generation, generation); XCTAssertEqual(source.region, region)
+                    XCTAssertEqual(session.sampledFramesForVerification, samples)
+                    Self.assertRetainedState(session, equals: accepted)
+                    XCTAssertTrue(try Self.thumbnail(session).image === preview)
+                    XCTAssertTrue(rejected.canFinish); XCTAssertTrue(rejected.canCopy)
+                    let events = output.automaticEvents
+                    if !initiallyPaused {
+                        clock.now += 1
+                        try await Self.deliver(seed, to: session, source: source)
+                    }
+                    XCTAssertFalse(session.snapshotForVerification.autoScrolling)
+                    XCTAssertEqual(output.automaticEvents, events, "New matching pixels cannot rearm Auto after rejection")
+                    try PortableSettingsUIPreviewFixture.click(toolbar.finishButton)
+                    try await Self.waitUntil { session.isClosedForVerification }
+                    let delivered = try XCTUnwrap(output.image)
+                    XCTAssertEqual(delivered.width, seed.width); XCTAssertEqual(delivered.height, seed.height)
+                    XCTAssertEqual(try Self.pixels(delivered), try Self.pixels(seed))
+                    XCTAssertEqual(output.finishes, 1)
+                }
+            }
+        }
+    }
+
+    func testCloseDuringUnsupportedSeedDrainMakesLateFramesAndActionsInert() async throws {
+        try await withSession(seed: Self.sourceLimitImage(origin: 0, length: 47), seedAutomatically: false) { session, source, seed, output, clock in
+            let toolbar = try Self.toolbar(session)
+            let controls = try XCTUnwrap(session.controlsForVerification)
+            let stalePause = try XCTUnwrap(toolbar.pauseButton.action)
+            let staleAuto = try XCTUnwrap(toolbar.autoButton.action)
+            var closes = 0
+            session.onClose = { closes += 1 }
+            source.holdDrain = true
+            source.offer(seed)
+            try await Self.waitUntil { source.hasPendingDrain }
+            XCTAssertEqual(session.snapshotForVerification.acceptedFrames, 1)
+            XCTAssertTrue(session.snapshotForVerification.paused)
+            XCTAssertFalse(session.snapshotForVerification.canPause)
+            XCTAssertFalse(session.snapshotForVerification.previewPositionVerified)
+            let samples = session.sampledFramesForVerification
+            let beforeClose = session.snapshotForVerification
+            try PortableSettingsUIPreviewFixture.click(toolbar.cancelButton)
+            source.offer(seed)
+            XCTAssertTrue(controls.isRetired)
+            XCTAssertNil(toolbar.pauseButton.action); XCTAssertNil(toolbar.autoButton.action)
+            XCTAssertTrue(NSApp.sendAction(stalePause, to: controls, from: toolbar.pauseButton))
+            XCTAssertTrue(NSApp.sendAction(staleAuto, to: controls, from: toolbar.autoButton))
+            source.releaseDrain(); source.releaseDrain()
+            try await Self.waitUntil { session.isClosedForVerification }
+            clock.now += 10_000
+            XCTAssertEqual(closes, 1); XCTAssertEqual(source.stopCalls, 1)
+            XCTAssertEqual(source.pauseCalls, 1); XCTAssertEqual(source.resumeCalls, 0); XCTAssertEqual(source.moveCalls, 0)
+            XCTAssertEqual(session.sampledFramesForVerification, samples)
+            XCTAssertEqual(session.snapshotForVerification, beforeClose)
+            XCTAssertEqual(session.activeCaptureDurationForVerification, 0)
+            XCTAssertEqual(output.deliveryAttempts, 0); XCTAssertEqual(output.automaticEvents, 0)
+            XCTAssertNil(session.controlsForVerification)
+        }
+    }
+
     func testActiveSeededAxisChangeResumesOnceAndMultiFrameAxisChangeIsRejected() async throws {
-        try await withSession(seed: Self.sourceLimitImage(origin: 0, axis: .horizontal)) { session, source, seed, output, clock in
+        try await withSession(seed: Self.sourceLimitImage(origin: 0, axis: .horizontal, crossLength: 48)) { session, source, seed, output, clock in
             let oldGeneration = source.generation
             clock.now += 31
             source.holdResume = true
@@ -458,7 +737,7 @@ final class LiveScrollSessionInteractionTests: XCTestCase {
             try await Self.deliver(seed, to: session, source: source, generation: oldGeneration)
             XCTAssertFalse(session.snapshotForVerification.previewPositionVerified)
             XCTAssertTrue(try Self.thumbnail(session).image === preview)
-            try await Self.deliver(Self.sourceLimitImage(origin: 0, axis: .horizontal, salt: 101), to: session, source: source)
+            try await Self.deliver(Self.sourceLimitImage(origin: 0, axis: .horizontal, crossLength: 48, salt: 101), to: session, source: source)
             XCTAssertFalse(session.stateForVerification.matched)
             XCTAssertFalse(session.snapshotForVerification.previewPositionVerified)
             XCTAssertFalse(session.snapshotForVerification.canAutoScroll)
@@ -786,11 +1065,12 @@ final class LiveScrollSessionInteractionTests: XCTestCase {
     }
 
     private func withSession(seed suppliedSeed: CGImage? = nil, allOutputRoutes: Bool = false, seedAutomatically: Bool = true,
+                             sourceSize: CGSize? = nil,
                              _ body: (LiveScrollSessionController, Source, CGImage, Output, Clock) async throws -> Void) async throws {
         _ = NSApplication.shared
         guard let screen = NSScreen.main else { throw XCTSkip("A native macOS screen is required for session controls") }
         let seed = try suppliedSeed ?? Self.image()
-        let source = Source(displayBounds: screen.frame, size: CGSize(width: seed.width, height: seed.height))
+        let source = Source(displayBounds: screen.frame, size: sourceSize ?? CGSize(width: seed.width, height: seed.height))
         let output = Output(), clock = Clock()
         let chainDefinition = try CaptureChainDefinition(name: "Owned source-cap image route", source: .region, outputs: [.copy])
         let textDefinition = try TextScriptDefinition(name: "Owned source-cap text route", source: "return text;")
@@ -850,6 +1130,24 @@ final class LiveScrollSessionInteractionTests: XCTestCase {
             XCTAssertTrue(try menuItem(session, suffix).isEnabled, suffix)
         }
         XCTAssertEqual(try menuItem(session, "textScript").isEnabled, textAllowed)
+    }
+
+    private static func assertUnsupportedCaptureControls(_ session: LiveScrollSessionController,
+                                                         width: Int, height: Int) throws {
+        let state = session.snapshotForVerification, toolbar = try toolbar(session)
+        XCTAssertTrue(state.paused); XCTAssertFalse(state.busy)
+        XCTAssertFalse(state.previewPositionVerified); XCTAssertFalse(state.autoScrolling)
+        XCTAssertFalse(state.canPause); XCTAssertFalse(state.canMoveRegion); XCTAssertFalse(state.canAutoScroll)
+        XCTAssertFalse(toolbar.pauseButton.isEnabled); XCTAssertFalse(toolbar.autoButton.isEnabled)
+        XCTAssertFalse(try menuItem(session, "moveRegion").isEnabled)
+        XCTAssertFalse(try thumbnail(session).isPositionVerified)
+        XCTAssertEqual(try thumbnail(session).viewportMarkerColor, .systemOrange)
+        XCTAssertEqual(state.axis, .vertical)
+        XCTAssertTrue(state.statusDetail.contains("\(width)×\(height)"))
+        XCTAssertTrue(state.statusDetail.contains("纵向至少需要24×48像素"))
+        XCTAssertTrue(state.statusDetail.contains("重选"))
+        XCTAssertEqual(toolbar.statusLabel.accessibilityHelp(), state.statusDetail)
+        XCTAssertTrue(toolbar.statusLabel.toolTip?.contains(state.statusDetail) == true)
     }
 
     private static func assertUnconfirmedTeardownControls(_ session: LiveScrollSessionController,
@@ -1042,8 +1340,9 @@ final class LiveScrollSessionInteractionTests: XCTestCase {
     /// Same absolute-coordinate texture as the proven assembler source-limit
     /// fixture; expected output is generated independently of strip assembly.
     private static func sourceLimitImage(origin: Int, length: Int = 200,
-                                         axis: ScrollAxis = .vertical, salt: UInt64 = 7) throws -> CGImage {
-        let width = axis == .vertical ? 24 : length, height = axis == .vertical ? length : 24
+                                         axis: ScrollAxis = .vertical, crossLength: Int = 24,
+                                         salt: UInt64 = 7) throws -> CGImage {
+        let width = axis == .vertical ? crossLength : length, height = axis == .vertical ? length : crossLength
         var data = [UInt8](repeating: 255, count: width * height * 4)
         for y in 0..<height { for x in 0..<width {
             var value = UInt64((axis == .vertical ? y : x) + origin + 10_000) &* 0x9e3779b185ebca87

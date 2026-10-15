@@ -276,6 +276,27 @@ final class LiveScrollSessionController {
 
     private var sourceTeardownUnconfirmed: Bool { source?.hasUnconfirmedTeardown == true }
 
+    // These are the captured raster dimensions, not screen points or an assumed
+    // Retina scale. A seed may be useful horizontally but impossible vertically.
+    private var captureGeometryUnsupported: Bool {
+        lastState.width > 0 && lastState.acceptedObservations <= 1 &&
+            !LiveScrollMatcher.supportsCapture(width: lastState.width, height: lastState.height, axis: axis)
+    }
+
+    private var captureGeometryGuidance: String {
+        let other: ScrollAxis = axis == .vertical ? .horizontal : .vertical
+        if LiveScrollMatcher.supportsCapture(width: lastState.width, height: lastState.height, axis: other) {
+            return other == .horizontal ? "请切横向或重选" : "请切纵向或重选"
+        }
+        return "选区过小，请重选"
+    }
+
+    private func captureGeometryDetail(for requestedAxis: ScrollAxis) -> String {
+        let requirement = requestedAxis == .vertical ? "纵向至少需要24×48像素" : "横向至少需要48×24像素"
+        return "当前选区为\(lastState.width)×\(lastState.height)实际像素，\(requirement)。" +
+            "原图和当前方向保留；请选择适合的方向，或关闭后重选更大选区。不会自动缩放或重开Auto。"
+    }
+
     /// Failed sources have already fenced off producer delivery, but cannot be
     /// restarted. Keep the short action visible and the original reason in help.
     private func setCaptureStatus(_ text: String, kind: LiveScrollCaptureSnapshot.StatusKind) {
@@ -286,7 +307,7 @@ final class LiveScrollSessionController {
     }
 
     private func startSampling() {
-        guard sampling == nil, !retired, !paused, !finishing, !captureLimitReached, !sourceTeardownUnconfirmed,
+        guard sampling == nil, !retired, !paused, !finishing, !captureLimitReached, !sourceTeardownUnconfirmed, !captureGeometryUnsupported,
               regionDrag == nil, let source, let assembler else { return }
         let token = generation
         sampling = Task { [weak self] in
@@ -328,6 +349,19 @@ final class LiveScrollSessionController {
                     self.snapshot.previewPositionVerified = update.state.matched && !update.state.previewUnavailable
                         && !self.paused && self.regionDrag == nil
                     if let image = update.preview { self.controls?.updatePreview(image: image, viewportFraction: update.viewport) }
+                    if self.captureGeometryUnsupported {
+                        // Retain one exact seed for output or an explicit valid-axis
+                        // switch, but never schedule Auto or keep sampling a region
+                        // that cannot satisfy the unchanged matcher geometry.
+                        self.paused = true; self.clearAutomaticState(); self.pauseCaptureClock()
+                        self.snapshot.previewPositionVerified = false
+                        self.setCaptureStatus(self.captureGeometryGuidance, kind: .warning)
+                        try await source.pauseAndDrain()
+                        try Task.checkCancellation()
+                        guard self.generation == token, !self.retired else { break }
+                        self.setCaptureStatus(self.captureGeometryGuidance, kind: .warning)
+                        break
+                    }
                     self.observeAutomaticProgress(frame: frame, previousOffset: previousOffset)
                     self.setCaptureStatus(self.automaticStopMessage ?? update.state.message,
                         kind: self.automaticStopMessage != nil ? .warning :
@@ -367,15 +401,16 @@ final class LiveScrollSessionController {
         snapshot.statusDetail = sourceUnavailable
             ? "采集停止未确认，不能继续采集、移动或识别文字。" +
                 (lastState.width > 0 ? "已接好的长图仍保留；输出时会等待当前拼接完成。" : "尚无可输出的长图，请关闭本次捕获。") +
-                (sourceTeardownDetail.map { "\n" + $0 } ?? "") : ""
+                (sourceTeardownDetail.map { "\n" + $0 } ?? "") :
+            (captureGeometryUnsupported ? captureGeometryDetail(for: axis) : "")
         snapshot.status = deliveryWarning ?? text; snapshot.statusKind = deliveryWarning == nil ? kind : .warning
         snapshot.paused = paused; snapshot.busy = finishing || transition != nil || regionDrag != nil || chainChoiceID != nil || textChoiceID != nil || textAttemptID != nil
-        snapshot.canPause = !deliveryCompleted && !finishing && !captureLimitReached && !sourceUnavailable && transition == nil && regionDrag == nil && source != nil
-        snapshot.canMoveRegion = !deliveryCompleted && !finishing && !captureLimitReached && !sourceUnavailable && transition == nil && regionDrag == nil && source != nil
+        snapshot.canPause = !deliveryCompleted && !finishing && !captureLimitReached && !sourceUnavailable && !captureGeometryUnsupported && transition == nil && regionDrag == nil && source != nil
+        snapshot.canMoveRegion = !deliveryCompleted && !finishing && !captureLimitReached && !sourceUnavailable && !captureGeometryUnsupported && transition == nil && regionDrag == nil && source != nil
         snapshot.canImport = !deliveryCompleted && lastState.width == 0 && !finishing
         let outputReady = !deliveryCompleted && !finishing && transition == nil && regionDrag == nil && lastState.width > 0
         snapshot.canFinish = outputReady; snapshot.canCopy = outputReady
-        snapshot.canChangeAxis = !captureLimitReached && !sourceUnavailable && lastState.acceptedObservations <= 1
+        snapshot.canChangeAxis = !captureLimitReached && !sourceUnavailable && lastState.width > 0 && lastState.acceptedObservations <= 1
         snapshot.canQuickSave = outputReady && saveDestination != nil
         snapshot.canPin = outputReady && onPin != nil && Self.canPin(width: lastState.width, height: lastState.height)
         snapshot.pinUnavailableReason = lastState.width == 0 || Self.canPin(width: lastState.width, height: lastState.height) ? "" : "贴图最多支持 3200 万像素；可完成并编辑或快速保存原尺寸长图"
@@ -383,10 +418,10 @@ final class LiveScrollSessionController {
         let automaticAllowed = automaticScrollPermission()
         let currentVerified = snapshot.previewPositionVerified && lastAutomaticObservation != nil
             && source?.automaticScrollWatermark != nil
-        snapshot.canAutoScroll = !deliveryCompleted && !finishing && !captureLimitReached && !sourceUnavailable && !paused
+        snapshot.canAutoScroll = !deliveryCompleted && !finishing && !captureLimitReached && !sourceUnavailable && !captureGeometryUnsupported && !paused
             && transition == nil && regionDrag == nil && source != nil && automaticAllowed
             && (automatic || currentVerified)
-        snapshot.autoScrollUnavailableReason = sourceUnavailable ? "采集停止未确认，请完成已有长图" : captureLimitReached ? "本次捕获已达上限，可完成已有长图" :
+        snapshot.autoScrollUnavailableReason = sourceUnavailable ? "采集停止未确认，请完成已有长图" : captureGeometryUnsupported ? captureGeometryGuidance : captureLimitReached ? "本次捕获已达上限，可完成已有长图" :
             (!automaticAllowed ? "自动滚动需要辅助功能权限" :
                 (paused ? "继续捕获并验证当前位置后可自动滚动" : "等待选区画面接上后可自动滚动"))
         if captureLimitReached { snapshot.canChangeAxis = false }
@@ -397,7 +432,7 @@ final class LiveScrollSessionController {
         snapshot.canApplyImageChain = chainReady && chainTransaction == nil
         snapshot.canContinueImageChain = chainReady && chainTransaction != nil
         snapshot.canReplaceImageChain = snapshot.canContinueImageChain
-        snapshot.canAbandonImageChain = snapshot.canContinueImageChain && !captureLimitReached
+        snapshot.canAbandonImageChain = snapshot.canContinueImageChain && !captureLimitReached && !captureGeometryUnsupported
         snapshot.chainTransactionID = chainTransaction?.transactionID
         snapshot.chainContinueTitle = chainTransaction.map {
             "继续「\($0.definition.name)」（\($0.receipts.count)/\($0.definition.outputs.count) 已完成）"
@@ -415,7 +450,7 @@ final class LiveScrollSessionController {
     }
 
     private func togglePause() {
-        guard chainTransaction == nil, chainChoiceID == nil, textChoiceID == nil, textAttemptID == nil, transition == nil, regionDrag == nil, !finishing, !retired, !deliveryCompleted, !captureLimitReached, !sourceTeardownUnconfirmed, let source else { return }
+        guard chainTransaction == nil, chainChoiceID == nil, textChoiceID == nil, textAttemptID == nil, transition == nil, regionDrag == nil, !finishing, !retired, !deliveryCompleted, !captureLimitReached, !sourceTeardownUnconfirmed, !captureGeometryUnsupported, let source else { return }
         if paused && updateCaptureLimit() {
             setStatus("已达到本次捕获上限，可完成保存已有长图", kind: .paused); return
         }
@@ -823,7 +858,7 @@ final class LiveScrollSessionController {
 
     private func confirmAbandonImageChain(transactionID: UUID) {
         guard canCommandImageChain, let transaction = chainTransaction, transaction.transactionID == transactionID,
-              let parent = controls?.toolbarWindow, !captureLimitReached else { return }
+              let parent = controls?.toolbarWindow, !captureLimitReached, !captureGeometryUnsupported else { return }
         let token = generation, choice = UUID()
         let alert = LiveScrollChainChoiceController(title: "放弃未完成操作并继续采集？",
             informativeText: transaction.committedDescription,
@@ -843,7 +878,7 @@ final class LiveScrollSessionController {
     /// The warning's explicit action is the only product caller. Release the
     /// checkpoint before toggling acquisition; the next Finish is a new revision.
     @discardableResult func abandonImageChain(transactionID: UUID) -> Bool {
-        guard canCommandImageChain, !captureLimitReached,
+        guard canCommandImageChain, !captureLimitReached, !captureGeometryUnsupported,
               chainTransaction?.transactionID == transactionID else { return false }
         chainTransaction = nil; chainTeardownWarning = nil
         setStatus("已放弃未完成操作；已完成的外部结果仍保留", kind: .paused)
@@ -964,7 +999,7 @@ final class LiveScrollSessionController {
     }
 
     private func toggleAutomatic() {
-        guard chainTransaction == nil, chainChoiceID == nil, textChoiceID == nil, textAttemptID == nil, !deliveryCompleted, !finishing, !paused, !captureLimitReached, !sourceTeardownUnconfirmed,
+        guard chainTransaction == nil, chainChoiceID == nil, textChoiceID == nil, textAttemptID == nil, !deliveryCompleted, !finishing, !paused, !captureLimitReached, !sourceTeardownUnconfirmed, !captureGeometryUnsupported,
               transition == nil, regionDrag == nil, !retired, let source else { return }
         if automatic {
             stopAutomatic("已停止自动滚动，可继续手动滚动")
@@ -1094,7 +1129,7 @@ final class LiveScrollSessionController {
     /// an early mouse-up waits for that boundary before applying a new region.
     private func beginRegionDrag(id: UUID) -> Bool {
         guard chainTransaction == nil, chainChoiceID == nil, textChoiceID == nil, textAttemptID == nil, transition == nil, regionDrag == nil, !finishing, !retired,
-              !deliveryCompleted, !captureLimitReached, !sourceTeardownUnconfirmed, let source, screen != nil else { return false }
+              !deliveryCompleted, !captureLimitReached, !sourceTeardownUnconfirmed, !captureGeometryUnsupported, let source, screen != nil else { return false }
         let drag = RegionDrag(id: id, generation: generation, wasPaused: paused,
                               originalRegion: source.region)
         regionDrag = drag
@@ -1201,7 +1236,7 @@ final class LiveScrollSessionController {
 
     private func moveRegion() {
         guard chainTransaction == nil, chainChoiceID == nil, textChoiceID == nil, textAttemptID == nil, transition == nil, regionDrag == nil, !finishing, !retired, !deliveryCompleted,
-              !captureLimitReached, !sourceTeardownUnconfirmed, let source, let screen else { return }
+              !captureLimitReached, !sourceTeardownUnconfirmed, !captureGeometryUnsupported, let source, let screen else { return }
         let wasPaused = paused
         let token = generation
         paused = true; clearAutomaticState()
@@ -1258,8 +1293,18 @@ final class LiveScrollSessionController {
 
     private func changeAxis(_ next: ScrollAxis) {
         guard chainTransaction == nil, chainChoiceID == nil, textChoiceID == nil, textAttemptID == nil, !retired, !deliveryCompleted, !captureLimitReached, !sourceTeardownUnconfirmed, regionDrag == nil, next != axis,
-              lastState.acceptedObservations <= 1, transition == nil, !finishing,
+              lastState.width > 0, lastState.acceptedObservations <= 1, transition == nil, !finishing,
               let source, let original = assembler else { return }
+        // Reject an impossible direction before draining, replacing the seed or
+        // changing the user's current pause state. No resize or recapture occurs.
+        if lastState.width > 0,
+           !LiveScrollMatcher.supportsCapture(width: lastState.width, height: lastState.height, axis: next) {
+            clearAutomaticState()
+            setStatus("方向未改，选区过小", kind: .warning)
+            snapshot.statusDetail = captureGeometryDetail(for: next)
+            controls?.update(snapshot: snapshot)
+            return
+        }
         let token = generation
         let wasPaused = paused
         paused = true; clearAutomaticState()
@@ -1276,6 +1321,11 @@ final class LiveScrollSessionController {
                 guard let first = await original.initialImageForAxisChange() else { throw CaptureError.busy }
                 try Task.checkCancellation()
                 guard !self.retired, self.generation == token else { return }
+                // The actual retained seed is authoritative after drainage too.
+                // Never replace or resume an assembler with an impossible axis.
+                guard LiveScrollMatcher.supportsCapture(width: first.width, height: first.height, axis: next) else {
+                    throw CaptureError.invalidRegion
+                }
                 let fresh = LiveScrollAssembler(axis: next, generation: self.generation, storageParent: self.resourceStorageParent); replacement = fresh
                 let seed = try await fresh.observe(first)
                 try Task.checkCancellation()

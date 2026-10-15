@@ -393,8 +393,8 @@ final class LiveScrollTextAppIntegrationTests: XCTestCase {
             try await session.startForVerification(source: source, screen: screen)
             try await SaveWorkflowUIPreviewFixture.until({ source.waiting }, "Owned source did not request its initial frame")
             try autoreleasepool {
-                let image = try counter.map { try CaptureTestProviderCounter.image(width: 8, height: 8, counter: $0) }
-                    ?? SaveWorkflowUIPreviewFixture.sourceImage(width: 8, height: 8)
+                let image = try counter.map { try CaptureTestProviderCounter.image(width: 24, height: 48, counter: $0) }
+                    ?? SaveWorkflowUIPreviewFixture.sourceImage(width: 24, height: 48)
                 source.offer(image)
             }
             try await SaveWorkflowUIPreviewFixture.until({ session.snapshotForVerification.canApplyTextScript && source.waiting },

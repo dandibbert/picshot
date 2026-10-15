@@ -818,7 +818,7 @@ class WorkflowSelectionTests(unittest.TestCase):
             self.assertIn("PlistBuddy -c 'Print :" + field + "' \"$PWD/dist/PicShot.app/Contents/Info.plist\"", native)
         self.assertIn('python3 scripts/check-live-scroll-chain-demo.py --report dist/live-scroll-demo/saved-image-chain/live-scroll-chain.json --source "$GITHUB_SHA"', native)
 
-    def test_current_2500_inventory_preserves_all_2493_2487_and_original_2047_ids(self):
+    def test_current_2513_inventory_preserves_all_2500_2493_2487_and_original_2047_ids(self):
         # Same portable source sentinel as native-test-shards; actual discovery
         # and all current native IDs still execute in the unchanged workflow.
         inventory=[]
@@ -833,6 +833,44 @@ class WorkflowSelectionTests(unittest.TestCase):
             inventory.extend(module+'.'+classes[0]+'/'+method for method in methods)
         inventory=sorted(inventory)
         current_inventory=inventory
+        geometry_added=C.scroll_geometry_additions(inventory)
+        geometry_manifest=json.loads((REPO/'scripts/scroll-geometry-additive-tests.json').read_text())
+        self.assertEqual(geometry_manifest,sorted(geometry_added))
+        self.assertEqual(len(geometry_added),13)
+        self.assertEqual({name.split('/')[0]:sum(other.split('/')[0]==name.split('/')[0] for other in geometry_added)
+            for name in geometry_added},{'PicShotCoreTests.LiveScrollMatcherTests':3,
+                                        'PicShotTests.LiveScrollAssemblerTransactionTests':4,
+                                        'PicShotTests.LiveScrollScreenSourceTests':2,
+                                        'PicShotTests.LiveScrollSessionInteractionTests':4})
+        preserved289=[name for name in inventory if name not in geometry_added]
+        self.assertEqual((len(preserved289),len({name.split('/')[0] for name in preserved289}),
+            hashlib.sha256(('\n'.join(preserved289)+'\n').encode()).hexdigest()),C.PRESERVED289_NATIVE_INVENTORY)
+        self.assertEqual(inventory,sorted(preserved289+geometry_manifest))
+        baselines=[next(name for name in preserved289 if name.split('/')[0]==cls)
+                   for cls in sorted({name.split('/')[0] for name in geometry_added})]
+        mutations=[('stale289',preserved289),('unsorted',list(reversed(inventory)))]
+        for method in geometry_manifest+baselines:
+            wrong_module=('PicShotTests.' if method.startswith('PicShotCoreTests.') else 'PicShotCoreTests.')+method.split('.',1)[1]
+            wrong_class=method.split('/')[0]+'Unrecorded/'+method.split('/')[1]
+            mutations.extend([
+                ('missing '+method,[name for name in inventory if name!=method]),
+                ('renamed '+method,sorted(name+'Renamed' if name==method else name for name in inventory)),
+                ('wrong module '+method,sorted(wrong_module if name==method else name for name in inventory)),
+                ('wrong class '+method,sorted(wrong_class if name==method else name for name in inventory)),
+                ('matched count '+method,sorted([name for name in inventory if name!=method]+[method+'Replacement'])),
+                ('extra '+method,sorted(inventory+[method+'Unexpected'])),
+                ('duplicate '+method,sorted(inventory+[method])),
+            ])
+        for label,changed in mutations:
+            for guard in (C.scroll_geometry_additions,C.scroll_source_recovery_additions,C.scroll_capture_state_additions,C.scroll_text_script_additions,C.text_script_additions):
+                with self.subTest(geometry=label,guard=guard.__name__),self.assertRaises(ValueError):
+                    guard(changed)
+        for bad in ({},geometry_manifest[:-1],geometry_manifest+[geometry_manifest[-1]],list(reversed(geometry_manifest)),
+                    [name+'Renamed' if name==geometry_manifest[0] else name for name in geometry_manifest],
+                    sorted(name.replace('PicShotCoreTests.','PicShotTests.',1) for name in geometry_manifest),
+                    sorted(geometry_manifest[:-1]+[geometry_manifest[-1]+'Replacement'])):
+            with patch.object(C,'read',return_value=json.dumps(bad).encode()),self.assertRaises(ValueError):
+                C.scroll_geometry_manifest()
         source_added=C.scroll_source_recovery_additions(inventory)
         source_manifest=json.loads((REPO/'scripts/scroll-source-recovery-additive-tests.json').read_text())
         self.assertEqual(source_manifest,sorted(source_added))
@@ -840,10 +878,10 @@ class WorkflowSelectionTests(unittest.TestCase):
         self.assertEqual({name.split('/')[0]:sum(other.split('/')[0]==name.split('/')[0] for other in source_added)
             for name in source_added},{'PicShotTests.LiveScrollFrameSourceTests':3,
                                      'PicShotTests.LiveScrollSessionInteractionTests':4})
-        preserved287=[name for name in inventory if name not in source_added]
+        preserved287=[name for name in preserved289 if name not in source_added]
         self.assertEqual((len(preserved287),len({name.split('/')[0] for name in preserved287}),
             hashlib.sha256(('\n'.join(preserved287)+'\n').encode()).hexdigest()),C.PRESERVED287_NATIVE_INVENTORY)
-        self.assertEqual(inventory,sorted(preserved287+source_manifest))
+        self.assertEqual(preserved289,sorted(preserved287+source_manifest))
         baseline=next(name for name in preserved287 if name.startswith('PicShotTests.LiveScrollFrameSourceTests/'))
         mutations=[('stale287',preserved287),('unsorted',list(reversed(inventory)))]
         for method in source_manifest+[baseline]:
@@ -924,10 +962,10 @@ class WorkflowSelectionTests(unittest.TestCase):
             for label,changed in mutations.items():
                 for guard in (C.scroll_text_script_additions,C.text_script_additions):
                     with self.subTest(bridge=method,mutation=label,guard=guard.__name__),self.assertRaises(ValueError):
-                        guard(sorted(changed+capture_manifest+source_manifest))
+                        guard(sorted(changed+capture_manifest+source_manifest+geometry_manifest))
         for changed in (preserved279,list(reversed(inventory))):
             with self.subTest(stale279_or_unsorted=True),self.assertRaises(ValueError):
-                C.scroll_text_script_additions(changed+capture_manifest+source_manifest)
+                C.scroll_text_script_additions(changed+capture_manifest+source_manifest+geometry_manifest)
         for bad in ({},bridge_manifest[:-1],bridge_manifest+[bridge_manifest[-1]],list(reversed(bridge_manifest)),
                     [name+'Renamed' if name==bridge_manifest[0] else name for name in bridge_manifest]):
             with patch.object(C,'read',return_value=json.dumps(bad).encode()),self.assertRaises(ValueError):
@@ -990,12 +1028,13 @@ class WorkflowSelectionTests(unittest.TestCase):
                          '0f19081756c225e5b0fede62805ee01693d1409bf6552979ac74db409e3e4aab')
         live=json.loads((REPO/'scripts/live-scroll-additive-tests.json').read_text())
         self.assertEqual(live,[name for name in current_inventory if '.LiveScroll' in name])
-        self.assertEqual(len(live),237)
+        self.assertEqual(len(live),250)
         self.assertEqual(len(set(live)&bridge_added),29)
         self.assertTrue(guidance_added.issubset(live))
         self.assertTrue(capture_added.issubset(live))
         self.assertTrue(source_added.issubset(live))
-        live=[name for name in live if name not in scroll_added and name not in guidance_added and name not in bridge_added and name not in capture_added and name not in source_added]
+        self.assertTrue(geometry_added.issubset(live))
+        live=[name for name in live if name not in scroll_added and name not in guidance_added and name not in bridge_added and name not in capture_added and name not in source_added and name not in geometry_added]
         self.assertEqual(len(live),165);self.assertTrue(set(live).issubset(inventory))
         self.assertTrue(recovery.issubset(live))
         prior_live=[name for name in live if name not in recovery and name not in payload_added]

@@ -42,6 +42,44 @@ final class LiveScrollMatcherTests: XCTestCase {
         return try ScrollFrame(width: source.width, height: source.height, grayscale: pixels)
     }
 
+    func testCaptureSupportUsesExactAxisPixelMinima() {
+        XCTAssertTrue(LiveScrollMatcher.supportsCapture(width: 24, height: 48, axis: .vertical))
+        XCTAssertTrue(LiveScrollMatcher.supportsCapture(width: 48, height: 24, axis: .horizontal))
+        XCTAssertFalse(LiveScrollMatcher.supportsCapture(width: 23, height: 48, axis: .vertical))
+        XCTAssertFalse(LiveScrollMatcher.supportsCapture(width: 24, height: 47, axis: .vertical))
+        XCTAssertFalse(LiveScrollMatcher.supportsCapture(width: 47, height: 24, axis: .horizontal))
+        XCTAssertFalse(LiveScrollMatcher.supportsCapture(width: 48, height: 23, axis: .horizontal))
+        XCTAssertFalse(LiveScrollMatcher.supportsCapture(width: 1_600, height: 32, axis: .vertical))
+        XCTAssertTrue(LiveScrollMatcher.supportsCapture(width: 1_600, height: 32, axis: .horizontal))
+    }
+
+    func testCaptureSupportRejectsNonpositiveDimensionsWithoutArithmeticOverflow() {
+        for axis in ScrollAxis.allCases {
+            for invalid in [Int.min, -1, 0] {
+                XCTAssertFalse(LiveScrollMatcher.supportsCapture(width: invalid, height: 48, axis: axis))
+                XCTAssertFalse(LiveScrollMatcher.supportsCapture(width: 48, height: invalid, axis: axis))
+                XCTAssertFalse(LiveScrollMatcher.supportsCapture(width: invalid, height: invalid, axis: axis))
+            }
+            XCTAssertTrue(LiveScrollMatcher.supportsCapture(width: Int.max, height: Int.max, axis: axis))
+        }
+    }
+
+    func testMatcherEnforcesPixelMinimaBeforeIdenticalFrameFastPath() throws {
+        for axis in ScrollAxis.allCases {
+            let minimum = try frame(axis, length: 48, cross: 24)
+            let result = try LiveScrollMatcher.match(previous: minimum, next: minimum, axis: axis)
+            XCTAssertTrue(result.isStationary)
+            XCTAssertEqual(result.contentBounds.rect, LiveScrollPixelRect(x: 0, y: 0,
+                width: minimum.width, height: minimum.height))
+            for (length, cross) in [(47, 24), (48, 23)] {
+                let tooSmall = try frame(axis, length: length, cross: cross)
+                XCTAssertThrowsError(try LiveScrollMatcher.match(previous: tooSmall, next: tooSmall, axis: axis)) {
+                    XCTAssertEqual($0 as? ScrollStitchError, .insufficientTexture)
+                }
+            }
+        }
+    }
+
     func testSignedMotionAndSinglePixelPrecisionOnBothAxes() throws {
         for axis in ScrollAxis.allCases {
             for displacement in [-49, -1, 1, 49] {

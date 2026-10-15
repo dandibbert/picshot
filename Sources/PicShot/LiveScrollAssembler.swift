@@ -39,6 +39,7 @@ actor LiveScrollAssembler {
     private var state = State()
     private var cancelled = false
     private let commitDistance = 96
+    private static let unsupportedCaptureMessage = "捕获区域太小，请换方向或重选；当前截图可完成"
     private var committedLower = 0
     private var committedUpper = 0
     enum PreviewFailureForTesting { case unavailable, cancelled }
@@ -58,12 +59,26 @@ actor LiveScrollAssembler {
         guard let previous = anchorGray, let previousImage = anchorImage else {
             firstImage = image; anchorImage = image; anchorGray = gray
             state.width = image.width; state.height = image.height
-            state.acceptedObservations = 1; state.matched = true
+            state.acceptedObservations = 1
+            state.matched = LiveScrollMatcher.supportsCapture(width: image.width, height: image.height, axis: axis)
+            if !state.matched { state.message = Self.unsupportedCaptureMessage }
             do {
                 try injectPreviewFailureForTesting()
                 return Update(state: state, preview: try Self.thumbnail(image), viewport: CGRect(x: 0, y: 0, width: 1, height: 1))
             } catch is CancellationError { throw CancellationError() }
-            catch { return previewUnavailableUpdate() }
+            catch {
+                // The original image is still finishable and available for an
+                // explicit axis change, but unsupported geometry is not verified.
+                guard state.matched else {
+                    state.previewUnavailable = true
+                    return Update(state: state, preview: nil, viewport: .zero)
+                }
+                return previewUnavailableUpdate()
+            }
+        }
+        guard LiveScrollMatcher.supportsCapture(width: previous.width, height: previous.height, axis: axis) else {
+            state.matched = false; state.message = Self.unsupportedCaptureMessage
+            return Update(state: state, preview: nil, viewport: .zero)
         }
         let match: LiveScrollMatch
         do {

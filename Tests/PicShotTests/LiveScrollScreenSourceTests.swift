@@ -251,6 +251,53 @@ final class LiveScrollScreenSourceTests: XCTestCase {
             pointPixelScale: 1, expectedPixelSize: geometry.pixelSize))
     }
 
+    func testMatcherMinimumUsesActualCaptureGeometryAtOneAndTwoPixelScales() throws {
+        // The same logical selection can be unsupported at 1x and supported at
+        // 2x. Neither the selector's points nor the machine's Retina scale is
+        // evidence that the returned capture is large enough for matching.
+        for scale: CGFloat in [1, 2, 1.5] {
+            let geometry = try LiveScrollScreenSource.captureGeometry(
+                region: CGRect(x: 20, y: 30, width: 24, height: 24),
+                screenSize: CGSize(width: 800, height: 600),
+                contentRect: CGRect(x: -800, y: -100, width: 800, height: 600),
+                pointPixelScale: scale, expectedPixelSize: nil)
+            let side = Int(24 * scale)
+            XCTAssertEqual(geometry.pixelSize, CGSize(width: side, height: side))
+            let configuration = LiveScrollScreenSource.configuration(region: geometry.region, pixelSize: geometry.pixelSize)
+            XCTAssertEqual(configuration.width, side); XCTAssertEqual(configuration.height, side)
+            for axis in [ScrollAxis.vertical, .horizontal] {
+                XCTAssertEqual(LiveScrollMatcher.supportsCapture(width: configuration.width,
+                    height: configuration.height, axis: axis), scale == 2, "\(scale)x \(axis)")
+            }
+        }
+    }
+
+    func testMatcherExactAndOnePixelShortBoundariesUseRoundedCapturePixelsAtEveryScale() throws {
+        let dimensions: [(width: Int, height: Int, axis: ScrollAxis, supported: Bool)] = [
+            (24, 48, .vertical, true), (23, 48, .vertical, false), (24, 47, .vertical, false),
+            (48, 24, .horizontal, true), (47, 24, .horizontal, false), (48, 23, .horizontal, false)
+        ]
+        for scale: CGFloat in [1, 2, 1.5] {
+            for item in dimensions {
+                // At 1.5x a 15-point edge rounds outward to 23 actual pixels;
+                // use that real geometry result, without rounding up to a
+                // matching minimum or expanding the user's selection.
+                let logicalWidth = scale == 1.5 && item.width == 23 ? 15 : CGFloat(item.width) / scale
+                let logicalHeight = scale == 1.5 && item.height == 23 ? 15 : CGFloat(item.height) / scale
+                let geometry = try LiveScrollScreenSource.captureGeometry(
+                    region: CGRect(x: 0, y: 0, width: logicalWidth, height: logicalHeight),
+                    screenSize: CGSize(width: 800, height: 600),
+                    contentRect: CGRect(x: 0, y: 0, width: 800, height: 600),
+                    pointPixelScale: scale, expectedPixelSize: nil)
+                XCTAssertEqual(geometry.pixelSize, CGSize(width: item.width, height: item.height), "\(scale)x \(item)")
+                let configuration = LiveScrollScreenSource.configuration(region: geometry.region, pixelSize: geometry.pixelSize)
+                XCTAssertEqual(configuration.width, item.width); XCTAssertEqual(configuration.height, item.height)
+                XCTAssertEqual(LiveScrollMatcher.supportsCapture(width: configuration.width,
+                    height: configuration.height, axis: item.axis), item.supported, "\(scale)x \(item)")
+            }
+        }
+    }
+
     func testOwnedImageSurvivesPixelBufferReuseAndReleaseWithoutColorOrRowFlip() throws {
         var buffer: CVPixelBuffer?
         XCTAssertEqual(CVPixelBufferCreate(kCFAllocatorDefault, 16, 16, kCVPixelFormatType_32BGRA,

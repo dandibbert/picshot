@@ -316,14 +316,14 @@ final class LiveScrollChainSessionTests: XCTestCase {
             XCTAssertTrue(f.session.startImageChain(definition: f.bridge.definitions[0]))
             try await self.until { f.bridge.savePending }
             let runner = try XCTUnwrap(f.bridge.activeRunner)
-            XCTAssertEqual(counter.liveBytes, 8 * 8 * 4)
-            XCTAssertEqual(f.session.retainedChainCapture?.retainedBytes, 8 * 8 * 4)
-            XCTAssertEqual(runner.retainedBytes, 8 * 8 * 4)
+            XCTAssertEqual(counter.liveBytes, 24 * 48 * 4)
+            XCTAssertEqual(f.session.retainedChainCapture?.retainedBytes, 24 * 48 * 4)
+            XCTAssertEqual(runner.retainedBytes, 24 * 48 * 4)
             XCTAssertTrue(runner.capture?.image === f.session.retainedChainCapture?.image)
             f.session.cancel(); _ = runner.cancel(); f.session.cancel()
             XCTAssertFalse(f.session.isClosedForVerification); XCTAssertEqual(f.closes, 0)
             XCTAssertEqual(f.bridge.saveCancels, 1)
-            XCTAssertEqual(counter.liveBytes, 8 * 8 * 4); XCTAssertEqual(counter.deallocations, 0)
+            XCTAssertEqual(counter.liveBytes, 24 * 48 * 4); XCTAssertEqual(counter.deallocations, 0)
             XCTAssertFalse(f.session.startImageChain(definition: f.bridge.definitions[0]))
             f.bridge.completeSave(.cancelled)
             try await self.until { f.session.isClosedForVerification && counter.liveBytes == 0 }
@@ -447,8 +447,8 @@ final class LiveScrollChainSessionTests: XCTestCase {
             try await f.session.startForVerification(source: f.source, screen: screen)
             try await until { f.source.waiting }
             try autoreleasepool {
-                let image = try initialImage?() ?? providerCounter.map { try CaptureTestProviderCounter.image(width: 8, height: 8, counter: $0) }
-                    ?? SaveWorkflowUIPreviewFixture.sourceImage(width: 8, height: 8)
+                let image = try initialImage?() ?? providerCounter.map { try CaptureTestProviderCounter.image(width: 24, height: 48, counter: $0) }
+                    ?? SaveWorkflowUIPreviewFixture.sourceImage(width: 24, height: 48)
                 if image.width * image.height <= 1_024 * 1_024 {
                     f.expectedPixels = try SaveWorkflowUIPreviewFixture.pixels(image)
                 }

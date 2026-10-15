@@ -388,7 +388,7 @@ final class LiveScrollTextScriptSessionTests: XCTestCase {
         do {
             try await f.session.startForVerification(source: f.source, screen: screen)
             try await until { f.source.waiting }
-            try autoreleasepool { f.source.offer(try initial?() ?? SaveWorkflowUIPreviewFixture.sourceImage(width: 8, height: 8)) }
+            try autoreleasepool { f.source.offer(try initial?() ?? SaveWorkflowUIPreviewFixture.sourceImage(width: 24, height: 48)) }
             try await until { f.source.waiting && f.session.stateForVerification.width > 0 }
             try await body(f)
         } catch {

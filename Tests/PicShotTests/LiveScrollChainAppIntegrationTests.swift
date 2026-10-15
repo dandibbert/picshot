@@ -56,7 +56,7 @@ final class LiveScrollChainAppIntegrationTests: XCTestCase {
     }
 
     func testDirectEditorAdmissionIncludesCancelledCheckpointAtExactByteBoundary() async throws {
-        let incoming = try SaveWorkflowUIPreviewFixture.sourceImage(width: 8, height: 8)
+        let incoming = try SaveWorkflowUIPreviewFixture.sourceImage(width: 24, height: 48)
         let opening = EditorRasterEstimate.openingBytes(image: incoming, presentation: nil)
         let checkpointBytes = incoming.bytesPerRow * incoming.height
         for shortByOne in [true, false] {
@@ -144,7 +144,7 @@ final class LiveScrollChainAppIntegrationTests: XCTestCase {
             XCTAssertTrue(session.startImageChain(definition: f.definition))
             try await self.until { f.outputs.savePending }
             let bytes = f.app.retainedCaptureDraftBytesForVerification
-            XCTAssertEqual(bytes, 8 * 8 * 4)
+            XCTAssertEqual(bytes, 24 * 48 * 4)
             let manager = try XCTUnwrap(f.app.captureChainManagerForVerification)
             session.cancel()
             try self.press("close", in: manager)
@@ -222,8 +222,8 @@ final class LiveScrollChainAppIntegrationTests: XCTestCase {
             try await session.startForVerification(source: source, screen: screen)
             try await SaveWorkflowUIPreviewFixture.until({ source.waiting }, "Owned source did not request its initial frame")
             try autoreleasepool {
-                let image = try counter.map { try CaptureTestProviderCounter.image(width: 8, height: 8, counter: $0) }
-                    ?? SaveWorkflowUIPreviewFixture.sourceImage(width: 8, height: 8)
+                let image = try counter.map { try CaptureTestProviderCounter.image(width: 24, height: 48, counter: $0) }
+                    ?? SaveWorkflowUIPreviewFixture.sourceImage(width: 24, height: 48)
                 source.offer(image)
             }
             try await SaveWorkflowUIPreviewFixture.until({ session.snapshotForVerification.canApplyImageChain && source.waiting },

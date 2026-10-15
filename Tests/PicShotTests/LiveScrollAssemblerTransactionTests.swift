@@ -88,6 +88,127 @@ final class LiveScrollAssemblerTransactionTests: XCTestCase {
         return result
     }
 
+    func testMinimumPixelSeedRetainsExactInitialImageAndOutputBothAxes() async throws {
+        for axis in ScrollAxis.allCases {
+            let parent = try root()
+            defer { try? FileManager.default.removeItem(at: parent) }
+            let assembler = LiveScrollAssembler(axis: axis, generation: 55, storageParent: parent)
+            let seed = try image(axis, origin: 0, length: 48, cross: 24)
+            let update = try await assembler.observe(seed)
+            XCTAssertTrue(update.state.matched)
+            XCTAssertEqual(update.state.width, axis == .vertical ? 24 : 48)
+            XCTAssertEqual(update.state.height, axis == .vertical ? 48 : 24)
+            XCTAssertEqual(update.state.acceptedObservations, 1)
+            XCTAssertEqual(update.state.committedSources, 0)
+            let preview = try XCTUnwrap(update.preview)
+            XCTAssertEqual(preview.width, seed.width); XCTAssertEqual(preview.height, seed.height)
+            XCTAssertEqual(try pixels(preview), try pixels(seed))
+            let initial = await assembler.initialImageForAxisChange()
+            XCTAssertTrue(try XCTUnwrap(initial) === seed)
+            let output = try await assembler.finish()
+            XCTAssertTrue(output === seed)
+            XCTAssertEqual(try pixels(output), try pixels(seed))
+            let document = await assembler.documentSnapshotForResourceVerification()
+            XCTAssertNil(document); XCTAssertTrue(try spoolFiles(parent).isEmpty)
+            await assembler.close()
+        }
+    }
+
+    func testOnePixelShortSeedIsNeverMatchedAndKeepsEveryOutputPixelBothAxes() async throws {
+        for axis in ScrollAxis.allCases { for (length, cross) in [(47, 24), (48, 23)] {
+            let parent = try root()
+            defer { try? FileManager.default.removeItem(at: parent) }
+            let assembler = LiveScrollAssembler(axis: axis, generation: 56, storageParent: parent)
+            let seed = try image(axis, origin: 0, length: length, cross: cross)
+            let update = try await assembler.observe(seed)
+            XCTAssertFalse(update.state.matched)
+            XCTAssertEqual(update.state.message, "捕获区域太小，请换方向或重选；当前截图可完成")
+            XCTAssertEqual(update.state.width, seed.width); XCTAssertEqual(update.state.height, seed.height)
+            XCTAssertEqual(update.state.acceptedObservations, 1)
+            XCTAssertEqual(update.state.committedSources, 0)
+            XCTAssertEqual(update.viewport, CGRect(x: 0, y: 0, width: 1, height: 1))
+            let preview = try XCTUnwrap(update.preview)
+            XCTAssertEqual(preview.width, seed.width); XCTAssertEqual(preview.height, seed.height)
+            XCTAssertEqual(try pixels(preview), try pixels(seed))
+            for _ in 0..<3 {
+                let repeated = try await assembler.observe(seed)
+                XCTAssertFalse(repeated.state.matched); XCTAssertNil(repeated.preview)
+                XCTAssertEqual(repeated.state.message, update.state.message)
+                assertAcceptedStateUnchanged(repeated.state, update.state)
+            }
+            let initial = await assembler.initialImageForAxisChange()
+            XCTAssertTrue(try XCTUnwrap(initial) === seed)
+            let output = try await assembler.finish()
+            XCTAssertTrue(output === seed)
+            XCTAssertEqual(output.width, seed.width); XCTAssertEqual(output.height, seed.height)
+            XCTAssertEqual(try pixels(output), try pixels(seed))
+            let document = await assembler.documentSnapshotForResourceVerification()
+            XCTAssertNil(document); XCTAssertTrue(try spoolFiles(parent).isEmpty)
+            await assembler.close()
+        } }
+    }
+
+    func testWideShortSeedCanSwitchAxisWithoutResizingOriginalOrOutput() async throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let vertical = LiveScrollAssembler(axis: .vertical, generation: 57, storageParent: parent)
+        let seed = try image(.horizontal, origin: 0, length: 1_600, cross: 32)
+        let rejected = try await vertical.observe(seed)
+        XCTAssertFalse(rejected.state.matched)
+        XCTAssertEqual(rejected.state.width, 1_600); XCTAssertEqual(rejected.state.height, 32)
+        let preview = try XCTUnwrap(rejected.preview)
+        XCTAssertEqual(preview.width, 800); XCTAssertEqual(preview.height, 16)
+        let original = await vertical.initialImageForAxisChange()
+        let retained = try XCTUnwrap(original)
+        XCTAssertTrue(retained === seed)
+        let verticalOutput = try await vertical.finish()
+        XCTAssertTrue(verticalOutput === seed)
+        XCTAssertEqual(try pixels(verticalOutput), try pixels(seed))
+
+        // An explicit axis change receives the original full-resolution seed;
+        // neither the old nor the new assembler replaces it with its thumbnail.
+        let horizontal = LiveScrollAssembler(axis: .horizontal, generation: 58, storageParent: parent)
+        let supported = try await horizontal.observe(retained)
+        XCTAssertTrue(supported.state.matched)
+        XCTAssertEqual(supported.state.width, 1_600); XCTAssertEqual(supported.state.height, 32)
+        let horizontalInitial = await horizontal.initialImageForAxisChange()
+        XCTAssertTrue(try XCTUnwrap(horizontalInitial) === seed)
+        let horizontalOutput = try await horizontal.finish()
+        XCTAssertTrue(horizontalOutput === seed)
+        XCTAssertEqual(horizontalOutput.width, 1_600); XCTAssertEqual(horizontalOutput.height, 32)
+        XCTAssertEqual(try pixels(horizontalOutput), try pixels(seed))
+        XCTAssertTrue(try spoolFiles(parent).isEmpty)
+        await vertical.close(); await horizontal.close()
+    }
+
+    func testUnsupportedSeedPreviewFailureKeepsGeometryAdviceAndExactOutput() async throws {
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let assembler = LiveScrollAssembler(axis: .vertical, generation: 59, storageParent: parent)
+        let seed = try image(.horizontal, origin: 0, length: 200, cross: 32)
+        await assembler.failNextPreviewForTesting()
+        let failed = try await assembler.observe(seed)
+        XCTAssertFalse(failed.state.matched); XCTAssertTrue(failed.state.previewUnavailable)
+        XCTAssertNil(failed.preview)
+        XCTAssertEqual(failed.state.message, "捕获区域太小，请换方向或重选；当前截图可完成")
+        for _ in 0..<3 {
+            let repeated = try await assembler.observe(seed)
+            XCTAssertFalse(repeated.state.matched); XCTAssertTrue(repeated.state.previewUnavailable)
+            XCTAssertNil(repeated.preview)
+            XCTAssertEqual(repeated.state.message, failed.state.message)
+            assertAcceptedStateUnchanged(repeated.state, failed.state)
+        }
+        let original = await assembler.initialImageForAxisChange()
+        XCTAssertTrue(try XCTUnwrap(original) === seed)
+        let output = try await assembler.finish()
+        XCTAssertTrue(output === seed)
+        XCTAssertEqual(output.width, seed.width); XCTAssertEqual(output.height, seed.height)
+        XCTAssertEqual(try pixels(output), try pixels(seed))
+        let document = await assembler.documentSnapshotForResourceVerification()
+        XCTAssertNil(document); XCTAssertTrue(try spoolFiles(parent).isEmpty)
+        await assembler.close()
+    }
+
     func testLostOverlapAdvicePreservesLastGoodPixelsAndAnchorBothAxes() async throws {
         for axis in ScrollAxis.allCases {
             let parent = try root()

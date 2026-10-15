@@ -257,7 +257,8 @@ class InstalledTextScriptQualificationTests(unittest.TestCase):
         scroll=list(C.SCROLL_CHAIN_ADDITIONS)
         capture_state=set(json.loads((ROOT/'scripts/scroll-capture-state-additive-tests.json').read_text()))
         source_recovery=set(json.loads((ROOT/'scripts/scroll-source-recovery-additive-tests.json').read_text()))
-        required=set(added)|set(bridge)|set(C.SCROLL_RECOVERY_ADDITIONS)|set(C.SCROLL_GUIDANCE_ADDITIONS)|set(scroll)|set(payload['focused'])|capture_state|source_recovery
+        geometry=set(json.loads((ROOT/'scripts/scroll-geometry-additive-tests.json').read_text()))
+        required=set(added)|set(bridge)|set(C.SCROLL_RECOVERY_ADDITIONS)|set(C.SCROLL_GUIDANCE_ADDITIONS)|set(scroll)|set(payload['focused'])|capture_state|source_recovery|geometry
         fake=sorted(required|{'PicShotTests.UnrelatedTests/test'+str(i)
                              for i in range(len(inventory)-len(required))})
         self.assertEqual(len(fake),C.CURRENT_NATIVE_INVENTORY[0])
@@ -266,22 +267,34 @@ class InstalledTextScriptQualificationTests(unittest.TestCase):
             self.assertEqual(C.text_script_additions(inventory),set(added))
             self.assertEqual(C.scroll_text_script_additions(inventory),set(bridge))
             self.assertEqual(C.scroll_source_recovery_additions(inventory),source_recovery)
+            self.assertEqual(C.scroll_geometry_additions(inventory),geometry)
+            for method in sorted(geometry):
+                wrong_module=('PicShotTests.' if method.startswith('PicShotCoreTests.') else 'PicShotCoreTests.')+method.split('.',1)[1]
+                for label,changed in (
+                        ('missing',[name for name in inventory if name != method]),
+                        ('renamed',sorted(name+'Renamed' if name == method else name for name in inventory)),
+                        ('wrong module',sorted(wrong_module if name == method else name for name in inventory)),
+                        ('matched count',sorted([name for name in inventory if name != method]+[method+'Replacement'])),
+                        ('duplicate',sorted(inventory+[method])),
+                        ('unknown',sorted(inventory+[method+'Unknown']))):
+                    with self.subTest(geometry=method,mutation=label),self.assertRaises(ValueError):
+                        C.text_script_additions(changed)
             for method in sorted(source_recovery):
                 for label,changed in (
                         ('missing',[name for name in inventory if name != method]),
                         ('renamed',sorted(name+'Renamed' if name == method else name for name in inventory)),
                         ('wrong module',sorted(name.replace('PicShotTests.', 'PicShotCoreTests.', 1) if name == method else name for name in inventory)),
                         ('matched count',sorted([name for name in inventory if name != method]+[method+'Replacement']))):
-                    with self.subTest(source_recovery=method,mutation=label),self.assertRaisesRegex(ValueError,'Explicit288 source-recovery methods missing or renamed'):
+                    with self.subTest(source_recovery=method,mutation=label),self.assertRaisesRegex(ValueError,'Preserved289 native IDs changed'):
                         C.text_script_additions(changed)
             for method in sorted(capture_state):
                 for label,changed in (
                         ('missing',[name for name in inventory if name != method]),
                         ('renamed',sorted(name+'Renamed' if name == method else name for name in inventory)),
                         ('wrong module',sorted(name.replace('PicShotTests.', 'PicShotCoreTests.', 1) if name == method else name for name in inventory))):
-                    with self.subTest(capture_state=method,mutation=label),self.assertRaisesRegex(ValueError,'Preserved287 native IDs changed'):
+                    with self.subTest(capture_state=method,mutation=label),self.assertRaisesRegex(ValueError,'Preserved289 native IDs changed'):
                         C.text_script_additions(changed)
-            with self.assertRaisesRegex(ValueError,'Preserved287 native IDs changed'):
+            with self.assertRaisesRegex(ValueError,'Preserved289 native IDs changed'):
                 C.text_script_additions(fake)
             for method in scroll:
                 renamed_class='PicShotTests.UnrecordedScrollChainTests/'+method.split('/')[1]
@@ -291,7 +304,7 @@ class InstalledTextScriptQualificationTests(unittest.TestCase):
                         ('new class',sorted(renamed_class if name == method else name for name in inventory))):
                     with self.subTest(method=method,mutation=label),self.assertRaisesRegex(ValueError,'Existing-image chain additions are missing or renamed'):
                         C.scroll_chain_additions(changed)
-                    with self.subTest(method=method,union=label),self.assertRaisesRegex(ValueError,'Preserved287 native IDs changed'):
+                    with self.subTest(method=method,union=label),self.assertRaisesRegex(ValueError,'Preserved289 native IDs changed'):
                         C.text_script_additions(changed)
             for cls in sorted({name.split('/')[0] for name in scroll}):
                 changed=sorted(inventory+[cls+'/testUnrecordedMethod'])
@@ -300,7 +313,7 @@ class InstalledTextScriptQualificationTests(unittest.TestCase):
             recovery=C.SCROLL_RECOVERY_ADDITIONS[0]
             for changed in ([name for name in inventory if name != recovery],
                             sorted(name+'Renamed' if name == recovery else name for name in inventory)):
-                with self.assertRaisesRegex(ValueError,'Preserved287 native IDs changed'):
+                with self.assertRaisesRegex(ValueError,'Preserved289 native IDs changed'):
                     C.text_script_additions(changed)
         for bad in (added[:-1],added+[added[0]],list(reversed(added)),
                     sorted(added[:-1]+['PicShotTests.TextScriptSyntheticTests/testForgedMethod'])):
@@ -315,6 +328,7 @@ class InstalledTextScriptQualificationTests(unittest.TestCase):
         added=json.loads((ROOT/'scripts/text-script-integration-tests.json').read_text())
         bridge=json.loads((ROOT/'scripts/scroll-text-script-additive-tests.json').read_text())
         excluded=set(added)|set(bridge)|set(C.SCROLL_RECOVERY_ADDITIONS)|set(C.SCROLL_CHAIN_ADDITIONS)|set(C.SCROLL_GUIDANCE_ADDITIONS)|set(json.loads((ROOT/'scripts/scroll-capture-state-additive-tests.json').read_text()))|set(json.loads((ROOT/'scripts/scroll-source-recovery-additive-tests.json').read_text()))
+        excluded |= set(json.loads((ROOT/'scripts/scroll-geometry-additive-tests.json').read_text()))
         baseline=next(name for name in inventory if name not in excluded and name.split('/')[0] not in C.SAVE_PAYLOAD_CLASSES)
         changed=sorted(name+'Renamed' if name == baseline else name for name in inventory)
         self.assertEqual(len(changed),len(inventory))
@@ -322,7 +336,7 @@ class InstalledTextScriptQualificationTests(unittest.TestCase):
         self.assertEqual({name.split('/')[0] for name in changed},{name.split('/')[0] for name in inventory})
         with patch.object(C,'read',side_effect=lambda path: (ROOT/path).read_bytes()):
             self.assertEqual(C.text_script_additions(inventory),set(added))
-            with self.assertRaisesRegex(ValueError,'Preserved287 native IDs changed'):
+            with self.assertRaisesRegex(ValueError,'Preserved289 native IDs changed'):
                 C.text_script_additions(changed)
 
 

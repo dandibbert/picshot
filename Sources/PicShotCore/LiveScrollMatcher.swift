@@ -87,6 +87,13 @@ public enum LiveScrollMatchError: Error, LocalizedError, Sendable, Equatable {
 /// Bounds are pairwise evidence: the caller must reject later incompatible bounds rather
 /// than silently changing previously committed strip geometry.
 public enum LiveScrollMatcher {
+    /// Pixel geometry only; supported dimensions do not establish overlap or texture.
+    public static func supportsCapture(width: Int, height: Int, axis: ScrollAxis) -> Bool {
+        let length = axis == .vertical ? height : width
+        let cross = axis == .vertical ? width : height
+        return length >= 48 && cross >= 24
+    }
+
     public struct Configuration: Sendable {
         public var minimumOverlapFraction: Double = 0.30
         /// Bounds work independently of potentially very tall/high-DPI captures.
@@ -129,7 +136,9 @@ public enum LiveScrollMatcher {
         try Task.checkCancellation()
         let length = axis == .vertical ? previous.height : previous.width
         let cross = axis == .vertical ? previous.width : previous.height
-        guard length >= 48, cross >= 24 else { throw ScrollStitchError.insufficientTexture }
+        guard supportsCapture(width: previous.width, height: previous.height, axis: axis) else {
+            throw ScrollStitchError.insufficientTexture
+        }
         let lockedEdges = try configuration.lockedContentBounds.map {
             try validateLockedBounds($0, frame: previous, axis: axis, configuration: configuration)
         }
