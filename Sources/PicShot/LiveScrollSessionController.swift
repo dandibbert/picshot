@@ -1270,7 +1270,9 @@ final class LiveScrollSessionController {
             } catch {
                 guard !self.retired, self.generation == token, !Task.isCancelled else { return }
                 self.mover = nil; self.region = source.region
-                if !wasPaused, !source.hasUnconfirmedTeardown, !self.updateCaptureLimit() {
+                // Restore an unapplied move's original source once. After an
+                // applied move, a failed resume requires the user's retry.
+                if !applied, !wasPaused, !source.hasUnconfirmedTeardown, !self.updateCaptureLimit() {
                     do {
                         try await source.resume()
                         try Task.checkCancellation()

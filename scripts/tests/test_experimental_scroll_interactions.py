@@ -818,7 +818,7 @@ class WorkflowSelectionTests(unittest.TestCase):
             self.assertIn("PlistBuddy -c 'Print :" + field + "' \"$PWD/dist/PicShot.app/Contents/Info.plist\"", native)
         self.assertIn('python3 scripts/check-live-scroll-chain-demo.py --report dist/live-scroll-demo/saved-image-chain/live-scroll-chain.json --source "$GITHUB_SHA"', native)
 
-    def test_current_2513_inventory_preserves_all_2500_2493_2487_and_original_2047_ids(self):
+    def test_current_2517_inventory_preserves_all_2513_2500_2493_2487_and_original_2047_ids(self):
         # Same portable source sentinel as native-test-shards; actual discovery
         # and all current native IDs still execute in the unchanged workflow.
         inventory=[]
@@ -833,6 +833,38 @@ class WorkflowSelectionTests(unittest.TestCase):
             inventory.extend(module+'.'+classes[0]+'/'+method for method in methods)
         inventory=sorted(inventory)
         current_inventory=inventory
+        menu_move_added=C.scroll_menu_move_additions(inventory)
+        menu_move_manifest=json.loads((REPO/'scripts/scroll-menu-move-additive-tests.json').read_text())
+        self.assertEqual(menu_move_manifest,sorted(menu_move_added))
+        self.assertEqual(len(menu_move_added),4)
+        self.assertEqual({name.split('/')[0] for name in menu_move_added},
+                         {'PicShotTests.LiveScrollSessionInteractionTests'})
+        preserved291=[name for name in inventory if name not in menu_move_added]
+        self.assertEqual((len(preserved291),len({name.split('/')[0] for name in preserved291}),
+            hashlib.sha256(('\n'.join(preserved291)+'\n').encode()).hexdigest()),C.PRESERVED291_NATIVE_INVENTORY)
+        self.assertEqual(inventory,sorted(preserved291+menu_move_manifest))
+        baseline=next(name for name in preserved291 if name.startswith('PicShotTests.LiveScrollSessionInteractionTests/'))
+        mutations=[('stale291',preserved291),('unsorted',list(reversed(inventory)))]
+        for method in menu_move_manifest+[baseline]:
+            mutations.extend([
+                ('missing '+method,[name for name in inventory if name!=method]),
+                ('renamed '+method,sorted(name+'Renamed' if name==method else name for name in inventory)),
+                ('wrong module '+method,sorted(name.replace('PicShotTests.','PicShotCoreTests.',1) if name==method else name for name in inventory)),
+                ('wrong class '+method,sorted(name.replace('SessionInteractionTests/','SessionInteractionTestsUnrecorded/',1) if name==method else name for name in inventory)),
+                ('unknown '+method,sorted(inventory+[method+'Unexpected'])),
+                ('duplicate '+method,sorted(inventory+[method])),
+            ])
+        for label,changed in mutations:
+            for guard in (C.scroll_menu_move_additions,C.scroll_geometry_additions,C.scroll_source_recovery_additions,
+                          C.scroll_capture_state_additions,C.scroll_text_script_additions,C.text_script_additions):
+                with self.subTest(menu_move=label,guard=guard.__name__),self.assertRaises(ValueError):
+                    guard(changed)
+        for bad in ({},menu_move_manifest[:-1],menu_move_manifest+[menu_move_manifest[-1]],list(reversed(menu_move_manifest)),
+                    [name+'Renamed' if name==menu_move_manifest[0] else name for name in menu_move_manifest],
+                    sorted(name.replace('PicShotTests.','PicShotCoreTests.',1) for name in menu_move_manifest),
+                    sorted(menu_move_manifest[:-1]+[menu_move_manifest[-1]+'Replacement'])):
+            with patch.object(C,'read',return_value=json.dumps(bad).encode()),self.assertRaises(ValueError):
+                C.scroll_menu_move_manifest()
         geometry_added=C.scroll_geometry_additions(inventory)
         geometry_manifest=json.loads((REPO/'scripts/scroll-geometry-additive-tests.json').read_text())
         self.assertEqual(geometry_manifest,sorted(geometry_added))
@@ -842,10 +874,10 @@ class WorkflowSelectionTests(unittest.TestCase):
                                         'PicShotTests.LiveScrollAssemblerTransactionTests':4,
                                         'PicShotTests.LiveScrollScreenSourceTests':2,
                                         'PicShotTests.LiveScrollSessionInteractionTests':4})
-        preserved289=[name for name in inventory if name not in geometry_added]
+        preserved289=[name for name in preserved291 if name not in geometry_added]
         self.assertEqual((len(preserved289),len({name.split('/')[0] for name in preserved289}),
             hashlib.sha256(('\n'.join(preserved289)+'\n').encode()).hexdigest()),C.PRESERVED289_NATIVE_INVENTORY)
-        self.assertEqual(inventory,sorted(preserved289+geometry_manifest))
+        self.assertEqual(preserved291,sorted(preserved289+geometry_manifest))
         baselines=[next(name for name in preserved289 if name.split('/')[0]==cls)
                    for cls in sorted({name.split('/')[0] for name in geometry_added})]
         mutations=[('stale289',preserved289),('unsorted',list(reversed(inventory)))]
@@ -962,10 +994,10 @@ class WorkflowSelectionTests(unittest.TestCase):
             for label,changed in mutations.items():
                 for guard in (C.scroll_text_script_additions,C.text_script_additions):
                     with self.subTest(bridge=method,mutation=label,guard=guard.__name__),self.assertRaises(ValueError):
-                        guard(sorted(changed+capture_manifest+source_manifest+geometry_manifest))
+                        guard(sorted(changed+capture_manifest+source_manifest+geometry_manifest+menu_move_manifest))
         for changed in (preserved279,list(reversed(inventory))):
             with self.subTest(stale279_or_unsorted=True),self.assertRaises(ValueError):
-                C.scroll_text_script_additions(changed+capture_manifest+source_manifest+geometry_manifest)
+                C.scroll_text_script_additions(changed+capture_manifest+source_manifest+geometry_manifest+menu_move_manifest)
         for bad in ({},bridge_manifest[:-1],bridge_manifest+[bridge_manifest[-1]],list(reversed(bridge_manifest)),
                     [name+'Renamed' if name==bridge_manifest[0] else name for name in bridge_manifest]):
             with patch.object(C,'read',return_value=json.dumps(bad).encode()),self.assertRaises(ValueError):
@@ -990,7 +1022,7 @@ class WorkflowSelectionTests(unittest.TestCase):
                 with self.subTest(guidance=method,mutation=label),self.assertRaises(ValueError):
                     C.scroll_guidance_additions(changed)
                 with self.subTest(guidance=method,combined_guard=label),self.assertRaises(ValueError):
-                    C.text_script_additions(sorted(changed+bridge_manifest+capture_manifest+source_manifest))
+                    C.text_script_additions(sorted(changed+bridge_manifest+capture_manifest+source_manifest+geometry_manifest+menu_move_manifest))
         for changed in (preserved278,list(reversed(inventory))):
             with self.subTest(stale_or_unsorted=True),self.assertRaises(ValueError):
                 C.scroll_guidance_additions(changed)
@@ -1028,13 +1060,14 @@ class WorkflowSelectionTests(unittest.TestCase):
                          '0f19081756c225e5b0fede62805ee01693d1409bf6552979ac74db409e3e4aab')
         live=json.loads((REPO/'scripts/live-scroll-additive-tests.json').read_text())
         self.assertEqual(live,[name for name in current_inventory if '.LiveScroll' in name])
-        self.assertEqual(len(live),250)
+        self.assertEqual(len(live),254)
         self.assertEqual(len(set(live)&bridge_added),29)
         self.assertTrue(guidance_added.issubset(live))
         self.assertTrue(capture_added.issubset(live))
         self.assertTrue(source_added.issubset(live))
         self.assertTrue(geometry_added.issubset(live))
-        live=[name for name in live if name not in scroll_added and name not in guidance_added and name not in bridge_added and name not in capture_added and name not in source_added and name not in geometry_added]
+        self.assertTrue(menu_move_added.issubset(live))
+        live=[name for name in live if name not in scroll_added and name not in guidance_added and name not in bridge_added and name not in capture_added and name not in source_added and name not in geometry_added and name not in menu_move_added]
         self.assertEqual(len(live),165);self.assertTrue(set(live).issubset(inventory))
         self.assertTrue(recovery.issubset(live))
         prior_live=[name for name in live if name not in recovery and name not in payload_added]

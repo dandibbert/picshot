@@ -1,0 +1,6 @@
+[
+  "PicShotTests.LiveScrollSessionInteractionTests/testMenuMoveCancelAndRejectedProposalRestoreOnlyOriginalCaptureState",
+  "PicShotTests.LiveScrollSessionInteractionTests/testMenuMoveCloseDuringAppliedOrRejectedResumeKeepsLateCallbacksInert",
+  "PicShotTests.LiveScrollSessionInteractionTests/testMenuMoveCloseWhileChoosingCannotApplyOldReturnToNewSession",
+  "PicShotTests.LiveScrollSessionInteractionTests/testMenuMoveOneShotResumeFailureRequiresExplicitRetryAndKeepsMovedPixels"
+]

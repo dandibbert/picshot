@@ -1064,6 +1064,229 @@ final class LiveScrollSessionInteractionTests: XCTestCase {
         }
     }
 
+    func testMenuMoveOneShotResumeFailureRequiresExplicitRetryAndKeepsMovedPixels() async throws {
+        try await withSession { session, source, seed, output, clock in
+            let toolbar = try Self.toolbar(session)
+            let original = source.region, oldGeneration = source.generation
+            let accepted = session.stateForVerification
+            let preview = try XCTUnwrap(Self.thumbnail(session).image)
+            try await Self.waitUntil { session.snapshotForVerification.canAutoScroll }
+            try PortableSettingsUIPreviewFixture.click(toolbar.autoButton)
+            XCTAssertTrue(session.snapshotForVerification.autoScrolling)
+            XCTAssertEqual(output.automaticEvents, 1)
+            clock.now += 17
+            source.resumeFailuresRemaining = 1
+            let view = try await Self.openMenuMover(session)
+            let staleCompletion = view.finished
+            try Self.dragMenuMover(view)
+            let moved = view.region
+            XCTAssertEqual(moved, original.offsetBy(dx: 0, dy: 60))
+            try Self.sendMoverKey(view, code: 36, characters: "\r")
+            try await Self.waitUntil { !session.snapshotForVerification.busy }
+
+            XCTAssertEqual(source.operations, ["pause", "move", "resume"])
+            XCTAssertEqual(source.resumeFailuresRemaining, 0)
+            XCTAssertEqual(source.completedResumes, 0)
+            XCTAssertEqual(source.region, moved)
+            XCTAssertTrue(session.snapshotForVerification.paused)
+            XCTAssertFalse(session.snapshotForVerification.autoScrolling)
+            XCTAssertFalse(session.snapshotForVerification.previewPositionVerified)
+            XCTAssertEqual(session.snapshotForVerification.status, "选区已移动，继续采集失败；长图仍保留")
+            XCTAssertEqual(session.snapshotForVerification.statusKind, .paused)
+            XCTAssertEqual(toolbar.pauseButton.accessibilityLabel(), "继续捕获")
+            XCTAssertTrue(session.snapshotForVerification.canFinish)
+            XCTAssertTrue(session.snapshotForVerification.canCopy)
+            XCTAssertTrue(try Self.thumbnail(session).image === preview)
+            Self.assertRetainedState(session, equals: accepted)
+            XCTAssertEqual(output.finishes + output.copies, 0)
+            try Self.assertStatusVisibleAndRetainEvidence(session, phase: "scroll-state-menu-move-retry")
+
+            // The old completion cannot retry, relocate, or silently re-arm Auto.
+            staleCompletion?(.success(original)); staleCompletion?(.failure(CaptureError.cancelled))
+            XCTAssertNil(view.finished)
+            clock.now += 10_000
+            XCTAssertEqual(session.activeCaptureDurationForVerification, 17)
+            XCTAssertEqual(source.resumeCalls, 1); XCTAssertEqual(source.moveCalls, 1)
+            XCTAssertEqual(source.region, moved)
+            XCTAssertTrue(session.snapshotForVerification.paused)
+            XCTAssertEqual(output.automaticEvents, 1)
+
+            try PortableSettingsUIPreviewFixture.click(toolbar.pauseButton)
+            try await Self.waitUntil { !session.snapshotForVerification.busy && !session.snapshotForVerification.paused }
+            XCTAssertEqual(source.resumeCalls, 2); XCTAssertEqual(source.completedResumes, 1)
+            XCTAssertFalse(session.snapshotForVerification.autoScrolling)
+            XCTAssertFalse(session.snapshotForVerification.previewPositionVerified)
+            try await Self.deliver(seed, to: session, source: source, generation: oldGeneration)
+            XCTAssertFalse(session.snapshotForVerification.previewPositionVerified)
+            try await Self.deliver(seed, to: session, source: source)
+            XCTAssertTrue(session.snapshotForVerification.previewPositionVerified)
+            XCTAssertTrue(session.snapshotForVerification.canAutoScroll)
+            XCTAssertFalse(session.snapshotForVerification.autoScrolling)
+            XCTAssertGreaterThan(source.generation, oldGeneration)
+            XCTAssertEqual(output.automaticEvents, 1)
+            try PortableSettingsUIPreviewFixture.click(toolbar.finishButton)
+            try await Self.waitUntil { session.isClosedForVerification }
+            XCTAssertEqual(output.finishes, 1); XCTAssertEqual(output.copies, 0)
+            XCTAssertEqual(try Self.pixels(XCTUnwrap(output.image)), try Self.pixels(seed))
+        }
+    }
+
+    func testMenuMoveCancelAndRejectedProposalRestoreOnlyOriginalCaptureState() async throws {
+        for initiallyPaused in [false, true] {
+            for rejectMove in [false, true] {
+                try await withSession { session, source, seed, output, _ in
+                    let toolbar = try Self.toolbar(session)
+                    if initiallyPaused {
+                        try PortableSettingsUIPreviewFixture.click(toolbar.pauseButton)
+                        try await Self.waitUntil { session.snapshotForVerification.paused && !session.snapshotForVerification.busy }
+                    } else {
+                        try await Self.waitUntil { session.snapshotForVerification.canAutoScroll }
+                        try PortableSettingsUIPreviewFixture.click(toolbar.autoButton)
+                        XCTAssertTrue(session.snapshotForVerification.autoScrolling)
+                    }
+                    let original = source.region, accepted = session.stateForVerification
+                    let preview = try XCTUnwrap(Self.thumbnail(session).image)
+                    let resumes = source.resumeCalls, events = output.automaticEvents
+                    source.failure = rejectMove ? .move : nil
+                    let view = try await Self.openMenuMover(session)
+                    let staleCompletion = view.finished
+                    try Self.dragMenuMover(view)
+                    XCTAssertNotEqual(view.region, original)
+                    try Self.sendMoverKey(view, code: rejectMove ? 36 : 53, characters: rejectMove ? "\r" : "\u{1b}")
+                    try await Self.waitUntil { !session.snapshotForVerification.busy }
+                    XCTAssertEqual(source.region, original)
+                    XCTAssertEqual(source.moveCalls, rejectMove ? 1 : 0)
+                    XCTAssertEqual(source.resumeCalls, resumes + (initiallyPaused ? 0 : 1))
+                    XCTAssertEqual(session.snapshotForVerification.paused, initiallyPaused)
+                    XCTAssertFalse(session.snapshotForVerification.autoScrolling)
+                    XCTAssertFalse(session.snapshotForVerification.previewPositionVerified)
+                    XCTAssertTrue(try Self.thumbnail(session).image === preview)
+                    Self.assertRetainedState(session, equals: accepted)
+                    staleCompletion?(.success(original.offsetBy(dx: 0, dy: 120)))
+                    staleCompletion?(.failure(CaptureError.cancelled))
+                    XCTAssertEqual(source.resumeCalls, resumes + (initiallyPaused ? 0 : 1))
+                    XCTAssertEqual(source.region, original)
+                    XCTAssertEqual(output.automaticEvents, events)
+                    source.failure = nil
+                    try PortableSettingsUIPreviewFixture.click(toolbar.finishButton)
+                    try await Self.waitUntil { session.isClosedForVerification }
+                    XCTAssertEqual(output.finishes, 1); XCTAssertEqual(output.copies, 0)
+                    XCTAssertEqual(try Self.pixels(XCTUnwrap(output.image)), try Self.pixels(seed))
+                }
+            }
+        }
+    }
+
+    func testMenuMoveCloseDuringAppliedOrRejectedResumeKeepsLateCallbacksInert() async throws {
+        for rejectMove in [false, true] {
+            try await withSession { session, source, _, output, clock in
+                var closes = 0
+                session.onClose = { closes += 1 }
+                let original = source.region
+                source.holdResume = true; source.failure = rejectMove ? .move : nil
+                clock.now += 33
+                let view = try await Self.openMenuMover(session)
+                let staleCompletion = view.finished
+                try Self.dragMenuMover(view)
+                let moved = view.region
+                try Self.sendMoverKey(view, code: 36, characters: "\r")
+                try await Self.waitUntil { source.hasPendingResume }
+                let beforeClose = session.snapshotForVerification
+                session.cancel()
+                XCTAssertNil(session.controlsForVerification)
+                XCTAssertFalse(session.isClosedForVerification)
+                XCTAssertEqual(closes, 0)
+                clock.now += 9_000
+                source.releaseResume(); source.releaseResume()
+                try await Self.waitUntil { source.completedResumes == 1 && session.isClosedForVerification }
+                XCTAssertEqual(closes, 1)
+                XCTAssertEqual(source.region, rejectMove ? original : moved)
+                XCTAssertEqual(source.moveCalls, 1); XCTAssertEqual(source.resumeCalls, 1); XCTAssertEqual(source.stopCalls, 1)
+                XCTAssertEqual(session.snapshotForVerification, beforeClose)
+                XCTAssertEqual(session.activeCaptureDurationForVerification, 33)
+                XCTAssertEqual(output.finishes + output.copies + output.automaticEvents, 0)
+                try await self.withSession { fresh, freshSource, _, freshOutput, _ in
+                    let freshState = fresh.snapshotForVerification, freshRegion = freshSource.region
+                    staleCompletion?(.success(original)); staleCompletion?(.failure(CaptureError.cancelled))
+                    XCTAssertEqual(fresh.snapshotForVerification, freshState)
+                    XCTAssertEqual(freshSource.region, freshRegion)
+                    XCTAssertEqual(freshSource.moveCalls + freshSource.resumeCalls, 0)
+                    XCTAssertEqual(freshOutput.finishes + freshOutput.copies + freshOutput.automaticEvents, 0)
+                    XCTAssertEqual(source.moveCalls, 1); XCTAssertEqual(source.resumeCalls, 1); XCTAssertEqual(closes, 1)
+                }
+            }
+        }
+    }
+
+    func testMenuMoveCloseWhileChoosingCannotApplyOldReturnToNewSession() async throws {
+        try await withSession { session, source, _, output, _ in
+            var closes = 0
+            session.onClose = { closes += 1 }
+            let original = source.region
+            let view = try await Self.openMenuMover(session)
+            let window = try XCTUnwrap(view.window), staleCompletion = view.finished
+            try Self.dragMenuMover(view)
+            let proposed = view.region
+            session.cancel()
+            try await Self.waitUntil { session.isClosedForVerification }
+            XCTAssertNil(view.finished); XCTAssertFalse(window.isVisible)
+            XCTAssertEqual(source.region, original)
+            XCTAssertEqual(source.resumeCalls + source.moveCalls, 0)
+            XCTAssertEqual(source.stopCalls, 1); XCTAssertEqual(closes, 1)
+            try await self.withSession { fresh, freshSource, _, freshOutput, _ in
+                let before = fresh.snapshotForVerification
+                staleCompletion?(.success(proposed)); staleCompletion?(.failure(CaptureError.cancelled))
+                XCTAssertEqual(fresh.snapshotForVerification, before)
+                XCTAssertEqual(freshSource.moveCalls + freshSource.resumeCalls, 0)
+                XCTAssertEqual(freshOutput.finishes + freshOutput.copies + freshOutput.automaticEvents, 0)
+                XCTAssertEqual(source.resumeCalls + source.moveCalls, 0)
+                XCTAssertEqual(output.finishes + output.copies, 0); XCTAssertEqual(closes, 1)
+            }
+        }
+    }
+
+    private static func openMenuMover(_ session: LiveScrollSessionController) async throws -> ManualScrollRegionMoveView {
+        // Dispatch the actual production More menu item's target/action. This
+        // does not substitute the private session method or a synthetic result.
+        try dispatchMenu(session, "moveRegion")
+        try await waitUntil { session.activeMoveViewForVerification != nil }
+        let view = try XCTUnwrap(session.activeMoveViewForVerification)
+        let window = try XCTUnwrap(view.window)
+        try await waitUntil { window.isVisible && window.firstResponder === view }
+        XCTAssertTrue(window.contentView === view)
+        return view
+    }
+
+    private static func dragMenuMover(_ view: ManualScrollRegionMoveView) throws {
+        let window = try XCTUnwrap(view.window)
+        let start = CGPoint(x: view.region.midX, y: view.region.midY)
+        for (type, point) in [(NSEvent.EventType.leftMouseDown, start),
+                              (.leftMouseDragged, start.offsetBy(dx: 20, dy: 35)),
+                              (.leftMouseUp, start.offsetBy(dx: 40, dy: 60))] {
+            let event = try XCTUnwrap(NSEvent.mouseEvent(with: type, location: view.convert(point, to: nil),
+                modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1))
+            XCTAssertEqual(event.windowNumber, window.windowNumber)
+            // Same owned gesture route as the existing mover tests; Return and
+            // Escape below traverse NSWindow's actual first-responder dispatch.
+            switch type {
+            case .leftMouseDown: view.mouseDown(with: event)
+            case .leftMouseDragged: view.mouseDragged(with: event)
+            default: view.mouseUp(with: event)
+            }
+        }
+    }
+
+    private static func sendMoverKey(_ view: ManualScrollRegionMoveView, code: UInt16, characters: String) throws {
+        let window = try XCTUnwrap(view.window)
+        XCTAssertTrue(window.isVisible); XCTAssertTrue(window.firstResponder === view)
+        let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
+            characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code))
+        XCTAssertEqual(event.windowNumber, window.windowNumber)
+        window.sendEvent(event)
+    }
+
     private func withSession(seed suppliedSeed: CGImage? = nil, allOutputRoutes: Bool = false, seedAutomatically: Bool = true,
                              sourceSize: CGSize? = nil,
                              _ body: (LiveScrollSessionController, Source, CGImage, Output, Clock) async throws -> Void) async throws {
@@ -1427,6 +1650,7 @@ final class LiveScrollSessionInteractionTests: XCTestCase {
         private(set) var hasUnconfirmedTeardown = false
         var holdDrain = false
         var holdResume = false
+        var resumeFailuresRemaining = 0
         var holdNextFrame = false
         var hasPendingDrain: Bool { drain != nil }
         var hasPendingResume: Bool { resumption != nil }
@@ -1449,6 +1673,7 @@ final class LiveScrollSessionInteractionTests: XCTestCase {
         }
         func resume() async throws {
             resumeCalls += 1; operations.append("resume")
+            if resumeFailuresRemaining > 0 { resumeFailuresRemaining -= 1; throw Failure.resume }
             if failure == .resume { throw Failure.resume }
             try await start()
             if holdResume {

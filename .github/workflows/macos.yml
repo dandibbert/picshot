@@ -1,4 +1,4 @@
-# Qualify reviewed actual-pixel direction admission after exact250 native completion.
+# Verify explicit retry after an applied fallback region move fails to resume; retain all prior gates.
 # Full experimental qualification requires exact owned source geometry and complete installed scrolling parents; all ordinary gates remain intact.
 name: Native macOS build and verification
 on:
