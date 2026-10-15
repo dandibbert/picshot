@@ -111,6 +111,117 @@ final class LiveScrollFrameSourceTests: XCTestCase {
         try await source.stop()
     }
 
+    func testCompatibleSourceDefaultsToNoKnownTeardownFailure() {
+        let source: any LiveScrollFrameSource = CompatibleFrameSource(region: region, displayBounds: display)
+        XCTAssertFalse(source.hasUnconfirmedTeardown)
+    }
+
+    func testConfirmedTeardownAllowsRecoveryAfterPauseAndProviderFailure() async throws {
+        let fixture = try Self.image(width: 16, height: 32)
+        var failProvider = false
+        let source: any LiveScrollFrameSource = try LiveScrollVerificationFrameSource(region: region, displayBounds: display) {
+            if failProvider { throw CaptureError.failed("Provider failed") }
+            return fixture
+        }
+        XCTAssertFalse(source.hasUnconfirmedTeardown)
+        try await source.start()
+        XCTAssertFalse(source.hasUnconfirmedTeardown)
+        let initial = try await source.nextFrame(timeout: 0.1)
+        XCTAssertNotNil(initial)
+        try await source.pauseAndDrain()
+        XCTAssertFalse(source.hasUnconfirmedTeardown)
+        try source.moveRegion(to: region.offsetBy(dx: 2, dy: 4))
+        try await source.resume()
+        failProvider = true
+        do { _ = try await source.nextFrame(timeout: 0.1); XCTFail("Provider failure returned a frame") }
+        catch CaptureError.failed(let message) { XCTAssertEqual(message, "Provider failed") }
+        XCTAssertFalse(source.hasUnconfirmedTeardown)
+        XCTAssertNil(source.automaticScrollWatermark)
+        try source.moveRegion(to: region)
+        failProvider = false
+        try await source.resume()
+        let recovered = try await source.nextFrame(timeout: 0.1)
+        XCTAssertEqual(recovered?.region, region)
+        XCTAssertFalse(source.hasUnconfirmedTeardown)
+        try await source.stop()
+        XCTAssertFalse(source.hasUnconfirmedTeardown)
+    }
+
+    func testUncooperativeProviderTimeoutKeepsTeardownUnconfirmedAfterLateCompletion() async throws {
+        weak var releasedSource: LiveScrollVerificationFrameSource?
+        weak var releasedGate: ImageGate?
+        do {
+            let gate = ImageGate(image: try Self.image(width: 16, height: 32))
+            defer { gate.release() }
+            var providerReturned = false
+            let verification = try LiveScrollVerificationFrameSource(region: region, displayBounds: display) {
+                let image = await gate.next()
+                providerReturned = true
+                return image
+            }
+            let source: any LiveScrollFrameSource = verification
+            releasedSource = verification; releasedGate = gate
+            try await source.start()
+            XCTAssertFalse(source.hasUnconfirmedTeardown)
+            let read = Task { try await source.nextFrame(timeout: 1) }
+            for _ in 0..<1_000 where gate.calls == 0 { await Task.yield() }
+            XCTAssertEqual(gate.calls, 1)
+            XCTAssertNotNil(gate.continuation)
+            let began = ProcessInfo.processInfo.systemUptime
+            do { try await source.pauseAndDrain(); XCTFail("Uncooperative provider teardown succeeded") }
+            catch LiveScrollSourceError.operationTimedOut(let operation) { XCTAssertEqual(operation, "验证帧清理") }
+            let elapsed = ProcessInfo.processInfo.systemUptime - began
+            XCTAssertEqual(LiveScrollScreenSource.operationTimeout, 3)
+            XCTAssertGreaterThanOrEqual(elapsed, 2.9)
+            XCTAssertLessThan(elapsed, 5)
+            XCTAssertTrue(gate.cancelled)
+            XCTAssertFalse(providerReturned)
+            XCTAssertTrue(source.hasUnconfirmedTeardown)
+            XCTAssertNil(source.automaticScrollWatermark)
+            do { _ = try await read.value; XCTFail("Failed teardown delivered a frame") }
+            catch is CancellationError { }
+            do { try await source.resume(); XCTFail("Unconfirmed source resumed") }
+            catch LiveScrollSourceError.unconfirmedTeardown { }
+            do { try source.moveRegion(to: region.offsetBy(dx: 2, dy: 4)); XCTFail("Unconfirmed source moved") }
+            catch CaptureError.busy { }
+
+            gate.release()
+            for _ in 0..<1_000 where !providerReturned { await Task.yield() }
+            XCTAssertTrue(providerReturned)
+            XCTAssertNil(gate.continuation)
+            XCTAssertEqual(gate.calls, 1)
+            XCTAssertTrue(source.hasUnconfirmedTeardown)
+            XCTAssertNil(source.automaticScrollWatermark)
+            do { _ = try await source.nextFrame(timeout: 0.1); XCTFail("Late provider completion delivered a frame") }
+            catch LiveScrollSourceError.paused { }
+            do { try await source.resume(); XCTFail("Late provider completion reset failed state") }
+            catch LiveScrollSourceError.unconfirmedTeardown { }
+            do { try source.moveRegion(to: region.offsetBy(dx: 2, dy: 4)); XCTFail("Late provider completion allowed movement") }
+            catch CaptureError.busy { }
+            do { try await source.stop(); XCTFail("Failed teardown became confirmed after release") }
+            catch LiveScrollSourceError.unconfirmedTeardown { }
+            XCTAssertTrue(source.hasUnconfirmedTeardown)
+        }
+        for _ in 0..<1_000 where releasedSource != nil || releasedGate != nil { await Task.yield() }
+        XCTAssertNil(releasedSource)
+        XCTAssertNil(releasedGate)
+    }
+
+    @MainActor
+    private final class CompatibleFrameSource: LiveScrollFrameSource {
+        let region: CGRect
+        let displayBounds: CGRect
+        let target: LiveScrollScreenSource.Target? = nil
+        init(region: CGRect, displayBounds: CGRect) { self.region = region; self.displayBounds = displayBounds }
+        func start() async throws { }
+        func nextFrame(timeout: TimeInterval) async throws -> LiveScrollScreenSource.Frame? { nil }
+        func pauseAndDrain() async throws { }
+        func resume() async throws { }
+        func stop() async throws { }
+        func moveRegion(to proposed: CGRect) throws { }
+        func validateTarget() throws { }
+    }
+
     private static func image(width: Int, height: Int) throws -> CGImage {
         let context = try XCTUnwrap(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
             bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),

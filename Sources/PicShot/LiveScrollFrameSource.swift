@@ -8,6 +8,8 @@ protocol LiveScrollFrameSource: AnyObject {
     var region: CGRect { get }
     var displayBounds: CGRect { get }
     var target: LiveScrollScreenSource.Target? { get }
+    /// True only when teardown failed and capture cannot safely resume.
+    var hasUnconfirmedTeardown: Bool { get }
     /// Producer callback fence, not a presentation-time or input-causality claim.
     var automaticScrollWatermark: LiveScrollFrameWatermark? { get }
     func start() async throws
@@ -20,6 +22,9 @@ protocol LiveScrollFrameSource: AnyObject {
 }
 
 extension LiveScrollFrameSource {
+    /// Existing simple sources have no known terminal failure; successful
+    /// drainage must still be established by pauseAndDrain, never by this flag.
+    var hasUnconfirmedTeardown: Bool { false }
     /// Sources without a producer fence remain available for manual capture.
     var automaticScrollWatermark: LiveScrollFrameWatermark? { nil }
 }
@@ -47,6 +52,7 @@ final class LiveScrollVerificationFrameSource: LiveScrollFrameSource {
     private var readDrain: CheckedContinuation<Void, Never>?
 
     var automaticScrollWatermark: LiveScrollFrameWatermark? { mailbox.frameWatermark }
+    var hasUnconfirmedTeardown: Bool { state == .failed }
 
     private enum State { case idle, running, draining, paused, stopped, failed }
     private struct Worker {

@@ -140,6 +140,242 @@ final class LiveScrollSessionInteractionTests: XCTestCase {
         }
     }
 
+    func testPermanentDrainFailureOnPauseDragAndSamplingRejectsStaleCaptureAndPreservesLastGoodPixels() async throws {
+        for trigger in ["pause", "drag", "sampling"] {
+            try await withSession(seed: Self.sourceLimitImage(origin: 0), allOutputRoutes: true) { session, source, seed, output, clock in
+                let toolbar = try Self.toolbar(session), controls = try XCTUnwrap(session.controlsForVerification)
+                let handle = try Self.handle(session), start = try Self.handleCenter(handle)
+                let staleEnd = handle.end, originalRegion = source.region
+                let preview = try XCTUnwrap(Self.thumbnail(session).image)
+                let before = session.stateForVerification
+                let document = await session.documentSnapshotForResourceVerification()
+                XCTAssertTrue(session.snapshotForVerification.canChangeAxis)
+                try PortableSettingsUIPreviewFixture.click(toolbar.autoButton)
+                XCTAssertEqual(output.automaticEvents, 1)
+                source.failPermanentDrain = true
+                clock.now += 29
+                switch trigger {
+                case "pause": try PortableSettingsUIPreviewFixture.click(toolbar.pauseButton)
+                case "drag":
+                    source.holdDrain = true
+                    try Self.pointer(.leftMouseDown, handle: handle, screenPoint: start)
+                    try await Self.waitUntil { source.hasPendingDrain }
+                    try Self.pointer(.leftMouseDragged, handle: handle, screenPoint: start.offsetBy(dx: 20, dy: -35))
+                    try Self.pointer(.leftMouseUp, handle: handle, screenPoint: start.offsetBy(dx: 40, dy: -60))
+                    source.releaseDrain(); source.releaseDrain()
+                default:
+                    source.nextFailure = LiveScrollDocument.Failure.writeFailed
+                    source.offer(try Self.sourceLimitImage(origin: 24))
+                }
+                try await Self.waitUntil { source.hasUnconfirmedTeardown && !session.snapshotForVerification.busy }
+                XCTAssertFalse(session.captureLimitReachedForVerification)
+                try Self.assertUnconfirmedTeardownControls(session)
+                XCTAssertEqual(source.pauseCalls, 1); XCTAssertEqual(source.completedDrains, 1)
+                XCTAssertEqual(session.activeCaptureDurationForVerification, 29)
+                Self.assertRetainedState(session, equals: before)
+                XCTAssertTrue(try Self.thumbnail(session).image === preview)
+                XCTAssertFalse(try Self.thumbnail(session).isPositionVerified)
+                if trigger != "sampling" {
+                    try Self.assertStatusVisibleAndRetainEvidence(session, phase: "scroll-state-drain-failure-" + trigger)
+                }
+
+                // Even a stale controller snapshot cannot authorize commands
+                // against a source whose teardown failure is now permanent.
+                let failed = session.snapshotForVerification, sampled = session.sampledFramesForVerification
+                var stale = failed
+                stale.canPause = true; stale.canMoveRegion = true; stale.canAutoScroll = true
+                stale.canChangeAxis = true; stale.canApplyTextScript = true
+                source.failPermanentDrain = false // The source's failure remains latched.
+                for _ in 0..<3 {
+                    controls.update(snapshot: stale)
+                    try Self.dispatchButton(toolbar.pauseButton); try Self.dispatchButton(toolbar.autoButton)
+                    for suffix in ["moveRegion", "axis.horizontal", "axis.vertical", "textScript"] {
+                        try Self.dispatchMenu(session, suffix, requireEnabled: false)
+                    }
+                    staleEnd?(start.offsetBy(dx: 40, dy: -60)); staleEnd?(nil)
+                    session.show()
+                    try Self.dispatchStaleAcquisitionActions(session)
+                }
+                source.offer(try Self.sourceLimitImage(origin: 96))
+                clock.now += 10_000
+                let after = await session.documentSnapshotForResourceVerification()
+                XCTAssertEqual(after, document)
+                XCTAssertEqual(session.snapshotForVerification, failed)
+                XCTAssertEqual(session.sampledFramesForVerification, sampled)
+                XCTAssertEqual(session.activeCaptureDurationForVerification, 29)
+                XCTAssertEqual(source.region, originalRegion)
+                XCTAssertEqual(source.resumeCalls, 0); XCTAssertEqual(source.moveCalls, 0)
+                XCTAssertEqual(source.pauseCalls, 1); XCTAssertEqual(output.automaticEvents, 1)
+                XCTAssertNil(session.textChoiceAlertForVerification); XCTAssertEqual(output.textStarts, 0)
+                XCTAssertTrue(try Self.thumbnail(session).image === preview)
+                try Self.assertUnconfirmedTeardownControls(session)
+
+                // Choice cancellation, rejected delivery, and Save cancellation
+                // preserve the failed source and every safe image recovery route.
+                try Self.dispatchMenu(session, "imageChain")
+                try XCTUnwrap(session.chainChoiceAlertForVerification).cancel()
+                try await Self.waitUntil { !session.snapshotForVerification.busy }
+                output.rejectDelivery = true
+                try PortableSettingsUIPreviewFixture.click(toolbar.copyButton)
+                try await Self.waitUntil { output.copies == 1 && !session.snapshotForVerification.busy }
+                try Self.assertUnconfirmedTeardownControls(session, requireCaptureStatus: false)
+                try Self.dispatchMenu(session, "quickSave")
+                try await Self.waitUntil { output.saves == 1 && !session.snapshotForVerification.busy }
+                try Self.assertUnconfirmedTeardownControls(session, requireCaptureStatus: false)
+                output.rejectDelivery = false
+                try PortableSettingsUIPreviewFixture.click(toolbar.finishButton)
+                try await Self.waitUntil { output.finishes == 1 && !session.snapshotForVerification.busy }
+                XCTAssertEqual(try Self.pixels(XCTUnwrap(output.image)), try Self.pixels(seed))
+                try Self.assertDeliveredWithTeardownWarning(session, output: output)
+                XCTAssertEqual(source.resumeCalls, 0); XCTAssertEqual(source.moveCalls, 0)
+                XCTAssertEqual(output.automaticEvents, 1)
+            }
+        }
+    }
+
+    func testPermanentDrainFailureAllImageOutputsAwaitProducerDrainAndHeldSamplingBeforeExactDelivery() async throws {
+        for route in ["finish", "copy", "quickSave", "pin", "imageChain"] {
+            try await withSession(seed: Self.sourceLimitImage(origin: 0), allOutputRoutes: true) { session, source, _, output, _ in
+                let toolbar = try Self.toolbar(session)
+                source.offer(try Self.sourceLimitImage(origin: 24))
+                try await Self.waitUntil { session.snapshotForVerification.acceptedFrames == 2 && source.mailbox.counters.waitingReaders == 1 }
+                let accepted = session.stateForVerification, sampled = session.sampledFramesForVerification
+                let expected = try Self.sourceLimitImage(origin: 0, length: 224)
+                source.holdNextFrame = true
+                source.offer(try Self.sourceLimitImage(origin: 120))
+                try await Self.waitUntil { source.hasPendingFrame }
+                source.failPermanentDrain = true
+                try PortableSettingsUIPreviewFixture.click(toolbar.pauseButton)
+                try await Self.waitUntil { source.hasUnconfirmedTeardown && !session.snapshotForVerification.busy }
+                try Self.assertUnconfirmedTeardownControls(session)
+                XCTAssertTrue(source.hasPendingFrame, "The source failure can publish while sampling is still settling")
+                Self.assertRetainedState(session, equals: accepted)
+                XCTAssertEqual(session.sampledFramesForVerification, sampled)
+
+                source.holdDrain = true
+                output.acceptSave = true; output.allowChainRun = true
+                switch route {
+                case "finish": try PortableSettingsUIPreviewFixture.click(toolbar.finishButton)
+                case "copy": try PortableSettingsUIPreviewFixture.click(toolbar.copyButton)
+                case "imageChain":
+                    try Self.dispatchMenu(session, route)
+                    let choice = try XCTUnwrap(session.chainChoiceAlertForVerification)
+                    try PortableSettingsUIPreviewFixture.click(try XCTUnwrap(choice.buttons.first))
+                default: try Self.dispatchMenu(session, route)
+                }
+                try await Self.waitUntil { source.hasPendingDrain }
+                XCTAssertEqual(output.deliveryAttempts, 0)
+                XCTAssertEqual(session.chainRenderCountForVerification, 0)
+                XCTAssertEqual(source.pauseCalls, 2)
+                XCTAssertTrue(session.snapshotForVerification.busy)
+                try Self.dispatchButton(toolbar.finishButton); try Self.dispatchButton(toolbar.copyButton)
+                for suffix in ["quickSave", "pin", "imageChain", "textScript"] {
+                    try Self.dispatchMenu(session, suffix, requireEnabled: false)
+                }
+                let prematureDelivery = self.expectation(description: "No \(route) delivery while sampling is held")
+                prematureDelivery.isInverted = true
+                output.onDelivery = { prematureDelivery.fulfill() }
+                source.releaseDrain(); source.releaseDrain()
+                try await Self.waitUntil { source.completedDrains == 2 }
+                await self.fulfillment(of: [prematureDelivery], timeout: 0.1)
+                output.onDelivery = nil
+                XCTAssertTrue(source.hasPendingFrame)
+                XCTAssertTrue(session.snapshotForVerification.busy)
+                XCTAssertEqual(output.deliveryAttempts, 0, "A failed producer drain must not bypass awaiting sampling")
+                XCTAssertEqual(session.chainRenderCountForVerification, 0)
+                source.releaseFrame(); source.releaseFrame()
+                try await Self.waitUntil { output.deliveryAttempts == 1 && !session.snapshotForVerification.busy }
+                XCTAssertEqual(session.sampledFramesForVerification, sampled, "The held retired frame must fail the source generation fence")
+                Self.assertRetainedState(session, equals: accepted)
+                XCTAssertEqual(try Self.pixels(XCTUnwrap(output.image)), try Self.pixels(expected))
+                XCTAssertEqual(output.finishes, route == "finish" ? 1 : 0)
+                XCTAssertEqual(output.copies, route == "copy" ? 1 : 0)
+                XCTAssertEqual(output.saves, route == "quickSave" ? 1 : 0)
+                XCTAssertEqual(output.pins, route == "pin" ? 1 : 0)
+                XCTAssertEqual(output.chainCopies, route == "imageChain" ? 1 : 0)
+                XCTAssertEqual(session.chainRenderCountForVerification, route == "imageChain" ? 1 : 0)
+                try Self.assertDeliveredWithTeardownWarning(session, output: output)
+                XCTAssertEqual(source.pauseCalls, 2); XCTAssertEqual(source.resumeCalls, 0); XCTAssertEqual(source.moveCalls, 0)
+                XCTAssertEqual(output.automaticEvents, 0)
+                var closes = 0
+                session.onClose = { closes += 1 }
+                try PortableSettingsUIPreviewFixture.click(toolbar.cancelButton)
+                try await Self.waitUntil { session.isClosedForVerification }
+                XCTAssertEqual(closes, 1); XCTAssertEqual(source.stopCalls, 1)
+                XCTAssertEqual(output.deliveryAttempts, 1)
+            }
+        }
+    }
+
+    func testTransientPauseFailureRemainsRecoverableWithoutPermanentTeardownState() async throws {
+        try await withSession { session, source, seed, output, clock in
+            let toolbar = try Self.toolbar(session)
+            source.failure = .pause
+            clock.now += 13
+            try PortableSettingsUIPreviewFixture.click(toolbar.pauseButton)
+            try await Self.waitUntil { session.snapshotForVerification.statusKind == .error && !session.snapshotForVerification.busy }
+            XCTAssertFalse(source.hasUnconfirmedTeardown)
+            XCTAssertFalse(session.captureLimitReachedForVerification)
+            XCTAssertTrue(session.snapshotForVerification.canPause)
+            XCTAssertTrue(session.snapshotForVerification.canMoveRegion)
+            XCTAssertTrue(session.snapshotForVerification.canChangeAxis)
+            XCTAssertEqual(toolbar.pauseButton.accessibilityLabel(), "重试捕获")
+            clock.now += 5_000
+            XCTAssertEqual(session.activeCaptureDurationForVerification, 13)
+            source.failure = nil
+            try PortableSettingsUIPreviewFixture.click(toolbar.pauseButton)
+            try await Self.waitUntil { !session.snapshotForVerification.paused && !session.snapshotForVerification.busy }
+            XCTAssertEqual(source.resumeCalls, 1)
+            XCTAssertFalse(session.snapshotForVerification.previewPositionVerified)
+            XCTAssertFalse(session.snapshotForVerification.autoScrolling)
+            try await Self.deliver(seed, to: session, source: source)
+            XCTAssertTrue(session.snapshotForVerification.previewPositionVerified)
+            XCTAssertEqual(output.automaticEvents, 0)
+            clock.now += 2
+            XCTAssertEqual(session.activeCaptureDurationForVerification, 15)
+            try PortableSettingsUIPreviewFixture.click(toolbar.finishButton)
+            try await Self.waitUntil { session.isClosedForVerification }
+            XCTAssertEqual(output.finishes, 1)
+            XCTAssertEqual(try Self.pixels(XCTUnwrap(output.image)), try Self.pixels(seed))
+        }
+    }
+
+    func testPermanentSourceFailureBeforeFirstFrameOffersCloseWithoutOutputOrRestart() async throws {
+        try await withSession(allOutputRoutes: true, seedAutomatically: false) { session, source, _, output, clock in
+            try await Self.waitUntil { source.mailbox.counters.waitingReaders == 1 }
+            clock.now += 7
+            source.failBeforeReadCompletes()
+            try await Self.waitUntil { session.snapshotForVerification.statusKind == .error && !session.snapshotForVerification.busy }
+            let failed = session.snapshotForVerification, toolbar = try Self.toolbar(session)
+            XCTAssertEqual(failed.status, "停止未确认，请关闭")
+            XCTAssertTrue(failed.statusDetail.contains(Failure.permanentDrain.localizedDescription))
+            XCTAssertTrue(failed.statusDetail.contains("尚无可输出的长图"))
+            XCTAssertEqual(toolbar.statusLabel.accessibilityHelp(), failed.statusDetail)
+            XCTAssertFalse(failed.canPause); XCTAssertFalse(failed.canMoveRegion); XCTAssertFalse(failed.canAutoScroll)
+            XCTAssertFalse(failed.canChangeAxis); XCTAssertFalse(failed.canApplyTextScript)
+            XCTAssertFalse(failed.canFinish); XCTAssertFalse(failed.canCopy); XCTAssertFalse(failed.canQuickSave)
+            XCTAssertFalse(failed.canPin); XCTAssertFalse(failed.canApplyImageChain)
+            XCTAssertFalse(failed.previewPositionVerified); XCTAssertNil(try Self.thumbnail(session).image)
+            XCTAssertEqual(failed.acceptedFrames, 0); XCTAssertEqual(session.sampledFramesForVerification, 0)
+            for _ in 0..<3 {
+                try Self.dispatchStaleAcquisitionActions(session)
+                try Self.dispatchButton(toolbar.finishButton); try Self.dispatchButton(toolbar.copyButton)
+                for suffix in ["quickSave", "pin", "imageChain", "textScript"] {
+                    try Self.dispatchMenu(session, suffix, requireEnabled: false)
+                }
+            }
+            clock.now += 10_000
+            XCTAssertEqual(session.snapshotForVerification, failed)
+            XCTAssertEqual(session.activeCaptureDurationForVerification, 7)
+            XCTAssertEqual(source.pauseCalls, 1); XCTAssertEqual(source.resumeCalls, 0); XCTAssertEqual(source.moveCalls, 0)
+            XCTAssertEqual(output.deliveryAttempts, 0); XCTAssertEqual(output.textStarts, 0)
+            XCTAssertEqual(output.automaticEvents, 0)
+            try PortableSettingsUIPreviewFixture.click(toolbar.cancelButton)
+            try await Self.waitUntil { session.isClosedForVerification }
+            XCTAssertEqual(source.stopCalls, 1)
+        }
+    }
+
     func testExplicitPauseSurvivesSeededAxisChangeUntilOneExplicitContinueAndFinishPixelsStayExact() async throws {
         for continueBeforeFinish in [false, true] {
             try await withSession { session, source, seed, output, clock in
@@ -192,7 +428,8 @@ final class LiveScrollSessionInteractionTests: XCTestCase {
     }
 
     func testActiveSeededAxisChangeResumesOnceAndMultiFrameAxisChangeIsRejected() async throws {
-        try await withSession { session, source, seed, output, clock in
+        try await withSession(seed: Self.sourceLimitImage(origin: 0, axis: .horizontal)) { session, source, seed, output, clock in
+            let oldGeneration = source.generation
             clock.now += 31
             source.holdResume = true
             try Self.dispatchMenu(session, "axis.horizontal")
@@ -205,6 +442,50 @@ final class LiveScrollSessionInteractionTests: XCTestCase {
             XCTAssertFalse(session.snapshotForVerification.paused)
             XCTAssertEqual(source.operations, ["pause", "resume"])
             XCTAssertEqual(source.resumeCalls, 1); XCTAssertEqual(source.completedResumes, 1)
+            try await Self.waitUntil { source.mailbox.counters.waitingReaders == 1 }
+            let preview = try XCTUnwrap(Self.thumbnail(session).image)
+            let document = await session.documentSnapshotForResourceVerification()
+            XCTAssertFalse(session.snapshotForVerification.previewPositionVerified,
+                           "Replaying the old seed into a new assembler does not verify the live source position")
+            XCTAssertFalse(try Self.thumbnail(session).isPositionVerified)
+            XCTAssertEqual(try Self.thumbnail(session).viewportMarkerColor, .systemOrange)
+            XCTAssertFalse(session.snapshotForVerification.canAutoScroll)
+            XCTAssertFalse(try Self.toolbar(session).autoButton.isEnabled)
+            XCTAssertEqual(output.automaticEvents, 0)
+
+            // A delayed callback from before the axis change cannot verify the
+            // marker, even when its pixels exactly match the retained seed.
+            try await Self.deliver(seed, to: session, source: source, generation: oldGeneration)
+            XCTAssertFalse(session.snapshotForVerification.previewPositionVerified)
+            XCTAssertTrue(try Self.thumbnail(session).image === preview)
+            try await Self.deliver(Self.sourceLimitImage(origin: 0, axis: .horizontal, salt: 101), to: session, source: source)
+            XCTAssertFalse(session.stateForVerification.matched)
+            XCTAssertFalse(session.snapshotForVerification.previewPositionVerified)
+            XCTAssertFalse(session.snapshotForVerification.canAutoScroll)
+            XCTAssertEqual(session.snapshotForVerification.acceptedFrames, 1)
+            let mismatchSequence = source.sequence
+            try await Self.deliver(seed, to: session, source: source, sequence: mismatchSequence)
+            XCTAssertFalse(session.snapshotForVerification.previewPositionVerified,
+                           "A stale same-generation match cannot replace a newer mismatched observation")
+            try await Self.deliver(seed, to: session, source: source, generation: source.generation + 1)
+            XCTAssertFalse(session.snapshotForVerification.previewPositionVerified,
+                           "A callback from a generation the producer has not activated cannot verify position")
+            XCTAssertFalse(try Self.thumbnail(session).isPositionVerified)
+            XCTAssertTrue(try Self.thumbnail(session).image === preview)
+            let afterMismatch = await session.documentSnapshotForResourceVerification()
+            XCTAssertEqual(afterMismatch, document)
+            XCTAssertEqual(output.automaticEvents, 0)
+
+            try await Self.deliver(seed, to: session, source: source)
+            XCTAssertTrue(session.stateForVerification.matched)
+            XCTAssertTrue(session.snapshotForVerification.previewPositionVerified)
+            XCTAssertTrue(try Self.thumbnail(session).isPositionVerified)
+            XCTAssertEqual(try Self.thumbnail(session).viewportMarkerColor, .systemGreen)
+            XCTAssertTrue(session.snapshotForVerification.canAutoScroll)
+            XCTAssertTrue(try Self.toolbar(session).autoButton.isEnabled)
+            XCTAssertFalse(session.snapshotForVerification.autoScrolling)
+            XCTAssertEqual(output.automaticEvents, 0)
+            XCTAssertEqual(session.snapshotForVerification.acceptedFrames, 1)
             clock.now += 3
             XCTAssertEqual(session.activeCaptureDurationForVerification, 34)
             try PortableSettingsUIPreviewFixture.click(Self.toolbar(session).finishButton)
@@ -504,7 +785,7 @@ final class LiveScrollSessionInteractionTests: XCTestCase {
         }
     }
 
-    private func withSession(seed suppliedSeed: CGImage? = nil, allOutputRoutes: Bool = false,
+    private func withSession(seed suppliedSeed: CGImage? = nil, allOutputRoutes: Bool = false, seedAutomatically: Bool = true,
                              _ body: (LiveScrollSessionController, Source, CGImage, Output, Clock) async throws -> Void) async throws {
         _ = NSApplication.shared
         guard let screen = NSScreen.main else { throw XCTSkip("A native macOS screen is required for session controls") }
@@ -513,10 +794,11 @@ final class LiveScrollSessionInteractionTests: XCTestCase {
         let output = Output(), clock = Clock()
         let chainDefinition = try CaptureChainDefinition(name: "Owned source-cap image route", source: .region, outputs: [.copy])
         let textDefinition = try TextScriptDefinition(name: "Owned source-cap text route", source: "return text;")
-        let chainDependencies: LiveScrollChainDependencies? = allOutputRoutes ? .init(definitions: { [chainDefinition] }, run: { _, _ in
-            XCTFail("Choice-only coverage must not run an image chain"); throw Failure.output
+        let chainDependencies: LiveScrollChainDependencies? = allOutputRoutes ? .init(definitions: { [chainDefinition] }, run: { transaction, runID in
+            try await output.runChain(transaction, id: runID)
         }, cancel: { _ in }) : nil
         let textDependencies: LiveScrollTextDependencies? = allOutputRoutes ? .init(definitions: { [textDefinition] }, start: { _, _, _, _, _ in
+            output.textStarts += 1
             XCTFail("Choice-only coverage must not run a text script"); throw Failure.output
         }, cancel: { _ in }) : nil
         let session = LiveScrollSessionController(onComplete: { output.image = $0; output.finishes += 1 },
@@ -528,15 +810,17 @@ final class LiveScrollSessionInteractionTests: XCTestCase {
             chainDependencies: chainDependencies, textDependencies: textDependencies)
         do {
             try await session.startForVerification(source: source, screen: screen)
-            source.offer(seed)
-            try await Self.waitUntil { session.snapshotForVerification.acceptedFrames == 1 }
+            if seedAutomatically {
+                source.offer(seed)
+                try await Self.waitUntil { session.snapshotForVerification.acceptedFrames == 1 }
+            }
             try await body(session, source, seed, output, clock)
         } catch {
-            source.releaseDrain(); source.releaseResume()
+            source.releaseDrain(); source.releaseResume(); source.releaseFrame()
             await session.closeForVerification()
             throw error
         }
-        source.releaseDrain(); source.releaseResume()
+        source.releaseDrain(); source.releaseResume(); source.releaseFrame()
         await session.closeForVerification()
         XCTAssertTrue(session.isClosedForVerification)
     }
@@ -557,14 +841,81 @@ final class LiveScrollSessionInteractionTests: XCTestCase {
         XCTAssertEqual(document?.sourceCount, 100)
     }
 
-    private static func assertAllOutputRoutes(_ session: LiveScrollSessionController) throws {
+    private static func assertAllOutputRoutes(_ session: LiveScrollSessionController, textAllowed: Bool = true) throws {
         let state = session.snapshotForVerification
         XCTAssertTrue(state.canFinish); XCTAssertTrue(state.canCopy)
         XCTAssertTrue(state.canQuickSave); XCTAssertTrue(state.canPin)
-        XCTAssertTrue(state.canApplyImageChain); XCTAssertTrue(state.canApplyTextScript)
-        for suffix in ["quickSave", "pin", "imageChain", "textScript"] {
+        XCTAssertTrue(state.canApplyImageChain); XCTAssertEqual(state.canApplyTextScript, textAllowed)
+        for suffix in ["quickSave", "pin", "imageChain"] {
             XCTAssertTrue(try menuItem(session, suffix).isEnabled, suffix)
         }
+        XCTAssertEqual(try menuItem(session, "textScript").isEnabled, textAllowed)
+    }
+
+    private static func assertUnconfirmedTeardownControls(_ session: LiveScrollSessionController,
+                                                         requireCaptureStatus: Bool = true) throws {
+        try assertTerminalControls(session)
+        try assertAllOutputRoutes(session, textAllowed: false)
+        let state = session.snapshotForVerification, label = try toolbar(session).statusLabel
+        if requireCaptureStatus {
+            XCTAssertEqual(state.status, "停止未确认，请完成")
+            XCTAssertEqual(state.statusKind, .error)
+            XCTAssertEqual(label.textColor, .systemRed)
+        }
+        XCTAssertFalse(state.previewPositionVerified)
+        XCTAssertTrue(state.statusDetail.contains(Failure.permanentDrain.localizedDescription))
+        XCTAssertTrue(state.textScriptUnavailableReason.contains("停止未确认"))
+        XCTAssertEqual(label.accessibilityLabel(), state.status)
+        XCTAssertEqual(label.accessibilityHelp(), state.statusDetail)
+        XCTAssertTrue(label.toolTip?.contains(state.statusDetail) == true)
+    }
+
+    private static func assertDeliveredWithTeardownWarning(_ session: LiveScrollSessionController, output: Output) throws {
+        let warning = session.snapshotForVerification.status, attempts = output.deliveryAttempts
+        let state = session.snapshotForVerification, toolbar = try toolbar(session)
+        XCTAssertTrue(warning.contains("采集停止未确认"))
+        XCTAssertTrue(warning.contains(Failure.permanentDrain.localizedDescription))
+        XCTAssertEqual(state.statusKind, .warning)
+        XCTAssertFalse(session.isClosedForVerification)
+        XCTAssertTrue(state.paused); XCTAssertFalse(state.busy); XCTAssertFalse(state.autoScrolling)
+        XCTAssertFalse(state.canPause); XCTAssertFalse(state.canMoveRegion); XCTAssertFalse(state.canChangeAxis)
+        XCTAssertFalse(state.canAutoScroll); XCTAssertFalse(state.canApplyTextScript)
+        XCTAssertFalse(state.canFinish); XCTAssertFalse(state.canCopy); XCTAssertFalse(state.canQuickSave)
+        XCTAssertFalse(state.canPin); XCTAssertFalse(state.canApplyImageChain); XCTAssertFalse(state.canContinueImageChain)
+        XCTAssertTrue(toolbar.cancelButton.isEnabled)
+        for _ in 0..<3 {
+            try dispatchStaleAcquisitionActions(session)
+            try dispatchButton(toolbar.finishButton); try dispatchButton(toolbar.copyButton)
+            for suffix in ["quickSave", "pin", "imageChain", "textScript", "help"] {
+                try dispatchMenu(session, suffix, requireEnabled: false)
+            }
+            session.show()
+        }
+        XCTAssertEqual(output.deliveryAttempts, attempts)
+        XCTAssertEqual(output.textStarts, 0)
+        XCTAssertEqual(session.snapshotForVerification.status, warning)
+        XCTAssertEqual(session.snapshotForVerification.statusKind, .warning)
+        XCTAssertNil(session.chainChoiceAlertForVerification); XCTAssertNil(session.textChoiceAlertForVerification)
+    }
+
+    private static func assertRetainedState(_ session: LiveScrollSessionController, equals expected: LiveScrollAssembler.State) {
+        let actual = session.stateForVerification
+        XCTAssertEqual(actual.width, expected.width); XCTAssertEqual(actual.height, expected.height)
+        XCTAssertEqual(actual.viewportOffset, expected.viewportOffset)
+        XCTAssertEqual(actual.acceptedObservations, expected.acceptedObservations)
+        XCTAssertEqual(actual.committedSources, expected.committedSources)
+        XCTAssertEqual(actual.diskBytes, expected.diskBytes)
+        XCTAssertEqual(actual.matched, expected.matched); XCTAssertEqual(actual.message, expected.message)
+        XCTAssertEqual(actual.fixedLeading, expected.fixedLeading); XCTAssertEqual(actual.fixedTrailing, expected.fixedTrailing)
+        XCTAssertEqual(actual.previewIsTransient, expected.previewIsTransient)
+        XCTAssertEqual(actual.previewUnavailable, expected.previewUnavailable)
+    }
+
+    private static func deliver(_ image: CGImage, to session: LiveScrollSessionController, source: Source,
+                                sequence: UInt64? = nil, generation: UInt64? = nil) async throws {
+        let samples = session.sampledFramesForVerification
+        source.offer(image, sequence: sequence, generation: generation)
+        try await waitUntil { session.sampledFramesForVerification == samples + 1 && source.mailbox.counters.waitingReaders == 1 }
     }
 
     private static func dispatchStaleAcquisitionActions(_ session: LiveScrollSessionController) throws {
@@ -612,7 +963,7 @@ final class LiveScrollSessionInteractionTests: XCTestCase {
             XCTAssertEqual(label.bounds.size, CGSize(width: 275, height: 16))
             XCTAssertEqual(label.font?.pointSize, 11)
             XCTAssertEqual(label.stringValue, session.snapshotForVerification.status)
-            XCTAssertEqual(label.textColor, .systemOrange)
+            XCTAssertEqual(label.textColor, session.snapshotForVerification.statusKind == .error ? .systemRed : .systemOrange)
             let cell = try XCTUnwrap(label.cell), full = cell.cellSize
             XCTAssertGreaterThan(full.width, 0); XCTAssertGreaterThan(full.height, 0)
             XCTAssertLessThanOrEqual(full.width, label.bounds.width, "Complete status must be visible in \(mode)")
@@ -690,13 +1041,14 @@ final class LiveScrollSessionInteractionTests: XCTestCase {
     }
     /// Same absolute-coordinate texture as the proven assembler source-limit
     /// fixture; expected output is generated independently of strip assembly.
-    private static func sourceLimitImage(origin: Int, length: Int = 200) throws -> CGImage {
-        let width = 24, height = length
+    private static func sourceLimitImage(origin: Int, length: Int = 200,
+                                         axis: ScrollAxis = .vertical, salt: UInt64 = 7) throws -> CGImage {
+        let width = axis == .vertical ? 24 : length, height = axis == .vertical ? length : 24
         var data = [UInt8](repeating: 255, count: width * height * 4)
         for y in 0..<height { for x in 0..<width {
-            var value = UInt64(y + origin + 10_000) &* 0x9e3779b185ebca87
-            value ^= UInt64(x) &* 0xc2b2ae3d27d4eb4f
-            value ^= 7
+            var value = UInt64((axis == .vertical ? y : x) + origin + 10_000) &* 0x9e3779b185ebca87
+            value ^= UInt64(axis == .vertical ? x : y) &* 0xc2b2ae3d27d4eb4f
+            value ^= salt
             value = (value ^ (value >> 30)) &* 0xbf58476d1ce4e5b9
             value = (value ^ (value >> 27)) &* 0x94d049bb133111eb
             value ^= value >> 31
@@ -717,17 +1069,51 @@ final class LiveScrollSessionInteractionTests: XCTestCase {
         return Data(bytes: try XCTUnwrap(context.data), count: image.width * image.height * 4)
     }
 
-    private enum Failure: Error, Equatable { case pause, move, resume, output, timedOut }
+    private enum Failure: Error, LocalizedError, Equatable {
+        case pause, permanentDrain, move, resume, output, timedOut
+        var errorDescription: String? { self == .permanentDrain ? "Owned permanent drain failure" : nil }
+    }
     @MainActor private final class Clock { var now: TimeInterval = 1_000 }
     @MainActor private final class Output: LiveScrollSaveDestination {
-        var image: CGImage?
+        var image: CGImage? { didSet { onDelivery?() } }
+        var onDelivery: (() -> Void)?
         var finishes = 0, copies = 0, pins = 0, saves = 0, automaticEvents = 0
+        var chainCopies = 0, textStarts = 0
+        var deliveryAttempts: Int { finishes + copies + pins + saves + chainCopies }
         var rejectDelivery = false
+        var acceptSave = false, allowChainRun = false
+        private var chainRunner: CaptureChainRunner?
         func save(image: CGImage, parent: NSWindow?) async throws {
             self.image = image; saves += 1
-            throw CancellationError()
+            if !acceptSave { throw CancellationError() }
         }
-        func cancel() { }
+        func cancel() { _ = chainRunner?.cancel() }
+
+        func runChain(_ transaction: LiveScrollChainTransaction, id: UUID) async throws -> CaptureChainSnapshot {
+            guard allowChainRun else { XCTFail("Choice-only coverage must not run an image chain"); throw Failure.output }
+            let runner = try CaptureChainRunner(definition: transaction.definition, preparedCapture: transaction.capture,
+                receipts: transaction.receipts, dependencies: .init(capture: {
+                    XCTFail("Prepared image-chain recovery must not reacquire pixels"); throw Failure.output
+                }, savePNG: { _ in
+                    XCTFail("The owned image chain contains only Copy"); return .cancelled
+                }, copy: { image in
+                    self.image = image; self.chainCopies += 1
+                }, pin: { _ in
+                    XCTFail("The owned image chain contains only Copy"); throw Failure.output
+                }, cancelSave: { }), id: id)
+            chainRunner = runner
+            return try await withCheckedThrowingContinuation { continuation in
+                runner.onTerminal = { [weak self] snapshot in
+                    self?.chainRunner = nil
+                    continuation.resume(returning: snapshot)
+                }
+                if !runner.start() {
+                    runner.onTerminal = nil; chainRunner = nil
+                    XCTFail("Prepared image-chain runner refused to start")
+                    continuation.resume(throwing: Failure.output)
+                }
+            }
+        }
     }
 
     @MainActor private final class Source: LiveScrollFrameSource {
@@ -738,21 +1124,27 @@ final class LiveScrollSessionInteractionTests: XCTestCase {
         var automaticScrollWatermark: LiveScrollFrameWatermark? { mailbox.frameWatermark }
         var failure: Failure?
         var nextFailure: Error?
+        var failPermanentDrain = false
+        private(set) var hasUnconfirmedTeardown = false
         var holdDrain = false
         var holdResume = false
+        var holdNextFrame = false
         var hasPendingDrain: Bool { drain != nil }
         var hasPendingResume: Bool { resumption != nil }
+        var hasPendingFrame: Bool { delivery != nil }
         private(set) var pauseCalls = 0, resumeCalls = 0, moveCalls = 0, stopCalls = 0, completedDrains = 0
         private(set) var completedResumes = 0
         private(set) var operations: [String] = []
-        private var generation: UInt64 = 0, sequence: UInt64 = 0
+        private(set) var generation: UInt64 = 0, sequence: UInt64 = 0
         private var running = false, stopped = false
         private var drain: CheckedContinuation<Void, Never>?
         private var resumption: CheckedContinuation<Void, Never>?
+        private var delivery: CheckedContinuation<Void, Never>?
 
         init(displayBounds: CGRect, size: CGSize) { self.displayBounds = displayBounds; region.size = size }
         func start() async throws {
             guard !stopped else { throw LiveScrollSourceError.stopped }
+            guard !hasUnconfirmedTeardown else { throw Failure.permanentDrain }
             generation &+= 1; running = true
             mailbox.activate(generation: generation, width: Int(region.width), height: Int(region.height))
         }
@@ -769,15 +1161,23 @@ final class LiveScrollSessionInteractionTests: XCTestCase {
         func nextFrame(timeout: TimeInterval) async throws -> LiveScrollScreenSource.Frame? {
             let token = generation
             let frame = try await mailbox.next(generation: token, timeout: timeout)
+            if holdNextFrame {
+                holdNextFrame = false
+                await withCheckedContinuation { delivery = $0 }
+            }
             try Task.checkCancellation()
             guard running, generation == token else { throw CancellationError() }
             if let failure = nextFailure { nextFailure = nil; throw failure }
             return frame
         }
-        func offer(_ image: CGImage) {
-            sequence &+= 1
-            mailbox.offer(.init(image: image, sequence: sequence, generation: generation,
-                timestamp: TimeInterval(sequence), region: region), generation: generation, sequence: sequence)
+        func offer(_ image: CGImage, sequence suppliedSequence: UInt64? = nil, generation suppliedGeneration: UInt64? = nil) {
+            let frameGeneration = suppliedGeneration ?? generation
+            let frameSequence = suppliedSequence ?? (sequence + 1)
+            if running && frameGeneration == generation { sequence = max(sequence, frameSequence) }
+            // The active mailbox envelope deliberately permits stale metadata
+            // through, exercising the session's independent identity fence.
+            mailbox.offer(.init(image: image, sequence: frameSequence, generation: frameGeneration,
+                timestamp: TimeInterval(frameSequence), region: region), generation: generation, sequence: sequence)
         }
         func pauseAndDrain() async throws {
             pauseCalls += 1; operations.append("pause"); halt()
@@ -786,6 +1186,10 @@ final class LiveScrollSessionInteractionTests: XCTestCase {
                 await withCheckedContinuation { drain = $0 }
             }
             completedDrains += 1
+            if failPermanentDrain || hasUnconfirmedTeardown {
+                hasUnconfirmedTeardown = true
+                throw Failure.permanentDrain
+            }
             if failure == .pause { throw Failure.pause }
         }
         func releaseDrain() {
@@ -794,18 +1198,29 @@ final class LiveScrollSessionInteractionTests: XCTestCase {
         func releaseResume() {
             let pending = resumption; resumption = nil; pending?.resume()
         }
+        func releaseFrame() {
+            let pending = delivery; delivery = nil; pending?.resume()
+        }
+        func failBeforeReadCompletes() {
+            hasUnconfirmedTeardown = true
+            let token = generation
+            running = false; generation &+= 1
+            mailbox.close(generation: token, error: Failure.permanentDrain)
+        }
         func stop() async throws {
             stopCalls += 1; stopped = true; halt()
             // Deliberately leave an already-held drain outstanding so the test
             // can complete it after retirement and exercise stale-task guards.
+            if hasUnconfirmedTeardown { throw Failure.permanentDrain }
         }
         func moveRegion(to proposed: CGRect) throws {
             moveCalls += 1; operations.append("move")
+            guard !hasUnconfirmedTeardown else { throw Failure.permanentDrain }
             if failure == .move { throw Failure.move }
             guard !running, !stopped, drain == nil else { throw CaptureError.busy }
             region = proposed
         }
-        func validateTarget() throws { }
+        func validateTarget() throws { if hasUnconfirmedTeardown { throw Failure.permanentDrain } }
         private func halt() {
             let token = generation
             running = false; generation &+= 1; mailbox.close(generation: token)

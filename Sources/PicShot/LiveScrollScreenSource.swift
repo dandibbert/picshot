@@ -37,6 +37,7 @@ final class LiveScrollScreenSource {
 
     var counters: LiveScrollFrameCounters { mailbox.counters }
     var automaticScrollWatermark: LiveScrollFrameWatermark? { mailbox.frameWatermark }
+    var hasUnconfirmedTeardown: Bool { state == .failed }
 
     private let displayIdentity: DisplayIdentity
     private let mailbox = LiveScrollFrameMailbox<LiveScrollPixelFrame>()

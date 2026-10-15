@@ -9,6 +9,7 @@ struct LiveScrollCaptureSnapshot: Equatable {
     var pixelHeight = 0
     var acceptedFrames = 0
     var status = "滚动页面以继续拼接"
+    var statusDetail = ""
     var statusKind: StatusKind = .capturing
     var paused = false
     var busy = false
@@ -565,8 +566,10 @@ final class LiveScrollToolbarView: NSView {
         dimensionLabel.stringValue = snapshot.dimensions
         dimensionLabel.setAccessibilityLabel("已拼接尺寸 \(snapshot.dimensions)，\(max(0, snapshot.acceptedFrames)) 帧")
         dimensionLabel.toolTip = dimensionLabel.accessibilityLabel()
-        statusLabel.stringValue = snapshot.status; statusLabel.toolTip = snapshot.status
+        statusLabel.stringValue = snapshot.status
+        statusLabel.toolTip = snapshot.statusDetail.isEmpty ? snapshot.status : snapshot.status + "\n" + snapshot.statusDetail
         statusLabel.setAccessibilityLabel(snapshot.status)
+        statusLabel.setAccessibilityHelp(snapshot.statusDetail.isEmpty ? nil : snapshot.statusDetail)
         let warning = snapshot.statusKind == .warning || snapshot.statusKind == .paused
         let error = snapshot.statusKind == .error
         statusLabel.textColor = error ? .systemRed : (warning ? .systemOrange : .secondaryLabelColor)

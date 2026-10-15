@@ -599,8 +599,10 @@ PRESERVED279_NATIVE_INVENTORY = (2446, 272, 'cb4c7562b61acbe85a76baab2cfad28c601
 PRESERVED279_FOCUSED_INVENTORY = (1914, 'a2b347f3dcdc7e010730706a8db5ba5886392dd41bb69daa7dd1f79c2eb05e6a')
 PRESERVED284_NATIVE_INVENTORY = (2487, 276, '9771421dd31e1bdd9617232d43d18dccfcc96caa81e3cebd714295d65d44eb06')
 PRESERVED284_FOCUSED_INVENTORY = (1955, '2ed09aa59fcb8240d7036a5117a761eb294f228825fcdf3e5061109b98e3eb66')
-CURRENT_NATIVE_INVENTORY = (2493, 276, '599b965cf63f5d8d05f13c73c7abb7845ba3fb673a0b9c180b45db7ee99f2645')
-CURRENT_FOCUSED_INVENTORY = (1961, '9ea75c63c129afc6ef75049e285790c0b90d4032092835b9080ab55c236a375c')
+PRESERVED287_NATIVE_INVENTORY = (2493, 276, '599b965cf63f5d8d05f13c73c7abb7845ba3fb673a0b9c180b45db7ee99f2645')
+PRESERVED287_FOCUSED_INVENTORY = (1961, '9ea75c63c129afc6ef75049e285790c0b90d4032092835b9080ab55c236a375c')
+CURRENT_NATIVE_INVENTORY = (2500, 276, 'd43319ad3451170aa9f928011c1ca63b3ec45b4e7068d6a2d892399e9281c3de')
+CURRENT_FOCUSED_INVENTORY = (1968, '12fec756bdcd86f6c9901d7fcb5c0fb891cde8425f7ea9a3884c674fc5656983')
 SCROLL_GUIDANCE_ADDITIONS = (
     'PicShotTests.LiveScrollAssemblerTransactionTests/testLostOverlapAdvicePreservesLastGoodPixelsAndAnchorBothAxes',
     'PicShotTests.LiveScrollAssemblerTransactionTests/testUncertainPlainTextBoundaryAdvicePreservesSeedAndRecoversForwardBothAxes',
@@ -652,6 +654,34 @@ SCROLL_CHAIN_CHOICE_ADDITIONS = (
 )
 
 
+def scroll_source_recovery_manifest():
+    added = json.loads(read(Path('scripts/scroll-source-recovery-additive-tests.json')))
+    need(type(added) is list and len(added) == 7
+         and all(type(name) is str and re.fullmatch(
+             r'PicShotTests\.LiveScroll(?:FrameSource|SessionInteraction)Tests/test\w+', name) for name in added)
+         and added == sorted(set(added))
+         and hashlib.sha256(('\n'.join(added)+'\n').encode()).hexdigest()
+         == '7fa8711a54c263dac1a28ffc0570320a859b28b2c2f6e987d7e266906d14b485',
+         'Explicit7 source-recovery IDs differ')
+    return set(added)
+
+
+def scroll_source_recovery_additions(inventory):
+    """Remove only the explicit288 additions before binding delivered287 exactly."""
+    need(type(inventory) is list and all(type(name) is str for name in inventory)
+         and inventory == sorted(set(inventory)), 'Native discovery must contain unique sorted IDs')
+    added = scroll_source_recovery_manifest()
+    need(added.issubset(inventory), 'Explicit288 source-recovery methods missing or renamed')
+    preserved = [name for name in inventory if name not in added]
+    need((len(preserved), len({name.split('/')[0] for name in preserved}),
+          hashlib.sha256(('\n'.join(preserved)+'\n').encode()).hexdigest()) == PRESERVED287_NATIVE_INVENTORY,
+         'Preserved287 native IDs changed')
+    need((len(inventory), len({name.split('/')[0] for name in inventory}),
+          hashlib.sha256(('\n'.join(inventory)+'\n').encode()).hexdigest()) == CURRENT_NATIVE_INVENTORY,
+         'Current native discovery differs from the exact additive source-recovery union')
+    return added
+
+
 def scroll_capture_state_manifest():
     added = json.loads(read(Path('scripts/scroll-capture-state-additive-tests.json')))
     need(type(added) is list and len(added) == 6
@@ -666,8 +696,8 @@ def scroll_capture_state_manifest():
 
 def scroll_capture_state_additions(inventory):
     """Remove only the explicit285 additions before binding delivered284 exactly."""
-    need(type(inventory) is list and all(type(name) is str for name in inventory)
-         and inventory == sorted(set(inventory)), 'Native discovery must contain unique sorted IDs')
+    source_recovery = scroll_source_recovery_additions(inventory)
+    inventory = [name for name in inventory if name not in source_recovery]
     added = scroll_capture_state_manifest()
     need(added.issubset(inventory), 'Explicit285 capture-state methods missing or renamed')
     preserved = [name for name in inventory if name not in added]
@@ -675,8 +705,8 @@ def scroll_capture_state_additions(inventory):
           hashlib.sha256(('\n'.join(preserved)+'\n').encode()).hexdigest()) == PRESERVED284_NATIVE_INVENTORY,
          'Preserved284 native IDs changed')
     need((len(inventory), len({name.split('/')[0] for name in inventory}),
-          hashlib.sha256(('\n'.join(inventory)+'\n').encode()).hexdigest()) == CURRENT_NATIVE_INVENTORY,
-         'Current native discovery differs from the exact additive capture-state union')
+          hashlib.sha256(('\n'.join(inventory)+'\n').encode()).hexdigest()) == PRESERVED287_NATIVE_INVENTORY,
+         'Preserved287 native discovery differs from the exact additive capture-state union')
     return added
 
 
@@ -696,7 +726,8 @@ def scroll_text_script_manifest():
 def scroll_text_script_additions(inventory):
     """Remove only the explicit41 additions before binding delivered279 exactly."""
     capture_state = scroll_capture_state_additions(inventory)
-    inventory = [name for name in inventory if name not in capture_state]
+    source_recovery = scroll_source_recovery_manifest()
+    inventory = [name for name in inventory if name not in capture_state | source_recovery]
     added = scroll_text_script_manifest()
     need(added.issubset(inventory), 'Explicit280 scrolling text script methods missing or renamed')
     classes = {name.split('/')[0] for name in added}
@@ -729,6 +760,11 @@ def check_focused_inventory(inventory):
     need(type(inventory) is list and all(type(name) is str for name in inventory)
          and inventory == sorted(set(inventory)), 'Focused discovery must contain unique sorted IDs')
     current_inventory = inventory
+    source_recovery = scroll_source_recovery_manifest()
+    need(source_recovery.issubset(inventory), 'All7 source-recovery methods must be selected in both plans')
+    inventory = [name for name in inventory if name not in source_recovery]
+    need((len(inventory), hashlib.sha256(('\n'.join(inventory)+'\n').encode()).hexdigest())
+         == PRESERVED287_FOCUSED_INVENTORY, 'Preserved287 focused native IDs changed')
     capture_state = scroll_capture_state_manifest()
     need(capture_state.issubset(inventory), 'All6 capture-state methods must be selected in both plans')
     inventory = [name for name in inventory if name not in capture_state]
@@ -763,7 +799,8 @@ def text_script_additions(inventory):
     current_inventory = inventory
     text_bridge_ids = scroll_text_script_additions(inventory)
     capture_state_ids = scroll_capture_state_manifest()
-    inventory = [name for name in inventory if name not in text_bridge_ids | capture_state_ids]
+    source_recovery_ids = scroll_source_recovery_manifest()
+    inventory = [name for name in inventory if name not in text_bridge_ids | capture_state_ids | source_recovery_ids]
     guidance_ids = scroll_guidance_additions(inventory)
     preserved278 = [name for name in inventory if name not in guidance_ids]
     inventory = preserved278
@@ -800,7 +837,7 @@ def text_script_additions(inventory):
          == '5c7d51efe5e1fc16a1d3dd5c5d5fc4ae35948893fc7e5feb92aaf7c83c9f5539', 'Current native discovery differs from the exact2407 ID union')
     need((len(current_inventory), len({name.split('/')[0] for name in current_inventory}),
           hashlib.sha256(('\n'.join(current_inventory)+'\n').encode()).hexdigest()) == CURRENT_NATIVE_INVENTORY,
-         'Current native discovery differs from the exact additive capture-state union')
+         'Current native discovery differs from the exact additive source-recovery union')
     preserved269 = [name for name in preserved278 if name not in SCROLL_CHAIN_CHOICE_ADDITIONS]
     need(len(preserved269) == 2436 and hashlib.sha256(('\n'.join(preserved269)+'\n').encode()).hexdigest()
          == '38a94e9f556705bb7b34260cca519f70d8058e59ef4f12b0701cf1a65ad79d07',
@@ -1199,12 +1236,14 @@ def final():
             ('full', 'native-tests-plan.json', 'native-test-shards', 'test-report.json'),
             ('focused', 'focused-tests-plan.json', 'focused-test-shards', 'critical-tests-report.json')):
         plan = native.checked_plan(Path('dist')/planfile, source['sourceCommit'])
+        source_recovery_ids = scroll_source_recovery_additions(plan['discoveredTests'])
+        need(source_recovery_ids <= set(plan['selectedTests']), 'All7 source-recovery methods must be selected in both plans')
         capture_state_ids = scroll_capture_state_additions(plan['discoveredTests'])
         need(capture_state_ids <= set(plan['selectedTests']), 'All6 capture-state methods must be selected in both plans')
         text_ids = text_script_additions(plan['discoveredTests'])
         text_bridge_ids = scroll_text_script_additions(plan['discoveredTests'])
         need(text_bridge_ids <= set(plan['selectedTests']), 'All41 scrolling text script methods must be selected in both plans')
-        preserved279 = [name for name in plan['discoveredTests'] if name not in text_bridge_ids | capture_state_ids]
+        preserved279 = [name for name in plan['discoveredTests'] if name not in text_bridge_ids | capture_state_ids | source_recovery_ids]
         guidance_ids = scroll_guidance_additions(preserved279)
         need(guidance_ids <= set(plan['selectedTests']), 'All6 guidance methods must be selected in both plans')
         scroll_ids = scroll_chain_additions(plan['discoveredTests'])
@@ -1217,7 +1256,7 @@ def final():
         if kind == 'full':
             live = json.loads(read(Path('scripts/live-scroll-additive-tests.json')))
             need(live == [name for name in plan['discoveredTests'] if '.LiveScroll' in name]
-                 and len(live) == 230, 'All preserved and new live methods required')
+                 and len(live) == 237, 'All preserved and new live methods required')
             feedback = feedback_additions(plan['discoveredTests'])
             chains = chain_additions(plan['discoveredTests'])
             stable = [name for name in plan['discoveredTests'] if name not in set(live) | feedback | chains | text_ids | payload_ids | scroll_ids | text_bridge_ids]
@@ -1228,6 +1267,7 @@ def final():
             check_focused_inventory(plan['selectedTests'])
         aggregate = native.aggregate(plan, Path('dist')/directory)
         need(aggregate == load(Path('dist')/reportfile), 'Native aggregate differs: ' + kind)
+        need(not (source_recovery_ids & set(aggregate['skippedTests'])), 'Source-recovery methods must pass without skips: ' + kind)
         need(not (capture_state_ids & set(aggregate['skippedTests'])), 'Capture-state methods must pass without skips: ' + kind)
         need(not (text_bridge_ids & set(aggregate['skippedTests'])), 'Scrolling text script methods must pass without skips: ' + kind)
         need(not (text_ids & set(aggregate['skippedTests'])), 'Script methods must pass without skips: ' + kind)
