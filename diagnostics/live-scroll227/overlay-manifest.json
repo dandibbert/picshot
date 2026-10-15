@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "productBase": "e5a859a82b2a7a697e51a0a4d42f34ae4f5602d0",
+  "productTree": "bee9ab45ee7770f2aab84565f392934f21903030",
+  "appOverlay": {
+    "Sources/PicShot/LiveScrollAllocationDiagnostic.swift": {
+      "originalSHA256": null,
+      "overlaySHA256": "ebb5ada4e673adc9b61fe743cf6cd343c52c1e9dc83aa7b5290002aaaf9f35b6"
+    },
+    "Sources/PicShot/LiveScrollResourceFixture.swift": {
+      "originalSHA256": "4457ce7cf6543746d0064e474db6d0b89552279e50fe1f0f4f28d49860214f06",
+      "overlaySHA256": "a5a976446b8b03a09d901eb47fd0f309b4c2c7a2063ddfd966631605e2243233"
+    },
+    "scripts/launch-smoke-app.swift": {
+      "originalSHA256": "589eab4377c411f1146dd2c3144320b212358bf52ff81543a70d6c9da295149f",
+      "overlaySHA256": "0594381379fc78efed7829ad00ac0aead2c99f7338332123914fde9dcb12bbd1"
+    }
+  },
+  "diagnosticOnly": true,
+  "installerAcceptance": false,
+  "original227MemoryFailurePreserved": true
+}

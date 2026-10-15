@@ -9,8 +9,8 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[live-scroll-xctest-diagnostic]') && 'live-scroll-xctest-diagnostic' || contains(github.event.head_commit.message || '', '[text-script-xctest-diagnostic]') && 'text-script-xctest-diagnostic' || contains(github.event.head_commit.message || '', '[text-script-runtime]') && 'text-script-runtime' || contains(github.event.head_commit.message || '', '[experimental-installer227]') && 'experimental-installer227' || contains(github.event.head_commit.message || '', '[blocked-installers227]') && 'blocked-installers227' || contains(github.event.head_commit.message || '', '[live-scroll-remainder]') && 'live-scroll-remainder' || contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') && 'pin-ui-diagnostic' || contains(github.event.head_commit.message || '', '[shortcut-isolation]') && 'shortcut-isolation' || contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && 'intel154-fresh-diagnostic' || contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && 'native-timeout-diagnostic' || contains(github.event.head_commit.message || '', '[installed-diagnostic]') && 'installed-diagnostic' || contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-product-resource' || contains(github.event.head_commit.message || '', '[seed-render-crop]') && 'seed-render-crop' || contains(github.event.head_commit.message || '', '[effect-context]') && 'effect-context' || contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && 'renderer-scope-controls' || contains(github.event.head_commit.message || '', '[renderer-storage]') && 'renderer-storage' || contains(github.event.head_commit.message || '', '[drawing-pair]') && 'drawing-pair' || contains(github.event.head_commit.message || '', '[editable-observation]') && 'editable-observation' || contains(github.event.head_commit.message || '', '[callout-retirement]') && 'callout-retirement' || contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-documents' || contains(github.event.head_commit.message || '', '[multiwindow-memory]') && 'multiwindow-memory' || contains(github.event.head_commit.message || '', '[recording-wait]') && 'recording-wait' || contains(github.event.head_commit.message || '', '[manual-hash]') && 'manual-hash' || contains(github.event.head_commit.message || '', '[scroll-memory]') && 'scroll-memory' || contains(github.event.head_commit.message || '', '[decode-exit-latch]') && 'decode-exit-latch' || contains(github.event.head_commit.message || '', '[decode-timing-v3]') && 'decode-timing-v3' || contains(github.event.head_commit.message || '', '[decode-large]') && 'decode-large' || contains(github.event.head_commit.message || '', '[pin-workflows]') && 'pins-010' || contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
-  cancel-in-progress: ${{ !contains(github.event.head_commit.message || '', '[live-scroll-xctest-diagnostic]') && !contains(github.event.head_commit.message || '', '[text-script-xctest-diagnostic]') && !contains(github.event.head_commit.message || '', '[text-script-runtime]') && !contains(github.event.head_commit.message || '', '[experimental-installer227]') && !contains(github.event.head_commit.message || '', '[blocked-installers227]') && !contains(github.event.head_commit.message || '', '[live-scroll-remainder]') && !contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') && !contains(github.event.head_commit.message || '', '[shortcut-isolation]') && !contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && !(contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]')) && !contains(github.event.head_commit.message || '', '[seed-render-crop]') && !contains(github.event.head_commit.message || '', '[effect-context]') && !contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && !contains(github.event.head_commit.message || '', '[renderer-storage]') && !contains(github.event.head_commit.message || '', '[drawing-pair]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
+  group: picshot-${{ github.ref }}-${{ contains(github.event.head_commit.message || '', '[live-scroll-allocation-diagnostic]') && 'live-scroll-allocation-diagnostic' || contains(github.event.head_commit.message || '', '[live-scroll-xctest-diagnostic]') && 'live-scroll-xctest-diagnostic' || contains(github.event.head_commit.message || '', '[text-script-xctest-diagnostic]') && 'text-script-xctest-diagnostic' || contains(github.event.head_commit.message || '', '[text-script-runtime]') && 'text-script-runtime' || contains(github.event.head_commit.message || '', '[experimental-installer227]') && 'experimental-installer227' || contains(github.event.head_commit.message || '', '[blocked-installers227]') && 'blocked-installers227' || contains(github.event.head_commit.message || '', '[live-scroll-remainder]') && 'live-scroll-remainder' || contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') && 'pin-ui-diagnostic' || contains(github.event.head_commit.message || '', '[shortcut-isolation]') && 'shortcut-isolation' || contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && 'intel154-fresh-diagnostic' || contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && 'native-timeout-diagnostic' || contains(github.event.head_commit.message || '', '[installed-diagnostic]') && 'installed-diagnostic' || contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-product-resource' || contains(github.event.head_commit.message || '', '[seed-render-crop]') && 'seed-render-crop' || contains(github.event.head_commit.message || '', '[effect-context]') && 'effect-context' || contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && 'renderer-scope-controls' || contains(github.event.head_commit.message || '', '[renderer-storage]') && 'renderer-storage' || contains(github.event.head_commit.message || '', '[drawing-pair]') && 'drawing-pair' || contains(github.event.head_commit.message || '', '[editable-observation]') && 'editable-observation' || contains(github.event.head_commit.message || '', '[callout-retirement]') && 'callout-retirement' || contains(github.event.head_commit.message || '', '[editable-documents]') && 'editable-documents' || contains(github.event.head_commit.message || '', '[multiwindow-memory]') && 'multiwindow-memory' || contains(github.event.head_commit.message || '', '[recording-wait]') && 'recording-wait' || contains(github.event.head_commit.message || '', '[manual-hash]') && 'manual-hash' || contains(github.event.head_commit.message || '', '[scroll-memory]') && 'scroll-memory' || contains(github.event.head_commit.message || '', '[decode-exit-latch]') && 'decode-exit-latch' || contains(github.event.head_commit.message || '', '[decode-timing-v3]') && 'decode-timing-v3' || contains(github.event.head_commit.message || '', '[decode-large]') && 'decode-large' || contains(github.event.head_commit.message || '', '[pin-workflows]') && 'pins-010' || contains(github.event.head_commit.message || '', '[intel-only]') && 'intel-05' || 'current' }}
+  cancel-in-progress: ${{ !contains(github.event.head_commit.message || '', '[live-scroll-allocation-diagnostic]') && !contains(github.event.head_commit.message || '', '[live-scroll-xctest-diagnostic]') && !contains(github.event.head_commit.message || '', '[text-script-xctest-diagnostic]') && !contains(github.event.head_commit.message || '', '[text-script-runtime]') && !contains(github.event.head_commit.message || '', '[experimental-installer227]') && !contains(github.event.head_commit.message || '', '[blocked-installers227]') && !contains(github.event.head_commit.message || '', '[live-scroll-remainder]') && !contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') && !contains(github.event.head_commit.message || '', '[shortcut-isolation]') && !contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && !(contains(github.event.head_commit.message || '', '[editable-product-resource]') && contains(github.event.head_commit.message || '', '[editable-documents]')) && !contains(github.event.head_commit.message || '', '[seed-render-crop]') && !contains(github.event.head_commit.message || '', '[effect-context]') && !contains(github.event.head_commit.message || '', '[renderer-scope-controls]') && !contains(github.event.head_commit.message || '', '[renderer-storage]') && !contains(github.event.head_commit.message || '', '[drawing-pair]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
 jobs:
   text-script-xctest-diagnostic:
     if: ${{ contains(github.event.head_commit.message || '', '[text-script-xctest-diagnostic]') }}
@@ -760,7 +760,7 @@ jobs:
           retention-days: 14
 
   build:
-    if: ${{ !contains(github.event.head_commit.message || '', '[live-scroll-xctest-diagnostic]') && !contains(github.event.head_commit.message || '', '[text-script-xctest-diagnostic]') && !contains(github.event.head_commit.message || '', '[text-script-runtime]') && !contains(github.event.head_commit.message || '', '[experimental-installer227]') && !contains(github.event.head_commit.message || '', '[blocked-installers227]') && !contains(github.event.head_commit.message || '', '[live-scroll-remainder]') && !contains(github.event.head_commit.message || '', '[live-scroll-preview]') && !contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') && !contains(github.event.head_commit.message || '', '[shortcut-isolation]') && !contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') && !contains(github.event.head_commit.message || '', '[codec-attribution]') && !contains(github.event.head_commit.message || '', '[codec-staging]') && !contains(github.event.head_commit.message || '', '[codec-avif-confirmation]') && !contains(github.event.head_commit.message || '', '[runner-only]') && !contains(github.event.head_commit.message || '', '[scroll-memory]') && !contains(github.event.head_commit.message || '', '[manual-hash]') && !contains(github.event.head_commit.message || '', '[recording-wait]') && !contains(github.event.head_commit.message || '', '[multiwindow-memory]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-documents]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
+    if: ${{ !contains(github.event.head_commit.message || '', '[live-scroll-allocation-diagnostic]') && !contains(github.event.head_commit.message || '', '[live-scroll-xctest-diagnostic]') && !contains(github.event.head_commit.message || '', '[text-script-xctest-diagnostic]') && !contains(github.event.head_commit.message || '', '[text-script-runtime]') && !contains(github.event.head_commit.message || '', '[experimental-installer227]') && !contains(github.event.head_commit.message || '', '[blocked-installers227]') && !contains(github.event.head_commit.message || '', '[live-scroll-remainder]') && !contains(github.event.head_commit.message || '', '[live-scroll-preview]') && !contains(github.event.head_commit.message || '', '[pin-ui-diagnostic]') && !contains(github.event.head_commit.message || '', '[shortcut-isolation]') && !contains(github.event.head_commit.message || '', '[intel154-fresh-diagnostic]') && !contains(github.event.head_commit.message || '', '[native-timeout-diagnostic]') && !contains(github.event.head_commit.message || '', '[installed-diagnostic]') && (!contains(github.event.head_commit.message || '', '[gif-attribution]') || contains(github.event.head_commit.message || '', '[verify-installers]')) && !contains(github.event.head_commit.message || '', '[gif-timing]') && !contains(github.event.head_commit.message || '', '[codec-build]') && !contains(github.event.head_commit.message || '', '[codec-attribution]') && !contains(github.event.head_commit.message || '', '[codec-staging]') && !contains(github.event.head_commit.message || '', '[codec-avif-confirmation]') && !contains(github.event.head_commit.message || '', '[runner-only]') && !contains(github.event.head_commit.message || '', '[scroll-memory]') && !contains(github.event.head_commit.message || '', '[manual-hash]') && !contains(github.event.head_commit.message || '', '[recording-wait]') && !contains(github.event.head_commit.message || '', '[multiwindow-memory]') && !contains(github.event.head_commit.message || '', '[callout-retirement]') && !contains(github.event.head_commit.message || '', '[editable-documents]') && !contains(github.event.head_commit.message || '', '[editable-observation]') }}
     strategy:
       fail-fast: false
       matrix:
@@ -6244,3 +6244,246 @@ jobs:
         if-no-files-found: error
         retention-days: 14
         compression-level: 6
+
+
+  # One instrumented original227 attribution, never installer or memory acceptance.
+  live-scroll-allocation-diagnostic:
+    if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message || '', '[live-scroll-allocation-diagnostic]') }}
+    runs-on: macos-15
+    timeout-minutes: 85
+    steps:
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      with:
+        fetch-depth: 0
+        persist-credentials: false
+    - name: Bind original227 and reviewed observation-only overlay
+      id: provenance
+      run: python3 diagnostics/live-scroll227/prepare-allocation-source.py
+    - name: Check diagnostic identity storage and protocol negative controls
+      id: contracts
+      run: python3 -m unittest discover -s diagnostics/live-scroll227/tests -p 'test_*.py' -v
+    - name: Build original release application with opt-in observations and unchanged signing
+      id: build
+      timeout-minutes: 30
+      run: |
+        python3 scripts/run-bounded-command.py --timeout-seconds 1740 --max-log-bytes 8388608 --log dist/allocation227/build.log --report dist/allocation227/build-report.json -- env PICSHOT_PACKAGE_APP_ONLY=1 bash dist/allocation227/source/scripts/package.sh
+        codesign --verify --deep --strict dist/allocation227/source/dist/PicShot.app
+        xcrun dwarfdump --uuid dist/allocation227/source/dist/PicShot.app/Contents/MacOS/PicShot > dist/allocation227/executable-uuid.txt
+        shasum -a 256 dist/allocation227/source/dist/PicShot.app/Contents/MacOS/PicShot > dist/allocation227/executable-sha256.txt
+        xcrun swiftc -O diagnostics/live-scroll227/verify-allocation-diagnostic-outputs.swift -o dist/allocation227/verify-outputs
+    - name: Certify generated input and the exact diagnostic binary outside measurement
+      id: certify
+      timeout-minutes: 11
+      run: |
+        mkdir -p dist/allocation227/resource/certify dist/allocation227/resource/measure
+        python3 scripts/run-bounded-command.py --timeout-seconds 620 --max-log-bytes 8388608 --log dist/allocation227/certify.log --report dist/allocation227/certify-command.json -- env PICSHOT_LIVE_SCROLL_RESOURCE_MODE=certify PICSHOT_LIVE_SCROLL_RESOURCE_INPUT="$PWD/dist/allocation227/resource/input" PICSHOT_LIVE_SCROLL_PNG_WRITER=foundation swift dist/allocation227/source/scripts/launch-smoke-app.swift "$PWD/dist/allocation227/source/dist/PicShot.app" "$PWD/dist/allocation227/resource/certify/summary.json"
+        python3 diagnostics/live-scroll227/check-allocation-run.py certify
+    - name: Observe one owned original227 replay after full-history and fixed-capacity access gates
+      id: measure
+      continue-on-error: true
+      timeout-minutes: 11
+      run: |
+        python3 scripts/run-bounded-command.py --timeout-seconds 620 --max-log-bytes 8388608 --log dist/allocation227/observer.log --report dist/allocation227/observer-command.json -- python3 diagnostics/live-scroll227/observe-original227-allocations.py --app "$PWD/dist/allocation227/source/dist/PicShot.app" --launcher "$PWD/dist/allocation227/source/scripts/launch-smoke-app.swift" --resource-root "$PWD/dist/allocation227/resource" --diagnostic-directory "$PWD/dist/allocation227/observation" --report "$PWD/dist/allocation227/observer-report.json"
+    - name: Verify every available PNG after confirmed owned process exit even on diagnostic failure
+      id: outputs
+      if: ${{ !cancelled() && steps.certify.outcome == 'success' && (steps.measure.outcome == 'success' || steps.measure.outcome == 'failure') }}
+      timeout-minutes: 5
+      run: |
+        python3 diagnostics/live-scroll227/check-allocation-run.py retired
+        python3 scripts/run-bounded-command.py --timeout-seconds 240 --max-log-bytes 4194304 --log dist/allocation227/output-verification.log --report dist/allocation227/output-verification-command.json -- dist/allocation227/verify-outputs "$PWD/dist/allocation227/resource" "$PWD/dist/allocation227/available-output-verification.json"
+    - name: Apply original complete native pixel verifier only when all ten cycles completed
+      id: native_validation
+      if: ${{ !cancelled() && steps.outputs.outcome == 'success' }}
+      timeout-minutes: 11
+      run: python3 diagnostics/live-scroll227/check-allocation-run.py validate-if-complete
+    - name: Preserve all original failure classifications and diagnostic outcomes
+      if: always()
+      id: outcomes
+      env:
+        PICSHOT_ALLOCATION_STEP_OUTCOMES: ${{ toJSON(steps) }}
+      run: python3 diagnostics/live-scroll227/check-allocation-run.py summarize
+    - name: Prepare bounded raw evidence and exact output manifests
+      if: always()
+      id: archives
+      run: python3 diagnostics/live-scroll227/prepare-allocation-artifacts.py
+    - name: Upload allocation evidence part 1
+      if: ${{ always() && hashFiles('dist/allocation227/artifacts/records-01.zip') != '' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Allocation227-Records-01-${{ github.run_number }}
+        path: dist/allocation227/artifacts/records-01.zip
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 0
+    - name: Upload allocation evidence part 2
+      if: ${{ always() && hashFiles('dist/allocation227/artifacts/records-02.zip') != '' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Allocation227-Records-02-${{ github.run_number }}
+        path: dist/allocation227/artifacts/records-02.zip
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 0
+    - name: Upload allocation evidence part 3
+      if: ${{ always() && hashFiles('dist/allocation227/artifacts/records-03.zip') != '' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Allocation227-Records-03-${{ github.run_number }}
+        path: dist/allocation227/artifacts/records-03.zip
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 0
+    - name: Upload allocation evidence part 4
+      if: ${{ always() && hashFiles('dist/allocation227/artifacts/records-04.zip') != '' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Allocation227-Records-04-${{ github.run_number }}
+        path: dist/allocation227/artifacts/records-04.zip
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 0
+    - name: Upload allocation evidence part 5
+      if: ${{ always() && hashFiles('dist/allocation227/artifacts/records-05.zip') != '' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Allocation227-Records-05-${{ github.run_number }}
+        path: dist/allocation227/artifacts/records-05.zip
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 0
+    - name: Upload allocation evidence part 6
+      if: ${{ always() && hashFiles('dist/allocation227/artifacts/records-06.zip') != '' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Allocation227-Records-06-${{ github.run_number }}
+        path: dist/allocation227/artifacts/records-06.zip
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 0
+    - name: Upload allocation evidence part 7
+      if: ${{ always() && hashFiles('dist/allocation227/artifacts/records-07.zip') != '' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Allocation227-Records-07-${{ github.run_number }}
+        path: dist/allocation227/artifacts/records-07.zip
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 0
+    - name: Upload allocation evidence part 8
+      if: ${{ always() && hashFiles('dist/allocation227/artifacts/records-08.zip') != '' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Allocation227-Records-08-${{ github.run_number }}
+        path: dist/allocation227/artifacts/records-08.zip
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 0
+    - name: Retain complete generated output 1
+      if: ${{ always() && hashFiles('dist/allocation227/artifacts/outputs/cycle-01.png') != '' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Allocation227-Output-01-${{ github.run_number }}
+        path: dist/allocation227/artifacts/outputs/cycle-01.png
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 0
+    - name: Retain complete generated output 2
+      if: ${{ always() && hashFiles('dist/allocation227/artifacts/outputs/cycle-02.png') != '' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Allocation227-Output-02-${{ github.run_number }}
+        path: dist/allocation227/artifacts/outputs/cycle-02.png
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 0
+    - name: Retain complete generated output 3
+      if: ${{ always() && hashFiles('dist/allocation227/artifacts/outputs/cycle-03.png') != '' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Allocation227-Output-03-${{ github.run_number }}
+        path: dist/allocation227/artifacts/outputs/cycle-03.png
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 0
+    - name: Retain complete generated output 4
+      if: ${{ always() && hashFiles('dist/allocation227/artifacts/outputs/cycle-04.png') != '' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Allocation227-Output-04-${{ github.run_number }}
+        path: dist/allocation227/artifacts/outputs/cycle-04.png
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 0
+    - name: Retain complete generated output 5
+      if: ${{ always() && hashFiles('dist/allocation227/artifacts/outputs/cycle-05.png') != '' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Allocation227-Output-05-${{ github.run_number }}
+        path: dist/allocation227/artifacts/outputs/cycle-05.png
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 0
+    - name: Retain complete generated output 6
+      if: ${{ always() && hashFiles('dist/allocation227/artifacts/outputs/cycle-06.png') != '' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Allocation227-Output-06-${{ github.run_number }}
+        path: dist/allocation227/artifacts/outputs/cycle-06.png
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 0
+    - name: Retain complete generated output 7
+      if: ${{ always() && hashFiles('dist/allocation227/artifacts/outputs/cycle-07.png') != '' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Allocation227-Output-07-${{ github.run_number }}
+        path: dist/allocation227/artifacts/outputs/cycle-07.png
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 0
+    - name: Retain complete generated output 8
+      if: ${{ always() && hashFiles('dist/allocation227/artifacts/outputs/cycle-08.png') != '' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Allocation227-Output-08-${{ github.run_number }}
+        path: dist/allocation227/artifacts/outputs/cycle-08.png
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 0
+    - name: Retain complete generated output 9
+      if: ${{ always() && hashFiles('dist/allocation227/artifacts/outputs/cycle-09.png') != '' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Allocation227-Output-09-${{ github.run_number }}
+        path: dist/allocation227/artifacts/outputs/cycle-09.png
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 0
+    - name: Retain complete generated output 10
+      if: ${{ always() && hashFiles('dist/allocation227/artifacts/outputs/cycle-10.png') != '' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Allocation227-Output-10-${{ github.run_number }}
+        path: dist/allocation227/artifacts/outputs/cycle-10.png
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 0
+    - name: Retain compact source outcome and archive index on every exit
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: PicShot-Allocation227-Outcome-${{ github.run_number }}
+        path: |
+          dist/allocation227/source-identity.json
+          dist/allocation227/outcomes.json
+          dist/allocation227/artifact-manifest.json
+          dist/allocation227/observer-report.json
+          dist/allocation227/available-output-verification.json
+          diagnostics/live-scroll227/plan.md
+          diagnostics/live-scroll227/overlay-manifest.json
+        if-no-files-found: warn
+        retention-days: 14
+        compression-level: 6
+    - name: Require complete attribution evidence without granting installer acceptance
+      if: always()
+      run: python3 diagnostics/live-scroll227/check-allocation-run.py require-complete
