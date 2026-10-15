@@ -1,4 +1,4 @@
-# Verify explicit retry after an applied fallback region move fails to resume; retain all prior gates.
+# Qualify reviewed fallback region retry after exact254 native completion; retain all prior gates.
 # Full experimental qualification requires exact owned source geometry and complete installed scrolling parents; all ordinary gates remain intact.
 name: Native macOS build and verification
 on:
